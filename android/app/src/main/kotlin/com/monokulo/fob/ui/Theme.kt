@@ -149,6 +149,9 @@ object Fob {
     val qrLight = Color(0xFFFFFFFF)
     /** Quieter words on the white of the expanded code, in both themes. */
     val qrMuted = Color(0xFF5A564C)
+    /** Touch phones' strip on the white of Share my profile, in both themes, with its orange phone. */
+    val qrStrip = Color(0xFFEFEAE0)
+    val qrAccent = Color(0xFFB34700)
 }
 
 /** Which theme Fob draws in; kept on the phone (see [WalletModel.theme]). */

@@ -29,6 +29,8 @@ import uniffi.fob.Prepared
 import uniffi.fob.Profile
 import uniffi.fob.ProfileShare
 import uniffi.fob.ShareLine
+import uniffi.fob.Swapped
+import uniffi.fob.TouchSwap
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
 import java.io.File
@@ -383,6 +385,21 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return emptyList()
         val (seconds, offset, hours24) = clock()
         return wallet.profileShares(seconds, offset, hours24)
+    }
+
+    /** Touch phones, as Share my profile opens with NFC on: a swap on its own new address. */
+    suspend fun startSwap(): TouchSwap = requireNotNull(_wallet.value).startSwap()
+
+    /** Ends a swap, keeping it as a share when anything went out; their profile when it came. */
+    suspend fun endSwap(swap: TouchSwap): Swapped? {
+        val swapped = _wallet.value?.endSwap(swap)
+        refresh()
+        return swapped
+    }
+
+    /** Ends a swap as its screen goes, whatever came, on the model's scope so leaving doesn't cut it short. */
+    fun endSwapLater(swap: TouchSwap) {
+        scope.launch { runCatching { endSwap(swap) } }
     }
 
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */

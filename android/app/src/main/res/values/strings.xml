@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Fob</string>
+    <!-- Shown in the phone's NFC settings beside Fob's card service. -->
+    <string name="swap_service">Fob: swap profiles by touching phones</string>
 </resources>

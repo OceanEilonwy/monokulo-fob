@@ -118,9 +118,11 @@ object Icons {
     const val person = "M8.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M5.5 19.5c0.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5"
     /** Two links of a chain: a share's link copied or shared. */
     const val link = "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"
-    /** Two coins, one behind the other (drawn at stroke 1.8). */
+    /** A phone with waves (drawn at stroke 1.8): touch phones, and a share made that way. */
+    const val touch = "M7 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M18.5 8.5a5 5 0 0 1 0 7 M20.8 6.2a8.2 8.2 0 0 1 0 11.6"
     /** A payment code, drawn loose: a request in Activity. */
     const val request = "M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h2 M18 14h2 M14 18h2 M18 18h2"
+    /** Two coins, one behind the other (drawn at stroke 1.8). */
     const val coins = "M2.5 13a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z M6.5 13a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z M13.2 4.3A6.5 6.5 0 1 1 17.6 16.4"
     /** One coin splitting into three (drawn at stroke 1.8). */
     const val split = "M2.5 12a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0 -9 0Z M16.8 5a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 12a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 19a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M11.5 12h5.3 M10.6 9.6l6.5-3.6 M10.6 14.4l6.5 3.6"

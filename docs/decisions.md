@@ -1014,3 +1014,76 @@ Calls made while building the first version, with why. Newest last.
     leaves theirs) and the address as send address (moved out of paid
     at); the note stays. When nothing would change it says so and offers
     Open Sam instead.
+
+## Round 3: touch phones
+
+137. **Touch phones is card emulation and reader mode, taking turns**
+    (Round 6's note): Android has no phone-to-phone NFC since Beam went,
+    so while Share my profile is in front with NFC on, each phone answers
+    as a card (`SwapService`, a `HostApduService`) and switches reader mode
+    on and off at random 150–450 ms (a reading phone isn't a card), never
+    mid-exchange (`busy`, which lets go after a second of quiet). Two phones
+    on that screen settle into one of each within a touch. Fob's service
+    is preferred while the screen is in front (`setPreferredService`).
+138. **The application ID is F0 46 4F 42 53 57 41 50** (F0, proprietary,
+    then "FOBSWAP"; `swap::AID`), in `res/xml/apduservice.xml` as category
+    other with `requireDeviceUnlock`; a Rust test checks the file says the
+    same.
+139. **The protocol is all in Rust** (`swap.rs`; the app moves bytes):
+    select, then exchanges `80 E0 <index>` each carrying the reader's chunk
+    `index` and answered with the card's chunk `index`, at most 240 bytes
+    each way in short APDUs (extended ones aren't on every phone), then
+    `80 E2` done. Each profile code travels as a frame: version 1, its
+    length (two bytes, at most 3000; the largest code is 2664), the first
+    four bytes of its SHA3-256 (already a dependency), the code. Indexes
+    run with no gaps. A frame cut short, longer than it says or the cap, of
+    another version, or not matching its checksum ends the touch on both
+    phones with nothing taken; so does a code `parse_profile` refuses (no
+    name, another network, a bad photo). Touching again starts over.
+140. **Both end with the other's, or the card knows the reader's first**:
+    the reader takes the card's profile only once the card answers done;
+    the card takes the reader's on done. If the link drops after done
+    reaches the card but before its answer comes back, the card has the
+    reader's and the reader hasn't the card's; nothing can close that gap
+    over one link, and touching again (a new session on each side) fixes it.
+141. **Only while Share my profile is in front**: the card service answers
+    "not available" (6A82) to anything while no swap is set, which is
+    whenever the screen isn't resumed (`LifecycleResumeEffect`), so a
+    locked phone, a phone in a pocket or Fob in the background gives
+    nothing. A swap that's over answers the same.
+142. **A new address per swap, handed out when it starts** (`start_swap`):
+    the swap begins as Share my profile opens with NFC on (not on the
+    strip: the board's line says being on the screen is enough), on the
+    next subaddress from the one counter, saved at once so it's never given
+    again, even if nobody touches. It's kept as a share only when it's over
+    (`end_swap`, on success or as the screen goes): "Touched phones with
+    Sam" when theirs came, "Touched phones" when ours went out whole but
+    theirs didn't (so a payment to that address still comes "Via your
+    profile"), nothing otherwise. A swap kept once isn't kept twice. The
+    kind is `touched_phones` with the name, by name in the file beside the
+    others; Copy link on its code again doesn't change it, since who it
+    went to is what it's listed by.
+143. **The screens** (Round 6 › "Touch phones", "Swapped"): the strip "Or
+    touch phones · Both on this screen, backs together: you swap" (the
+    phone with waves in orange) sits between the code and its line, only on
+    a phone with NFC and card emulation; with NFC off it says so and opens
+    NFC's settings, and the swap starts on coming back. The strip and the
+    words around it keep the white screen's fixed colours in both themes
+    (`qrStrip`, `qrAccent`, the light theme's warm grey and orange). Touch
+    phones is on the theme's paper (rings, your photo, the board's words,
+    why the last touch took nothing, "No NFC? Scan each other's code
+    instead." going back to the code). Swapped has both photos with the
+    tick, Rust's "Swapped with Sam" and "Sam got your profile, and you got
+    Sam's.", their name, pattern and address, Not now (back to Your
+    profile) and Add contact: straight to the new card, or, when it would
+    change a contact, the asking sheet a scanned profile shows (decision
+    136), with Pay there too. A haptic confirm on success. Your shares
+    lists it as "Touched phones with Sam" with the phone icon; Activity's
+    line for it stays "Shared your profile".
+144. **Emulators have no NFC**: the strip hides there, and the protocol's
+    proof is its tests (two peers in memory: whole swaps of the largest
+    and smallest codes both ways, cut short, garbled each way, oversize,
+    another version, chunks out of order, done refused, the link dropping
+    midway and just before done, codes that aren't profiles, commands in
+    the wrong state; two wallets swapping through sessions). The two-phone
+    checks are in the checklist.
