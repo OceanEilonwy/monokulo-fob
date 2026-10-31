@@ -3,8 +3,10 @@
 //! A payment locks its change for 10 blocks (about 20 minutes); with the
 //! money in pieces, only the piece spent waits.
 //!
-//! Pieces are notes: in the currency prices are shown in (5, 10, 20, 50,
-//! 100, 200, set in XMR at today's price) or, without a price, in XMR. This
+//! Pieces are notes: in the currency prices are shown in (six round amounts
+//! from the currency's smallest note, 5, 10, 20, 50, 100, 200 in dollars,
+//! 1,000 to 50,000 in yen, set in XMR at today's price) or, without a
+//! price, in XMR. This
 //! module chooses them, checks them against the money and the 16 outputs a
 //! transaction may have, and writes every word of the Split up screen.
 
@@ -16,10 +18,10 @@ use crate::{
 /// The most pieces one split makes: a transaction has at most 16 outputs,
 /// and one is the change.
 pub const MAX_PIECES: u32 = 15;
-/// The notes in money, in whole units of the currency.
-const MONEY_NOTES: [u64; 6] = [5, 10, 20, 50, 100, 200];
+/// How many notes there are to choose from, in money or XMR.
+const NOTE_COUNT: usize = 6;
 /// The notes in XMR, without a price: 0.01, 0.05, 0.1, 0.25, 0.5, 1.
-const XMR_NOTES: [u64; 6] = [10_000_000_000, 50_000_000_000, 100_000_000_000, 250_000_000_000, 500_000_000_000, 1_000_000_000_000];
+const XMR_NOTES: [u64; NOTE_COUNT] = [10_000_000_000, 50_000_000_000, 100_000_000_000, 250_000_000_000, 500_000_000_000, 1_000_000_000_000];
 /// How far back payments teach the suggestion: 30 days.
 pub const LOOKBACK: u64 = 30 * 86_400;
 /// Fewer payments than this, and the suggestion is an even mix instead.
@@ -52,8 +54,9 @@ pub struct Note {
     pub minor: Option<u64>,
 }
 
-/// A whole number of a currency: "$20", "20 CHF".
+/// A whole number of a currency: "$20", "20 CHF", "₫100,000".
 fn whole(units: u64, currency: &Currency) -> String {
+    let units = price::grouped(units);
     match currency.symbol {
         Some(symbol) => format!("{symbol}{units}"),
         None => format!("{units} {}", currency.code),
@@ -65,15 +68,16 @@ fn whole(units: u64, currency: &Currency) -> String {
 pub fn notes(money: Money) -> Vec<Note> {
     if let Some((currency, p)) = money {
         let unit = 10u64.pow(currency.decimals);
-        let in_money: Option<Vec<Note>> = MONEY_NOTES
-            .iter()
-            .map(|&units| {
-                let minor = units * unit;
+        // Six round amounts from the currency's smallest note.
+        let in_money: Option<Vec<Note>> = price::currencies::ladder(currency.note, NOTE_COUNT)
+            .into_iter()
+            .map(|units| {
+                let minor = units.checked_mul(unit)?;
                 let atomic = price::to_atomic(minor, p, currency).filter(|a| *a > 0)?;
                 Some(Note { atomic, label: whole(units, currency), spoken: whole(units, currency), minor: Some(minor) })
             })
             .collect();
-        if let Some(notes) = in_money {
+        if let Some(notes) = in_money.filter(|n| n.len() == NOTE_COUNT) {
             return notes;
         }
     }
@@ -455,6 +459,18 @@ mod tests {
         let (gbp, chf) = (price::currency("GBP"), price::currency("CHF"));
         assert_eq!(super::notes(Some((&gbp, PRICE)))[0].label, "£5");
         assert_eq!(super::notes(Some((&chf, PRICE)))[0].label, "5 CHF");
+        // Currencies with many units to the dollar get notes of about the
+        // same worth, not 5 yen.
+        let labels = |code: &str, price: u64| super::notes(Some((&price::currency(code), price))).into_iter().map(|n| n.label).collect::<Vec<_>>();
+        assert_eq!(labels("JPY", 45_000 * price::MICRO), ["¥1,000", "¥2,000", "¥5,000", "¥10,000", "¥20,000", "¥50,000"]);
+        assert_eq!(labels("VND", 7_500_000 * price::MICRO), ["₫100,000", "₫200,000", "₫500,000", "₫1,000,000", "₫2,000,000", "₫5,000,000"]);
+        assert_eq!(labels("KRW", 420_000 * price::MICRO)[0], "₩5,000");
+        assert_eq!(labels("IDR", 4_800_000 * price::MICRO)[0], "Rp50,000");
+        assert_eq!(labels("KWD", 92 * price::MICRO), ["1 KWD", "2 KWD", "5 KWD", "10 KWD", "20 KWD", "50 KWD"]);
+        // ¥1,000 at ¥45,000 an XMR is about the same XMR as $5 at $300.
+        let yen = super::notes(Some((&price::currency("JPY"), 45_000 * price::MICRO)));
+        assert_eq!(amount::format(yen[0].atomic), "0.02222");
+        assert_eq!(amount::format(notes[0].atomic), "0.01667");
         let xmr: Vec<_> = super::notes(None).iter().map(|n| (n.label.clone(), n.spoken.clone())).collect();
         assert_eq!(xmr[0], ("0.01".into(), "0.01 XMR".into()));
         assert_eq!(xmr.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["0.01", "0.05", "0.1", "0.25", "0.5", "1"]);

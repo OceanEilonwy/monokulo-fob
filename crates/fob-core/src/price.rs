@@ -512,6 +512,8 @@ pub struct Currency {
     pub plural: &'static str,
     /// Digits after the point in its smallest unit.
     pub decimals: u32,
+    /// Split up's smallest note, in whole units ([`currencies::Info::note`]).
+    pub note: u64,
 }
 
 /// How Fob writes `code`: as [`currencies`] has it, or, for one it doesn't
@@ -519,8 +521,8 @@ pub struct Currency {
 /// decimals.
 pub fn currency(code: &str) -> Currency {
     match currencies::find(code) {
-        Some(c) => Currency { code: c.code.to_owned(), symbol: c.symbol, name: c.name, plural: c.plural, decimals: c.decimals },
-        None => Currency { code: code.to_owned(), symbol: None, name: "", plural: "", decimals: 2 },
+        Some(c) => Currency { code: c.code.to_owned(), symbol: c.symbol, name: c.name, plural: c.plural, decimals: c.decimals, note: c.note },
+        None => Currency { code: code.to_owned(), symbol: None, name: "", plural: "", decimals: 2, note: 5 },
     }
 }
 
@@ -543,6 +545,45 @@ pub fn shown_in_text(settings: &Settings) -> String {
 }
 
 const XMR_ONLY: &str = "XMR only";
+
+/// Under "Also show amounts in": "Uses today's XMR price", or with XMR
+/// only "Fob never looks up a price".
+pub fn shown_in_line(settings: &Settings) -> &'static str {
+    if settings.code().is_some() { "Uses today's XMR price" } else { NEVER_LOOKS }
+}
+
+const NEVER_LOOKS: &str = "Fob never looks up a price";
+
+/// One way to ask on Price from's "Ask over".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportRow {
+    pub transport: Transport,
+    /// "Web", "Tor"
+    pub title: &'static str,
+    /// "The provider sees this phone's IP address", "Kraken doesn't answer
+    /// over Tor".
+    pub line: String,
+    /// It can be picked: built, and the provider answers over it.
+    pub available: bool,
+    pub chosen: bool,
+}
+
+/// "Ask over": Web, then Tor, greyed while the provider doesn't answer
+/// over it or Fob hasn't Tor built in, its line saying which.
+pub fn transport_rows(settings: &Settings) -> Vec<TransportRow> {
+    [Transport::Web, Transport::Tor]
+        .into_iter()
+        .map(|t| {
+            let (title, line) = match t {
+                Transport::Web => ("Web", "The provider sees this phone's IP address".to_owned()),
+                Transport::Tor if !settings.provider.answers_over(t) => ("Tor", format!("{} doesn't answer {}", settings.provider.name(), t.text())),
+                Transport::Tor if !t.available() => ("Tor", "Hides this phone's IP address · not built into Fob yet".to_owned()),
+                Transport::Tor => ("Tor", "Hides this phone's IP address; slower".to_owned()),
+            };
+            TransportRow { transport: t, title, line, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
+        })
+        .collect()
+}
 
 /// One row of the "Also show amounts in" list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -599,7 +640,7 @@ pub fn currency_list(chosen: Option<&str>, phone: Option<&str>, query: &str) -> 
             code: None,
             sign: amount::SIGN.into(),
             name: XMR_ONLY.into(),
-            line: "Fob never looks up a price".into(),
+            line: NEVER_LOOKS.into(),
             chosen: chosen.is_none(),
         };
         groups.push(CurrencyGroup { title: "NONE".into(), rows: vec![row] });
@@ -847,7 +888,7 @@ pub fn to_atomic(minor: u64, price: u64, currency: &Currency) -> Option<u64> {
 }
 
 /// Digits with a comma every three: "1,234".
-fn grouped(whole: u64) -> String {
+pub(crate) fn grouped(whole: u64) -> String {
     let digits = whole.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
@@ -1278,6 +1319,23 @@ mod tests {
         assert_eq!(read(r#"{"currency":"NZD","provider":"kraken"}"#).provider, Provider::CoinGecko);
         assert_eq!(read(r#"{"currency":"XYZ"}"#).code(), None);
         assert_eq!(read(r#"{"currency":"USD","provider":"coingecko"}"#).provider, Provider::CoinGecko);
+    }
+
+    #[test]
+    fn ask_over_says_why_tor_is_greyed() {
+        let mut s = Settings::default();
+        let rows = transport_rows(&s);
+        assert_eq!(rows.iter().map(|r| (r.title, r.available, r.chosen)).collect::<Vec<_>>(), [("Web", true, true), ("Tor", false, false)]);
+        assert_eq!(rows[0].line, "The provider sees this phone's IP address");
+        assert_eq!(rows[1].line, "Kraken doesn't answer over Tor");
+        // CoinGecko answers over Tor, but Fob hasn't Tor built in: still
+        // greyed, saying so.
+        s.choose_provider(Provider::CoinGecko).unwrap();
+        let tor = &transport_rows(&s)[1];
+        assert_eq!((tor.line.as_str(), tor.available), ("Hides this phone's IP address · not built into Fob yet", false));
+        assert_eq!(shown_in_line(&s), "Uses today's XMR price");
+        s.choose_currency(None).unwrap();
+        assert_eq!(shown_in_line(&s), "Fob never looks up a price");
     }
 
     #[test]

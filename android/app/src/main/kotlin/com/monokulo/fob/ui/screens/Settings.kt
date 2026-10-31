@@ -62,11 +62,24 @@ import com.monokulo.fob.ui.ThemeChoice
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
-import android.widget.Toast
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import com.monokulo.fob.ui.Manrope
+import com.monokulo.fob.ui.Radio
+import com.monokulo.fob.ui.SearchField
+import uniffi.fob.CurrencyRow
+import uniffi.fob.PriceSettings
 import uniffi.fob.Activity
 import uniffi.fob.CurrencyList
 import uniffi.fob.PriceCheck
@@ -122,14 +135,9 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     var node by remember { mutableStateOf("") }
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
-    var choosing by remember { mutableStateOf<Pick?>(null) }
-    var priceError by remember { mutableStateOf<String?>(null) }
+    var choosingTheme by remember { mutableStateOf(false) }
     val prices by model.prices.collectAsState()
-    val context = LocalContext.current
-    // What the currency dialog shows, asked of Rust as it opens.
-    var currencyList by remember { mutableStateOf<CurrencyList?>(null) }
-    LaunchedEffect(choosing) { if (choosing == Pick.CURRENCY) currencyList = model.currencyList("") }
-    // Your profile's row, its words from Rust ("Set up your profile" before there's one).
+    // Your profile's row, its words from Rust ("Add a shareable Fob contact" before there's a name).
     var profile by remember { mutableStateOf<Profile?>(null) }
     var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
     LaunchedEffect(wallet) {
@@ -140,61 +148,24 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     val canSpend = wallet?.canSpend() != false
     Page {
         TopBar("Settings", onBack = { nav.back() })
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Column {
                 SectionLabel("Wallet")
                 Card {
-                    profileRow?.let { row ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button) { nav.go(Screen.Profile) }.padding(horizontal = 20.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            val p = profile
-                            if (p != null) Avatar(p.name, p.initial, p.photo, 40.dp)
-                            else Box(Modifier.size(40.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.person, tint = Fob.muted, size = 20.dp) }
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(row.title, fontSize = 16.sp)
-                                Text(row.line, fontSize = 13.sp, color = Fob.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            }
-                            StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
-                        }
-                    }
-                    SettingRow("Contacts", "Who you pay, kept on this phone", onClick = { nav.go(Screen.Contacts) })
-                    if (canSpend) SettingRow("Back up seed phrase", "Show the words that restore this wallet", onClick = { nav.go(Screen.ShowSeed) })
-                    SettingRow("Show wallet code", "Restore this wallet on another phone", onClick = { nav.go(Screen.ShowWalletCode) })
+                    profileRow?.let { row -> ProfileSettingRow(row, profile) { nav.go(Screen.Profile) } }
+                    LeadRow(Icons.people, "Contacts", "Who you pay, kept on this phone") { nav.go(Screen.Contacts) }
+                    // Step 7 adds the keys; until then the two backups it gathers.
+                    LeadRow(Icons.key, "Backup and keys", if (canSpend) "Seed phrase, wallet code" else "Wallet code") { nav.go(Screen.BackupKeys) }
                 }
             }
             Column {
                 SectionLabel("Display")
-                Card {
-                    ValueRow("Theme", theme.label) { choosing = Pick.THEME }
-                    // A stopgap until the Money card: the currency list in a dialog.
-                    prices?.let { p -> ValueRow("Also show amounts in", p.currencyText) { choosing = Pick.CURRENCY } }
-                    // Only with a currency: with XMR only there's no money to put first.
-                    prices?.takeIf { it.currency != null }?.let { p ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("Show first", fontSize = 16.sp)
-                                Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
-                            }
-                            Segmented(
-                                listOf("XMR", p.currency ?: ""), if (p.fiatFirst) 1 else 0, { i -> scope.launch { model.setFiatFirst(i == 1) } },
-                                Modifier.semantics { contentDescription = "Show first" }, height = 48.dp,
-                            )
-                        }
-                    }
-                }
+                Card { ValueRow("Theme", theme.label) { choosingTheme = true } }
             }
-            prices?.takeIf { it.currency != null }?.let { p ->
+            prices?.let { p ->
                 Column {
-                    SectionLabel("Prices")
-                    Card {
-                        // Red with Rust's reason while lookups fail ("Kraken · over the internet · Not answering").
-                        SettingRow("Price from", p.sourceText, onClick = { nav.go(Screen.PriceFrom) }, subtitleColor = if (p.failing) Fob.red else Fob.muted)
-                    }
+                    SectionLabel("Money")
+                    Card { MoneyRows(p, onCurrency = { nav.go(Screen.CurrencyList) }, onPriceFrom = { nav.go(Screen.PriceFrom) }, onTryAgain = model::retryPrices) { first -> scope.launch { runCatching { model.setFiatFirst(first) } } } }
                 }
             }
             Column {
@@ -242,38 +213,16 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             dismissButton = { TextButton("Cancel", { switching = false }, color = Fob.ink) },
         )
     }
-    val p = prices
-    if (choosing == Pick.THEME) {
+    if (choosingTheme) {
         AlertDialog(
-            onDismissRequest = { choosing = null },
+            onDismissRequest = { choosingTheme = false },
             title = { Text("Theme") },
             text = {
                 Column(Modifier.selectableGroup()) {
-                    ThemeChoice.entries.forEach { choice -> Choice(choice.label, choice == theme) { model.setTheme(choice); choosing = null } }
+                    ThemeChoice.entries.forEach { choice -> Choice(choice.label, choice == theme) { model.setTheme(choice); choosingTheme = false } }
                 }
             },
-            confirmButton = { TextButton("Done", { choosing = null }, color = Fob.ink) },
-        )
-    } else if (choosing == Pick.CURRENCY && p != null) {
-        // Rust's words when a choice moved the provider or the transport.
-        val said = { text: String? -> text?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() } }
-        AlertDialog(
-            onDismissRequest = { choosing = null; priceError = null },
-            title = { Text("Also show amounts in") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    currencyList?.groups?.forEach { g ->
-                        SectionLabel(g.title)
-                        g.rows.forEach { c ->
-                            Choice("${c.sign} · ${c.name}", c.chosen, subtitle = c.line) {
-                                scope.launch { runCatching { model.setCurrency(c.code) }.onSuccess { choosing = null; said(it) }.onFailure { priceError = it.reason() } }
-                            }
-                        }
-                    }
-                    ErrorText(priceError)
-                }
-            },
-            confirmButton = { TextButton("Done", { choosing = null; priceError = null }, color = Fob.ink) },
+            confirmButton = { TextButton("Done", { choosingTheme = false }, color = Fob.ink) },
         )
     }
     if (forgetting) {
@@ -287,54 +236,302 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     }
 }
 
-/** Which list Settings has open in a dialog. */
-private enum class Pick { THEME, CURRENCY }
+/**
+ * Your profile in Settings (board ProfileCopy): the photo or a person
+ * outline, Rust's title, and with a name "Henry · share as a code" where
+ * only the name is cut short, so the rest always shows.
+ */
+@Composable
+private fun ProfileSettingRow(row: ProfileRow, profile: Profile?, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) {}.padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        val name = row.name
+        if (profile != null && name != null) Avatar(profile.name, profile.initial, profile.photo, 40.dp)
+        else Box(Modifier.size(40.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.person, tint = Fob.muted, size = 20.dp, width = 1.8f) }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(row.title, fontSize = 16.sp)
+            val suffix = row.suffix
+            if (name != null && suffix != null) {
+                Row {
+                    Text(name, fontSize = 13.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    Text(suffix, fontSize = 13.sp, color = Fob.muted, maxLines = 1)
+                }
+            }
+        }
+        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+    }
+}
+
+/** A row with its icon in a sunken circle, as the Wallet card has them: Contacts, Backup and keys. */
+@Composable
+private fun LeadRow(icon: String, title: String, line: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) {}.padding(start = 20.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(icon, size = 20.dp, width = 1.8f) }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontSize = 16.sp)
+            Text(line, fontSize = 13.sp, color = Fob.muted)
+        }
+        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+    }
+}
 
 /**
- * Price from, its own screen so the price toast's cog can open it and Back
- * return where it was: each provider of the chosen currency, asked as it
- * opens, and how requests travel. A stopgap until step 3's design.
+ * The Money card (board PricesWording): "Also show amounts in" with its
+ * value; with a currency, Show first and Price from, red with Try again
+ * while lookups fail. With XMR only, just the first row.
+ */
+@Composable
+private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () -> Unit, onTryAgain: () -> Unit, onFiatFirst: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button, onClick = onCurrency)
+            .semantics(mergeDescendants = true) {}.padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Also show amounts in", fontSize = 16.sp)
+            Text(p.currencyLine, fontSize = 13.sp, color = Fob.muted)
+        }
+        // A long name ("New Taiwan dollar") wraps rather than squeezing the title.
+        Text(p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.8f, fill = false))
+        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+    }
+    val code = p.currency ?: return
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Show first", fontSize = 16.sp)
+            Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
+        }
+        Segmented(listOf("XMR", code), if (p.fiatFirst) 1 else 0, { i -> onFiatFirst(i == 1) }, Modifier.semantics { contentDescription = "Show first" }, height = 48.dp)
+    }
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button, onClick = onPriceFrom)
+            .padding(start = 20.dp, end = if (p.failing) 8.dp else 16.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Price from", fontSize = 16.sp)
+            // While lookups fail, the toast's line: "Kraken didn't answer · using the 14:02 price".
+            Text(p.sourceText, fontSize = 13.sp, color = if (p.failing) Fob.red else Fob.muted)
+        }
+        if (p.failing) {
+            Box(
+                Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onTryAgain).padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("Try again", color = Fob.orangeText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+        } else {
+            StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+        }
+    }
+}
+
+/**
+ * "Also show amounts in" (board CurrencyPicker): a search, then Rust's
+ * groups (XMR only, this phone's currency, all of them A–Z). Choosing one
+ * goes back; when the provider had to change for it, Rust's words show as
+ * a notice.
+ */
+@Composable
+fun CurrencyListScreen(model: WalletModel, nav: Nav) {
+    val scope = rememberCoroutineScope()
+    val keyboard = LocalSoftwareKeyboardController.current
+    var query by rememberSaveable { mutableStateOf("") }
+    var list by remember { mutableStateOf<CurrencyList?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    // Rust filters as each letter is typed.
+    LaunchedEffect(query) { list = model.currencyList(query) }
+    val choose = { code: String? ->
+        scope.launch {
+            runCatching { model.setCurrency(code) }
+                .onSuccess { keyboard?.hide(); nav.back() }
+                .onFailure { error = it.reason() }
+        }
+    }
+    Page(scroll = false) {
+        TopBar("Also show amounts in", onBack = { nav.back() })
+        SearchField(
+            query, { query = it }, "Search: name, code or symbol", "Search currencies",
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp), height = 52.dp, onSearch = { keyboard?.hide() },
+        )
+        ErrorText(error)
+        LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+            list?.empty?.let { words ->
+                item { Text(words, color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 16.dp)) }
+            }
+            list?.groups?.forEach { g ->
+                item(key = g.title) {
+                    Column(Modifier.padding(top = 14.dp)) {
+                        Text(
+                            g.title, color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
+                            modifier = Modifier.padding(start = 8.dp, bottom = 6.dp).semantics { heading() },
+                        )
+                        Card(Modifier.selectableGroup()) { g.rows.forEach { row -> CurrencyLine(row) { choose(row.code) } } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One currency: its sign in a circle, its name, who prices it, and a tick on the chosen one. */
+@Composable
+private fun CurrencyLine(row: CurrencyRow, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 60.dp).selectable(row.chosen, role = Role.RadioButton, onClick = onClick)
+            .semantics(mergeDescendants = true) {}.padding(horizontal = 20.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // The sign isn't read: "A$" says nothing the name doesn't.
+        Box(Modifier.size(40.dp).clip(CircleShape).background(Fob.sunken).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+            Text(
+                row.sign, fontFamily = Manrope, fontWeight = FontWeight.ExtraBold, fontSize = if (row.sign.length > 2) 13.sp else 17.sp,
+                maxLines = 1, softWrap = false,
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(row.name, fontSize = 16.sp)
+            Text(row.line, fontSize = 12.5.sp, color = Fob.muted)
+        }
+        if (row.chosen) StrokeIcon(Icons.check, size = 20.dp)
+    }
+}
+
+/**
+ * Price from (board PriceSource): each provider of the chosen currency,
+ * asked as the page opens (and again when the currency or the way of
+ * asking changes), then how requests travel. Picking stays here; Rust's
+ * words show as a notice when a pick moved the transport.
  */
 @Composable
 fun PriceFromScreen(model: WalletModel, nav: Nav) {
     val prices by model.prices.collectAsState()
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     var checks by remember { mutableStateOf<List<PriceCheck>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { checks = model.checkPrices() }
-    // Rust's words when a choice moved the provider or the transport.
-    val said = { text: String? -> text?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() } }
+    val p = prices
+    val transport = p?.sources?.firstOrNull { it.chosen }?.transport
+    LaunchedEffect(p?.currency, transport) {
+        checks = null
+        checks = model.checkPrices()
+    }
     Page {
         TopBar("Price from", onBack = { nav.back() })
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            val p = prices
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (p?.currency == null) {
-                Text("With XMR only, Fob never looks up a price.", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 4.dp))
+                Text("With XMR only, Fob never looks up a price.", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 8.dp))
                 return@Column
             }
-            Column {
-                SectionLabel("Providers")
-                Card {
-                    if (checks == null) Text("Asking each provider…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
-                    checks?.forEach { c ->
-                        Choice(c.name, c.chosen, subtitle = c.rate ?: c.failure, enabled = c.canPick) {
-                            scope.launch { runCatching { model.setPriceProvider(c.provider) }.onSuccess { said(it); nav.back() }.onFailure { error = it.reason() } }
-                        }
+            Text(
+                buildAnnotatedString {
+                    append("Prices in ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Fob.ink)) { append(p.currencyPlural ?: p.currencyText) }
+                    append(", checked as this page opens. Tap a provider to pick it.")
+                },
+                color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(horizontal = 8.dp),
+            )
+            Card(Modifier.selectableGroup()) {
+                val lines = checks
+                if (lines == null) {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        CircularProgressIndicator(Modifier.size(20.dp), color = Fob.muted, strokeWidth = 2.dp)
+                        Text("Asking each provider…", color = Fob.muted, fontSize = 14.sp)
+                    }
+                }
+                lines?.forEach { c ->
+                    ProviderLine(c, chosen = c.provider == p.provider) {
+                        scope.launch { runCatching { model.setPriceProvider(c.provider) }.onSuccess { error = null }.onFailure { error = it.reason() } }
                     }
                 }
             }
             Column {
                 SectionLabel("Ask over")
-                Card {
+                Card(Modifier.selectableGroup()) {
                     p.sources.forEach { s ->
-                        Choice(s.text, s.chosen, subtitle = s.note, enabled = s.available) {
-                            scope.launch { runCatching { model.setPriceTransport(s.transport) }.onSuccess { nav.back() }.onFailure { error = it.reason() } }
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 60.dp)
+                                .selectable(s.chosen, enabled = s.available, role = Role.RadioButton) {
+                                    scope.launch { runCatching { model.setPriceTransport(s.transport) }.onSuccess { error = null }.onFailure { error = it.reason() } }
+                                }
+                                .semantics(mergeDescendants = true) {}.padding(horizontal = 20.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            Radio(s.chosen, s.available)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(s.title, fontSize = 16.sp, color = if (s.available) Fob.ink else Fob.outline)
+                                Text(s.line, fontSize = 13.sp, color = Fob.muted)
+                            }
                         }
                     }
                 }
             }
             ErrorText(error)
+        }
+    }
+}
+
+/**
+ * One provider on one line: radio, name, a globe (web) and an onion (Tor)
+ * for how it can be asked, and its rate; one that failed is greyed, its
+ * failure in red, and can't be picked. TalkBack reads Rust's label.
+ */
+@Composable
+private fun ProviderLine(c: PriceCheck, chosen: Boolean, onClick: () -> Unit) {
+    val ink = if (c.canPick) Fob.ink else Fob.outline
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(chosen, enabled = c.canPick, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = c.label }.padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.weight(1f).clearAndSetSemantics {}, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Radio(chosen, c.canPick)
+            Text(c.name, fontSize = 16.sp, color = ink)
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (c.web) WayIcon(Icons.globe, ink, 1.8f)
+                if (c.tor) WayIcon(Icons.onion, ink, 1.6f)
+            }
+            val failure = c.failure
+            Text(failure ?: c.rate ?: "", fontSize = 14.sp, color = if (failure != null) Fob.red else Fob.muted, textAlign = TextAlign.End)
+        }
+    }
+}
+
+/** A small sunken badge with a way of asking's icon. */
+@Composable
+private fun WayIcon(path: String, tint: Color, width: Float) {
+    Box(Modifier.size(24.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(path, tint = tint, size = 14.dp, width = width) }
+}
+
+/**
+ * Backup and keys: for now the two backups it gathers, Seed phrase (not
+ * on a watch-only wallet) and Wallet code, each opening its screen as
+ * before. Step 7 adds the fingerprint, the keys and their layout.
+ */
+@Composable
+fun BackupKeysScreen(model: WalletModel, nav: Nav) {
+    val wallet by model.wallet.collectAsState()
+    val canSpend = wallet?.canSpend() != false
+    Page {
+        TopBar("Backup and keys", onBack = { nav.back() })
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Column {
+                SectionLabel("Back up")
+                Card {
+                    if (canSpend) SettingRow("Seed phrase", "The words that restore this wallet", onClick = { nav.go(Screen.ShowSeed) })
+                    SettingRow("Wallet code", "Restore this wallet on another phone", onClick = { nav.go(Screen.ShowWalletCode) })
+                }
+            }
         }
     }
 }
@@ -353,17 +550,14 @@ private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
     }
 }
 
-/** One of a few choices: its name, and a tick when it's the one chosen; one not [enabled] is muted with why under it. */
+/** One of a few choices: its name, and a tick when it's the one chosen. */
 @Composable
-private fun Choice(title: String, chosen: Boolean, subtitle: String? = null, enabled: Boolean = true, onClick: () -> Unit) {
+private fun Choice(title: String, chosen: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(chosen, enabled = enabled, role = Role.RadioButton, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(chosen, role = Role.RadioButton, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, fontSize = 16.sp, color = if (enabled) Fob.ink else Fob.muted)
-            if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = Fob.muted)
-        }
+        Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
         if (chosen) StrokeIcon(Icons.check, size = 20.dp)
     }
 }

@@ -1458,3 +1458,78 @@ Calls made while building the first version, with why. Newest last.
     provider or transport goes back, as the dialog closed. Settings' Price
     from row is red with Rust's line while lookups fail ("Kraken · over
     the internet · Not answering").
+194. **Settings as board SettingsV3**: the Wallet card has your profile,
+    Contacts and Backup and keys, each with its icon in a sunken circle;
+    Display has only Theme; Money (decision 195) replaces Display's
+    currency rows and the Prices card; Syncing, Network, Receipts and
+    This phone stay. Backup and keys opens a stopgap screen until step 7:
+    Seed phrase (not on a watch-only wallet) and Wallet code under "Back
+    up", each opening its screen as before. Its line says only what's
+    there ("Seed phrase, wallet code", or "Wallet code" watch-only), not
+    keys, which step 7 adds.
+195. **The Money card's words**: "Also show amounts in" says "Uses today's
+    XMR price", or with XMR only "Fob never looks up a price" (Rust's
+    `shown_in_line`), its value at the end (a long name wraps to two
+    lines). Price from, while lookups fail, shows the toast's own line in
+    red ("Kraken didn't answer · using the 14:02 price"), as board
+    PricesWording has it, with Try again in place of the chevron; this
+    replaces decision 193's "Kraken · over the internet · Not answering".
+    Try again works with the toast swiped away too: it asks Rust for the
+    current failure and shows Retry's progress in the toast.
+196. **The currency list is a screen**: `Screen.CurrencyList`, with
+    Contacts' search pill (now one shared `SearchField`, here 52 dp, with
+    a clear button and the keyboard's Search closing the keyboard). Rust
+    filters on every change; groups are headings for TalkBack, rows are
+    radio buttons reading name and providers (the sign in the circle
+    isn't read; three-character signs drop to 13 sp). Choosing goes back.
+197. **Move words are an in-app notice, not a system toast**: Rust's
+    "Kraken doesn't price New Zealand dollars, so Fob now asks CoinGecko"
+    shows for 4 s in a small card in the price toast's colours, just above
+    where the toast sits (above it when both show), read politely by
+    TalkBack; tapping it dismisses it. The model posts it from
+    `setCurrency` and `setPriceProvider`, so any screen choosing shows it.
+198. **Price from stays put**: picking a provider or a transport keeps the
+    screen open (decision 193 went back); the radio follows the settings.
+    The check runs as the page opens and again when the currency or the
+    transport changes, not on a provider picked (its rate is already
+    there). While it runs, one row says "Asking each provider…" with a
+    spinner. The intro is the board's: "Prices in **Australian dollars**,
+    checked as this page opens. Tap a provider to pick it." Each provider
+    is one line: radio, name, globe and onion badges for what it answers
+    over, rate on the right or the failure in red, the name greyed and
+    not pickable when it failed; TalkBack reads Rust's label only.
+199. **"Ask over" words from Rust** (`transport_rows`): Web, "The provider
+    sees this phone's IP address"; Tor, greyed with "Kraken doesn't answer
+    over Tor" when the provider lacks it, else "Hides this phone's IP
+    address · not built into Fob yet" while Tor isn't built (greyed too),
+    and the board's "Hides this phone's IP address; slower" once it is.
+    The ffi's own words for these (the "Not available yet" note and
+    "Kraken · over Tor") are gone.
+200. **The profile row** (decision 11): Rust's `settings_row` gives a
+    title and, with a name, the name and " · share as a code" apart, so
+    the app cuts only the name with an ellipsis and the rest always shows.
+    No name (and a blank one from an old file, photo or not) is only
+    "Add a shareable Fob contact" with the person outline; the photo shows
+    only beside a name.
+201. **Amounts say how old their price is** (decision 9, over decision
+    190's "without an age"): once the price is 10 minutes old, Home's
+    money figure and Send's ready line add "· 40 min old" or "· 2 h old"
+    (whole minutes under an hour, whole hours after; never days, as a
+    price over a day isn't shown). `Balance` gains `fiat_age` and
+    `fiat_line` ("$412.06 · 2 h old"); with money first, the big figure
+    stays bare and the age sits small beside it. `balance` and
+    `ready_line` take the time, as the toast does.
+202. **No price yet still says why**: the toast's line with no price ever
+    kept is "CoinGecko didn't answer · no NZD price yet" (board
+    ToastSettings), or "… · type the amount in XMR" when a money amount
+    asked; decision 189's "No price yet · …" lines are gone.
+203. **Split up's notes in every currency**: each of the 45 has its
+    smallest note in the table (`note`), a round amount on the 1-2-5
+    ladder worth about five US dollars at late-2026 rates ($5, €5, £5,
+    A$5, NZ$10, ¥1,000, ₩5,000, ₫100,000, Rp50,000, 1 KWD, 2 BHD, 5,000
+    ARS…), and the six notes run up the ladder from it (¥1,000 to
+    ¥50,000). Notes are written with thousands separators, and a tile's
+    label shrinks to fit ("₫5,000,000"). The table is fixed, not from the
+    live rate, so notes stay the same round amounts as XMR moves; a
+    currency that loses much of its value (the Argentine peso) needs its
+    entry raised in a later build.

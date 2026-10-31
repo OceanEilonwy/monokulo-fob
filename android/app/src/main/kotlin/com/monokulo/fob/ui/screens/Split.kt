@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -169,7 +171,11 @@ private fun NoteTile(tile: SplitTile, modifier: Modifier, onAdd: () -> Unit, onR
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text(tile.label, style = display(22), maxLines = 1)
+            // Long notes ("₫5,000,000") shrink to fit the tile.
+            BasicText(
+                tile.label, style = display(22).copy(color = Fob.ink), maxLines = 1,
+                autoSize = TextAutoSize.StepBased(minFontSize = 12.sp, maxFontSize = 22.sp), modifier = Modifier.padding(horizontal = 6.dp),
+            )
             Text(tile.countText, color = Fob.muted, fontSize = 13.sp, maxLines = 1)
         }
         if (chosen) {

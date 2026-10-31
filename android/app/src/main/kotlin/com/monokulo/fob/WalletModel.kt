@@ -90,6 +90,27 @@ class WalletModel(private val app: Application) {
     private var toastDone = 0uL
 
     /**
+     * A short note at the bottom of the screen, Rust's words when a price
+     * choice moved something else ("Kraken doesn't price New Zealand
+     * dollars, so Fob now asks CoinGecko"); gone after a few seconds.
+     */
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice
+
+    private fun say(text: String?) {
+        text ?: return
+        _notice.value = text
+        scope.launch {
+            delay(4_000)
+            if (_notice.value === text) _notice.value = null
+        }
+    }
+
+    fun dismissNotice() {
+        _notice.value = null
+    }
+
+    /**
      * Light, dark or as the phone is. Only how Fob looks, the same for every
      * wallet, so it's an app preference rather than in the wallet file.
      */
@@ -164,9 +185,9 @@ class WalletModel(private val app: Application) {
 
     suspend fun refresh() {
         val wallet = _wallet.value ?: return
-        _prices.value = wallet.priceSettings()
-        _balance.value = wallet.balance()
         val (seconds, offset, hours24) = clock()
+        _prices.value = wallet.priceSettings(seconds, offset, hours24)
+        _balance.value = wallet.balance(seconds)
         _activity.value = wallet.activityDays(seconds, offset, hours24)
         _notReady.value = wallet.notReady(seconds, offset, hours24)
         refreshToast(wallet)
@@ -195,15 +216,21 @@ class WalletModel(private val app: Application) {
         _priceToast.value = null
     }
 
-    /** The toast's Retry: "Trying again…", then the price it got for 2 s, or the failure again. */
+    /**
+     * The toast's Retry, or Settings' Try again (with the toast swiped away
+     * or not): "Trying again…" in the toast, then the price it got for 2 s,
+     * or the failure again.
+     */
     fun retryPrices() {
         val wallet = _wallet.value ?: return
-        val failed = (_priceToast.value as? PriceToastState.Failed)?.toast ?: return
-        toastDone = failed.id
-        val asking = PriceToastState.Retrying(failed)
-        _priceToast.value = asking
+        if (_priceToast.value is PriceToastState.Retrying) return
         scope.launch {
             val (seconds, offset, hours24) = clock()
+            val failed = (_priceToast.value as? PriceToastState.Failed)?.toast
+                ?: wallet.priceToast(seconds, offset, hours24) ?: return@launch
+            toastDone = failed.id
+            val asking = PriceToastState.Retrying(failed)
+            _priceToast.value = asking
             val result = wallet.retryPrices(seconds, offset, hours24)
             // Swiped away meanwhile: nothing more to say.
             if (_priceToast.value !== asking) return@launch
@@ -260,11 +287,11 @@ class WalletModel(private val app: Application) {
         scope.launch { runCatching { wallet.rememberReceiveNote(index, note) } }
     }
 
-    /** "Also show amounts in" a currency's [code], or XMR only (null). Returns Rust's words when the provider had to change for it. */
-    suspend fun setCurrency(code: String?): String? = changePrices { it.setCurrency(code) }
+    /** "Also show amounts in" a currency's [code], or XMR only (null); Rust's words show as a notice when the provider had to change for it. */
+    suspend fun setCurrency(code: String?) = say(changePrices { it.setCurrency(code) })
 
-    /** Prices from [provider]; returns Rust's words when the transport had to change for it. */
-    suspend fun setPriceProvider(provider: PriceProvider): String? = changePrices { it.setPriceProvider(provider) }
+    /** Prices from [provider]; Rust's words show as a notice when the transport had to change for it. */
+    suspend fun setPriceProvider(provider: PriceProvider) = say(changePrices { it.setPriceProvider(provider) })
 
     /** Throws what Rust refused (Tor, for now). */
     suspend fun setPriceTransport(transport: PriceTransport) = changePrices { it.setPriceTransport(transport) }

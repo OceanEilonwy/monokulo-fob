@@ -4,12 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{
-    activity, amount, contacts, not_ready, pattern,
-    price::{self, Source as _},
-    profile,
-    qr, receipt, split, uri,
-};
+use fob_core::{activity, amount, contacts, not_ready, pattern, price, profile, qr, receipt, split, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -130,11 +125,16 @@ pub struct Balance {
     pub total_text: String,
     pub unlocked_text: String,
     /// What the balance is worth now, "$412.06"; only with a currency besides XMR and a
-    /// current price.
+    /// price from within the day.
     pub fiat_text: Option<String>,
+    /// That price's age once it's missed a refresh: "2 h old".
+    pub fiat_age: Option<String>,
+    /// The worth with its age, where it sits small: "$412.06 · 2 h old".
+    pub fiat_line: Option<String>,
     /// Show [`fiat_text`](Self::fiat_text) first, the XMR under it.
     pub fiat_first: bool,
-    /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70".
+    /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70", with the
+    /// price's age once old ("… · 2 h old").
     pub ready_line: String,
 }
 
@@ -261,14 +261,16 @@ impl From<price::Transport> for PriceTransport {
     }
 }
 
-/// A place prices can come from, to choose.
+/// One way to ask, on Price from's "Ask over".
 #[derive(uniffi::Record)]
 pub struct PriceSourceChoice {
     pub transport: PriceTransport,
-    /// "Kraken · over Tor"
-    pub text: String,
-    /// "Not available yet" for one Fob can't use.
-    pub note: Option<String>,
+    /// "Web", "Tor"
+    pub title: String,
+    /// "The provider sees this phone's IP address", "Kraken doesn't answer
+    /// over Tor".
+    pub line: String,
+    /// It can be picked; greyed otherwise, the line saying why.
     pub available: bool,
     pub chosen: bool,
 }
@@ -280,13 +282,18 @@ pub struct PriceSettings {
     pub currency: Option<String>,
     /// That row's value: "US dollar", "XMR only".
     pub currency_text: String,
+    /// Under its title: "Uses today's XMR price", "Fob never looks up a price".
+    pub currency_line: String,
+    /// For Price from's intro, "Prices in Australian dollars, …"; none with XMR only.
+    pub currency_plural: Option<String>,
     pub provider: PriceProvider,
     /// "Show first" the currency, not XMR.
     pub fiat_first: bool,
-    /// Price from's row: "Kraken · over the internet", with why while
-    /// lookups fail ("… · Not answering").
+    /// Price from's row: "Kraken · over the internet", or while lookups
+    /// fail the toast's line ("Kraken didn't answer · using the 14:02
+    /// price").
     pub source_text: String,
-    /// Lookups are failing: the row is red.
+    /// Lookups are failing: the row is red, with Try again.
     pub failing: bool,
     pub sources: Vec<PriceSourceChoice>,
 }
@@ -898,16 +905,23 @@ impl FobWallet {
         Ok(self.inner.set_zmq(on, endpoint.as_deref()).await?)
     }
 
-    pub async fn balance(&self) -> Balance {
+    /// The balance at `now` (seconds since the epoch), which dates the price.
+    pub async fn balance(&self, now: u64) -> Balance {
         let b = self.inner.balance().await;
+        let worth = self.inner.worth_aged(b.total, now).await;
         Balance {
             total: b.total,
             unlocked: b.unlocked,
             total_text: xmr(b.total),
             unlocked_text: xmr(b.unlocked),
-            fiat_text: self.inner.worth_now(b.total).await,
+            fiat_line: worth.as_ref().map(|(w, old)| match old {
+                Some(old) => format!("{w} · {old}"),
+                None => w.clone(),
+            }),
+            fiat_age: worth.as_ref().and_then(|(_, old)| old.clone()),
+            fiat_text: worth.map(|(w, _)| w),
             fiat_first: self.inner.price_settings().await.fiat_first,
-            ready_line: self.inner.ready_line().await,
+            ready_line: self.inner.ready_line(now).await,
         }
     }
 
@@ -967,28 +981,19 @@ impl FobWallet {
         self.inner.stop_prices();
     }
 
-    /// Settings' money and price rows.
-    pub async fn price_settings(&self) -> PriceSettings {
+    /// Settings' money and price rows, and Price from's "Ask over". The
+    /// clock as for `activity_days`, for when a failing row's price is from.
+    pub async fn price_settings(&self, now: u64, utc_offset: i32, hours_24: bool) -> PriceSettings {
         let s = self.inner.price_settings().await;
-        let sources = [price::Transport::Web, price::Transport::Tor]
+        let sources = price::transport_rows(&s)
             .into_iter()
-            .map(|t| PriceSourceChoice {
-                transport: t.into(),
-                text: price::Settings { transport: t, ..s.clone() }.source_text(),
-                note: if !t.available() {
-                    Some("Not available yet".to_owned())
-                } else if !s.provider.answers_over(t) {
-                    Some(format!("{} doesn't answer {}", s.provider.name(), t.text()))
-                } else {
-                    None
-                },
-                available: t.available() && s.provider.answers_over(t),
-                chosen: t == s.transport,
-            })
+            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: r.line, available: r.available, chosen: r.chosen })
             .collect();
-        let (source_text, failing) = self.inner.price_from_line().await;
+        let (source_text, failing) = self.inner.price_from_line(activity::Clock { now, utc_offset, hours_24 }).await;
         PriceSettings {
             currency_text: price::shown_in_text(&s),
+            currency_line: price::shown_in_line(&s).into(),
+            currency_plural: s.code().map(|c| price::currency(c).plural.to_owned()),
             currency: s.currency.clone(),
             provider: s.provider.into(),
             fiat_first: s.fiat_first,
@@ -1364,11 +1369,11 @@ impl FobWallet {
         self.inner.profile().await.map(Into::into)
     }
 
-    /// Settings' row: "Your profile" with "Henry · name and photo, share as
-    /// a code", or "Set up your profile".
+    /// Settings' row: "Your profile" over "Henry · share as a code", or
+    /// only "Add a shareable Fob contact" before there's a name.
     pub async fn profile_row(&self) -> ProfileRow {
-        let (title, line) = self.inner.profile_row().await;
-        ProfileRow { title, line }
+        let row = self.inner.profile_row().await;
+        ProfileRow { title: row.title, name: row.name, suffix: row.suffix }
     }
 
     /// Under Receive's note while requests carry your name: "The code names
@@ -1474,10 +1479,12 @@ impl From<profile::Profile> for Profile {
 /// Settings' row for the profile.
 #[derive(uniffi::Record)]
 pub struct ProfileRow {
-    /// "Your profile", "Set up your profile"
+    /// "Your profile", "Add a shareable Fob contact"
     pub title: String,
-    /// "Henry · name and photo, share as a code"
-    pub line: String,
+    /// Under it, with a name: "Henry" (cut with an ellipsis when long) then
+    /// " · share as a code" (always shown). None without a name.
+    pub name: Option<String>,
+    pub suffix: Option<String>,
 }
 
 /// How a share went out.

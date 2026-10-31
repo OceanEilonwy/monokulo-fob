@@ -318,12 +318,24 @@ pub fn swapped_words(name: &str, sure: bool) -> (String, String) {
     (format!("Swapped with {name}"), line)
 }
 
-/// Settings' row: "Your profile" with "Henry · name and photo, share as a
-/// code", or "Set up your profile" before there's one.
-pub fn settings_row(profile: Option<&Profile>) -> (String, String) {
-    match profile {
-        Some(p) => ("Your profile".into(), format!("{} · name and photo, share as a code", p.name)),
-        None => ("Set up your profile".into(), "A name and photo other Fobs can save you by".into()),
+/// Settings' row for the profile, every word ready to draw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingsRow {
+    /// "Your profile", or "Add a shareable Fob contact" before there's a name.
+    pub title: String,
+    /// The line under it, in two parts so the app cuts only the name:
+    /// "Henry" and " · share as a code". None without a name.
+    pub name: Option<String>,
+    pub suffix: Option<String>,
+}
+
+/// Settings' row: "Your profile" over "Henry · share as a code", or only
+/// "Add a shareable Fob contact" while there's no name (a photo alone
+/// doesn't make a contact others can save).
+pub fn settings_row(profile: Option<&Profile>) -> SettingsRow {
+    match profile.map(|p| p.name.trim()).filter(|n| !n.is_empty()) {
+        Some(name) => SettingsRow { title: "Your profile".into(), name: Some(name.to_owned()), suffix: Some(" · share as a code".into()) },
+        None => SettingsRow { title: "Add a shareable Fob contact".into(), name: None, suffix: None },
     }
 }
 
@@ -616,11 +628,19 @@ mod tests {
     #[test]
     fn settings_and_receive_say_whose_name_goes_out() {
         let mut book = Book::default();
-        assert_eq!(settings_row(book.profile()).0, "Set up your profile");
+        let row = settings_row(book.profile());
+        assert_eq!((row.title.as_str(), row.name, row.suffix), ("Add a shareable Fob contact", None, None), "no second line");
         assert_eq!(receive_line(&book), None);
         book.set("Henry", None).unwrap();
-        assert_eq!(settings_row(book.profile()), ("Your profile".into(), "Henry · name and photo, share as a code".into()));
-        assert_eq!(receive_line(&book).as_deref(), Some("The code names you as “Henry” · change in Settings"));
+        let row = settings_row(book.profile());
+        assert_eq!((row.title.as_str(), row.name.as_deref(), row.suffix.as_deref()), ("Your profile", Some("Henry"), Some(" · share as a code")));
+        // A long name comes whole: the app cuts it, never the suffix.
+        book.set("Henrietta Montgomery-Fairweather", None).unwrap();
+        assert_eq!(settings_row(book.profile()).name.as_deref(), Some("Henrietta Montgomery-Fairweather"));
+        // An old file's blank name, with a photo or not, isn't a contact.
+        let blank = Profile { name: " ".into(), photo: None, name_in_requests: true };
+        assert_eq!(settings_row(Some(&blank)).title, "Add a shareable Fob contact");
+        assert_eq!(receive_line(&book).as_deref(), Some("The code names you as “Henrietta Montgomery-Fairweather” · change in Settings"));
         book.set_name_in_requests(false).unwrap();
         assert_eq!(receive_line(&book), None);
     }

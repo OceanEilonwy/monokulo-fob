@@ -37,7 +37,9 @@ import com.monokulo.fob.ui.FobTheme
 import com.monokulo.fob.ui.LocalBottomSpace
 import com.monokulo.fob.ui.LocalFobColors
 import com.monokulo.fob.ui.PriceToastHost
+import com.monokulo.fob.ui.screens.BackupKeysScreen
 import com.monokulo.fob.ui.screens.BackupScreen
+import com.monokulo.fob.ui.screens.CurrencyListScreen
 import com.monokulo.fob.ui.screens.CoinsScreen
 import com.monokulo.fob.ui.screens.ConfirmScreen
 import com.monokulo.fob.ui.screens.ContactEditScreen
@@ -113,6 +115,10 @@ sealed interface Screen {
     data object Settings : Screen
     /** Price from: each provider, checked as it opens; from Settings or the price toast's cog. */
     data object PriceFrom : Screen
+    /** "Also show amounts in": every currency, with a search. */
+    data object CurrencyList : Screen
+    /** Backup and keys: Seed phrase and Wallet code, until step 7 adds the keys. */
+    data object BackupKeys : Screen
     /** Everyone this wallet pays, and who was paid but isn't saved. */
     data object Contacts : Screen
     /** A contact's card. */
@@ -211,9 +217,11 @@ class MainActivity : FragmentActivity() {
                     Box(Modifier.fillMaxSize()) {
                         App(nav)
                         val toast by model.priceToast.collectAsState()
+                        val notice by model.notice.collectAsState()
                         PriceToastHost(
                             toast, onRetry = model::retryPrices, onDismiss = model::dismissPriceToast,
                             onSettings = { if (nav.current != Screen.PriceFrom) nav.go(Screen.PriceFrom) },
+                            notice = notice, onNoticeDismiss = model::dismissNotice,
                         )
                     }
                 }
@@ -302,6 +310,8 @@ class MainActivity : FragmentActivity() {
             Screen.Split -> SplitScreen(model, nav)
             Screen.Settings -> SettingsScreen(model, nav)
             Screen.PriceFrom -> PriceFromScreen(model, nav)
+            Screen.CurrencyList -> CurrencyListScreen(model, nav)
+            Screen.BackupKeys -> BackupKeysScreen(model, nav)
             Screen.Contacts -> ContactsScreen(model, nav)
             is Screen.Contact -> ContactScreen(model, nav, screen.id)
             is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill, screen.forRequest)
