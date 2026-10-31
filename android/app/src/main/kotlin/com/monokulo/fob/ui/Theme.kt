@@ -37,6 +37,9 @@ class FobColors(
     /** What sits on [greenFill]: the tick on Paid. */
     val onGreen: Color,
     val highlight: Color,
+    /** The first, middle and last groups of an address on Receive. */
+    val addressMark: Color,
+    val onAddressMark: Color,
     val red: Color,
     /** The empty part of the sync ring. */
     val track: Color,
@@ -58,6 +61,8 @@ val LightColors = FobColors(
     greenFill = Color(0xFF4CC27A),
     onGreen = Color(0xFF1A1917),
     highlight = Color(0xFFFBF3E8),
+    addressMark = Color(0xFFFBE3CC),
+    onAddressMark = Color(0xFF7A2F00),
     red = Color(0xFFB3261E),
     track = Color(0xFFD8D1C3),
 )
@@ -78,6 +83,8 @@ val DarkColors = FobColors(
     greenFill = Color(0xFF5CC88A),
     onGreen = Color(0xFF111111),
     highlight = Color(0xFF2E2418),
+    addressMark = Color(0xFF4A2A12),
+    onAddressMark = Color(0xFFFFC9A0),
     red = Color(0xFFF2B8B5),
     track = Color(0xFF3A3731),
 )
@@ -102,6 +109,8 @@ object Fob {
     val greenFill: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.greenFill
     val onGreen: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onGreen
     val highlight: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.highlight
+    val addressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.addressMark
+    val onAddressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onAddressMark
     val red: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.red
     val track: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.track
 
@@ -128,6 +137,8 @@ object Fob {
     /** QR codes stay dark on white in both themes, so every reader reads them. */
     val qrDark = Color(0xFF1A1917)
     val qrLight = Color(0xFFFFFFFF)
+    /** Quieter words on the white of the expanded code, in both themes. */
+    val qrMuted = Color(0xFF5A564C)
 }
 
 /** Which theme Fob draws in; kept on the phone (see [WalletModel.theme]). */

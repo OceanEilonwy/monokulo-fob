@@ -41,7 +41,6 @@ import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.InfoRow
-import com.monokulo.fob.ui.Mono
 import com.monokulo.fob.ui.NoScreenshots
 import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
@@ -54,7 +53,6 @@ import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.ThemeChoice
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
-import com.monokulo.fob.ui.full
 import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.launch
 import uniffi.fob.Activity

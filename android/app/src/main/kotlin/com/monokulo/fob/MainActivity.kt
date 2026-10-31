@@ -64,7 +64,8 @@ sealed interface Screen {
     data object ScanPay : Screen
     /** The send form, filled from a scanned or linked payment code when there was one. */
     data class Send(val code: String? = null) : Screen
-    data class Confirm(val prepared: Prepared) : Screen
+    /** [note]: the payment code's description, shown again before sending. */
+    data class Confirm(val prepared: Prepared, val note: String? = null) : Screen
     data class Paid(val prepared: Prepared, val tx: String) : Screen
     data class Receipt(val activity: Activity) : Screen
     data object Settings : Screen
@@ -189,7 +190,7 @@ class MainActivity : FragmentActivity() {
             Screen.Receive -> ReceiveScreen(model, nav)
             Screen.ScanPay -> ScanPayScreen(model, nav)
             is Screen.Send -> SendScreen(model, nav, screen.code)
-            is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, ::confirmIdentity)
+            is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
             is Screen.Paid -> PaidScreen(nav, screen.prepared)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
             Screen.Settings -> SettingsScreen(model, nav)

@@ -76,13 +76,17 @@ fun fieldColors() = OutlinedTextFieldDefaults.colors(
 )
 
 @Composable
-fun Field(value: String, onChange: (String) -> Unit, label: String, mono: Boolean = false, lines: Int = 1, hint: String? = null) {
+fun Field(
+    value: String, onChange: (String) -> Unit, label: String, mono: Boolean = false, lines: Int = 1, hint: String? = null,
+    placeholder: String? = null, prose: Boolean = false,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         OutlinedTextField(
             value = value, onValueChange = onChange, label = { Text(label) }, minLines = lines, singleLine = lines == 1,
+            placeholder = placeholder?.let { { Text(it, color = Fob.muted) } },
             shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth(),
             textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
+            keyboardOptions = if (prose) KeyboardOptions(capitalization = KeyboardCapitalization.Sentences) else KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
         )
         if (hint != null) Text(hint, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
     }
