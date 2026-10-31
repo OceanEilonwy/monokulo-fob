@@ -70,10 +70,22 @@ Calls made while building the first version, with why. Newest last.
 14. A sent payment's inputs are marked spent at once and its change counted
     in the balance until the transaction is mined.
 
+## Safety
+
+23. **Burning bug**: an output whose one-time key was already received is
+    ignored, as monero-oxide's scanner asks; only the first counts.
+24. **Secrets stay off screenshots**: the seed and wallet-code screens set
+    `FLAG_SECURE`.
+25. **The wallet file** is ChaCha20-Poly1305 under a random 32-byte key, which
+    is itself wrapped by an AES key kept in the Android Keystore.
+
 ## Left for later
 
-15. **Mempool**: incoming payments show once mined (about 2 minutes), not
-    while still in the pool. monero-oxide's scanner needs a block.
+15. **Mempool, done differently**: once caught up, Fob asks the node for its
+    pool and scans new pool transactions inside a stand-in block (the last
+    one scanned, with the pool's transactions as its own), because
+    monero-oxide only scans blocks. Their amounts show as on their way, in
+    memory only; the real block scans them again with true output indexes.
 16. **Background sync**: the wallet syncs while the app is on screen. A
     foreground service with a progress notification comes next.
 17. **Google Wallet**: not built. Each pass is a JWT signed with a Google

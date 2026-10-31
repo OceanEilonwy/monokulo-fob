@@ -67,6 +67,10 @@ struct Owned {
     amount: u64,
     subaddress: u32,
     coinbase: bool,
+    /// The output's one-time key, in hex: a second output with the same key
+    /// is the burning bug and isn't counted.
+    #[serde(default)]
+    key: String,
     /// `None` in a view-only wallet, which can't tell when it's spent.
     key_image: Option<String>,
     spent_in: Option<String>,
@@ -207,6 +211,13 @@ struct Inner {
     next_id: AtomicU64,
     status: std::sync::Mutex<SyncStatus>,
     syncing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Payments to this wallet still in the node's pool: amount by
+    /// transaction. Not saved: the pool is asked again after every block.
+    pool: std::sync::Mutex<HashMap<String, (u64, u64)>>,
+    /// Pool transactions already looked at, so each is fetched once.
+    pool_seen: std::sync::Mutex<HashSet<String>>,
+    /// The last block scanned, to scan pool transactions against.
+    last_block: std::sync::Mutex<Option<monero_wallet::block::Block>>,
 }
 
 /// A Fob wallet. Cheap to clone; clones share everything.
@@ -310,6 +321,9 @@ impl Wallet {
                 next_id: AtomicU64::new(1),
                 status: std::sync::Mutex::new(status),
                 syncing: std::sync::Mutex::new(None),
+                pool: std::sync::Mutex::new(HashMap::new()),
+                pool_seen: std::sync::Mutex::new(HashSet::new()),
+                last_block: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -463,6 +477,9 @@ impl Wallet {
         for sent in state.sent.iter().filter(|s| s.height.is_none()) {
             balance.total += sent.change;
         }
+        for (amount, _) in self.inner.pool.lock().expect("pool lock").values() {
+            balance.total += amount;
+        }
         balance.confirming = balance.total - balance.unlocked;
         balance
     }
@@ -526,6 +543,22 @@ impl Wallet {
             row.amount += output.amount;
         }
         rows.extend(incoming.into_values());
+        for (tx, (amount, seen)) in self.inner.pool.lock().expect("pool lock").iter() {
+            if !rows.iter().any(|r| r.tx == *tx) {
+                rows.push(Activity {
+                    tx: tx.clone(),
+                    direction: Direction::In,
+                    amount: *amount,
+                    fee: None,
+                    to: None,
+                    height: None,
+                    time: *seen,
+                    confirmations: 0,
+                    receipt: None,
+                    receipt_json: None,
+                });
+            }
+        }
         rows.sort_by(|a, b| (b.height.is_none(), b.height, b.time).cmp(&(a.height.is_none(), a.height, a.time)));
         rows
     }
@@ -566,6 +599,9 @@ impl Wallet {
         }
         self.refresh_status().await;
         if start >= tip {
+            // Caught up: show payments on their way before they're mined. The
+            // pool is a nicety: a node that won't share it doesn't stop syncing.
+            let _ = self.scan_pool(&rpc).await;
             return Ok(false);
         }
 
@@ -624,12 +660,18 @@ impl Wallet {
                 }
             }
 
+            *self.inner.last_block.lock().expect("block lock") = Some(scannable.block.clone());
             let found = scanner.scan(scannable).map_err(|e| FobError::Node(format!("scanning block {height}: {e:?}")))?;
             for output in found.not_additionally_locked() {
                 let tx = hex::encode(output.transaction());
-                if state.outputs.iter().any(|o| o.tx == tx && o.output == hex::encode(output.serialize())) {
+                let key = hex::encode(output.key().compress().to_bytes());
+                // Seen before: the same output again, or the burning bug (a
+                // second output with a key already received, which can't
+                // both be spent). Only the first counts.
+                if state.outputs.iter().any(|o| o.key == key || (o.tx == tx && o.output == hex::encode(output.serialize()))) {
                     continue;
                 }
+                self.inner.pool.lock().expect("pool lock").remove(&tx);
                 let subaddress = output.subaddress().map(|s| s.address()).unwrap_or(0);
                 state.receive_index = state.receive_index.max(subaddress);
                 let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
@@ -638,6 +680,7 @@ impl Wallet {
                 state.outputs.push(Owned {
                     output: hex::encode(output.serialize()),
                     coinbase: tx == miner_tx,
+                    key,
                     tx,
                     height,
                     time,
@@ -660,6 +703,65 @@ impl Wallet {
         drop(state);
         self.refresh_status().await;
         Ok(more)
+    }
+
+    /// Looks for payments to this wallet in the node's pool, so they show
+    /// as on their way about two minutes before they're mined.
+    ///
+    /// monero-oxide scans blocks, so the pool's transactions are scanned in a
+    /// stand-in: the last block scanned, with the pool's transactions as its
+    /// own. Only their amounts are kept, in memory; the real block scans them
+    /// again once mined, with their true output indexes.
+    async fn scan_pool(&self, rpc: &Daemon) -> Result<()> {
+        let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
+        let response = rpc.rpc_call("get_transaction_pool_hashes", None, 4 * 1024 * 1024).await.map_err(node_err)?;
+        let hashes: Vec<String> = serde_json::from_str::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|v| v.get("tx_hashes").and_then(|h| serde_json::from_value(h.clone()).ok()))
+            .unwrap_or_default();
+        let in_pool: HashSet<String> = hashes.iter().cloned().collect();
+        self.inner.pool.lock().expect("pool lock").retain(|tx, _| in_pool.contains(tx));
+        self.inner.pool_seen.lock().expect("pool lock").retain(|tx| in_pool.contains(tx));
+
+        let ours: HashSet<String> = self.inner.state.lock().await.sent.iter().map(|s| s.tx.clone()).collect();
+        let new: Vec<[u8; 32]> = {
+            let seen = self.inner.pool_seen.lock().expect("pool lock");
+            hashes
+                .iter()
+                .filter(|h| !seen.contains(*h) && !ours.contains(*h))
+                .filter_map(|h| hex::decode(h).ok()?.try_into().ok())
+                .collect()
+        };
+        if new.is_empty() {
+            return Ok(());
+        }
+        let Some(mut block) = self.inner.last_block.lock().expect("block lock").clone() else { return Ok(()) };
+        let txs = rpc.transactions(&new).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        let miner = block.miner_transaction().hash();
+        block.transactions = new.clone();
+        let stand_in = monero_wallet::interface::ScannableBlock {
+            block,
+            transactions: txs.into_iter().map(Into::into).collect(),
+            output_index_for_first_ringct_output: Some(0),
+        };
+        let receive_index = self.inner.state.lock().await.receive_index;
+        let mut scanner = Scanner::new(self.inner.keys.view_pair());
+        for i in 1..=receive_index.saturating_add(LOOKAHEAD) {
+            if let Some(sub) = SubaddressIndex::new(0, i) {
+                scanner.register_subaddress(sub);
+            }
+        }
+        let found = scanner.scan(stand_in).map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
+        let mut pool = self.inner.pool.lock().expect("pool lock");
+        for output in found.ignore_additional_timelock() {
+            if output.transaction() == miner {
+                continue;
+            }
+            let entry = pool.entry(hex::encode(output.transaction())).or_insert((0, now()));
+            entry.0 += output.commitment().amount;
+        }
+        self.inner.pool_seen.lock().expect("pool lock").extend(new.iter().map(hex::encode));
+        Ok(())
     }
 
     /// Brings [`status`](Wallet::status) up to date with the wallet's state.

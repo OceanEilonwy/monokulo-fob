@@ -147,7 +147,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             Column {
                 SectionLabel("Receipts")
                 Card {
-                    SettingRow("Keep receipts", "From payment codes that carry one. On this phone only.", checked = true, onChecked = null)
+                    SettingRow("Kept with each payment", "Receipts from payment codes that carry one, on this phone only.")
                     SettingRow("Google Wallet", "Not yet: adding receipts needs Fob's pass issuer, which isn't set up.")
                 }
             }
