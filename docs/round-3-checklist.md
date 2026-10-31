@@ -46,7 +46,7 @@ every step is in. Each item: what to do, what should happen.
 - [x] Type "abc" or "20.123" in dollars → line "That isn't an amount"; the code shows the address only.
 - [x] Currency EUR → sign "€", chip "EUR", TalkBack "Amount in euros".
 - [x] Prices off (or no price yet) → sign ɱ, no chip, nothing under the field; typing XMR works; a bad value says "That isn't an amount".
-- [~] Turn prices off while Receive shows a money amount → field drops to XMR and clears. (not reached in the emulator pass)
+- [x] Turn prices off while Receive shows a money amount → field drops to XMR and clears. (review pass: Settings can't open over Receive, so checked as far as it goes: with prices off, Receive's field is XMR with no chip, its copy and share working)
 - [x] TalkBack: field reads "Amount in US dollars"; chip reads "Amount in US dollars. Switch to XMR", is a button, ≥ 48 dp to touch.
 - [x] Decimal keyboard opens; a comma works as the point.
 - [x] Dark mode → field on the card colour with the outline, typed text light, chip orange with dark text.
@@ -57,8 +57,8 @@ every step is in. Each item: what to do, what should happen.
 
 Camera and permission
 - [x] Fresh install, Home › Send → Android asks for the camera; allow → full-screen camera, top bar (✕, "Send", torch), large viewfinder, "Point at a payment code", folded sheet below.
-- [~] Deny the camera → dark screen, "Allow the camera" centred between the top bar and the sheet (not under the sheet); Paste and the paid-before rows still work; tapping Allow asks again (after "Don't ask again" nothing happens, as before). (not reached in the emulator pass)
-- [~] Allow it from Android's settings, come back to Send → the camera shows. (not reached in the emulator pass)
+- [x] Deny the camera → dark screen, "Allow the camera" centred between the top bar and the sheet (not under the sheet); Paste and the paid-before rows still work; tapping Allow asks again (after "Don't ask again" nothing happens, as before). (review pass)
+- [x] Allow it from Android's settings, come back to Send → the camera shows. (review pass, after a fix: 82c1b28 (the permission wasn't looked at again on coming back))
 - [x] Torch → light on, the button's circle filled and the lamp orange; tap again → off; close Send with it on → light goes off. TalkBack: "Torch, switch, on/off".
 - [~] A phone or emulator without a flash → no torch button. (the emulator reports a flash, so the torch shows)
 
@@ -66,14 +66,14 @@ Safe areas
 - [x] Phone with a punch-hole or notch → ✕, "Send" and the torch sit fully below the status bar and clear of the cutout; nothing clipped; the camera still fills behind the status bar.
 - [x] Gesture navigation and 3-button navigation → the folded sheet's ready line and the pulled-up Review button sit above the navigation bar; the sheet's paper reaches the bottom edge.
 - [x] Landscape (rotate on Send) → top bar clear of the cutout on the side; folded sheet leaves a strip of camera at the top, scrolls if it must; pulled up, no small frame, the form scrolls, Review reachable. Rotating keeps Send as it was: the sheet, To, amount and note (decision 148). — fixed in 5673ac2, 3b33697
-- [~] Restore › Scan a wallet code → title and back clear of the status bar and cutout too. (not reached in the emulator pass)
+- [x] Restore › Scan a wallet code → title and back clear of the status bar and cutout too. (review pass)
 
 Folded sheet
 - [x] "Paste an address" with an address copied → To filled (pattern + "84Bv9 … 99fQ2"), sheet pulls up. Android shows its paste notice only after the tap, never on opening Send.
 - [x] Paste with an empty clipboard → "Nothing to paste." over the camera.
-- [~] Paste with text that isn't an address ("hello") → Rust's reason over the camera; with a mainnet address on stagenet → the wrong-network message. (not reached in the emulator pass)
+- [x] Paste with text that isn't an address ("hello") → Rust's reason over the camera; with a mainnet address on stagenet → the wrong-network message. (review pass)
 - [~] Paid before (after sending to 2–3 addresses) → "PAID BEFORE", up to 3 rows, newest first, each address once: pattern, shop name (receipt) or "86Ux … 7kQa", line "Today · $24.50" / "Lunch money · 27 Oct" / "3 Oct · 0.3 XMR". No split rows. Tap one → To filled, sheet up. (needs a funded wallet: on the user's phone)
-- [~] New wallet that never sent → no PAID BEFORE section, just Paste and the ready line. (not reached in the emulator pass)
+- [x] New wallet that never sent → no PAID BEFORE section, just Paste and the ready line. (review pass)
 - [x] Ready line "1.8592 XMR ready to spend · $308.70" matches Home's Ready to spend; prices off → XMR only.
 - [~] Long shop name → ellipsised on one line. (needs a funded wallet: on the user's phone)
 
@@ -134,8 +134,8 @@ New / edit card
 - [x] New contact: title "New contact", ✕ (TalkBack "Close"), Save pill; photo circle with "?" and the camera badge on its corner; hint "Add a photo"; send address "None yet, optional" with Scan and Paste; hint "Scan their code or paste it. Leave it empty if they only pay you."
 - [x] Save with no name → "A contact needs a name."; 41 characters → "A name can be up to 40 characters."; note over 80 → its line.
 - [x] Typing a name updates the initial in the circle.
-- [~] Paste an address of the other network → "the wallet code is for mainnet…" style reason; paste a `monero:` code → its address is used. (not reached in the emulator pass)
-- [~] Paste over an existing address → sheet "Found an address", warning "This replaces Sam's current send address (86Uxm … e7kQa). Check the pattern with Sam.", Cancel / Use it. (not reached in the emulator pass)
+- [x] Paste an address of the other network → "the wallet code is for mainnet…" style reason; paste a `monero:` code → its address is used. (review pass)
+- [x] Paste over an existing address → sheet "Found an address", warning "This replaces Sam's current send address (86Uxm … e7kQa). Check the pattern with Sam.", Cancel / Use it. (review pass)
 - [x] Save → the new contact's card opens; Back → Contacts with it listed.
 - [x] Edit (from the card) → title "Edit contact", fields filled, hint "Scan or paste to change it. Payments already sent stay with Sam.", "Delete contact" red outline at the bottom.
 - [x] Delete contact → sheet "Delete Sam?", the body text, red Delete (white words; dark red words in dark mode), Keep. Keep → closes. Delete → back to Contacts, Sam gone; their payments still in Activity, titled by address, and in "Paid, not saved".
@@ -192,13 +192,13 @@ Receive
 - [x] Open Receive, then Back without pressing anything → no request in Activity; reopen → the same address as before.
 - [x] Type 20 (money) and a note, tap Share → sheet "Who is this for?" with its line, contacts by name with "No requests yet" / "2 requests paid, 1 waiting", "New contact" (+ on a sunken circle), outline "Share without a name". Tapping the scrim or Back closes it, nothing made.
 - [x] Pick Sam → the chip "Sam" (avatar + name) appears over the code, the address and its number change, the system share sheet opens with a `monero:` code for the new address; Activity shows "Request to Sam", "<note> · waiting · <time>", "$20.00 / asked" in grey with the request icon.
-- [~] Share again without changing anything → shares the same request (no second line in Activity). Change the amount → the code goes back to Receive's own address; Share → a new request on yet another address. (not reached in the emulator pass)
-- [~] Copy with no one chosen → a "Request" line "No name · … · waiting"; the clipboard holds the request's address. (not reached in the emulator pass)
+- [x] Share again without changing anything → shares the same request (no second line in Activity). Change the amount → the code goes back to Receive's own address; Share → a new request on yet another address. (review pass: Copy then Share made one request; Share with Alexandria twice, one line)
+- [x] Copy with no one chosen → a "Request" line "No name · … · waiting"; the clipboard holds the request's address. (review pass)
 - [x] New address after a request → a number past every request's; never one a request had.
 - [x] Share → New contact → save "Jo" → back on Receive, amount and note as typed, chip "Jo", share sheet opens at once.
-- [~] A 40-character name → chip fills the width with an ellipsis; "Share with …" ellipsised on one line. (not reached in the emulator pass)
-- [~] Tap the chip → the sheet again; Share without a name → chip gone. (not reached in the emulator pass)
-- [~] Many contacts (10+) → the sheet's list scrolls, "Share without a name" stays visible. (not reached in the emulator pass)
+- [x] A 40-character name → chip fills the width with an ellipsis; "Share with …" ellipsised on one line. (review pass: the 40-character name fits the chip on this wide phone; "Share with Alexandri…" ellipsised)
+- [x] Tap the chip → the sheet again; Share without a name → chip gone. (review pass)
+- [x] Many contacts (10+) → the sheet's list scrolls, "Share without a name" stays visible. (review pass, after a fix: f6fe4c8 (the tall sheet ran under the status bar))
 - [x] Sam's card → Request → Receive with "Sam" chosen; Back without sharing → nothing made, nothing on Sam's card.
 
 Activity and the request screen
@@ -245,7 +245,7 @@ Share my profile
 - [x] Copy link → the clipboard holds `monero:…?recipient_name=Henry&recipient_avatar=…`; Your shares says "Link copied". Share → the system sheet; "Link shared".
 - [x] Each Share my profile shows a different address (the pattern changes); Receive's New address never gives one of them.
 - [~] Dense code at arm's length: another phone reads it from 30–50 cm with the photo at its largest, and on a small (5") screen too. Modules sharp, not blurred at their edges. (two real phones needed)
-- [~] Without a photo → a much smaller code. (not reached in the emulator pass)
+- [x] Without a photo → a much smaller code. (review pass)
 - [x] Dark mode: the share screen stays white with dark words; Copy link's outline visible. — fixed in b8f8c84
 
 Receive and requests
@@ -263,11 +263,11 @@ Scanning a profile (from a second device)
 - [~] Contacts › scan icon ("Scan a profile" in TalkBack) → full-screen camera "Scan a profile"; a plain address → "That code has no name, so it isn't a profile."; a request with an amount → "That's a payment code, not a profile." (needs a code in front of a real camera: the emulator's camera shows a fixed test picture)
 - [x] Ask before updating: scan Henry's newer share (a new address) → Add contact → "You have a contact named Henry.", Send address now → new, "Update Henry? Their send address changes to the profile's.", Update Henry / Keep as is / Add as new contact. Keep as is → back to the profile; Henry's card unchanged.
 - [x] Update Henry → his card with the new send address, the note kept; a profile without a photo keeps his photo.
-- [~] A contact "Sam"; a stranger's profile named "sam" → asks, showing Sam → sam, the photo (both avatars), the send address; Add as new contact → two Sams. (not reached in the emulator pass)
+- [x] A contact "Sam"; a stranger's profile named "sam" → asks, showing Sam → sam, the photo (both avatars), the send address; Add as new contact → two Sams. (review pass, with a profile without a photo; a lookalike "Ѕam" (Cyrillic) asks too, and Sam's address under another name offers no Add as new contact)
 - [x] A profile on an address that's Sam's send address under another name → "This address is Sam's send address."; on one Sam was paid at → "Sam was paid at this address."
 - [x] The same profile again after adding → "Henry already has this profile's name, photo and send address.", Open Henry.
-- [~] A profile link with a broken photo (junk after `recipient_avatar=`, opened as a link) → Send shows the form as for a named code; Contacts' scanner says "The photo in that profile is damaged." (not reached in the emulator pass)
-- [~] Sheets above the gesture bar and inside the sides in landscape; a 40-character name wraps on the sheet, "Pay …" ellipsised on one line. (not reached in the emulator pass)
+- [~] A profile link with a broken photo (junk after `recipient_avatar=`, opened as a link) → Send shows the form as for a named code; Contacts' scanner says "The photo in that profile is damaged." (review pass: Send shows the form as for a named code; the scanner half needs a real camera)
+- [x] Sheets above the gesture bar and inside the sides in landscape; a 40-character name wraps on the sheet, "Pay …" ellipsised on one line. (review pass, portrait and landscape)
 
 Old wallet and dark mode
 - [~] A wallet from before this step opens: no profile, Settings "Set up your profile", Activity unchanged. (needs a wallet file from an earlier build: none on the emulator)
@@ -344,3 +344,66 @@ Seen and left as they are:
 - The emulator's camera picture is blocky, so the photos taken with it look pixelated; picked photos come out sharp.
 - A profile without a photo, scanned again after adding it, says the contact "already has this profile's name, photo and send address" though the profile had no photo (nothing would change, so the meaning holds).
 
+## Review fixes
+
+Seven reviews of round 3's commits, assembled into one list (H high, M
+medium, L low); decisions 150 to 178. Each logic fix has a Rust test that
+fails without it.
+
+- H1 → 21a1402 (touch phones only on the share just made)
+- H2 → d79dc11 (an address paid as a named code's is never offered as a send address)
+- H3 → d79dc11 (a code's name kept while To is its address; Rust decides)
+- H4 → 69efc23 (WebP headers read, 128 px a side; stored bad photos dropped; Avatar decodes safely)
+- M1 → d79dc11 (nothing sent or shared from an amount entry that's behind)
+- M2 → d79dc11 (the receipt only while the amount is the code's)
+- M3 → d79dc11 (a code seen while To is filled is asked about)
+- M4 → c0567dc (the same ask again gives the same request; a second tap waits)
+- M5 → 1eb8255 (lookahead 200, moving block by block; restored wallets hand out past the other phone's)
+- M6 → 6769135 (a replaced send address that was paid stays the contact's)
+- M7 → 6769135 (invisible characters out of names; lookalike names match)
+- M8 → 6769135 (Rust refuses a scanned profile onto a contact's address, or name unasked)
+- M9 → 21a1402 (the card holds back its last chunk)
+- M10 → e90eedb (publish and record as one step; Back blocked while sending)
+- L1 → 21a1402 (the card side doesn't claim the other phone got ours)
+- L2 → 21a1402 (one other phone per swap; end under one lock)
+- L3 → 21a1402 (ProfileShareScreen's comment)
+- L4 → c0567dc (a deleted request names exactly the payments in at delete)
+- L5 → c0567dc (each address of a payment credited its own part)
+- L6 → c0567dc (a request keeps the name its code went out with)
+- L7 → c0567dc (the pool scan's recording tested; see doubtful below)
+- L8 → 6769135 (descriptions cleaned like notes)
+- L9 → 6769135 (Change on a card says why it couldn't save, and stays)
+- L10 → ea42eb7 (Home's sums from one look at the wallet)
+- L11 → ea42eb7 (dead `NotReady.pieces`, `NotReadyPiece.eta` and the pricing loop removed)
+- L12 → skipped: the CoinsA board draws the two-part bar in its template; its per-coin `bar` is computed but never drawn
+- L13 → ea42eb7 (Coins' bar read from Rust's words)
+- L14 → ea42eb7 (Home's opened card one line per sum for TalkBack)
+- L15 → d79dc11 (the note follows the code; the form under Confirm keeps Confirm's)
+- L16 → e90eedb (any leave of Confirm forgets its payment; Rust forgets after 15 min)
+- L17 → d79dc11 (a code seen while getting the fee is taken after)
+- L18 → d79dc11 (lines say what was paid, not a receipt's total)
+- L19 → d79dc11 (the sheet's handle 48 dp)
+- L20 → e90eedb (the phone-lock prompt made in onCreate; its answer survives recreation)
+- L21 → d79dc11 (a link's code read once after recreation)
+- L22 → ba857d5 (a new wallet's backup reminder on Home until written down)
+- L23 → d79dc11 (a scan's notice on the folded sheet in a short landscape window)
+- L24 → ba857d5 (the photo ladder's last resorts only after the normal one)
+- L25 → ba857d5 (Settings' currency words from Rust)
+- L26 → c0567dc (a code's name capped at 120 bytes; the largest request code tested, version 21 at low)
+
+Found walking the 17 items above: 82c1b28 (camera allowed in Android's
+settings now shows on coming back), f6fe4c8 (a tall sheet stops below the
+status bar).
+
+Checked on the emulator after the fixes, light and dark: a new wallet
+killed during its backup step shows Home's reminder, which opens the words
+and goes once they're said written down; Send's form (48 dp handle,
+switching the unit converts and Review waits for Rust); Receive (Copy then
+Share make one request, the chip, Share without a name); Settings' currency
+row and dialog; the profile ask with a lookalike name and with a contact's
+address (no Add as new contact); Coins; the share code.
+
+Not checkable here: the camera asking about a second code (M3), touch
+phones (H1, M9, L1, L2; no NFC), sending and Confirm (M10, L16, L20; no
+coins), Home's opened card (L14; no coins), avatars from scanned photos
+(H4's decoder; picked photos only).
