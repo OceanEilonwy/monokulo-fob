@@ -701,3 +701,39 @@ Calls made while building the first version, with why. Newest last.
     switch ("Torch", on or off for TalkBack); on, its circle fills with the
     camera's card colour and the lamp turns orange. It goes off with the
     camera when Send closes.
+
+## Round 3: contacts
+
+102. **A contact is kept in the wallet file** (`contacts::Book`, the
+    state's `contacts`, read as none from older files): an id (never used
+    again after a delete), a name (1–40 characters once trimmed, control
+    characters dropped), an optional note (up to 80 characters; longer is
+    refused, not cut), an optional photo (a WebP, checked by its `RIFF` …
+    `WEBP` header, of at most 1536 bytes, kept as hex in the JSON), an
+    optional send address and the addresses it was also paid at, and when
+    it was made. A send address is checked for the wallet's network; a
+    pasted or scanned `monero:` code gives its address. Two contacts may
+    share a send address, without a word. A change Rust refuses leaves the
+    file as it was.
+103. **Send address and also paid at stay apart**: an address from a code
+    that only named someone goes to `also_paid_at` and is never used to pay
+    them; making one of those the send address (scanned or pasted) moves
+    it out of `also_paid_at`. Payments to any of a contact's addresses are
+    theirs: in Activity (the title, and "To" on the payment's screen, are
+    the contact's name, before a receipt's shop), on their card ("Paid to
+    Sam", newest first) and in the lines about the last payment. Splits
+    are no one's. Deleting a contact leaves every payment, shown by its
+    address again.
+104. **The lines** (`contacts::list`, `on_send`, `unsaved`, `card`):
+    Contacts lists by name (any case) and its search looks in names and
+    notes; each line is "Lunch money · paid 27 Oct", "Paid today", the note
+    alone, or "Not paid yet". Send's sheet takes contacts with a send
+    address, the most recently paid first (never paid ones after, by
+    name), at most 3, each line the last payment's as Paid before had it
+    ("Lunch · 27 Oct", "Today · $24.50"), else the note or "Not paid yet".
+    "Paid, not saved" lists every address paid that's no contact's, each
+    once, newest first, as "84Bv … 9fQ2" and "Paid 25 Oct · $33.21". A
+    card shows addresses as their first, middle and last five ("86Uxm …
+    3EkYw … e7kQa", `contacts::three_part`), each paid-at address with "Not
+    their send address · paid once, 25 Oct" ("paid 3 times, last …", "not
+    paid yet").

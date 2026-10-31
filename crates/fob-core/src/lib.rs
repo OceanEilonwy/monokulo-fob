@@ -7,11 +7,13 @@
 //! - [`zmq`]: instant updates from the node's ZMQ publisher, when turned on.
 //! - [`price`]: what XMR is worth, now and when each payment moved.
 //! - [`split`]: paying what's ready to spend back as pieces.
+//! - [`contacts`]: the people this wallet pays, in the wallet file.
 //! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
 pub mod activity;
 pub mod amount;
+pub mod contacts;
 mod decoys;
 pub mod error;
 pub mod fetch;

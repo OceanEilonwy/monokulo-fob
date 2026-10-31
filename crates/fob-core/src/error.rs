@@ -28,6 +28,9 @@ pub enum FobError {
     /// Split up's pieces can't be split, and why.
     #[error("{0}")]
     Split(String),
+    /// A contact can't be saved as it is, and why.
+    #[error("{0}")]
+    Contact(String),
     #[error("couldn't build the transaction: {0}")]
     Send(String),
     #[error("couldn't read or save the wallet: {0}")]
