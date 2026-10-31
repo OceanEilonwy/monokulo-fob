@@ -82,6 +82,8 @@ async fn a_good_node_passes_every_check() {
         ]
     );
     assert_eq!((report.verdict(), report.usable(), report.address.as_str()), ("Working", Usable::Use, "node.example:38081"));
+    assert_eq!(report.mark(), Mark::Pass);
+    assert_eq!(Report::pending(Network::Stagenet, &node("x:1")).mark(), Mark::Checking);
     assert_eq!(report.line(false), "0 ms · in sync");
     assert_eq!(report.line(true), "0 ms · in sync · fastest");
     assert_eq!(report.rows[2].label(), "Up to date: block 1,792,004 · 1 min ago");
@@ -137,7 +139,7 @@ async fn a_lagging_node_can_be_used_anyway() {
     let lagging = Fake { info: Some(Ok(Info { nettype: "stagenet".into(), height: HEIGHT, target_height: HEIGHT + 1440 })), ..good() };
     let report = checked(&lagging, "node.example:38081").await;
     assert_eq!(rows(&report)[2..], [("Up to date", "2 days behind", Mark::Fail), ("Sends blocks to Fob", "31 blocks/s · 1.8 MB/s", Mark::Pass)]);
-    assert_eq!((report.verdict(), report.usable()), ("Not up to date", Usable::UseAnyway));
+    assert_eq!((report.verdict(), report.usable(), report.mark()), ("Not up to date", Usable::UseAnyway, Mark::Fail));
     assert_eq!(report.line(false), "0 ms · 2 days behind");
     // Behind what this wallet has already seen, though it thinks it's synced.
     let report = run(&good(), Report::pending(Network::Stagenet, &node("x:1")), HEIGHT + 30, NOW, &|_| {}).await;
@@ -309,8 +311,13 @@ const MONEROD_KEY: &[u8] = include_bytes!("monerod-v1.key.der");
 #[derive(Clone, Copy)]
 pub(crate) enum Canned {
     Http,
-    /// [`CERT`], over TLS 1.3 or (with `tls12`) 1.2 only.
+    /// [`CERT`] (or monerod's), over TLS 1.3 or (with `tls12`) 1.2 only.
     Tls { monerod: bool, tls12: bool },
+    /// The certificate of one and the key of the other: someone answering
+    /// with a certificate they don't hold the key of.
+    WrongKey { monerod: bool, tls12: bool },
+    /// Plain HTTP, every request sent on to the node on this port.
+    Redirect(u16),
 }
 
 /// A stagenet node on 127.0.0.1 that answers get_info and the last block
@@ -324,12 +331,21 @@ pub(crate) async fn canned_node(tls: bool) -> u16 {
 pub(crate) async fn canned(how: Canned) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let redirect = match how {
+        Canned::Redirect(to) => Some(to),
+        _ => None,
+    };
     let acceptor = match how {
-        Canned::Http => None,
-        Canned::Tls { monerod, tls12 } => {
+        Canned::Http | Canned::Redirect(_) => None,
+        Canned::Tls { monerod, tls12 } | Canned::WrongKey { monerod, tls12 } => {
             let provider = Arc::new(rustls::crypto::ring::default_provider());
             let versions: &[&rustls::SupportedProtocolVersion] = if tls12 { &[&rustls::version::TLS12] } else { rustls::DEFAULT_VERSIONS };
-            let (cert, key) = if monerod { (MONEROD_CERT, MONEROD_KEY) } else { (CERT, KEY) };
+            let (cert, key) = match (how, monerod) {
+                (Canned::Tls { .. }, true) => (MONEROD_CERT, MONEROD_KEY),
+                (Canned::Tls { .. }, false) => (CERT, KEY),
+                (_, true) => (MONEROD_CERT, KEY),
+                (_, false) => (CERT, MONEROD_KEY),
+            };
             // Served as it is: rustls's own check of a certificate against its
             // key won't read a version 1 one either.
             let key = provider.key_provider.load_private_key(rustls::pki_types::PrivatePkcs8KeyDer::from(key.to_vec()).into()).unwrap();
@@ -351,10 +367,10 @@ pub(crate) async fn canned(how: Canned) -> u16 {
                     // A client that refuses the certificate hangs up here.
                     Some(acceptor) => {
                         if let Ok(stream) = acceptor.accept(stream).await {
-                            answer(stream).await;
+                            answer(stream, None).await;
                         }
                     }
-                    None => answer(stream).await,
+                    None => answer(stream, redirect).await,
                 }
             });
         }
@@ -362,8 +378,8 @@ pub(crate) async fn canned(how: Canned) -> u16 {
     port
 }
 
-/// Answers one request, then closes.
-async fn answer(mut stream: impl AsyncRead + AsyncWrite + Unpin) {
+/// Answers one request, or sends it on to the node at `redirect`, then closes.
+async fn answer(mut stream: impl AsyncRead + AsyncWrite + Unpin, redirect: Option<u16>) {
     let mut request = vec![];
     let mut buf = [0; 4096];
     let (head, body_len) = loop {
@@ -392,7 +408,10 @@ async fn answer(mut stream: impl AsyncRead + AsyncWrite + Unpin) {
         "/json_rpc" => format!(r#"{{"result":{{"block_header":{{"height":{},"timestamp":{}}}}}}}"#, HEIGHT - 1, now - 30),
         _ => "not epee".into(),
     };
-    let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let response = match redirect {
+        Some(to) => format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:{to}{path}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        None => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()),
+    };
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
 }
@@ -456,6 +475,70 @@ async fn monerods_own_certificate_works_once_accepted() {
     }
 }
 
+/// Accepting a node's own certificate still needs the handshake signed by
+/// its key: someone answering with a certificate whose key they don't hold
+/// is refused, over TLS 1.3 and 1.2, with an EC or an RSA key, and the
+/// Certificate row says so.
+#[tokio::test]
+async fn a_handshake_not_signed_by_the_certificates_key_is_refused_even_when_accepted() {
+    for monerod in [false, true] {
+        for tls12 in [false, true] {
+            let port = canned(Canned::WrongKey { monerod, tls12 }).await;
+            let url = format!("https://127.0.0.1:{port}");
+            let marked = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
+            let case = format!("monerod: {monerod}, TLS 1.2: {tls12}");
+            assert_eq!(rows(&marked)[..2], [("Certificate", "signature doesn't match, not accepted", Mark::Fail), ("Answers", "", Mark::Skipped)], "{case}");
+            assert_eq!(marked.line(false), "Certificate signature doesn't match, not accepted", "{case}");
+            assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Err("signature doesn't match, not accepted".into()), "{case}");
+        }
+    }
+}
+
+/// A node that sends Fob elsewhere isn't followed: the other host would get
+/// this node's certificate rule (or an onion name looked up in the clear).
+#[tokio::test]
+async fn a_node_that_redirects_is_not_followed() {
+    let good = canned_node(false).await;
+    let port = canned(Canned::Redirect(good)).await;
+    let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), 0, now(), &|_| {}).await;
+    assert_eq!(rows(&report)[0], ("Answers", "answered 307", Mark::Fail));
+    assert_eq!(report.verdict(), "Doesn't answer");
+}
+
+/// Only a problem a node's own certificate can have is accepted with the
+/// mark; one that isn't says so in its own words.
+#[test]
+fn only_a_nodes_own_certificate_problems_can_be_accepted() {
+    use rustls::CertificateError as C;
+    #[derive(Debug)]
+    struct Webpki(&'static str);
+    impl std::fmt::Display for Webpki {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Webpki {}
+    let webpki = |name| rustls::Error::InvalidCertificate(C::Other(rustls::OtherError(Arc::new(Webpki(name)))));
+    let of = |e: C| CertProblem::of(&rustls::Error::InvalidCertificate(e));
+    assert_eq!(of(C::UnknownIssuer), CertProblem::SelfSigned);
+    assert_eq!(CertProblem::of(&webpki("CaUsedAsEndEntity")), CertProblem::SelfSigned);
+    assert_eq!(CertProblem::of(&webpki("UnsupportedCertVersion")), CertProblem::SelfSigned);
+    assert_eq!((of(C::Expired), of(C::NotValidYet), of(C::NotValidForName)), (CertProblem::Expired, CertProblem::NotYetValid, CertProblem::OtherName));
+    for broken in [C::BadSignature, C::Revoked, C::BadEncoding, C::UnhandledCriticalExtension, C::InvalidPurpose] {
+        assert_eq!(of(broken.clone()), CertProblem::Invalid, "{broken:?}");
+    }
+    assert_eq!(CertProblem::of(&webpki("EndEntityUsedAsCa")), CertProblem::Invalid);
+    assert_eq!(CertProblem::of(&rustls::Error::General("x".into())), CertProblem::Invalid);
+    for (problem, acceptable) in [(CertProblem::SelfSigned, true), (CertProblem::Expired, true), (CertProblem::OtherName, true), (CertProblem::BadSignature, false), (CertProblem::Invalid, false)] {
+        assert_eq!(problem.acceptable(), acceptable, "{problem:?}");
+        let refused = Failure::refused(Some(Err(problem)), true);
+        assert_eq!(refused, (!acceptable).then_some(Failure::Certificate(problem)), "marked: {problem:?}");
+        assert_eq!(Failure::refused(Some(Err(problem)), false), Some(Failure::Certificate(problem)), "not marked: {problem:?}");
+    }
+    assert_eq!(Failure::Certificate(CertProblem::Invalid).words(ANSWER), "not valid, not accepted");
+    assert_eq!(Failure::refused(Some(Ok(())), false), None);
+}
+
 /// A certificate's key is read without webpki, from any version.
 #[test]
 fn a_certificates_key_is_read_from_any_version() {
@@ -466,6 +549,31 @@ fn a_certificates_key_is_read_from_any_version() {
     assert!(crate::transport::public_key(CERT).is_some(), "version 3 too");
     assert_eq!(crate::transport::public_key(&MONEROD_CERT[..40]), None, "cut short");
     assert_eq!(crate::transport::public_key(b"not a certificate"), None);
+    // Hostile lengths and shapes: none read, none panic.
+    let hostile: [&[u8]; 9] = [
+        &[0x30, 0x84, 0xff, 0xff, 0xff, 0xff],
+        &[0x30, 0x80, 0x00, 0x00],
+        &[0x30, 0x85, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00],
+        &[0x30, 0x81],
+        &[0x30],
+        &[],
+        // A tbs whose [0] version says more than there is.
+        &[0x30, 0x06, 0x30, 0x04, 0xa0, 0x7f, 0x02, 0x01],
+        // A whole SPKI whose key has unused bits.
+        &[0x30, 0x19, 0x30, 0x17, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x0a, 0x30, 0x03, 0x06, 0x01, 0x00, 0x03, 0x03, 0x01, 0xaa, 0xbb],
+        // A long form padded past four bytes.
+        &[0x30, 0x88, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    ];
+    for bytes in hostile {
+        assert_eq!(crate::transport::public_key(bytes), None, "{bytes:02x?}");
+    }
+    // The same SPKI with no unused bits reads.
+    let whole = [0x30, 0x19, 0x30, 0x17, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x0a, 0x30, 0x03, 0x06, 0x01, 0x00, 0x03, 0x03, 0x00, 0xaa, 0xbb];
+    assert_eq!(crate::transport::public_key(&whole).map(|(_, a, k)| (a.to_vec(), k.to_vec())), Some((vec![0x06, 0x01, 0x00], vec![0xaa, 0xbb])));
+    // Every cut of a real certificate fails cleanly.
+    for n in 0..MONEROD_CERT.len() {
+        let _ = crate::transport::public_key(&MONEROD_CERT[..n]);
+    }
 }
 
 #[tokio::test]

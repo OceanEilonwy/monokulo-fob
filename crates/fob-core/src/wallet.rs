@@ -403,7 +403,7 @@ struct Inner {
     file_key: Zeroizing<[u8; 32]>,
     keys: Keys,
     state: Mutex<State>,
-    rpc: Mutex<Option<(String, Connection)>>,
+    rpc: Mutex<Option<(node::Setting, Connection)>>,
     /// Blocks being fetched ahead of the scanner.
     pipeline: Mutex<Option<Pipeline>>,
     prepared: Mutex<Pending<PreparedTx>>,
@@ -1054,16 +1054,17 @@ impl Wallet {
     /// The node: as a raw transport (for [`fetch`](crate::fetch)), as a
     /// daemon, and as a source of decoys with the output distribution cached.
     async fn connection(&self) -> Result<Connection> {
-        let node::Setting { url: node, self_signed } = self.node().await;
+        let node = self.node().await;
         let mut rpc = self.inner.rpc.lock().await;
-        // set_node drops it, so a changed certificate setting is used too.
-        if let Some((url, connection)) = rpc.as_ref()
-            && *url == node
+        // Kept for the node and its mark together: a mark taken off while a
+        // connection was being made never leaves one accepting any certificate.
+        if let Some((setting, connection)) = rpc.as_ref()
+            && *setting == node
         {
             return Ok(connection.clone());
         }
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
-        let transport = Transport::new(&node, self_signed).map_err(err)?;
+        let transport = Transport::new(&node.url, node.self_signed).map_err(err)?;
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
         let decoys = Decoys::new(daemon.clone(), transport.clone(), self.inner.path.with_extension("decoys"));
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
@@ -4108,6 +4109,29 @@ mod tests {
         let others = reopened.other_nodes(&[added.clone(), added]).await;
         assert_eq!(others.len(), Network::Stagenet.default_nodes().len() + 1);
         assert_eq!(others.last(), Some(&node::Setting { url: "http://node.example:38081".into(), self_signed: true }));
+    }
+
+    /// The connection kept is for the node and its mark: one made while the
+    /// mark was on is never used once it's off, whatever order a switch
+    /// and a connection being made happen in.
+    #[tokio::test]
+    async fn a_connection_is_kept_for_the_node_and_its_mark() {
+        let wallet = Wallet::create(&dir("connection-mark"), [1; 32], Network::Stagenet).unwrap();
+        let port = crate::node::tests::canned_node(true).await;
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.node = format!("https://127.0.0.1:{port}");
+            state.node_self_signed = true;
+        }
+        let (marked, ..) = wallet.connection().await.unwrap();
+        assert!(marked.requests() > 0, "made and used");
+        assert_eq!(wallet.connection().await.unwrap().0.requests(), marked.requests(), "kept while nothing changed");
+        // The mark goes off without set_node dropping the connection (its
+        // save landing between a connection's read of the setting and its
+        // keeping one): a new connection, with the usual check.
+        wallet.inner.state.lock().await.node_self_signed = false;
+        let err = wallet.connection().await.err().expect("the usual check refuses it");
+        assert!(format!("{err}").contains("certificate"), "{err}");
     }
 
     /// Fob has no Tor: an onion node is refused when chosen, and one

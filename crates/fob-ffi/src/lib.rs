@@ -2455,6 +2455,8 @@ pub struct NodeReport {
     pub address: String,
     /// "Working", "Checking…", or the failed check's words.
     pub verdict: String,
+    /// The verdict's mark: Working's tick, Checking's dots, else the failure's "!".
+    pub mark: CheckMark,
     pub rows: Vec<NodeCheckRow>,
     pub usable: NodeUse,
     pub checking: bool,
@@ -2465,6 +2467,7 @@ impl From<fob_core::node::Report> for NodeReport {
         use fob_core::node::Usable;
         NodeReport {
             verdict: r.verdict().into(),
+            mark: r.mark().into(),
             usable: match r.usable() {
                 Usable::Use => NodeUse::Use,
                 Usable::UseAnyway => NodeUse::UseAnyway,

@@ -202,13 +202,6 @@ private fun MarkCircle(mark: CheckMark, size: Dp) {
     }
 }
 
-/** The verdict's mark: Working's tick, Checking's dots, else the failure's "!". */
-private fun NodeReport.mark(): CheckMark = when {
-    checking -> CheckMark.CHECKING
-    rows.any { it.mark == CheckMark.FAIL } -> CheckMark.FAIL
-    else -> CheckMark.PASS
-}
-
 @Composable
 private fun CheckRows(rows: List<NodeCheckRow>, minHeight: Dp, lines: Boolean) {
     Column {
@@ -239,7 +232,7 @@ private fun WorkingCard(report: NodeReport) {
             Modifier.fillMaxWidth().padding(bottom = 12.dp).semantics(mergeDescendants = true) { heading(); liveRegion = LiveRegionMode.Polite },
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            MarkCircle(report.mark(), 40.dp)
+            MarkCircle(report.mark, 40.dp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(report.verdict, style = display(22))
                 // Whole, wrapping if it must: it's what's being checked.

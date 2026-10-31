@@ -45,6 +45,11 @@ pub enum CertProblem {
     NotYetValid,
     /// Made out to another host name.
     OtherName,
+    /// The handshake isn't signed by the certificate's key: whoever
+    /// answered doesn't hold it. Never accepted.
+    BadSignature,
+    /// Broken, revoked, or signed wrongly by its authority. Never accepted.
+    Invalid,
 }
 
 impl CertProblem {
@@ -55,18 +60,30 @@ impl CertProblem {
             CertProblem::Expired => "expired",
             CertProblem::NotYetValid => "not valid yet",
             CertProblem::OtherName => "for another address",
+            CertProblem::BadSignature => "signature doesn't match",
+            CertProblem::Invalid => "not valid",
         }
     }
 
-    fn of(error: &rustls::Error) -> CertProblem {
+    /// Whether a node marked to accept a self-signed certificate takes one
+    /// with this problem: only what a node's own certificate can have.
+    pub fn acceptable(self) -> bool {
+        !matches!(self, CertProblem::BadSignature | CertProblem::Invalid)
+    }
+
+    pub(crate) fn of(error: &rustls::Error) -> CertProblem {
         use rustls::CertificateError as C;
+        let rustls::Error::InvalidCertificate(error) = error else { return CertProblem::Invalid };
         match error {
-            rustls::Error::InvalidCertificate(C::Expired | C::ExpiredContext { .. }) => CertProblem::Expired,
-            rustls::Error::InvalidCertificate(C::NotValidYet | C::NotValidYetContext { .. }) => CertProblem::NotYetValid,
-            rustls::Error::InvalidCertificate(C::NotValidForName | C::NotValidForNameContext { .. }) => CertProblem::OtherName,
-            // Unknown issuer, or (openssl's usual self-signed certificate)
-            // an authority's certificate used as the server's own.
-            _ => CertProblem::SelfSigned,
+            C::Expired | C::ExpiredContext { .. } => CertProblem::Expired,
+            C::NotValidYet | C::NotValidYetContext { .. } => CertProblem::NotYetValid,
+            C::NotValidForName | C::NotValidForNameContext { .. } => CertProblem::OtherName,
+            C::UnknownIssuer => CertProblem::SelfSigned,
+            // webpki's own errors, which rustls passes on only in words:
+            // openssl's usual self-signed certificate (an authority's used
+            // as the server's own), and monerod's (version 1).
+            C::Other(other) if matches!(other.to_string().as_str(), "CaUsedAsEndEntity" | "UnsupportedCertVersion") => CertProblem::SelfSigned,
+            _ => CertProblem::Invalid,
         }
     }
 }
@@ -77,7 +94,8 @@ type Seen = Arc<std::sync::Mutex<Option<Result<(), CertProblem>>>>;
 
 /// The phone's usual check of a node's certificate (Mozilla's roots, as
 /// reqwest's own), noting what it found. For a node marked to accept
-/// self-signed certificates, any certificate passes: the connection is
+/// self-signed certificates, any certificate passes that a node's own could
+/// be (self-signed, expired, another name; not a broken one): the connection is
 /// still encrypted, and the handshake still proves the node holds the
 /// certificate's key, but nothing says whose key that is. Only that one
 /// node's connections are made with it; price providers have their own
@@ -96,6 +114,19 @@ struct Verifier {
 }
 
 impl Verifier {
+    fn note(&self, verdict: Result<(), CertProblem>) {
+        *self.seen.lock().expect("certificate lock") = Some(verdict);
+    }
+
+    /// The handshake's signature check, a failure noted as the
+    /// certificate's problem: whoever answered doesn't hold its key.
+    fn signed(&self, signed: Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        if signed.is_err() {
+            self.note(Err(CertProblem::BadSignature));
+        }
+        signed
+    }
+
     /// The handshake's signature over `message` by `cert`'s key, read
     /// without judging the certificate (any version). TLS 1.2 says less of
     /// the algorithm, so each that fits the scheme and the key is tried.
@@ -168,9 +199,10 @@ impl rustls::client::danger::ServerCertVerifier for Verifier {
         now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         let verdict = self.usual.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
-        *self.seen.lock().expect("certificate lock") = Some(verdict.as_ref().map(|_| ()).map_err(CertProblem::of));
+        let problem = verdict.as_ref().err().map(CertProblem::of);
+        self.note(problem.map_or(Ok(()), Err));
         match verdict {
-            Err(_) if self.accept_any => Ok(rustls::client::danger::ServerCertVerified::assertion()),
+            Err(_) if self.accept_any && problem.is_some_and(CertProblem::acceptable) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
             verdict => verdict,
         }
     }
@@ -181,10 +213,8 @@ impl rustls::client::danger::ServerCertVerifier for Verifier {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        if self.accept_any {
-            return self.signed_by_key(message, cert, dss, false);
-        }
-        self.usual.verify_tls12_signature(message, cert, dss)
+        let signed = if self.accept_any { self.signed_by_key(message, cert, dss, false) } else { self.usual.verify_tls12_signature(message, cert, dss) };
+        self.signed(signed)
     }
 
     fn verify_tls13_signature(
@@ -193,10 +223,8 @@ impl rustls::client::danger::ServerCertVerifier for Verifier {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        if self.accept_any {
-            return self.signed_by_key(message, cert, dss, true);
-        }
-        self.usual.verify_tls13_signature(message, cert, dss)
+        let signed = if self.accept_any { self.signed_by_key(message, cert, dss, true) } else { self.usual.verify_tls13_signature(message, cert, dss) };
+        self.signed(signed)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -240,6 +268,9 @@ impl Transport {
             .pool_idle_timeout(Duration::from_secs(8))
             .pool_max_idle_per_host(16)
             .tcp_keepalive(Duration::from_secs(30))
+            // monerod never redirects; following one would take this node's
+            // certificate rule, and a name lookup, to another host.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| InterfaceError::InternalError(format!("HTTP client: {e}")))?;
         Ok(Transport {
