@@ -46,9 +46,14 @@ import kotlinx.coroutines.withContext
 import uniffi.fob.contactPhotoFits
 import java.io.ByteArrayOutputStream
 
-/** A photo's sides tried in turn, and the WebP qualities at each, until Rust keeps it (decision 4 of the plan). */
-private val PHOTO_SIZES = listOf(96, 72, 64, 48)
-private val PHOTO_QUALITIES = listOf(80, 70, 60, 50, 40, 30, 20, 10, 0)
+/**
+ * A photo's (side, WebP quality) tried in turn until Rust keeps it (decision 4 of the plan): quality 80 down to 20
+ * at 96, 72 and 64 pixels, as decision 109 had it; only when none of those fits, quality 10 and 0 at 64, then 48
+ * (decision 149), so a busy photo still fits without every other one going blocky.
+ */
+private val PHOTO_STEPS: List<Pair<Int, Int>> =
+    listOf(96, 72, 64).flatMap { side -> listOf(80, 70, 60, 50, 40, 30, 20).map { side to it } } +
+        listOf(64 to 10, 64 to 0, 48 to 10, 48 to 0)
 
 /** Take a photo or choose one; what comes back is already small enough for Rust. */
 class PhotoChooser(val take: () -> Unit, val choose: () -> Unit)
@@ -150,21 +155,20 @@ private fun decode(context: Context, uri: Uri): Bitmap? = runCatching {
 }.getOrNull()
 
 /**
- * A photo from [source]: cropped to a centred square, scaled to 96 × 96 and
- * encoded by Android's WebP encoder, the quality stepped down (then the
- * size, to 72, 64 and 48) until Rust keeps it; null if it never does.
+ * A photo from [source]: cropped to a centred square, then scaled and
+ * encoded by Android's WebP encoder along [PHOTO_STEPS] until Rust keeps
+ * it; null if it never does.
  */
 private fun smallPhoto(source: Bitmap): ByteArray? {
     val side = minOf(source.width, source.height)
     if (side <= 0) return null
     val square = Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
     val format = if (Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSY else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
-    for (size in PHOTO_SIZES) {
-        val scaled = Bitmap.createScaledBitmap(square, size, size, true)
-        for (quality in PHOTO_QUALITIES) {
-            val bytes = ByteArrayOutputStream().also { scaled.compress(format, quality, it) }.toByteArray()
-            if (contactPhotoFits(bytes)) return bytes
-        }
+    val scaled = mutableMapOf<Int, Bitmap>()
+    for ((side, quality) in PHOTO_STEPS) {
+        val bitmap = scaled.getOrPut(side) { Bitmap.createScaledBitmap(square, side, side, true) }
+        val bytes = ByteArrayOutputStream().also { bitmap.compress(format, quality, it) }.toByteArray()
+        if (contactPhotoFits(bytes)) return bytes
     }
     return null
 }

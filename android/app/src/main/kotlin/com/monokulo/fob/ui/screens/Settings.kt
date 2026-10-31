@@ -160,8 +160,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                     ValueRow("Theme", theme.label) { choosing = Pick.THEME }
                     // Only while prices show: with them off there's no money to pick or put first.
                     prices?.takeIf { it.on }?.let { p ->
-                        val name = p.currencies.firstOrNull { it.code == p.currency }?.name
-                        ValueRow("Currency", name?.ifEmpty { null } ?: p.currency) { choosing = Pick.CURRENCY }
+                        ValueRow("Currency", p.currencyText) { choosing = Pick.CURRENCY }
                         Row(
                             Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -252,7 +251,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 Column {
                     if (choosing == Pick.CURRENCY) {
                         p.currencies.forEach { c ->
-                            Choice(listOfNotNull(c.name.ifEmpty { null }, c.code).joinToString(" · "), c.code == p.currency) {
+                            Choice(c.text, c.code == p.currency) {
                                 scope.launch { runCatching { model.setCurrency(c.code) }.onSuccess { choosing = null }.onFailure { priceError = it.reason() } }
                             }
                         }

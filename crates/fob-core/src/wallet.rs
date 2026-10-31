@@ -210,6 +210,10 @@ struct State {
     /// below it went to the other phone's.
     #[serde(default)]
     fresh_from: Option<u32>,
+    /// Made here, and its seed phrase not yet said to be written down: Home
+    /// reminds until it is, even if Fob was closed during the backup step.
+    #[serde(default)]
+    backup_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -589,6 +593,7 @@ impl Wallet {
             profile: profile::Book::default(),
             restored: restore_height.is_some(),
             fresh_from: None,
+            backup_pending: restore_height.is_none(),
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -705,6 +710,30 @@ impl Wallet {
 
     pub fn seed_words(&self) -> Option<(SeedKind, Zeroizing<String>)> {
         self.inner.keys.seed_words()
+    }
+
+    /// Home's reminder while a wallet made here hasn't had its seed phrase
+    /// written down: a title and a line; `None` once it has (or for a
+    /// restored or view-only wallet).
+    pub async fn backup_reminder(&self) -> Option<(String, String)> {
+        let pending = self.inner.state.lock().await.backup_pending;
+        let (_, words) = self.seed_words().filter(|_| pending)?;
+        let count = words.split_whitespace().count();
+        Some(("Back up your seed phrase".into(), format!("Your {count} words aren't written down yet. Without them, this wallet can't be restored.")))
+    }
+
+    /// "I've written them down": no more reminders.
+    pub async fn backup_done(&self) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        if !state.backup_pending {
+            return Ok(());
+        }
+        state.backup_pending = false;
+        if let Err(e) = self.save_state(&state) {
+            state.backup_pending = true;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// A wallet code for restoring this wallet elsewhere.
@@ -3553,6 +3582,27 @@ mod tests {
         assert_eq!(pending.take(1), None, "too old to send");
         assert!(pending.items.len() == 1 && pending.items.contains_key(&3), "pruned as others come and go");
         assert_eq!(pending.take(3), Some("newer"));
+    }
+
+    #[tokio::test]
+    async fn a_new_wallet_asks_to_be_backed_up_until_its_words_are_written_down() {
+        let path = dir("backup");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let (title, line) = wallet.backup_reminder().await.unwrap();
+        assert_eq!(title, "Back up your seed phrase");
+        assert_eq!(line, "Your 16 words aren't written down yet. Without them, this wallet can't be restored.");
+        // Fob closed during the backup step: opened again, it still asks.
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        assert!(reopened.backup_reminder().await.is_some());
+        reopened.backup_done().await.unwrap();
+        reopened.backup_done().await.unwrap();
+        assert!(Wallet::open(&path, [1; 32]).unwrap().backup_reminder().await.is_none());
+        // Restored ones, and files from before the reminder, never ask.
+        let words = wallet.seed_words().unwrap().1;
+        assert!(Wallet::restore_words(&dir("backup-restored"), [1; 32], Network::Stagenet, &words, Some(0)).unwrap().backup_reminder().await.is_none());
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        file["state"].as_object_mut().unwrap().remove("backup_pending");
+        assert!(!serde_json::from_value::<FileIn>(file).unwrap().state.backup_pending);
     }
 
     #[tokio::test]

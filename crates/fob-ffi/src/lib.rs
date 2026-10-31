@@ -138,13 +138,22 @@ pub struct Balance {
     pub ready_line: String,
 }
 
+/// Home's card while a new wallet's seed phrase isn't written down.
+#[derive(uniffi::Record)]
+pub struct BackupReminder {
+    /// "Back up your seed phrase"
+    pub title: String,
+    /// "Your 16 words aren't written down yet. …"
+    pub line: String,
+}
+
 /// A currency to choose.
 #[derive(uniffi::Record)]
 pub struct CurrencyChoice {
     /// "USD"
     pub code: String,
-    /// "US dollar"
-    pub name: String,
+    /// "US dollar · USD", or the code alone.
+    pub text: String,
 }
 
 /// How price requests travel.
@@ -191,6 +200,8 @@ pub struct PriceSettings {
     pub on: bool,
     /// "USD"
     pub currency: String,
+    /// The Currency row's value: "US dollar", or the code.
+    pub currency_text: String,
     pub currencies: Vec<CurrencyChoice>,
     /// "Show amounts in" the currency, not XMR.
     pub fiat_first: bool,
@@ -731,6 +742,17 @@ impl FobWallet {
         })
     }
 
+    /// Home's reminder while a wallet made here hasn't had its seed phrase
+    /// written down; none once it has.
+    pub async fn backup_reminder(&self) -> Option<BackupReminder> {
+        self.inner.backup_reminder().await.map(|(title, line)| BackupReminder { title, line })
+    }
+
+    /// "I've written them down": the reminder goes.
+    pub async fn backup_done(&self) -> Result<()> {
+        Ok(self.inner.backup_done().await?)
+    }
+
     pub async fn wallet_code(&self) -> String {
         self.inner.wallet_code().await.to_string()
     }
@@ -855,8 +877,9 @@ impl FobWallet {
                 .provider
                 .currencies()
                 .iter()
-                .map(|code| CurrencyChoice { code: (*code).to_owned(), name: price::currency(code).name.to_owned() })
+                .map(|code| CurrencyChoice { code: (*code).to_owned(), text: price::currency(code).choice_text() })
                 .collect(),
+            currency_text: price::currency(&s.currency).text(),
             currency: s.currency.clone(),
             fiat_first: s.fiat_first,
             source_text: s.source_text(),

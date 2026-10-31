@@ -336,6 +336,19 @@ pub fn currency(code: &str) -> Currency {
     }
 }
 
+impl Currency {
+    /// Settings' Currency row: its name, or its code when Fob doesn't know
+    /// one ("US dollar", "CHF").
+    pub fn text(&self) -> String {
+        if self.name.is_empty() { self.code.clone() } else { self.name.to_owned() }
+    }
+
+    /// Its line among the choices: "US dollar · USD", or the code alone.
+    pub fn choice_text(&self) -> String {
+        if self.name.is_empty() { self.code.clone() } else { format!("{} · {}", self.name, self.code) }
+    }
+}
+
 /// An amount field (toggle B), every word ready to draw: a sign before
 /// what's typed, a chip naming the unit that switches it while there's a
 /// price, and a line under it.
@@ -628,6 +641,12 @@ mod tests {
         let f = amount_field("20", true, None);
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch, f.line, f.switch_label), (Some("ɱ"), "XMR", false, false, None, None));
         assert_eq!(amount_field("x", false, None).line.as_deref(), Some("That isn't an amount"));
+    }
+
+    #[test]
+    fn settings_name_a_currency_or_give_its_code() {
+        assert_eq!((usd().text(), usd().choice_text()), ("US dollar".to_owned(), "US dollar · USD".to_owned()));
+        assert_eq!((currency("CHF").text(), currency("CHF").choice_text()), ("CHF".to_owned(), "CHF".to_owned()));
     }
 
     #[test]

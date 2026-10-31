@@ -76,6 +76,7 @@ import com.monokulo.fob.ui.display
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.fob.ActivityRow
+import uniffi.fob.BackupReminder
 import uniffi.fob.Network
 import uniffi.fob.NotReady
 import uniffi.fob.SyncStatus
@@ -102,6 +103,9 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
     val canSpend = wallet?.canSpend() != false
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
+    // A new wallet's words not yet written down (Fob closed during the backup step, say): asked again here.
+    var reminder by remember { mutableStateOf<BackupReminder?>(null) }
+    LaunchedEffect(wallet) { reminder = wallet?.backupReminder() }
     // Ready times count down between blocks: Rust writes them again each half minute.
     LaunchedEffect(notReady != null) {
         while (notReady != null) {
@@ -162,6 +166,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
         }
 
         Column(Modifier.padding(horizontal = 16.dp)) {
+            reminder?.let { BackupCard(it) { nav.go(Screen.ShowSeed) } }
             notReady?.let { ReadyCard(it) }
             val s = status
             if (s != null && !s.synced && s.tip > 0u) {
@@ -258,6 +263,24 @@ private fun ReadyCard(n: NotReady) {
                 Text(n.allReadyLine, color = Fob.muted, fontSize = 13.sp)
             }
         }
+    }
+}
+
+/** Rust's reminder that a new wallet's seed phrase isn't written down; it opens the words. */
+@Composable
+private fun BackupCard(r: BackupReminder, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(18.dp)).background(Fob.highlight)
+            .clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) {}
+            .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        StrokeIcon(Icons.lines, tint = Fob.orangeText, size = 22.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(r.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(r.line, color = Fob.muted, fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }
 }
 
