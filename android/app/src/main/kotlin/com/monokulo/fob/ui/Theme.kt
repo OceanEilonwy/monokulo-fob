@@ -1,8 +1,15 @@
 package com.monokulo.fob.ui
 
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -12,24 +19,112 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.R
 
+/** One theme's colour roles. Screens read them through [Fob]. */
+@Immutable
+class FobColors(
+    val dark: Boolean,
+    val paper: Color,
+    val card: Color,
+    val sunken: Color,
+    val line: Color,
+    val ink: Color,
+    val muted: Color,
+    val outline: Color,
+    val orangeText: Color,
+    val green: Color,
+    val greenDot: Color,
+    val greenFill: Color,
+    /** What sits on [greenFill]: the tick on Paid. */
+    val onGreen: Color,
+    val highlight: Color,
+    val red: Color,
+    /** The empty part of the sync ring. */
+    val track: Color,
+)
+
 /** The Monokulo family's colours, as in the Fob designs. */
+val LightColors = FobColors(
+    dark = false,
+    paper = Color(0xFFF4F1EA),
+    card = Color(0xFFFFFFFF),
+    sunken = Color(0xFFEFEAE0),
+    line = Color(0xFFE2DCCF),
+    ink = Color(0xFF1A1917),
+    muted = Color(0xFF5A564C),
+    outline = Color(0xFF8C8577),
+    orangeText = Color(0xFFB34700),
+    green = Color(0xFF1F7A45),
+    greenDot = Color(0xFF1F8A4C),
+    greenFill = Color(0xFF4CC27A),
+    onGreen = Color(0xFF1A1917),
+    highlight = Color(0xFFFBF3E8),
+    red = Color(0xFFB3261E),
+    track = Color(0xFFD8D1C3),
+)
+
+/** The same roles at night: warm greys, no black, the same orange. */
+val DarkColors = FobColors(
+    dark = true,
+    paper = Color(0xFF141311),
+    card = Color(0xFF1F1D1A),
+    sunken = Color(0xFF2A2824),
+    line = Color(0xFF3A3731),
+    ink = Color(0xFFF2EEE6),
+    muted = Color(0xFFB0A999),
+    outline = Color(0xFF7A7366),
+    orangeText = Color(0xFFFF8F45),
+    green = Color(0xFF5CC88A),
+    greenDot = Color(0xFF5CC88A),
+    greenFill = Color(0xFF5CC88A),
+    onGreen = Color(0xFF111111),
+    highlight = Color(0xFF2E2418),
+    red = Color(0xFFF2B8B5),
+    track = Color(0xFF3A3731),
+)
+
+val LocalFobColors = staticCompositionLocalOf { LightColors }
+
+/**
+ * The current theme's colours, by role: `Fob.ink`, `Fob.card`. Roles that
+ * read the theme are composable; the rest are the same in both themes.
+ */
 object Fob {
-    val paper = Color(0xFFF4F1EA)
-    val card = Color(0xFFFFFFFF)
-    val sunken = Color(0xFFEFEAE0)
-    val line = Color(0xFFE2DCCF)
-    val ink = Color(0xFF1A1917)
-    val muted = Color(0xFF5A564C)
-    val outline = Color(0xFF8C8577)
+    val paper: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.paper
+    val card: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.card
+    val sunken: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.sunken
+    val line: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.line
+    val ink: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.ink
+    val muted: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.muted
+    val outline: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.outline
+    val orangeText: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.orangeText
+    val green: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.green
+    val greenDot: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.greenDot
+    val greenFill: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.greenFill
+    val onGreen: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onGreen
+    val highlight: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.highlight
+    val red: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.red
+    val track: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.track
+
     val orange = Color(0xFFFF6600)
     val onOrange = Color(0xFF111111)
-    val orangeText = Color(0xFFB34700)
-    val green = Color(0xFF1F7A45)
-    val greenDot = Color(0xFF1F8A4C)
-    val greenFill = Color(0xFF4CC27A)
+
+    /** The camera's backdrop and what's drawn over it, in both themes. */
     val camera = Color(0xFF2B2925)
-    val highlight = Color(0xFFFBF3E8)
-    val red = Color(0xFFB3261E)
+    val onCamera = Color(0xFFF4F1EA)
+    val cameraHint = Color(0xFFE2DCCF)
+    val cameraCard = Color(0xFF3A3732)
+    val cameraWarning = Color(0xFFFF8A3D)
+
+    /** QR codes stay dark on white in both themes, so every reader reads them. */
+    val qrDark = Color(0xFF1A1917)
+    val qrLight = Color(0xFFFFFFFF)
+}
+
+/** Which theme Fob draws in; kept on the phone (see [WalletModel.theme]). */
+enum class ThemeChoice(val label: String) {
+    PHONE("Same as the phone"),
+    LIGHT("Light"),
+    DARK("Dark"),
 }
 
 /** Manrope is one variable font file: each weight is a variation of it. */
@@ -41,20 +136,29 @@ val Manrope = FontFamily(manrope(FontWeight.Medium), manrope(FontWeight.Bold), m
 fun display(size: Int) = TextStyle(fontFamily = Manrope, fontWeight = FontWeight.ExtraBold, fontSize = size.sp, letterSpacing = (-size / 36.0).sp)
 
 @Composable
-fun FobTheme(content: @Composable () -> Unit) {
+fun FobTheme(choice: ThemeChoice = ThemeChoice.PHONE, content: @Composable () -> Unit) {
+    val dark = when (choice) {
+        ThemeChoice.PHONE -> isSystemInDarkTheme()
+        ThemeChoice.LIGHT -> false
+        ThemeChoice.DARK -> true
+    }
+    val c = if (dark) DarkColors else LightColors
+    val roles = if (dark) darkColorScheme() else lightColorScheme()
     MaterialTheme(
-        colorScheme = lightColorScheme(
+        colorScheme = roles.copy(
             primary = Fob.orange,
             onPrimary = Fob.onOrange,
-            background = Fob.paper,
-            onBackground = Fob.ink,
-            surface = Fob.card,
-            onSurface = Fob.ink,
-            surfaceVariant = Fob.sunken,
-            onSurfaceVariant = Fob.muted,
-            outline = Fob.outline,
-            error = Fob.red,
+            background = c.paper,
+            onBackground = c.ink,
+            surface = c.card,
+            onSurface = c.ink,
+            surfaceContainerHigh = c.card,
+            surfaceVariant = c.sunken,
+            onSurfaceVariant = c.muted,
+            outline = c.outline,
+            error = c.red,
         ),
-        content = content,
-    )
+    ) {
+        CompositionLocalProvider(LocalFobColors provides c, LocalContentColor provides c.ink, content = content)
+    }
 }

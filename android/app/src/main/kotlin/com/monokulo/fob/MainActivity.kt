@@ -3,9 +3,11 @@ package com.monokulo.fob
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.biometric.BiometricManager
@@ -13,15 +15,18 @@ import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.monokulo.fob.ui.FobTheme
+import com.monokulo.fob.ui.LocalFobColors
 import com.monokulo.fob.ui.screens.BackupScreen
 import com.monokulo.fob.ui.screens.ConfirmScreen
 import com.monokulo.fob.ui.screens.HomeScreen
@@ -90,7 +95,9 @@ class MainActivity : FragmentActivity() {
         }
         val nav = Nav(if (model.hasWallet()) Screen.Home else Screen.Welcome)
         setContent {
-            FobTheme {
+            val theme by model.theme.collectAsState()
+            FobTheme(theme) {
+                SystemBars()
                 val pending by link
                 LaunchedEffect(pending) {
                     val code = pending ?: return@LaunchedEffect
@@ -140,6 +147,20 @@ class MainActivity : FragmentActivity() {
                 },
             )
             prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(title).setAllowedAuthenticators(allowed).build())
+        }
+    }
+
+    /** Status and navigation bar icons dark on light paper, light on dark. */
+    @Composable
+    private fun SystemBars() {
+        val colors = LocalFobColors.current
+        val paper = colors.paper.toArgb()
+        DisposableEffect(colors.dark) {
+            val clear = android.graphics.Color.TRANSPARENT
+            val style = if (colors.dark) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
+            enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            window.setBackgroundDrawable(ColorDrawable(paper))
+            onDispose {}
         }
     }
 

@@ -9,20 +9,25 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
@@ -41,27 +46,12 @@ import com.monokulo.fob.ui.ProgressBar
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
 import com.monokulo.fob.ui.display
-import com.monokulo.fob.ui.short
-import uniffi.fob.Activity
+import kotlinx.coroutines.launch
+import uniffi.fob.ActivityRow
 import uniffi.fob.Network
 import uniffi.fob.SyncStatus
 import java.text.DateFormat
-import java.util.Calendar
 import java.util.Date
-
-/** "Today 09:12", "Yesterday", "27 Oct": how Activity shows when. */
-fun whenText(seconds: ULong): String {
-    val date = Date(seconds.toLong() * 1000)
-    val then = Calendar.getInstance().apply { time = date }
-    val now = Calendar.getInstance()
-    val sameYear = then.get(Calendar.YEAR) == now.get(Calendar.YEAR)
-    val days = now.get(Calendar.DAY_OF_YEAR) - then.get(Calendar.DAY_OF_YEAR)
-    return when {
-        sameYear && days == 0 -> "Today " + DateFormat.getTimeInstance(DateFormat.SHORT).format(date)
-        sameYear && days == 1 -> "Yesterday"
-        else -> android.text.format.DateFormat.format(if (sameYear) "d MMM" else "d MMM yyyy", date).toString()
-    }
-}
 
 fun syncLine(status: SyncStatus): String {
     val upTo = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(status.upTo.toLong() * 1000))
@@ -79,8 +69,16 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
     val synced = status?.synced == true
     val error = status?.error
     val canSpend = wallet?.canSpend() != false
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
 
-    Page {
+    Page(refreshing = refreshing, onRefresh = {
+        refreshing = true
+        scope.launch {
+            model.syncNow()
+            refreshing = false
+        }
+    }) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             FobMark(26.dp)
             Text("Fob", style = display(22))
@@ -93,7 +91,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 else -> "Catching up · ${((status?.progress ?: 0f) * 100).toInt()}%"
             }
             SyncChip(chip, synced, status?.progress ?: 0f, error != null && !synced) { nav.go(Screen.Node) }
-            IconButton(onClick = { nav.go(Screen.Settings) }, modifier = Modifier.semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear, width = 1.8f) }
+            IconButton(onClick = { nav.go(Screen.Settings) }, modifier = Modifier.semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear) }
         }
 
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -102,6 +100,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 Text(balance?.totalText ?: "—", style = display(56))
                 Text("XMR", fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Fob.muted, modifier = Modifier.padding(bottom = 10.dp))
             }
+            balance?.readyText?.let { Text(it, color = Fob.muted, fontSize = 15.sp) }
             balance?.let { b ->
                 if (b.confirming > 0u) {
                     Row(
@@ -143,36 +142,39 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                     color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
                 )
             }
-            activity.forEach { row -> ActivityRow(row) { nav.go(Screen.Receipt(row)) } }
+            activity.forEach { day ->
+                DayLabel(day.label)
+                day.rows.forEach { row -> PaymentRow(row) { nav.go(Screen.Receipt(row.activity)) } }
+            }
         }
     }
 }
 
+/** "TODAY", "YESTERDAY", "27 OCT": a day's header in Activity. */
 @Composable
-fun ActivityRow(row: Activity, onClick: () -> Unit) {
-    val title = row.receipt?.merchant ?: if (row.outgoing) row.to?.let { short(it, 1) } ?: "Sent" else "Received"
-    val state = when {
-        row.pending && row.outgoing -> "Sending"
-        row.pending -> "On the way"
-        !row.settled -> "Confirming · ${row.confirmations} of 10"
-        row.outgoing -> "Sent"
-        else -> null
-    }
-    val receipt = row.receipt?.let { "receipt, ${it.itemCount} item${if (it.itemCount == 1u) "" else "s"}" }
-    val subtitle = listOfNotNull(state, receipt, whenText(row.time)).joinToString(" · ")
+private fun DayLabel(text: String) {
+    Text(
+        text, color = Fob.muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp,
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 4.dp).semantics { heading() },
+    )
+}
+
+/** One payment: what Rust wrote for it, drawn. */
+@Composable
+fun PaymentRow(row: ActivityRow, onClick: () -> Unit) {
+    val outgoing = row.activity.outgoing
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        IconBadge(if (row.outgoing) Icons.up else Icons.down, if (row.outgoing) Fob.ink else Fob.green, receipt = row.receipt != null)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            Text(subtitle, color = Fob.muted, fontSize = 13.sp)
+        IconBadge(if (outgoing) Icons.up else Icons.down, if (outgoing) Fob.ink else Fob.green, size = 28.dp, receipt = row.activity.receipt != null)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(row.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(row.line, color = Fob.muted, fontSize = 12.sp)
         }
-        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text((if (row.outgoing) "−" else "+") + row.amountText, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = if (row.outgoing) Fob.ink else Fob.green)
-            row.receipt?.let { Text(it.total, color = Fob.muted, fontSize = 13.sp) }
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(row.amountText, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (outgoing) Fob.ink else Fob.green)
+            row.fiatText?.let { Text(it, color = Fob.muted, fontSize = 12.sp) }
         }
-        Spacer(Modifier.width(0.dp))
     }
 }

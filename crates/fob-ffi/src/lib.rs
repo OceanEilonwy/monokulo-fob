@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{amount, qr, receipt, uri};
+use fob_core::{activity, amount, qr, receipt, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -81,7 +81,7 @@ fn xmr(atomic: u64) -> String {
 
 /// What's about to be paid: every digit.
 fn exact(atomic: u64) -> String {
-    amount::format(atomic, 4)
+    amount::format(atomic)
 }
 
 #[derive(uniffi::Record)]
@@ -124,6 +124,8 @@ pub struct Balance {
     pub total_text: String,
     pub unlocked_text: String,
     pub confirming_text: String,
+    /// "0.5 XMR ready to spend", only while some money can't be spent yet.
+    pub ready_text: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -142,6 +144,43 @@ pub struct Activity {
     /// Ten confirmations: final, and spendable when it came in.
     pub settled: bool,
     pub receipt: Option<Receipt>,
+}
+
+fn activity(a: fob_core::Activity) -> Activity {
+    Activity {
+        outgoing: a.direction == fob_core::Direction::Out,
+        amount_text: xmr(a.amount),
+        fee_text: a.fee.map(amount::format),
+        pending: a.height.is_none(),
+        settled: a.confirmations >= 10,
+        tx: a.tx,
+        to: a.to,
+        time: a.time,
+        confirmations: a.confirmations,
+        receipt: a.receipt.map(Into::into),
+    }
+}
+
+/// One row of Home's Activity, ready to draw.
+#[derive(uniffi::Record)]
+pub struct ActivityRow {
+    /// The payment, for its own screen.
+    pub activity: Activity,
+    /// The shop, who was paid, or "Received".
+    pub title: String,
+    /// "Receipt, 3 items · 09:12", "Not ready · 3 of 10 · 08:40".
+    pub line: String,
+    /// With its sign: "+0.5", "−0.1421".
+    pub amount_text: String,
+    /// The receipt's total: "$13.50".
+    pub fiat_text: Option<String>,
+}
+
+/// A day of Activity under its label: "TODAY", "YESTERDAY", "27 OCT".
+#[derive(uniffi::Record)]
+pub struct ActivityDay {
+    pub label: String,
+    pub rows: Vec<ActivityRow>,
 }
 
 #[derive(uniffi::Record)]
@@ -353,25 +392,24 @@ impl FobWallet {
             total_text: xmr(b.total),
             unlocked_text: xmr(b.unlocked),
             confirming_text: xmr(b.confirming),
+            ready_text: b.ready_text(),
         }
     }
 
-    pub async fn activity(&self) -> Vec<Activity> {
-        self.inner
-            .activity()
-            .await
+    /// Every payment, grouped by the phone's day, newest first. `now` is
+    /// seconds since the epoch, `utc_offset` the phone's offset in seconds,
+    /// `hours_24` its clock setting.
+    pub async fn activity_days(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ActivityDay> {
+        let clock = activity::Clock { now, utc_offset, hours_24 };
+        activity::by_day(self.inner.activity().await, clock)
             .into_iter()
-            .map(|a| Activity {
-                outgoing: a.direction == fob_core::Direction::Out,
-                amount_text: xmr(a.amount),
-                fee_text: a.fee.map(|f| amount::format(f, 5)),
-                pending: a.height.is_none(),
-                settled: a.confirmations >= 10,
-                tx: a.tx,
-                to: a.to,
-                time: a.time,
-                confirmations: a.confirmations,
-                receipt: a.receipt.map(Into::into),
+            .map(|day| ActivityDay {
+                label: day.label,
+                rows: day
+                    .rows
+                    .into_iter()
+                    .map(|r| ActivityRow { activity: activity(r.activity), title: r.title, line: r.line, amount_text: r.amount, fiat_text: r.fiat })
+                    .collect(),
             })
             .collect()
     }
@@ -389,6 +427,12 @@ impl FobWallet {
         self.inner.stop_sync();
     }
 
+    /// Asks the node for new blocks and its pool now (pull to refresh);
+    /// returns when that round is over, or after 20 s.
+    pub async fn sync_now(&self) {
+        self.inner.sync_now().await;
+    }
+
     /// Builds a payment for the confirm screen. `amount` is text as typed;
     /// `receipt_json` comes from the scanned `PaymentRequest`.
     pub async fn prepare(&self, to: String, amount: String, receipt_json: Option<String>) -> Result<Prepared> {
@@ -398,8 +442,8 @@ impl FobWallet {
             id: p.id,
             to: p.to,
             amount_text: exact(p.amount),
-            fee_text: amount::format(p.fee, 5),
-            total_text: amount::format(p.amount + p.fee, 5),
+            fee_text: amount::format(p.fee),
+            total_text: amount::format(p.amount + p.fee),
             receipt: p.receipt.map(Into::into),
         })
     }

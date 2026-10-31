@@ -25,15 +25,15 @@ async fn main() {
         Some("sync") => {
             while wallet.sync_step().await.unwrap() {}
             let b = wallet.balance().await;
-            println!("synced to {}: total {} unlocked {}", wallet.status().scanned, amount::format(b.total, 4), amount::format(b.unlocked, 4));
+            println!("synced to {}: total {} unlocked {}", wallet.status().scanned, amount::format(b.total), amount::format(b.unlocked));
             for a in wallet.activity().await {
-                println!("{:?} {} {} conf {}", a.direction, amount::format(a.amount, 4), a.tx, a.confirmations);
+                println!("{:?} {} {} conf {}", a.direction, amount::format(a.amount), a.tx, a.confirmations);
             }
         }
         Some("send") => {
             while wallet.sync_step().await.unwrap() {}
             let prepared = wallet.prepare(&args[2], amount::parse(&args[3]).unwrap(), None).await.unwrap();
-            println!("fee {}", amount::format(prepared.fee, 6));
+            println!("fee {}", amount::format(prepared.fee));
             println!("sent {}", wallet.send(prepared.id).await.unwrap());
         }
         _ => eprintln!("address | sync | send <address> <amount>"),

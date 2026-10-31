@@ -8,7 +8,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import uniffi.fob.Activity
+import android.text.format.DateFormat
+import com.monokulo.fob.ui.ThemeChoice
+import uniffi.fob.ActivityDay
 import uniffi.fob.Balance
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
@@ -16,6 +18,7 @@ import uniffi.fob.Prepared
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
 import java.io.File
+import java.util.TimeZone
 
 /**
  * What the screens show, kept up to date from the Rust wallet. Everything
@@ -39,8 +42,21 @@ class WalletModel(private val app: Application) {
     private val _balance = MutableStateFlow<Balance?>(null)
     val balance: StateFlow<Balance?> = _balance
 
-    private val _activity = MutableStateFlow<List<Activity>>(emptyList())
-    val activity: StateFlow<List<Activity>> = _activity
+    /** Activity grouped by the phone's days, ready to draw. */
+    private val _activity = MutableStateFlow<List<ActivityDay>>(emptyList())
+    val activity: StateFlow<List<ActivityDay>> = _activity
+
+    /**
+     * Light, dark or as the phone is. Only how Fob looks, the same for every
+     * wallet, so it's an app preference rather than in the wallet file.
+     */
+    private val _theme = MutableStateFlow(ThemeChoice.entries.firstOrNull { it.name == prefs.getString("theme", null) } ?: ThemeChoice.PHONE)
+    val theme: StateFlow<ThemeChoice> = _theme
+
+    fun setTheme(choice: ThemeChoice) {
+        prefs.edit().putString("theme", choice.name).apply()
+        _theme.value = choice
+    }
 
     private val _status = MutableStateFlow<SyncStatus?>(null)
     val status: StateFlow<SyncStatus?> = _status
@@ -96,7 +112,15 @@ class WalletModel(private val app: Application) {
     suspend fun refresh() {
         val wallet = _wallet.value ?: return
         _balance.value = wallet.balance()
-        _activity.value = wallet.activity()
+        val now = System.currentTimeMillis()
+        _activity.value = wallet.activityDays((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+    }
+
+    /** Pull to refresh: asks the node now, and returns once that round is over. */
+    suspend fun syncNow() {
+        val wallet = _wallet.value ?: return
+        wallet.syncNow()
+        refresh()
     }
 
     /**

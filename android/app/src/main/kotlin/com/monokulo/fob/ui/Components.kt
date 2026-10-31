@@ -31,11 +31,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -74,7 +78,8 @@ import kotlin.math.sin
 object Icons {
     const val back = "M20 12H5M11 6l-6 6 6 6"
     const val close = "M6 6l12 12M18 6L6 18"
-    const val gear = "M4 7h9 M17 7h3 M15 4.5v5 M4 17h3 M11 17h9 M9 14.5v5"
+    /** Monokular's cog: a ring and eight spokes. */
+    const val gear = "M12 8.8a3.2 3.2 0 1 0 0.01 0Z M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"
     const val scan = "M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16"
     const val down = "M12 4v13M6 11l6 6 6-6"
     const val up = "M12 20V7M6 13l6-6 6 6"
@@ -106,17 +111,39 @@ fun StrokeIcon(path: String, tint: Color = Fob.ink, size: Dp = 22.dp, width: Flo
     Icon(icon(path, width), contentDescription = null, tint = tint, modifier = Modifier.size(size))
 }
 
-/** A whole screen: paper, clear of the system bars, scrolling if it must. */
+/**
+ * A whole screen: paper, clear of the system bars, scrolling if it must.
+ * With [onRefresh], pulling down from the top calls it; the spinner shows
+ * while [refreshing].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Page(
     background: Color = Fob.paper,
     scroll: Boolean = true,
+    refreshing: Boolean = false,
+    onRefresh: (() -> Unit)? = null,
     bottom: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(Modifier.fillMaxSize().background(background).safeDrawingPadding()) {
-        val body = Modifier.weight(1f).fillMaxWidth().let { if (scroll) it.verticalScroll(rememberScrollState()) else it }
-        Column(body, content = content)
+        val scrolling = Modifier.fillMaxWidth().let { if (scroll) it.verticalScroll(rememberScrollState()) else it }
+        if (onRefresh == null) {
+            Column(Modifier.weight(1f).then(scrolling), content = content)
+        } else {
+            val state = rememberPullToRefreshState()
+            PullToRefreshBox(
+                isRefreshing = refreshing, onRefresh = onRefresh, state = state, modifier = Modifier.weight(1f).fillMaxWidth(),
+                indicator = {
+                    PullToRefreshDefaults.Indicator(
+                        state = state, isRefreshing = refreshing, containerColor = Fob.card, color = Fob.orangeText,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                },
+            ) {
+                Column(Modifier.fillMaxSize().then(scrolling), content = content)
+            }
+        }
         if (bottom != null) {
             Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = bottom)
         }
@@ -231,7 +258,10 @@ fun SectionLabel(text: String) {
     Text(text, color = Fob.muted, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
 }
 
-/** A round sunken badge with a stroke icon, as in Activity rows. */
+/**
+ * A round sunken badge with a stroke icon, as in Activity rows; with
+ * [receipt], a small receipt on its corner. Everything scales with [size].
+ */
 @Composable
 fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = false) {
     Box {
@@ -239,24 +269,25 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
             StrokeIcon(path, tint = tint, size = size / 2)
         }
         if (receipt) {
-            Box(Modifier.align(Alignment.BottomEnd).offset(4.dp, 4.dp).size(20.dp).clip(CircleShape).background(Fob.card), contentAlignment = Alignment.Center) {
-                StrokeIcon(Icons.receipt, tint = Fob.orangeText, size = 14.dp, width = 2.2f)
+            val badge = size / 2
+            Box(Modifier.align(Alignment.BottomEnd).offset(size / 10, size / 10).size(badge).clip(CircleShape).background(Fob.card), contentAlignment = Alignment.Center) {
+                StrokeIcon(Icons.receipt, tint = Fob.orangeText, size = badge * 0.7f, width = 2.2f)
             }
         }
     }
 }
 
-/** A QR code from the Rust library's module grid, with a quiet zone. */
+/** A QR code from the Rust library's module grid, with a quiet zone: dark on white in both themes. */
 @Composable
 fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code") {
     Canvas(modifier.size(size).semantics { contentDescription = description }) {
         val n = code.size.toInt()
         val quiet = 2
         val cell = this.size.width / (n + quiet * 2)
-        drawRect(Color.White)
+        drawRect(Fob.qrLight)
         for (y in 0 until n) for (x in 0 until n) {
             if (code.dark[y * n + x]) {
-                drawRect(Fob.ink, topLeft = Offset((x + quiet) * cell, (y + quiet) * cell), size = Size(cell + 0.5f, cell + 0.5f))
+                drawRect(Fob.qrDark, topLeft = Offset((x + quiet) * cell, (y + quiet) * cell), size = Size(cell + 0.5f, cell + 0.5f))
             }
         }
     }
@@ -283,6 +314,8 @@ fun FobMark(size: Dp) {
         wax.close()
         drawPath(wax, Fob.orange)
         val deep = Color(0xFFC24E00)
+        // The iris stays dark on the wax in both themes, like the launcher icon.
+        val iris = Color(0xFF1A1917)
         drawCircle(deep, radius = 29f * u, center = c, style = Stroke(3.2f * u))
         val k = 2.05f * u
         fun p(x: Float, y: Float) = Offset(c.x + (x - 30f) * k, c.y + (y - 28f) * k)
@@ -298,7 +331,7 @@ fun FobMark(size: Dp) {
         poly(deep, 30f to 33f, 25.67f to 30.5f, 24.5f to 37.53f)
         poly(deep, 25.67f to 30.5f, 25.67f to 25.5f, 19f to 28f)
         poly(deep, 25.67f to 25.5f, 30f to 23f, 24.5f to 18.47f)
-        poly(Fob.ink, 30f to 23f, 34.33f to 25.5f, 34.33f to 30.5f, 30f to 33f, 25.67f to 30.5f, 25.67f to 25.5f)
+        poly(iris, 30f to 23f, 34.33f to 25.5f, 34.33f to 30.5f, 30f to 33f, 25.67f to 30.5f, 25.67f to 25.5f)
     }
 }
 
@@ -312,10 +345,13 @@ fun SyncChip(text: String, synced: Boolean, progress: Float, error: Boolean, onC
         when {
             error -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.red))
             synced -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.greenDot))
-            else -> Canvas(Modifier.size(18.dp)) {
-                val stroke = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round)
-                drawArc(Color(0xFFD8D1C3), 0f, 360f, false, style = stroke)
-                drawArc(Fob.orangeText, -90f, 360f * progress.coerceIn(0.02f, 1f), false, style = stroke)
+            else -> {
+                val (track, arc) = Fob.track to Fob.orangeText
+                Canvas(Modifier.size(18.dp)) {
+                    val stroke = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round)
+                    drawArc(track, 0f, 360f, false, style = stroke)
+                    drawArc(arc, -90f, 360f * progress.coerceIn(0.02f, 1f), false, style = stroke)
+                }
             }
         }
         Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium)

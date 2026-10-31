@@ -4,8 +4,10 @@
 //! - [`Wallet`]: create, restore, open; sync, balance, activity; prepare and
 //!   send payments.
 //! - [`uri`]: payment codes (with ORF receipts) and wallet codes.
-//! - [`amount`], [`receipt`], [`qr`]: text and pictures ready for the screen.
+//! - [`amount`], [`activity`], [`receipt`], [`qr`]: text and pictures ready
+//!   for the screen.
 
+pub mod activity;
 pub mod amount;
 mod decoys;
 pub mod error;
