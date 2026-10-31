@@ -25,6 +25,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import com.monokulo.fob.ui.FobTheme
 import com.monokulo.fob.ui.LocalFobColors
 import com.monokulo.fob.ui.screens.BackupScreen
@@ -141,6 +143,15 @@ class Nav(start: Screen) {
     fun reset(screen: Screen) { stack.clear(); stack.add(screen) }
 }
 
+/**
+ * Keeps the [Nav] while the activity is made again for a change the
+ * manifest's `configChanges` doesn't cover (font size, language), so Fob
+ * comes back where it was, not at Home.
+ */
+class NavHolder : ViewModel() {
+    var nav: Nav? = null
+}
+
 class MainActivity : FragmentActivity() {
     private val model: WalletModel get() = (application as FobApp).model
     private val link = mutableStateOf<String?>(null)
@@ -148,12 +159,14 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        link.value = intent?.dataString
+        // A link is read once, not again when the activity is made again.
+        if (savedInstanceState == null) link.value = intent?.dataString
         // For the catching-up notification; Fob works the same without it.
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
-        val nav = Nav(if (model.hasWallet()) Screen.Home else Screen.Welcome)
+        val holder = ViewModelProvider(this)[NavHolder::class.java]
+        val nav = holder.nav ?: Nav(if (model.hasWallet()) Screen.Home else Screen.Welcome).also { holder.nav = it }
         setContent {
             val theme by model.theme.collectAsState()
             FobTheme(theme) {

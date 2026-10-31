@@ -1116,3 +1116,15 @@ Calls made while building the first version, with why. Newest last.
     only with prices, as before. The board's "Address check" row isn't
     drawn: Fob has no setting for it.
 
+## Round 3: the emulator pass
+
+148. **Rotating keeps where you are; Fob isn't portrait only**: nothing in
+    the decisions asks for portrait, and Send and the scanners have
+    landscape layouts (decision 92's 62% sheet), so the screen still turns.
+    The activity takes rotation, screen size, keyboard, density and dark
+    mode changes itself (`configChanges`): Compose redraws in place, so
+    every screen, its sheets and what's typed in it stay. Anything else
+    that makes the activity again (font size, language) keeps the back
+    stack in a ViewModel (`NavHolder`), and a `monero:` link that opened
+    Fob isn't read a second time then. After Android ends the process, Fob
+    opens at Home, as before.

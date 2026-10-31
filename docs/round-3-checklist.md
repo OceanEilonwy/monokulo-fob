@@ -65,7 +65,7 @@ Camera and permission
 Safe areas
 - [ ] Phone with a punch-hole or notch → ✕, "Send" and the torch sit fully below the status bar and clear of the cutout; nothing clipped; the camera still fills behind the status bar.
 - [ ] Gesture navigation and 3-button navigation → the folded sheet's ready line and the pulled-up Review button sit above the navigation bar; the sheet's paper reaches the bottom edge.
-- [ ] Landscape (rotate on Send) → top bar clear of the cutout on the side; folded sheet leaves a strip of camera at the top, scrolls if it must; pulled up, no small frame, the form scrolls, Review reachable. (Rotating restarts at Home, as every screen does today: Nav lives in the activity.)
+- [ ] Landscape (rotate on Send) → top bar clear of the cutout on the side; folded sheet leaves a strip of camera at the top, scrolls if it must; pulled up, no small frame, the form scrolls, Review reachable. Rotating keeps Send as it was: the sheet, To, amount and note (decision 148).
 - [ ] Restore › Scan a wallet code → title and back clear of the status bar and cutout too.
 
 Folded sheet
