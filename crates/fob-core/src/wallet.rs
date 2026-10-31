@@ -2067,7 +2067,7 @@ impl Wallet {
         Some(price::alert::toast(&alert, state.price_cache.last(&state.prices), clock))
     }
 
-    /// Settings' Price from row: "Kraken · over the internet", or while
+    /// Settings' Price from row: "Kraken · web", or while
     /// lookups fail the toast's line ("Kraken didn't answer · using the
     /// 14:02 price"), and whether they do (the row is red, with Try again).
     pub async fn price_from_line(&self, clock: Clock) -> (String, bool) {
@@ -3259,7 +3259,7 @@ mod tests {
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
         let working = FakePrices::new(166_100_000, vec![]);
-        assert_eq!(wallet.price_from_line(clock).await, ("Kraken · over the internet".into(), false));
+        assert_eq!(wallet.price_from_line(clock).await, ("Kraken · web".into(), false));
         // The first background failure shows.
         assert!(wallet.refresh_prices_from(&failing, Asked::Background, t).await.is_err());
         let first = wallet.price_toast(clock).await.unwrap();
