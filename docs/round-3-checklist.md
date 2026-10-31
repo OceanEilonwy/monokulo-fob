@@ -185,3 +185,36 @@ Codes to make (Receive on another wallet, or a QR generator): `monero:<addr>?tx_
 - [ ] Paid, not saved → Save on an address once paid with a code named "Henry" → New contact named Henry with the address as paid at; on an address paid without a name → as the send address.
 - [ ] Split up → Paid shows no contact button.
 - [ ] Dark mode: outline button and avatar readable, footnote muted, link orange.
+
+## Step 8 · Requests
+
+Receive
+- [ ] Open Receive, then Back without pressing anything → no request in Activity; reopen → the same address as before.
+- [ ] Type 20 (money) and a note, tap Share → sheet "Who is this for?" with its line, contacts by name with "No requests yet" / "2 requests paid, 1 waiting", "New contact" (+ on a sunken circle), outline "Share without a name". Tapping the scrim or Back closes it, nothing made.
+- [ ] Pick Sam → the chip "Sam" (avatar + name) appears over the code, the address and its number change, the system share sheet opens with a `monero:` code for the new address; Activity shows "Request to Sam", "<note> · waiting · <time>", "$20.00 / asked" in grey with the request icon.
+- [ ] Share again without changing anything → shares the same request (no second line in Activity). Change the amount → the code goes back to Receive's own address; Share → a new request on yet another address.
+- [ ] Copy with no one chosen → a "Request" line "No name · … · waiting"; the clipboard holds the request's address.
+- [ ] New address after a request → a number past every request's; never one a request had.
+- [ ] Share → New contact → save "Jo" → back on Receive, amount and note as typed, chip "Jo", share sheet opens at once.
+- [ ] A 40-character name → chip fills the width with an ellipsis; "Share with …" ellipsised on one line.
+- [ ] Tap the chip → the sheet again; Share without a name → chip gone.
+- [ ] Many contacts (10+) → the sheet's list scrolls, "Share without a name" stays visible.
+- [ ] Sam's card → Request → Receive with "Sam" chosen; Back without sharing → nothing made, nothing on Sam's card.
+
+Activity and the request screen
+- [ ] Pay a request's code from another wallet → a separate "From Sam" line, "<note> · not ready · 1 of 10 · <time>" in green; the request's line says "received $…" (in money when asked in money, else XMR). While still in the pool → "From Sam", "<note> · on the way", and the request already "received".
+- [ ] Pay it twice → two "From Sam" lines; the request's received is the sum; no "left to pay" anywhere.
+- [ ] Tap the request line → "Request": big amount asked, "asked of Sam · <note>", "Today 08:30 · 0.12 XMR at the time", Received "$… · … XMR" (or "Waiting"), "Address N" with three-part address and pattern, "Payments to it" (each opens its payment), "Show the code again" → full-screen white code with the same amount and note, brightness up; close returns.
+- [ ] A request with no amount → "Any amount", "for Sam · <note>", right side of its Activity line empty.
+- [ ] Delete request → sheet "Delete this request?" with the board's text naming Sam (no name: shorter text), red Delete, Keep. Keep → nothing changes. Delete → back to where it was opened; gone from Activity and Sam's card; earlier payments still "From Sam".
+- [ ] Pay the deleted request's address again → arrives as "Received" with the note, no name.
+- [ ] Delete Sam (contact) → his requests read "Request" / "No name · …".
+
+Contact card
+- [ ] Sam with requests → "Requests · Sam pays you" and "3 addresses"; rows newest first with pattern, note (or "Request"), "Address 9 · today 08:30", "Received $83.03" green or "Waiting" muted, "asked $80.00"; tap → the request.
+- [ ] No requests → no Requests section.
+- [ ] Something came from Sam → history titled "Payments with Sam", "From Sam" rows ("<note> · Today", +amount green) among the "−" payments to him.
+
+Old wallet and dark mode
+- [ ] An existing wallet from before this step opens; Receive shows the address it showed before; Activity unchanged except notes now lead received lines.
+- [ ] Dark mode: sheet on paper, rows readable, chip on the card colour, request icon and "asked" muted, "Received" green readable, Delete red readable, the full-screen code white.

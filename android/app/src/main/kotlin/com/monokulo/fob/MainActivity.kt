@@ -39,7 +39,9 @@ import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
 import com.monokulo.fob.ui.screens.PaymentScreen
 import com.monokulo.fob.ui.screens.ReceiptScreen
+import com.monokulo.fob.ui.screens.ReceiveDraft
 import com.monokulo.fob.ui.screens.ReceiveScreen
+import com.monokulo.fob.ui.screens.RequestScreen
 import com.monokulo.fob.ui.screens.RestoreChooseScreen
 import com.monokulo.fob.ui.screens.RestoreFoundScreen
 import com.monokulo.fob.ui.screens.RestoreScanScreen
@@ -68,7 +70,16 @@ sealed interface Screen {
     data object RestoreScan : Screen
     data class RestoreFound(val code: String) : Screen
     data object Home : Screen
-    data object Receive : Screen
+    /**
+     * Receive, for [contact] (chosen already, from their card's Request) or
+     * no one yet; [draft] fills the form as it was (back from New contact).
+     */
+    data class Receive(val contact: ULong? = null, val draft: ReceiveDraft? = null) : Screen {
+        /** Share as soon as it's open: a contact was just made for it. Not part of equality, so clearing it doesn't redraw. */
+        var shareOnOpen: Boolean = false
+    }
+    /** A request: what it asked, what came, Show the code again, Delete. */
+    data class Request(val id: ULong) : Screen
     /**
      * Send: the camera under a sheet with the form; [code], from a link, is
      * read as if scanned. With [draft], the form opens filled, as it was
@@ -90,8 +101,12 @@ sealed interface Screen {
     data object Contacts : Screen
     /** A contact's card. */
     data class Contact(val id: ULong) : Screen
-    /** The edit card: contact [id], or a new one; [prefill] fills a new one. */
-    data class ContactEdit(val id: ULong? = null, val prefill: ContactDraft? = null) : Screen
+    /**
+     * The edit card: contact [id], or a new one; [prefill] fills a new one.
+     * [forRequest]: New contact from Receive's sheet, which goes back to
+     * Receive with it chosen.
+     */
+    data class ContactEdit(val id: ULong? = null, val prefill: ContactDraft? = null, val forRequest: Boolean = false) : Screen
     /** Scanning a contact's send address, from its card's Change. */
     data class ContactScan(val id: ULong) : Screen
     data object ShowSeed : Screen
@@ -105,6 +120,8 @@ class Nav(start: Screen) {
     val current get() = stack.last()
     fun go(screen: Screen) { stack.add(screen) }
     fun back(): Boolean = if (stack.size > 1) { stack.removeAt(stack.lastIndex); true } else false
+    /** Puts `screen` in place of the current one. */
+    fun replace(screen: Screen) { stack[stack.lastIndex] = screen }
     /** Starts over at `screen`, forgetting the way here. */
     fun reset(screen: Screen) { stack.clear(); stack.add(screen) }
 }
@@ -212,7 +229,8 @@ class MainActivity : FragmentActivity() {
             Screen.RestoreScan -> RestoreScanScreen(model, nav)
             is Screen.RestoreFound -> RestoreFoundScreen(model, nav, screen.code)
             Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav) else WelcomeScreen(model, nav)
-            Screen.Receive -> ReceiveScreen(model, nav)
+            is Screen.Receive -> ReceiveScreen(model, nav, screen)
+            is Screen.Request -> RequestScreen(model, nav, screen.id)
             is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
             is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
             is Screen.Paid -> PaidScreen(model, nav, screen.prepared, screen.tx)
@@ -223,7 +241,7 @@ class MainActivity : FragmentActivity() {
             Screen.Settings -> SettingsScreen(model, nav)
             Screen.Contacts -> ContactsScreen(model, nav)
             is Screen.Contact -> ContactScreen(model, nav, screen.id)
-            is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill)
+            is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill, screen.forRequest)
             is Screen.ContactScan -> ContactScanScreen(model, nav, screen.id)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)

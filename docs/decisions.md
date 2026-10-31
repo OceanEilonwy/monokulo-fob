@@ -816,3 +816,88 @@ Calls made while building the first version, with why. Newest last.
     contact says what happens to such an address under the send address
     ("Paid at 84Bv9 … 2kLmQ … 99fQ2 from their code: kept with them, not as
     their send address.", `contacts::paid_at_note`).
+
+## Round 3: requests
+
+114. **A request is kept in the wallet file** (`requests::Book`, the
+    state's `requests`, none in older files): an id (never used again), its
+    subaddress and address, the contact it's for (or none), the note
+    (control characters and turning marks out, cut to what a code holds, as
+    Receive's), what it asked (`Asked`: the text as typed, its unit, the
+    XMR it came to then, and the money written out when typed in money; none
+    without an amount), and when it was made. Nothing about it changes
+    after. Deleting marks it with the time instead of removing it, so its
+    address stays known: payments from before keep their name.
+115. **Made on Share or Copy only** (`Wallet::make_request`; decision 2 of
+    the plan): Receive opens on its own address, as before, and its code is
+    that address's until Share or Copy, when the request is made and the
+    code switches to it. Share or Copy again with nothing changed (the same
+    contact, amount, unit and note) uses that request again rather than
+    making another; changing any of them puts Receive's own code back until
+    the next Share or Copy. Copy copies the request's address, as Copy
+    copied the address before. A note typed and then made into a request
+    isn't also kept for Receive's own address.
+116. **One counter hands out subaddresses** (`Wallet::hand_out`):
+    `receive_index` is the highest given to anything, and Receive's own
+    address is kept apart (`receive_own`; in an older file, the last one
+    handed out, as it showed). A request takes the next one, skipping the
+    address splits pay to; Receive's own is never a request's or the
+    split's, and New address takes the next as well, so no address is given
+    twice. A deleted request's address is below the counter, so it's
+    scanned for as long as the wallet is.
+117. **A request shows only what came** (`requests::received`): the sum of
+    every payment to its address, mined or still in the pool (the pool now
+    keeps the subaddress paid), else "Waiting"; never what's left, and it
+    never expires. In the money it asked in when it was asked in money and
+    every payment has a price recorded in that currency ("received
+    $83.03"), else in XMR ("received 0.5 XMR").
+118. **Activity** (Round 5 › "Activity: requests and payments, separate
+    lines"; `activity::by_day` now takes `requests::activity_rows`): each
+    request not deleted is a line among the payments by its time (payments
+    not yet mined stay on top): the request code icon on the sunken disc,
+    "Request to Sam" or "Request", "Concert tickets · received $83.03 ·
+    08:30" or "No name · Bike · waiting · 08:12", and on the right the
+    amount asked, grey, with "asked" (nothing for any amount). A payment
+    in now starts its line with what it was for, Receive's note as well as
+    a request's ("Pizza · 19:05", the status after it in lower case), and
+    is titled "From Sam" while its request is for a contact; its own screen
+    says "Sam · Address 9 · Concert tickets" under From.
+119. **Deleting a request** (asks first, Round 5's words): it leaves
+    Activity and the card; its address still receives, what comes after
+    shows as "Received" with the request's note (what it was for, not who),
+    and what came before still says "From Sam" and stays on Sam's card. A
+    request for a contact since deleted reads "Request" and "No name".
+120. **The request screen** (Round 5 › "A request"): the amount asked large
+    ("Any amount" without one), "asked of Sam · Concert tickets" ("asked,
+    no name", "for Sam" without an amount), "Today 08:30 · 0.4817 XMR at the
+    time" (the XMR only for an amount asked in money, where it's news),
+    Received, the address with its pattern, "Payments to it" as Activity
+    has them but with their day ("Today 08:40 · not ready · 3 of 10"), or
+    "Nothing paid to it yet.", Show the code again (the code as made, from
+    the XMR it came to then, never converted again), and Delete request.
+    Without a name, the confirm drops "and Sam's card" and "shown without a
+    name".
+121. **A contact's card lists their requests** between the send address and
+    Also paid at, only when there's one: "Requests · Sam pays you", "3
+    addresses", each newest first with its pattern, note (else "Request"),
+    "Address 9 · today 08:30" ("yesterday", "21 Oct"), "Received $83.03"
+    in green or "Waiting" muted, and "asked $80.00"; tapping opens it. What
+    came from them joins the payments to them ("From Sam", "Concert tickets
+    · Today", "+0.5" in green), and the section is then "Payments with Sam"
+    rather than "Paid to Sam".
+122. **Share asks who it's for** (Round 5 › "Share asks who it's for"):
+    every contact by name, each with Rust's line ("2 requests paid, 1
+    waiting", "1 request waiting", "No requests yet", `requests::summary`),
+    scrolling when there are many; New contact opens the edit card and,
+    saved, comes back to Receive filled as it was with them chosen, and
+    shares; Share without a name forgets any choice. Chosen, a chip over
+    the code shows their avatar and name (as wide as the name, ellipsised
+    when long) and opens the sheet again, and Share reads "Share with Sam"
+    and shares at once. A contact's Request opens Receive with them chosen;
+    nothing is made until Share or Copy.
+123. **A name in requests' codes** (`uri::payment_uri` takes a name, put in
+    as `recipient_name` after cleaning it as a contact's name): only a
+    request's code would carry it, since what's shared is always a request;
+    none until step 9's profile and "Name in payment requests" fill
+    `Wallet::name_in_requests` (marked), and Receive's line saying so has
+    its spot marked in `Pay.kt`.

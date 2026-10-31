@@ -14,7 +14,7 @@ use crate::{
     amount,
     error::{FobError, Result},
     network::Network,
-    uri,
+    requests, uri,
     wallet::{Activity, Direction},
 };
 
@@ -102,7 +102,7 @@ pub struct Draft {
 
 /// Characters a name or note keeps: no control characters (a line break,
 /// a bell) and none of the marks that turn text round on screen.
-fn shown(c: &char) -> bool {
+pub(crate) fn shown(c: &char) -> bool {
     !c.is_control() && !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
@@ -311,7 +311,7 @@ pub struct Row {
     pub line: String,
 }
 
-fn row(contact: &Contact, line: String) -> Row {
+pub(crate) fn row(contact: &Contact, line: String) -> Row {
     Row {
         id: contact.id,
         name: contact.name.clone(),
@@ -410,15 +410,17 @@ pub struct PaidAt {
     pub line: String,
 }
 
-/// A payment to a contact, on their card.
+/// A payment to a contact, or from them (to a request made for them), on
+/// their card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Paid {
     pub activity: Activity,
-    /// The payment's note, else the shop on its receipt, else "Sent".
+    /// The payment's note, else the shop on its receipt, else "Sent"; "From
+    /// Sam" for one from them.
     pub title: String,
-    /// "Today", "27 Oct"
+    /// "Today", "27 Oct"; "Concert tickets · Today" for one from them.
     pub when: String,
-    /// "−0.1204"
+    /// "−0.1204", "+0.5"
     pub amount: String,
     /// The receipt's total or its worth when sent: "$20.00".
     pub fiat: Option<String>,
@@ -435,22 +437,27 @@ pub struct Card {
     pub send_short: Option<String>,
     /// "Change", or "Add" without one.
     pub send_button: String,
+    /// "Requests · Sam pays you", between the send address and Also paid at.
+    pub requests_title: String,
+    /// "3 addresses", beside it.
+    pub requests_note: String,
+    /// Their requests, newest first; the section shows only with one.
+    pub requests: Vec<requests::CardLine>,
     pub also_paid_at: Vec<PaidAt>,
     /// "codes named Sam", beside "Also paid at".
     pub also_note: String,
-    /// "Paid to Sam"
+    /// "Paid to Sam", or "Payments with Sam" once something came from them.
     pub paid_title: String,
     pub paid: Vec<Paid>,
     /// "Nothing paid to Sam yet.", when nothing was.
     pub paid_empty: Option<String>,
-    // Step 8 adds the requests Sam pays you ("Requests · Sam pays you")
-    // here, between the send address and Also paid at.
 }
 
-/// `contact`'s card, from the payments in `rows`.
-pub fn card(contact: &Contact, rows: &[Activity], clock: Clock) -> Card {
+/// `contact`'s card, from their requests and the payments in `rows`.
+pub fn card(contact: &Contact, requests: &requests::Book, rows: &[Activity], clock: Clock) -> Card {
     let name = &contact.name;
     let paid = paid_to(contact, rows);
+    let theirs = requests::on_card(contact.id, requests, rows, clock);
     let also_paid_at = contact
         .also_paid_at
         .iter()
@@ -464,16 +471,30 @@ pub fn card(contact: &Contact, rows: &[Activity], clock: Clock) -> Card {
             PaidAt { address: address.clone(), short: three_part(address), line: format!("Not their send address · {times}") }
         })
         .collect();
-    let paid_rows: Vec<Paid> = paid
+    // Payments to their requests: from them.
+    let mut history: Vec<&Activity> =
+        paid.iter().copied().chain(rows.iter().filter(|a| a.direction == Direction::In && a.contact_id == Some(contact.id))).collect();
+    history.sort_by_key(|a| std::cmp::Reverse(a.time));
+    let from_them = history.iter().any(|a| a.direction == Direction::In);
+    let paid_rows: Vec<Paid> = history
         .iter()
-        .map(|p| Paid {
-            activity: (*p).clone(),
-            title: p.note.clone().or_else(|| p.receipt.as_ref().map(|r| r.merchant.clone())).unwrap_or_else(|| "Sent".into()),
-            when: activity::day_name(p.time, clock),
-            amount: format!("−{}", amount::format_short(p.amount)),
-            fiat: match (&p.receipt, &p.price) {
-                (None, None) => None,
-                _ => Some(activity::paid_amount(p)),
+        .map(|p| match p.direction {
+            Direction::In => Paid {
+                activity: (*p).clone(),
+                title: format!("From {name}"),
+                when: [p.note.clone(), Some(activity::day_name(p.time, clock))].into_iter().flatten().collect::<Vec<_>>().join(" · "),
+                amount: format!("+{}", amount::format_short(p.amount)),
+                fiat: p.price.as_ref().map(|_| activity::paid_amount(p)),
+            },
+            Direction::Out => Paid {
+                activity: (*p).clone(),
+                title: p.note.clone().or_else(|| p.receipt.as_ref().map(|r| r.merchant.clone())).unwrap_or_else(|| "Sent".into()),
+                when: activity::day_name(p.time, clock),
+                amount: format!("−{}", amount::format_short(p.amount)),
+                fiat: match (&p.receipt, &p.price) {
+                    (None, None) => None,
+                    _ => Some(activity::paid_amount(p)),
+                },
             },
         })
         .collect();
@@ -482,9 +503,12 @@ pub fn card(contact: &Contact, rows: &[Activity], clock: Clock) -> Card {
         send_label: if contact.send_address.is_some() { "Send address · you pay here" } else { "No send address yet" }.into(),
         send_short: contact.send_address.as_deref().map(three_part),
         send_button: if contact.send_address.is_some() { "Change" } else { "Add" }.into(),
+        requests_title: format!("Requests · {name} pays you"),
+        requests_note: requests::addresses_note(theirs.len()),
+        requests: theirs,
         also_paid_at,
         also_note: format!("codes named {name}"),
-        paid_title: format!("Paid to {name}"),
+        paid_title: if from_them { format!("Payments with {name}") } else { format!("Paid to {name}") },
         paid_empty: paid_rows.is_empty().then(|| format!("Nothing paid to {name} yet.")),
         paid: paid_rows,
         contact: contact.clone(),
@@ -689,6 +713,7 @@ mod tests {
             note: None,
             split: None,
             contact: None,
+            contact_id: None,
         }
     }
 
@@ -884,7 +909,7 @@ mod tests {
         lunch.note = Some("Lunch".into());
         lunch.price = Some(crate::price::Record { currency: "USD".into(), price: 166_112_956, provider: "Kraken".into(), at: NOW, daily: false });
         let rows = vec![paid(&code, 98_000_000_000, NOW - 6 * DAY), lunch, paid(&address(3), 1, NOW)];
-        let shown = card(&sam, &rows, clock());
+        let shown = card(&sam, &requests::Book::default(), &rows, clock());
         assert_eq!(shown.send_short.as_deref(), Some(three_part(&send).as_str()));
         assert_eq!((shown.send_label.as_str(), shown.send_button.as_str()), ("Send address · you pay here", "Change"));
         assert_eq!(shown.also_paid_at[0].line, "Not their send address · paid once, 25 Oct");
@@ -893,7 +918,8 @@ mod tests {
         let history: Vec<_> = shown.paid.iter().map(|p| (p.title.as_str(), p.when.as_str(), p.amount.as_str(), p.fiat.as_deref())).collect();
         assert_eq!(history, [("Lunch", "27 Oct", "−0.1204", Some("$20.00")), ("Sent", "25 Oct", "−0.098", None)]);
         assert_eq!(shown.paid_empty, None);
-        let none = card(&Contact { send_address: None, also_paid_at: vec![], ..sam.clone() }, &rows, clock());
+        assert!(shown.requests.is_empty());
+        let none = card(&Contact { send_address: None, also_paid_at: vec![], ..sam.clone() }, &requests::Book::default(), &rows, clock());
         assert_eq!(
             (none.send_label.as_str(), none.send_button.as_str(), none.paid_empty.as_deref()),
             ("No send address yet", "Add", Some("Nothing paid to Sam yet."))
@@ -901,6 +927,39 @@ mod tests {
         // Deleted, the payments are still there and no one's.
         book.delete(sam.id);
         assert_eq!(unsaved(&book, &rows, clock()).len(), 3);
+    }
+
+    #[test]
+    fn a_card_lists_their_requests_and_what_came_from_them() {
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let mut book = Book::default();
+        let send = address(1);
+        let sam = book.add(Network::Stagenet, Draft { send_address: Some(send.clone()), ..draft("Sam") }, NOW).unwrap();
+        let mut reqs = requests::Book::default();
+        let draft = |subaddress: u32, contact: Option<u64>, note: &str| requests::Draft {
+            subaddress,
+            address: keys.address(subaddress),
+            contact,
+            note: Some(note.into()),
+            asked: None,
+        };
+        reqs.add(draft(9, Some(sam.id), "Concert tickets"), NOW - 2 * DAY).unwrap();
+        reqs.add(draft(10, None, "Not Sam's"), NOW).unwrap();
+        let mut from_sam = paid("in", 500_000_000_000, NOW - DAY);
+        from_sam.direction = Direction::In;
+        from_sam.to = None;
+        from_sam.subaddress = Some(9);
+        from_sam.note = Some("Concert tickets".into());
+        from_sam.contact_id = Some(sam.id);
+        let rows = vec![from_sam, paid(&send, 120_400_000_000, NOW - 3 * DAY)];
+        let shown = card(&sam, &reqs, &rows, clock());
+        assert_eq!((shown.requests_title.as_str(), shown.requests_note.as_str()), ("Requests · Sam pays you", "1 address"));
+        assert_eq!(shown.requests.iter().map(|r| (r.note.as_str(), r.state.as_str())).collect::<Vec<_>>(), [("Concert tickets", "Received 0.5 XMR")]);
+        assert_eq!(shown.paid_title, "Payments with Sam");
+        let history: Vec<_> = shown.paid.iter().map(|p| (p.title.as_str(), p.when.as_str(), p.amount.as_str())).collect();
+        assert_eq!(history, [("From Sam", "Concert tickets · Yesterday", "+0.5"), ("Sent", "28 Oct", "−0.1204")]);
+        // What came from them isn't "paid to" them anywhere else.
+        assert_eq!(list(&book, &rows, "", clock())[0].line, "Paid 28 Oct");
     }
 
     #[test]

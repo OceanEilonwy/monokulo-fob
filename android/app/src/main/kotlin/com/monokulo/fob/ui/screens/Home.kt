@@ -172,7 +172,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
 
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlineButton("Receive", { nav.go(Screen.Receive) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
+                OutlineButton("Receive", { nav.go(Screen.Receive()) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
                 if (canSpend) PrimaryButton("Send", { nav.go(Screen.Send()) }, Modifier.weight(1f), height = 52.dp, leading = Icons.up)
             }
             if (!canSpend) Text("This wallet only watches: it can see payments but not send them.", color = Fob.muted, fontSize = 13.sp)
@@ -193,7 +193,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             activity.forEach { day ->
                 DayLabel(day.label)
                 day.rows.forEach { row ->
-                    PaymentRow(row) { nav.go(if (row.activity.receipt != null) Screen.Receipt(row.activity) else Screen.Payment(row.activity)) }
+                    PaymentRow(row) { open(nav, row) }
                 }
             }
         }
@@ -304,21 +304,41 @@ private fun DayLabel(text: String) {
     )
 }
 
-/** One payment: what Rust wrote for it, drawn. */
+/** Opens an Activity row: a payment's screen (its receipt, if it had one), or a request's. */
+fun open(nav: Nav, row: ActivityRow) {
+    val a = row.activity
+    val request = row.request
+    when {
+        a != null -> nav.go(if (a.receipt != null) Screen.Receipt(a) else Screen.Payment(a))
+        request != null -> nav.go(Screen.Request(request))
+    }
+}
+
+/**
+ * One payment, or a request (Round 5 › "Activity: requests and payments,
+ * separate lines": the code icon, the amount asked in grey): what Rust
+ * wrote for it, drawn.
+ */
 @Composable
 fun PaymentRow(row: ActivityRow, onClick: () -> Unit) {
-    val outgoing = row.activity.outgoing
+    val a = row.activity
+    val outgoing = a?.outgoing == true
+    val (icon, tint) = when {
+        a == null -> Icons.request to Fob.muted
+        outgoing -> Icons.up to Fob.ink
+        else -> Icons.down to Fob.green
+    }
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        IconBadge(if (outgoing) Icons.up else Icons.down, if (outgoing) Fob.ink else Fob.green, size = 28.dp, receipt = row.activity.receipt != null)
+        IconBadge(icon, tint, size = 28.dp, receipt = a?.receipt != null)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(row.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(row.line, color = Fob.muted, fontSize = 12.sp)
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            Text(row.amountText, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (outgoing) Fob.ink else Fob.green)
+            if (row.amountText.isNotEmpty()) Text(row.amountText, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (a == null) Fob.muted else tint)
             row.fiatText?.let { Text(it, color = Fob.muted, fontSize = 12.sp) }
         }
     }

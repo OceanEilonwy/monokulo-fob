@@ -17,8 +17,10 @@ import uniffi.fob.ContactCard
 import uniffi.fob.ContactRow
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
+import uniffi.fob.MadeRequest
 import uniffi.fob.NotReady
 import uniffi.fob.PaidBefore
+import uniffi.fob.RequestDetail
 import uniffi.fob.PaymentDetail
 import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
@@ -335,6 +337,33 @@ class WalletModel(private val app: Application) {
         refresh()
         return result
     }
+
+    /**
+     * Makes a request (Share or Copy on Receive, never just opening it): a
+     * new address for [contact] or no one, asking [amount] (in money when
+     * [inFiat]) with [note]. Throws what Rust refused. Activity shows it.
+     */
+    suspend fun makeRequest(contact: ULong?, amount: String, inFiat: Boolean, note: String): MadeRequest {
+        val made = requireNotNull(_wallet.value).makeRequest(contact, amount.ifBlank { null }, inFiat, note.ifBlank { null })
+        refresh()
+        return made
+    }
+
+    /** A request's own screen, every word from Rust; null once it's deleted. */
+    suspend fun request(id: ULong): RequestDetail? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.request(id, seconds, offset, hours24)
+    }
+
+    /** Deletes a request; its address still receives. Throws what Rust refused. */
+    suspend fun deleteRequest(id: ULong) {
+        requireNotNull(_wallet.value).deleteRequest(id)
+        refresh()
+    }
+
+    /** Share's sheet: every contact, each with its requests in a line. */
+    suspend fun requestContacts(): List<ContactRow> = _wallet.value?.requestContacts() ?: emptyList()
 
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */
     suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)

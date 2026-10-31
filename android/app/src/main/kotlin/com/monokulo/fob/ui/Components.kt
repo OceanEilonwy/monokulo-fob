@@ -74,6 +74,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -114,6 +115,8 @@ object Icons {
     /** A person with a plus: Save as a contact. */
     const val personPlus = "M6.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M3.5 19.5c0.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5 M19 8v6 M16 11h6"
     /** Two coins, one behind the other (drawn at stroke 1.8). */
+    /** A payment code, drawn loose: a request in Activity. */
+    const val request = "M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h2 M18 14h2 M14 18h2 M18 18h2"
     const val coins = "M2.5 13a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z M6.5 13a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z M13.2 4.3A6.5 6.5 0 1 1 17.6 16.4"
     /** One coin splitting into three (drawn at stroke 1.8). */
     const val split = "M2.5 12a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0 -9 0Z M16.8 5a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 12a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 19a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M11.5 12h5.3 M10.6 9.6l6.5-3.6 M10.6 14.4l6.5 3.6"
@@ -204,7 +207,7 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
             StrokeIcon(leading, tint = Fob.onOrange, width = iconWidth)
             Spacer(Modifier.width(10.dp))
         }
-        Text(text, color = if (enabled) Fob.onOrange else Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        Text(text, color = if (enabled) Fob.onOrange else Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
