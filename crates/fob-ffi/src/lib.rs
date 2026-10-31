@@ -1211,14 +1211,14 @@ impl FobWallet {
     /// however briefly its code shows, with its code.
     pub async fn share_profile(&self) -> Result<ProfileShare> {
         let (share, code) = self.inner.share_profile().await?;
-        Ok(ProfileShare { id: share.id, address: share.address, code })
+        Ok(ProfileShare { id: share.id, address: share.address, code, can_touch: true })
     }
 
     /// A share's code again, from Your shares or Activity; none for no such
     /// share.
     pub async fn share_code(&self, id: u64) -> Option<ProfileShare> {
-        let (share, code) = self.inner.share_code(id).await?;
-        Some(ProfileShare { id: share.id, address: share.address, code })
+        let (share, code, can_touch) = self.inner.share_code(id).await?;
+        Some(ProfileShare { id: share.id, address: share.address, code, can_touch })
     }
 
     /// Copy link or Share pressed on a share's screen.
@@ -1235,8 +1235,8 @@ impl FobWallet {
     /// The swap is over, done or the screen closed: kept as a share when
     /// anything went out; their profile when it came (once).
     pub async fn end_swap(&self, swap: Arc<TouchSwap>) -> Result<Option<Swapped>> {
-        Ok(self.inner.end_swap(&swap.inner).await?.map(|(share, scanned)| {
-            let (title, line) = profile::swapped_words(&scanned.code.name);
+        Ok(self.inner.end_swap(&swap.inner).await?.map(|(share, scanned, sure)| {
+            let (title, line) = profile::swapped_words(&scanned.code.name, sure);
             let text = uri::profile_uri(&scanned.code.address, &scanned.code.name, scanned.code.photo.as_deref());
             Swapped { share: share.id, title, line, text, profile: scanned.into() }
         }))
@@ -1334,7 +1334,7 @@ impl From<profile::ShareKind> for ShareKind {
 /// back; the protocol is all here.
 #[derive(uniffi::Object)]
 pub struct TouchSwap {
-    inner: fob_core::swap::Session,
+    inner: Arc<fob_core::swap::Session>,
 }
 
 /// What the reader sends next.
@@ -1419,6 +1419,9 @@ pub struct ProfileShare {
     pub address: String,
     /// `monero:<address>?recipient_name=…&recipient_avatar=…`
     pub code: String,
+    /// Touch phones still swaps on it: the share Share my profile just
+    /// made, only shown so far. A share opened again never does.
+    pub can_touch: bool,
 }
 
 /// A share on Your profile.

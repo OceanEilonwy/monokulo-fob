@@ -222,7 +222,7 @@ fun ProfileScreen(model: WalletModel, nav: Nav) {
                 error = null
                 scope.launch {
                     // Kept as a share now, however briefly its code shows.
-                    runCatching { model.shareProfile() }.onSuccess { nav.go(Screen.ProfileShare(it.id)) }.onFailure { error = it.reason() }
+                    runCatching { model.shareProfile() }.onSuccess { nav.go(Screen.ProfileShare(it.id, fresh = true)) }.onFailure { error = it.reason() }
                     busy = false
                 }
             }, enabled = !busy, leading = Icons.request)
@@ -281,13 +281,16 @@ private fun ShareRow(s: ShareLine, onClick: () -> Unit) {
  * Share my profile (Round 6 › "Share my profile: code, or touch phones"):
  * the share's code, and while it's open with NFC on, touch phones: this
  * phone answers as a card and now and then reads, so another Fob on this
- * screen held to it swaps profiles, each on a new address of its own. The
- * strip opens Touch phones, which says how; either way a swap ends on
- * Swapped, with a buzz.
+ * screen held to it swaps profiles, on this share's address. The strip
+ * opens Touch phones, which says how; either way a swap ends on Swapped,
+ * with a buzz. Only a share just made ([fresh]) that Rust says can still
+ * swap offers it: one opened again from Your shares or Activity shows its
+ * code alone, so its address goes to no second person.
  */
 @Composable
-fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
+fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong, fresh: Boolean) {
     val wallet by model.wallet.collectAsState()
+    val scope = rememberCoroutineScope()
     val view = LocalView.current
     var share by remember { mutableStateOf<ProfileShare?>(null) }
     var profile by remember { mutableStateOf<Profile?>(null) }
@@ -298,7 +301,8 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
         share = w.shareCode(id) ?: run { nav.back(); return@LaunchedEffect }
         profile = w.profile()
     }
-    val nfc = rememberTouchPhones(model, id, running = swapped == null) { done ->
+    val touch = fresh && share?.canTouch == true
+    val nfc = rememberTouchPhones(model, id, allowed = touch, running = swapped == null) { done ->
         swapped = done
         view.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.LONG_PRESS)
     }
@@ -306,20 +310,24 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
     val done = swapped
     when {
         done != null -> SwappedView(model, nav, profile, done)
-        touching -> TouchView(profile, onBack = { touching = false })
-        else -> ShareCode(model, nav, id, share, profile, nfc, onTouch = { touching = true })
+        touching && touch -> TouchView(profile, onBack = { touching = false })
+        else -> ShareCode(
+            model, nav, id, share, profile, if (touch) nfc else Nfc.NONE, onTouch = { touching = true },
+            // A link out ends the swap (Rust): the strip goes.
+            onWentOut = { scope.launch { wallet?.shareCode(id)?.let { share = it } } },
+        )
     }
 }
 
 /**
  * Touch phones while Share my profile is open: NFC as it is now (looked at
- * again on coming back, from its settings say), the swap once it's on,
- * answering and reading only while the screen is in front and [running],
- * and [onSwapped] once theirs came. Leaving ends the swap, kept as a share
- * when ours went out.
+ * again on coming back, from its settings say), the swap once it's on and
+ * [allowed], answering and reading only while the screen is in front and
+ * [running], and [onSwapped] once theirs came. Leaving ends the swap, kept
+ * as a share when ours went out.
  */
 @Composable
-private fun rememberTouchPhones(model: WalletModel, id: ULong, running: Boolean, onSwapped: (Swapped) -> Unit): Nfc {
+private fun rememberTouchPhones(model: WalletModel, id: ULong, allowed: Boolean, running: Boolean, onSwapped: (Swapped) -> Unit): Nfc {
     val context = LocalContext.current
     val activity = LocalActivity.current
     val scope = rememberCoroutineScope()
@@ -331,10 +339,10 @@ private fun rememberTouchPhones(model: WalletModel, id: ULong, running: Boolean,
         onPauseOrDispose {}
     }
     // Made once NFC is on, on the share's own address.
-    LaunchedEffect(nfc) { if (nfc == Nfc.ON && swap == null) swap = runCatching { model.startSwap(id) }.getOrNull() }
+    LaunchedEffect(nfc, allowed) { if (nfc == Nfc.ON && allowed && swap == null) swap = runCatching { model.startSwap(id) }.getOrNull() }
     val s = swap
     DisposableEffect(s) { onDispose { if (s != null) model.endSwapLater(s) } }
-    if (s != null && activity != null && running) {
+    if (s != null && activity != null && running && allowed) {
         LifecycleResumeEffect(s) {
             val runner = SwapRunner(activity, s, scope)
             runner.start()
@@ -484,7 +492,7 @@ private fun SwappedView(model: WalletModel, nav: Nav, profile: Profile?, done: S
  * each kept as how the share went out. Close goes back.
  */
 @Composable
-private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileShare?, profile: Profile?, nfc: Nfc, onTouch: () -> Unit) {
+private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileShare?, profile: Profile?, nfc: Nfc, onTouch: () -> Unit, onWentOut: () -> Unit) {
     val wallet by model.wallet.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -497,7 +505,7 @@ private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileSha
 
     /** Kept as how the share went out: Your shares says "Link copied" or "Link shared". */
     fun wentOut(kind: ShareKind) {
-        scope.launch { runCatching { wallet?.shareWentOut(id, kind) } }
+        scope.launch { runCatching { wallet?.shareWentOut(id, kind) }; onWentOut() }
     }
 
     Column(Modifier.fillMaxSize().background(Fob.qrLight).safeDrawingPadding()) {
