@@ -1742,3 +1742,85 @@ Calls made while building the first version, with why. Newest last.
     explanatory paragraph.
 232. **Addresses show host and port only**: no scheme, and never a login
     from `user:pass@` in the URL.
+
+## Round 7: the emulator pass
+
+233. **Price from's row names the Ask over row**: Settings reads "Kraken
+    · web" or "CoinGecko · Tor", the provider and the name of the row
+    picked under Ask over (lower-case "web" after the dot, "Tor" as a
+    name), from Rust (`Transport::name`, which the Ask over rows use too).
+    "over the internet" stays only inside sentences ("doesn't answer over
+    Tor").
+234. **Why syncing fails, in the checks' words**: the sync card's red line
+    (and the catching-up notification) was the transport's debug text
+    (`InterfaceError("error sending request: … dns error …")`). Rust now
+    says it as the Node checks would: "Address not found" (which is also
+    what an offline phone gets), "Refused to connect", "Wants a login",
+    "Couldn't connect"; a timeout is "Stopped answering", since syncing's
+    limits (15 s to connect, 30 s quiet) aren't the checks' 5 s; blocks
+    that don't scan "Sent blocks Fob can't read". Other failures (saving
+    the wallet) keep their own words, capitalised.
+235. **Settings' Node line follows syncing** (decision 10's board note,
+    decision 230): while syncing fails the line is "Can't reach node ·
+    host:port", exactly when Home's chip says so, over an earlier check's
+    verdict and over having synced before (the old rule hid the failure
+    once a wallet had synced). When syncing works again the last check's
+    verdict (or "Working") is back. Settings redraws the line as syncing
+    starts or stops failing. The Node screen isn't made to re-check by
+    itself: it checks the node in use every time it opens (decision 229),
+    so its verdict is never older than the visit; Fob still doesn't run the
+    full checks on every sync, which would cost the node a hundred blocks
+    each time.
+236. **Leaving Fob closes Backup and keys**: when the activity stops (Home
+    button, another app, the screen off), every Backup and keys screen on
+    top of the stack (the hub, Keys, Seed phrase, Wallet code) goes, so
+    coming back shows where they were opened from (Settings, or Home for
+    the reminder) and opening them asks for the phone's lock again. A
+    configuration change (turning, font size) doesn't count, and Recents
+    alone (a pause) doesn't either. The phone's own PIN screen stops Fob
+    too, but nothing locked is open yet then.
+237. **Home's reminder is behind the same lock**: it opens the seed phrase
+    only after the phone's lock, the prompt titled "Backup and keys" as
+    from Settings. Both go through one `openLocked` in the activity, which
+    asks once for a double tap and still opens the screen when the
+    activity is made again under the prompt (font size).
+238. **monerod's own certificates work once accepted**: monerod's
+    self-made TLS certificate is version 1 with no subject, which webpki
+    refuses to read at all, so ticking "Accept self-signed certificates"
+    still failed with "couldn't connect" (found on
+    https://node.monerodevs.org:38089). For a node with the mark, the
+    handshake's signature is now checked against the certificate's public
+    key read by Fob's own small DER reader (TLS 1.3 through rustls's raw
+    key check, TLS 1.2 through the provider's algorithms matched to the
+    key's), so the link is still proven to whoever holds that key. Nodes
+    without the mark keep webpki's full check.
+239. **Photos keep without Android 16's colour profile**: Android 16's
+    WebP encoder puts every image under an extended header with an sRGB
+    `ICCP` chunk (about 450 bytes), which Fob refused, so every picked or
+    taken photo said "couldn't be made small enough". Rust
+    (`contact_photo_kept`) now takes the profile out, and the extended
+    header when it then says nothing (no alpha), and hands back the bytes
+    it keeps; the app's ladder stops at the first it does. Fob's photos
+    are sRGB, so nothing changes in how they look. (Decision 149's "busy
+    photo that didn't fit" on this emulator was probably this.)
+240. **The price toast steps aside for the keyboard**: above the keyboard
+    it covered the field being typed in (Receive's amount). While the
+    keyboard is up the toast hides and comes back when it goes; the
+    field's own line still says how old the price is ("price from 14:02",
+    "No USD price now · type the amount in XMR").
+241. **The toast's cog keeps forms**: the cog opens Price from over any
+    screen, which dropped Send's and Receive's typed forms. Those screens
+    now put their form on the back stack as a draft just before (as
+    Confirm and New contact already did), so Back finds Send pulled up and
+    filled, and Receive's amount and note.
+242. **"Trying again…" shows for at least 0.8 s**: offline, Retry failed
+    within a frame, so it looked as if nothing happened.
+243. **The sync card at a big font**: it scrolls within the room between
+    the chip and the gesture bar, rather than being pushed up over the
+    chip with Node settings off the screen, and each value keeps its
+    longest word whole ("2,240,749", "Today,") while its label wraps.
+    Node's checks share that row (`LabelAndValue`), and the node's address
+    on the Working card shows whole, wrapping, rather than cut short. On
+    Keys a badge goes under its title when both don't fit.
+244. **Money's value sits at the row's end**, by the chevron as Theme's;
+    a long currency name wraps within about 150 dp.
