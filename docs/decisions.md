@@ -449,3 +449,20 @@ Calls made while building the first version, with why. Newest last.
     value now under it (not for a receipt, whose total already leads), and
     the fee and total each with theirs, at the current price; nothing when
     there is none.
+
+## Onion addresses
+
+71. **No `.onion` host is ever looked up.** Fob has no Tor transport, so a
+    node or ZMQ publisher on an onion service would have been resolved
+    through the phone's DNS, telling the resolver which onion service the
+    wallet uses (step 2's finding). Rust now refuses one with "Fob can't
+    reach .onion nodes yet" (`node::is_onion`: a host ending `.onion`, any
+    case, with or without the root's dot): choosing it as the node
+    (`set_node`, an Invalid error, before asking it anything), testing its
+    speed, `on_network`, building a node transport at all (so an onion node
+    already in a wallet file fails syncing with that message), a ZMQ
+    address (`zmq::endpoint`), and connecting a ZMQ subscriber (`zmtp`,
+    for an address saved before). The price transport refuses an onion
+    price source the same way ("Fob can't reach .onion price sources yet").
+    Each is tested without the network. When a Tor transport exists, these
+    checks are where it plugs in.

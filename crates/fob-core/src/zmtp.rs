@@ -71,6 +71,11 @@ pub(crate) async fn connect(endpoint: &str, topics: &[&str]) -> io::Result<Subsc
     let Some(address) = endpoint.strip_prefix("tcp://") else {
         return Err(invalid(format!("{endpoint} is not tcp://")));
     };
+    // Never looked up: there's no Tor to reach an onion service through.
+    let host = address.rsplit_once(':').map_or(address, |(host, _)| host);
+    if crate::node::is_onion(host.trim_start_matches('[').trim_end_matches(']')) {
+        return Err(invalid(crate::node::NO_ONION));
+    }
     let stream = tokio::net::TcpStream::connect(address).await?;
     // Subscriptions are a few small writes, each worth sending at once.
     stream.set_nodelay(true)?;

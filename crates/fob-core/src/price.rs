@@ -124,8 +124,9 @@ async fn web(url: &str) -> Result<Vec<u8>> {
     if parsed.scheme() != "https" {
         return Err(err("prices are only asked over https".into()));
     }
+    // An onion price source would be looked up through the phone's DNS.
     if crate::node::is_onion(parsed.host_str().unwrap_or("")) {
-        return Err(err(crate::node::NO_ONION.into()));
+        return Err(err("Fob can't reach .onion price sources yet".into()));
     }
     let client = CLIENT.as_ref().map_err(|e| err(e.clone()))?;
     let mut response = client.get(parsed).send().await.map_err(|e| err(format!("couldn't reach the price source: {}", e.without_url())))?;

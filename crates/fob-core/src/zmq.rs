@@ -89,6 +89,9 @@ pub fn endpoint(node: &str, typed: &str) -> Result<String, String> {
         return Err("only a host and port: tcp://host:18083".into());
     }
     let host = url.host_str().filter(|h| !h.is_empty()).ok_or("add the host: tcp://host:18083")?.to_ascii_lowercase();
+    if crate::node::is_onion(&host) {
+        return Err(crate::node::NO_ONION.into());
+    }
     let port = url.port().filter(|p| *p != 0).ok_or("add the port: tcp://host:18083")?;
     let node_host = node_host(node).ok_or("set a node first")?;
     if host != node_host {
@@ -211,6 +214,17 @@ mod tests {
             let error = endpoint(node, typed).unwrap_err();
             assert!(error.contains(says), "{typed}: {error}");
         }
+    }
+
+    /// Even with an onion node already in an older wallet file, its
+    /// publisher is refused when set and never looked up when connecting.
+    #[tokio::test]
+    async fn onion_publishers_are_refused() {
+        let onion = "http://xmrnode.onion:18081";
+        assert_eq!(endpoint(onion, "tcp://xmrnode.onion:18083"), Err(crate::node::NO_ONION.into()));
+        assert_eq!(endpoint(onion, "XMRNODE.ONION.:18083"), Err(crate::node::NO_ONION.into()));
+        let refused = crate::zmtp::connect("tcp://xmrnode.onion:18083", &[CHAIN_TOPIC]).await.err().expect("refused");
+        assert_eq!((refused.kind(), refused.to_string()), (std::io::ErrorKind::InvalidData, crate::node::NO_ONION.to_owned()));
     }
 
     #[test]

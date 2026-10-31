@@ -589,6 +589,8 @@ impl Wallet {
     /// Talks to another node from now on.
     pub async fn set_node(&self, url: &str) -> Result<()> {
         let url = crate::node::normalize(url);
+        // An onion node can't be reached without Tor, and isn't looked up.
+        crate::node::reachable(&url).map_err(FobError::BadEndpoint)?;
         // A node on the other network would never find this wallet's money.
         crate::node::on_network(self.network(), &url).await.map_err(FobError::Node)?;
         let zmq_dropped = {
@@ -2186,6 +2188,24 @@ mod tests {
         store::save(&path, &[1; 32], &file).unwrap();
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(old.price_settings().await, price::Settings::default());
+    }
+
+    /// Fob has no Tor: an onion node is refused when chosen, and one
+    /// already in a wallet file is never looked up or connected to.
+    #[tokio::test]
+    async fn an_onion_node_is_refused_and_never_reached() {
+        let wallet = Wallet::create(&dir("onion"), [1; 32], Network::Stagenet).unwrap();
+        let before = wallet.node().await;
+        let refused = wallet.set_node("xmrnode.onion:38081").await.unwrap_err();
+        assert!(matches!(refused, FobError::BadEndpoint(_)));
+        assert_eq!(refused.to_string(), "Fob can't reach .onion nodes yet");
+        assert_eq!(wallet.node().await, before, "unchanged");
+        // An older file with one: syncing fails on it, saying why.
+        wallet.inner.state.lock().await.node = "http://xmrnode.onion:38081".into();
+        let failed = wallet.sync_step().await.unwrap_err().to_string();
+        assert!(failed.contains("Fob can't reach .onion nodes yet"), "{failed}");
+        // And instant updates can't point at it either.
+        assert!(matches!(wallet.set_zmq(true, Some("tcp://xmrnode.onion:38083")).await, Err(FobError::BadEndpoint(e)) if e == crate::node::NO_ONION));
     }
 
     #[tokio::test]
