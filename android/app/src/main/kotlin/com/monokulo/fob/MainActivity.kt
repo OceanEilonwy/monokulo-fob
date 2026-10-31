@@ -43,6 +43,7 @@ import com.monokulo.fob.ui.screens.RestoreViewOnlyScreen
 import com.monokulo.fob.ui.screens.ScanPayScreen
 import com.monokulo.fob.ui.screens.SendScreen
 import com.monokulo.fob.ui.screens.SettingsScreen
+import com.monokulo.fob.ui.screens.SplitScreen
 import com.monokulo.fob.ui.screens.WalletCodeScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
 import com.monokulo.fob.ui.screens.ZmqScreen
@@ -71,6 +72,8 @@ sealed interface Screen {
     data class Receipt(val activity: Activity) : Screen
     /** A payment without a receipt. */
     data class Payment(val activity: Activity) : Screen
+    /** Split up: what's ready to spend paid back to this wallet as pieces. */
+    data object Split : Screen
     data object Settings : Screen
     data object ShowSeed : Screen
     data object ShowWalletCode : Screen
@@ -197,6 +200,7 @@ class MainActivity : FragmentActivity() {
             is Screen.Paid -> PaidScreen(nav, screen.prepared)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
+            Screen.Split -> SplitScreen(model, nav)
             Screen.Settings -> SettingsScreen(model, nav)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)

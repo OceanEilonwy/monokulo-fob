@@ -68,6 +68,7 @@ import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.ProgressBar
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
+import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.display
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -153,7 +154,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 }
             }
             balance?.readyText?.let { Text(it, color = Fob.muted, fontSize = 15.sp) }
-            notReady?.let { NotReadyCard(it) }
+            notReady?.let { NotReadyCard(it, onSplit = if (canSpend) ({ nav.go(Screen.Split) }) else null) }
             val s = status
             if (s != null && !s.synced && s.tip > 0u) {
                 Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -177,6 +178,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 10.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Activity", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 if (!synced && activity.isNotEmpty()) Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp)
+                if (canSpend) TextButton("Split up", { nav.go(Screen.Split) })
             }
             if (activity.isEmpty()) {
                 Text(
@@ -199,7 +201,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
  * per piece with its confirmations in a ring. Rust wrote every word.
  */
 @Composable
-private fun NotReadyCard(n: NotReady) {
+private fun NotReadyCard(n: NotReady, onSplit: (() -> Unit)?) {
     var open by rememberSaveable { mutableStateOf(false) }
     val turn by animateFloatAsState(if (open) -90f else 90f, label = "chevron")
     val state = if (open) "Expanded" else "Collapsed"
@@ -228,6 +230,13 @@ private fun NotReadyCard(n: NotReady) {
             Column {
                 Divider()
                 Column(Modifier.padding(vertical = 6.dp)) { n.pieces.forEach { PieceRow(it) } }
+                if (onSplit != null) {
+                    Text(
+                        "Split up your balance", color = Fob.orangeText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 8.dp, bottom = 8.dp).clip(RoundedCornerShape(10.dp))
+                            .clickable(role = Role.Button, onClick = onSplit).padding(horizontal = 8.dp, vertical = 10.dp),
+                    )
+                }
             }
         }
     }

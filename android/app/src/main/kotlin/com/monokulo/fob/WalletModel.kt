@@ -271,6 +271,9 @@ class WalletModel(private val app: Application) {
     suspend fun prepare(to: String, amount: String, receiptJson: String?, note: String?): Prepared =
         requireNotNull(_wallet.value).prepare(to, amount, receiptJson, note)
 
+    /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */
+    suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)
+
     suspend fun send(prepared: Prepared): String {
         val hash = requireNotNull(_wallet.value).send(prepared.id)
         refresh()

@@ -3,7 +3,7 @@
 //! amount, so the apps only draw.
 
 use crate::{
-    amount, price,
+    amount, price, split,
     wallet::{Activity, Direction},
 };
 
@@ -203,7 +203,9 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
         }
         _ => None,
     };
-    let party = if out {
+    let party = if activity.split.is_some() {
+        Some("This wallet".to_owned())
+    } else if out {
         activity.to.as_deref().map(short_address)
     } else {
         activity.subaddress.map(|i| {
@@ -243,6 +245,7 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
 fn row(activity: Activity, time: i64, clock: Clock) -> Row {
     let out = activity.direction == Direction::Out;
     let title = match (&activity.receipt, &activity.to) {
+        _ if activity.split.is_some() => split::TITLE.into(),
         (Some(r), _) => r.merchant.clone(),
         (None, Some(to)) if out => short_address(to),
         _ if out => "Sent".into(),
@@ -250,15 +253,17 @@ fn row(activity: Activity, time: i64, clock: Clock) -> Row {
     };
     let status = match waiting(&activity) {
         Some(waiting) => Some(waiting),
-        // A receipt says it was a payment; "Sent" would only repeat it.
-        None if out && activity.receipt.is_none() => Some("Sent".into()),
+        // A receipt says it was a payment, and a split's pieces what it
+        // was; "Sent" would only repeat it.
+        None if out && activity.receipt.is_none() && activity.split.is_none() => Some("Sent".into()),
         None => None,
     };
+    let pieces = activity.split.map(split::pieces_text);
     let receipt = activity.receipt.as_ref().map(|r| {
         let items = format!("{} item{}", r.item_count, if r.item_count == 1 { "" } else { "s" });
         if status.is_none() { format!("Receipt, {items}") } else { format!("receipt, {items}") }
     });
-    let line = [status, receipt, Some(time_of_day(time, clock))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let line = [status, pieces, receipt, Some(time_of_day(time, clock))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     Row {
         title,
         line,
@@ -322,6 +327,7 @@ mod tests {
             subaddress: None,
             pieces: vec![],
             note: None,
+            split: None,
         }
     }
 
@@ -501,6 +507,16 @@ mod tests {
         assert_eq!((d.status.as_str(), d.progress), ("Not ready · 24 of 60", Some(0.4)));
         let ready = Activity { confirmations: 60, ..reward };
         assert_eq!((status(&ready).as_str(), detail(&ready, None, false, "Kraken", clock(0)).progress), ("Confirmed · 60", None));
+    }
+
+    #[test]
+    fn a_split_reads_as_its_pieces() {
+        let split = Activity { split: Some(12), to: Some("5".repeat(95)), fee: Some(150_000_000), ..activity(Direction::Out, 150_000_000, NOW - HOUR, 20) };
+        let confirming = Activity { confirmations: 3, ..split.clone() };
+        let rows = by_day(vec![split.clone(), confirming], clock(0)).remove(0).rows;
+        let shown: Vec<_> = rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.amount.as_str())).collect();
+        assert_eq!(shown, [("Split up", "12 pieces · 11:00", "−0.0001"), ("Split up", "Confirming · 3 of 10 · 12 pieces · 11:00", "−0.0001")]);
+        assert_eq!(detail(&split, None, false, "Kraken", clock(0)).party.as_deref(), Some("This wallet"));
     }
 
     #[test]

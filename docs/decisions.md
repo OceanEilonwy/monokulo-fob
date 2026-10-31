@@ -488,3 +488,66 @@ Calls made while building the first version, with why. Newest last.
     at 24 confirmations reads "Not ready · 24 of 60" in Activity and on its
     own screen, whose bar is then confirmations ÷ 60, until it can be
     spent; no row says "Confirmed" while the card still lists its money.
+74. **Split up pays one subaddress of this wallet (`split`,
+    `Wallet::prepare_split`).** The pieces all go to one address kept for
+    splits (`split_index` in the wallet file): the next unused index the
+    first time a split is prepared, the same one after. Receive never hands
+    it out (`receive_address` and `new_receive_address` step past it), and
+    money found on it doesn't move Receive's index on to it. A restored
+    wallet doesn't know it: its pieces are still found (the index is within
+    the 50 watched past the last handed out) and Receive may then pass it;
+    nothing is lost. Change goes to the main address as for any payment. On
+    the chain a split looks like any 16-output payment; nothing names the
+    address. It reuses the payment flow: the confirm screen (title "Split
+    up", To "This wallet", the pieces listed by note, no address pattern
+    since there's no one to compare with), swipe and fingerprint.
+75. **At most 15 pieces**: Monero's 16 outputs a transaction, one of them
+    the change, which monero-oxide always adds (when nothing is left over it
+    is a zero-amount change output, which also hides that it was exact).
+    Rust refuses a 16th piece ("15 pieces is the most one split can make")
+    and a piece that with the estimated fee wouldn't fit what's ready to
+    spend ("Not enough ready to spend for another $20 piece"); the screen
+    shows the words for 3 s. Ready to spend means the outputs `Balance`
+    counts as unlocked, spent largest first as `prepare` chooses them.
+76. **Notes.** With prices on and a current price: 5, 10, 20, 50, 100 and
+    200 of the currency ("$20", "20 GBP" for one without a symbol), each set
+    in XMR at today's price with as few decimals as still come to the same
+    cents (`price::to_atomic`), so the pieces are XMR and their value moves
+    from then on, as the footer says. Without a price: 0.01, 0.05, 0.1,
+    0.25, 0.5 and 1 XMR: the same six-tile grid, and roughly the same
+    spread as the money notes at today's prices.
+77. **The fee shown is an estimate**: "Network fee about $0.03", from a
+    weight formula (`split::weight`: CLSAG inputs, an additional key per
+    output past two, a Bulletproof+ padded to a power of two with Monero's
+    clawback) at the node's fee rate, asked when the screen opens and kept
+    (also by every `prepare`), or Monero's usual 20,000 piconero per unit
+    of weight until then. The confirm screen shows the real fee. Under a
+    cent reads "less than $0.01".
+78. **The suggestion (`split::suggest`)**, deterministic: from 3 or more
+    payments out in the last 30 days (splits not counted), each payment
+    counts for the smallest note that covers it (the largest note for one
+    bigger than all); pieces are then added one at a time to the note
+    furthest below its share (smaller notes first on a tie), skipping a
+    note once another of it doesn't fit, up to 15 pieces. The words name
+    the 20th to 80th percentile of the payments, whole units rounded
+    ("most payments were $5–$25", "about 0.1 XMR" when they agree). With
+    fewer payments: 12 pieces, 4 each of three neighbouring notes, the
+    largest three whose 12 fit, else as many as fit of the smallest three,
+    with "Not enough payments yet to learn from, so here's an even mix.
+    Change it to suit." Either way the rest stays as one piece.
+79. **The screen** keeps only the counts; every word, tile label, the
+    accessibility labels ("Add a $20 piece, 4 so far", "Remove a $20
+    piece"), the bar (each piece's share of the width and the square root
+    of its value for its height, what's left over drawn in the track
+    colour) and the button's words come from Rust (`Wallet::split_view`).
+    Entries: Activity's header ("Split up", orange text) and, while the
+    not-ready card is open, "Split up your balance" under its pieces; only
+    in a wallet that can spend. Clear empties the counts.
+80. **A split in Activity**: titled "Split up", its line "12 pieces · 10:15"
+    (with "Confirming · 3 of 10" first while it confirms), and its amount
+    the fee, since only the fee left the wallet; the pieces' total is in
+    the wallet file (`Sent::pieces`, `Sent::amount`). While it isn't mined
+    the balance counts everything coming back (pieces and change), and the
+    not-ready card shows it as "Change · Split up". Its own screen says To
+    "This wallet". No real split was sent in this round: there's no funded
+    stagenet wallet among the tests.
