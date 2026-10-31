@@ -217,17 +217,51 @@ fun Page(
     }
 }
 
+/**
+ * The buttons at a screen's edges (round 8 › item 2): Back or Close, the top
+ * bar's actions, Home's photo and Settings, a scanner's Close and torch. One
+ * size and inset for all, so they sit in from the edge and are easy to hit:
+ * an icon-only button is a [target] circle with an [icon] inside, its row
+ * [inset] in from the screen's edge (a button's centre 44dp in), a photo is
+ * [avatar] inside the target, a text action at least [textHeight] tall.
+ */
+object EdgeButton {
+    val target = 56.dp
+    val icon = 26.dp
+    val avatar = 40.dp
+    val inset = 16.dp
+    val textHeight = 48.dp
+}
+
+/** An edge button's circle: [EdgeButton.target] wide, [content] centred; TalkBack reads [label]. */
+@Composable
+fun EdgeIconButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
+    Box(
+        modifier.size(EdgeButton.target).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+/** An edge button showing the icon [path] at [EdgeButton.icon]. */
+@Composable
+fun EdgeIconButton(path: String, label: String, onClick: () -> Unit, modifier: Modifier = Modifier, tint: Color = Fob.ink, width: Float = 2f) {
+    EdgeIconButton(label, onClick, modifier) { StrokeIcon(path, tint = tint, size = EdgeButton.icon, width = width) }
+}
+
+/**
+ * A screen's top bar: Back (or Close), the title, then [actions], the row
+ * [EdgeButton.inset] in from both edges. A long title or a big font
+ * ellipsizes the title; the buttons keep their size.
+ */
 @Composable
 fun TopBar(title: String?, onBack: (() -> Unit)?, closeIcon: Boolean = false, tint: Color = Fob.ink, actions: @Composable RowScope.() -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) {
-            IconButton(onClick = onBack, modifier = Modifier.semantics { contentDescription = if (closeIcon) "Close" else "Back" }) {
-                StrokeIcon(if (closeIcon) Icons.close else Icons.back, tint = tint, size = 20.dp)
-            }
+            EdgeIconButton(if (closeIcon) Icons.close else Icons.back, if (closeIcon) "Close" else "Back", onBack, tint = tint)
         } else {
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(4.dp))
         }
-        Text(title ?: "", color = tint, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        Text(title ?: "", color = tint, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         actions()
     }
 }
@@ -272,10 +306,10 @@ fun OutlineButton(
 
 @Composable
 fun TextButton(text: String, onClick: () -> Unit, color: Color = Fob.orangeText) {
-    Text(
-        text, color = color, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 10.dp, vertical = 12.dp),
-    )
+    Box(
+        Modifier.heightIn(min = EdgeButton.textHeight).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 10.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = color, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
 }
 
 @Composable

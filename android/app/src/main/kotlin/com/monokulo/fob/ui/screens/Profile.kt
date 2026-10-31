@@ -46,7 +46,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,6 +80,8 @@ import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.Avatar
 import com.monokulo.fob.ui.BarIcons
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.EdgeButton
+import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
@@ -151,7 +152,7 @@ fun ProfileEditScreen(model: WalletModel, nav: Nav, step: String?) {
             PrimaryButton(if (step != null) "Continue" else "Save", ::save, enabled = !busy && had != null)
         }) {
             if (step != null) {
-                Row(Modifier.fillMaxWidth().height(64.dp).padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(start = 20.dp, end = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically) {
                     Text(step, color = Fob.muted, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     TextButton("Skip", { nav.back() })
                 }
@@ -374,8 +375,8 @@ private fun TouchStrip(nfc: Nfc, onClick: () -> Unit) {
 private fun TouchView(profile: Profile?, onBack: () -> Unit) {
     val problem by TouchPhones.problem.collectAsState()
     Column(Modifier.fillMaxSize().background(Fob.paper).safeDrawingPadding()) {
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack, modifier = Modifier.semantics { contentDescription = "Back to the code" }) { StrokeIcon(Icons.close, size = 20.dp) }
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically) {
+            EdgeIconButton(Icons.close, "Back to the code", onBack)
         }
         Column(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(start = 28.dp, end = 28.dp, bottom = 60.dp),
@@ -496,8 +497,8 @@ private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileSha
     }
 
     Column(Modifier.fillMaxSize().background(Fob.qrLight).safeDrawingPadding()) {
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { nav.back() }, modifier = Modifier.semantics { contentDescription = "Close" }) { StrokeIcon(Icons.close, tint = Fob.qrDark, size = 20.dp) }
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically) {
+            EdgeIconButton(Icons.close, "Close", { nav.back() }, tint = Fob.qrDark)
         }
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             // As wide as the screen allows, leaving room for the words; the quiet zone is the code's own margin.
@@ -653,11 +654,8 @@ fun ProfileScanScreen(model: WalletModel, nav: Nav) {
             scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { found = text to s; notice = null } }.onFailure { notice = it.reason() } }
         })
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(
-                    Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button) { nav.back() }.semantics { contentDescription = "Close" },
-                    contentAlignment = Alignment.Center,
-                ) { StrokeIcon(Icons.close, tint = Fob.onCamera, size = 20.dp) }
+            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                EdgeIconButton(Icons.close, "Close", { nav.back() }, tint = Fob.onCamera)
                 Text("Scan a profile", color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).semantics { heading() })
             }
             if (found == null) {
