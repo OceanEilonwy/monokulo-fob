@@ -4,7 +4,7 @@
 
 use crate::{
     amount, price,
-    wallet::{Activity, Direction, UNLOCK},
+    wallet::{Activity, Direction},
 };
 
 /// The phone's clock, which only the app knows.
@@ -94,13 +94,14 @@ pub fn short_address(address: &str) -> String {
 }
 
 /// While a payment isn't settled: "Sending", "On the way",
-/// "Confirming · 3 of 10" (out) or "Not ready · 3 of 10" (in).
+/// "Confirming · 3 of 10" (out) or "Not ready · 3 of 10" (in; "20 of 60"
+/// for a mined reward, as many as its outputs need to be spent).
 fn waiting(activity: &Activity) -> Option<String> {
     let out = activity.direction == Direction::Out;
-    let c = activity.confirmations;
+    let (c, needed) = (activity.confirmations, activity.needed);
     match () {
         _ if activity.height.is_none() => Some(if out { "Sending".to_owned() } else { "On the way".to_owned() }),
-        _ if c < UNLOCK => Some(format!("{} · {c} of {UNLOCK}", if out { "Confirming" } else { "Not ready" })),
+        _ if c < needed => Some(format!("{} · {c} of {needed}", if out { "Confirming" } else { "Not ready" })),
         _ => None,
     }
 }
@@ -156,7 +157,7 @@ pub struct Detail {
     pub up: bool,
     /// "Not ready · 3 of 10", "Confirmed · 24".
     pub status: String,
-    /// While it can't be spent or isn't settled: confirmations ÷ 10.
+    /// While it can't be spent or isn't settled: confirmations ÷ needed.
     pub progress: Option<f32>,
     /// "From" or "To".
     pub party_label: String,
@@ -228,7 +229,7 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
         up: change.as_ref().is_some_and(|c| c.1),
         change: change.map(|c| c.0),
         status: status(activity),
-        progress: waiting(activity).map(|_| (activity.confirmations as f32 / UNLOCK as f32).min(1.0)),
+        progress: waiting(activity).map(|_| (activity.confirmations as f32 / activity.needed.max(1) as f32).min(1.0)),
         party_label: if out { "To" } else { "From" }.into(),
         party,
         pieces_label: if out { "Pieces spent" } else { "Pieces" }.into(),
@@ -293,6 +294,7 @@ pub fn by_day(rows: Vec<Activity>, clock: Clock) -> Vec<Day> {
 mod tests {
     use super::*;
     use crate::receipt::ReceiptView;
+    use crate::wallet::UNLOCK;
 
     /// 2026-10-31 12:00 UTC.
     const NOW: u64 = 1_793_448_000;
@@ -313,6 +315,7 @@ mod tests {
             height: Some(100),
             time,
             confirmations,
+            needed: UNLOCK,
             receipt: None,
             receipt_json: None,
             price: None,
@@ -485,6 +488,19 @@ mod tests {
         .map(status)
         .collect();
         assert_eq!(shown, ["Sending", "On the way", "Confirming · 3 of 10", "Not ready · 9 of 10", "Confirmed · 24", "Confirmed · 10"]);
+    }
+
+    #[test]
+    fn money_locked_longer_stays_not_ready_past_ten() {
+        // A mined reward needs 60: at 24 it isn't ready, on its row or its screen.
+        let reward = Activity { needed: 60, ..activity(Direction::In, 1, NOW, 24) };
+        assert_eq!(status(&reward), "Not ready · 24 of 60");
+        let row = by_day(vec![reward.clone()], clock(0)).remove(0).rows.remove(0);
+        assert_eq!(row.line, "Not ready · 24 of 60 · 12:00");
+        let d = detail(&reward, None, false, "Kraken", clock(0));
+        assert_eq!((d.status.as_str(), d.progress), ("Not ready · 24 of 60", Some(0.4)));
+        let ready = Activity { confirmations: 60, ..reward };
+        assert_eq!((status(&ready).as_str(), detail(&ready, None, false, "Kraken", clock(0)).progress), ("Confirmed · 60", None));
     }
 
     #[test]

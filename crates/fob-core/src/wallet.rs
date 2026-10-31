@@ -212,6 +212,10 @@ pub struct Activity {
     pub height: Option<u64>,
     pub time: u64,
     pub confirmations: u64,
+    /// Confirmations before it's settled: 10, or for a payment in, as many
+    /// as its slowest output needs to be spent (60 for a mined reward, more
+    /// for one locked to a later block), the not-ready card's rule.
+    pub needed: u64,
     pub receipt: Option<ReceiptView>,
     pub receipt_json: Option<String>,
     /// What one XMR was worth when it moved, in the currency prices are
@@ -782,6 +786,7 @@ impl Wallet {
                 height: sent.height,
                 time: sent.time,
                 confirmations: sent.height.map(|h| confirmations(&state, h)).unwrap_or(0),
+                needed: UNLOCK,
                 receipt: receipt.as_ref().map(ReceiptView::from),
                 receipt_json: sent.receipt.clone(),
                 price: None,
@@ -807,6 +812,7 @@ impl Wallet {
                 height: Some(spend.height),
                 time: spend.time,
                 confirmations: confirmations(&state, spend.height),
+                needed: UNLOCK,
                 receipt: None,
                 receipt_json: None,
                 price: None,
@@ -826,6 +832,7 @@ impl Wallet {
                 height: Some(output.height),
                 time: output.time,
                 confirmations: confirmations(&state, output.height),
+                needed: UNLOCK,
                 receipt: None,
                 receipt_json: None,
                 price: None,
@@ -847,6 +854,7 @@ impl Wallet {
                     height: None,
                     time: *seen,
                     confirmations: 0,
+                    needed: UNLOCK,
                     receipt: None,
                     receipt_json: None,
                     price: None,
@@ -864,6 +872,7 @@ impl Wallet {
                 Direction::In => {
                     let outputs: Vec<&Owned> = state.outputs.iter().filter(|o| o.tx == row.tx).collect();
                     row.pieces = outputs.iter().map(|o| o.amount).collect();
+                    row.needed = outputs.iter().map(|o| o.needed()).max().unwrap_or(UNLOCK);
                     row.subaddress = outputs.first().map(|o| o.subaddress);
                     row.note = row.subaddress.and_then(|s| state.notes.get(&s)).cloned();
                 }
@@ -1797,6 +1806,17 @@ mod tests {
             ]
         );
         assert_eq!(last, 4_000);
+        // Activity holds each payment in to the same rule: "Not ready"
+        // until its outputs can be spent, not at 10 for every one.
+        let lines: HashMap<String, String> = activity::by_day(wallet.activity().await, Clock { now: 6_000, utc_offset: 0, hours_24: true })
+            .into_iter()
+            .flat_map(|d| d.rows)
+            .map(|r| (r.activity.tx.clone(), r.line.split(" · ").take(2).collect::<Vec<_>>().join(" · ")))
+            .collect();
+        assert_eq!(lines["in"], "Not ready · 3 of 10");
+        assert_eq!(lines["mined"], "Not ready · 20 of 60");
+        assert_eq!(lines["locked"], "Not ready · 60 of 160");
+        assert!(!lines["old"].starts_with("Not ready"), "{}", lines["old"]);
         // The same money the balance counts as not unlocked.
         let balance = wallet.balance().await;
         assert_eq!(balance.total - balance.unlocked, pieces.iter().map(|p| p.amount).sum::<u64>());

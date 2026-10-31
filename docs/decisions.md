@@ -480,3 +480,11 @@ Calls made while building the first version, with why. Newest last.
     each change (`fit_receive_note`) and shows "That's as long as a note
     can be" when what was typed was cut; `payment_uri` and `receive` cut as
     well, whatever reaches them.
+73. **Activity's "Not ready" follows the not-ready card's rule.** Each row
+    carries the confirmations it needs (`Activity::needed`): for a payment
+    in, the most any of its outputs needs to be spent (`Owned::needed`:
+    10, 60 for a mined reward, more for an output locked to a later
+    block); 10 for a payment out and for one still in the pool. A reward
+    at 24 confirmations reads "Not ready · 24 of 60" in Activity and on its
+    own screen, whose bar is then confirmations ÷ 60, until it can be
+    spent; no row says "Confirmed" while the card still lists its money.
