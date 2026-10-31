@@ -1051,16 +1051,18 @@ Calls made while building the first version, with why. Newest last.
     whenever the screen isn't resumed (`LifecycleResumeEffect`), so a
     locked phone, a phone in a pocket or Fob in the background gives
     nothing. A swap that's over answers the same.
-142. **A new address per swap, handed out when it starts** (`start_swap`):
-    the swap begins as Share my profile opens with NFC on (not on the
-    strip: the board's line says being on the screen is enough), on the
-    next subaddress from the one counter, saved at once so it's never given
-    again, even if nobody touches. It's kept as a share only when it's over
-    (`end_swap`, on success or as the screen goes): "Touched phones with
-    Sam" when theirs came, "Touched phones" when ours went out whole but
-    theirs didn't (so a payment to that address still comes "Via your
-    profile"), nothing otherwise. A swap kept once isn't kept twice. The
-    kind is `touched_phones` with the name, by name in the file beside the
+142. **The swap is on the share's own address** (`start_swap(id)`): the
+    swap begins as Share my profile opens with NFC on (not on the strip:
+    the board's line says being on the screen is enough), on the address
+    the screen's share was given (decision 6's one per opening), so an
+    opening hands out one subaddress however the profile goes out. When
+    it's over (`end_swap`, on success or as the screen goes) the share is
+    kept as "Touched phones with Sam" when theirs came, "Touched phones"
+    when ours went out whole but theirs didn't (a payment to that address
+    still comes "Via your profile"), and stays "Code shown" otherwise; a
+    name, once there, stays. (First built with a second new address per
+    opening for the swap; the emulator pass changed it.) The kind is
+    `touched_phones` with the name, by name in the file beside the
     others; Copy link on its code again doesn't change it, since who it
     went to is what it's listed by.
 143. **The screens** (Round 6 › "Touch phones", "Swapped"): the strip "Or
@@ -1113,3 +1115,4 @@ Calls made while building the first version, with why. Newest last.
     and the group named for TalkBack. Currency and Show amounts in show
     only with prices, as before. The board's "Address check" row isn't
     drawn: Fob has no setting for it.
+

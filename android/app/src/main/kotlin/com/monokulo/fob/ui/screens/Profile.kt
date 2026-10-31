@@ -297,7 +297,7 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
         share = w.shareCode(id) ?: run { nav.back(); return@LaunchedEffect }
         profile = w.profile()
     }
-    val nfc = rememberTouchPhones(model, running = swapped == null) { done ->
+    val nfc = rememberTouchPhones(model, id, running = swapped == null) { done ->
         swapped = done
         view.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.LONG_PRESS)
     }
@@ -318,7 +318,7 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
  * when ours went out.
  */
 @Composable
-private fun rememberTouchPhones(model: WalletModel, running: Boolean, onSwapped: (Swapped) -> Unit): Nfc {
+private fun rememberTouchPhones(model: WalletModel, id: ULong, running: Boolean, onSwapped: (Swapped) -> Unit): Nfc {
     val context = LocalContext.current
     val activity = LocalActivity.current
     val scope = rememberCoroutineScope()
@@ -329,8 +329,8 @@ private fun rememberTouchPhones(model: WalletModel, running: Boolean, onSwapped:
         nfc = nfcState(context)
         onPauseOrDispose {}
     }
-    // Made once NFC is on, so a phone without it hands out no address.
-    LaunchedEffect(nfc) { if (nfc == Nfc.ON && swap == null) swap = runCatching { model.startSwap() }.getOrNull() }
+    // Made once NFC is on, on the share's own address.
+    LaunchedEffect(nfc) { if (nfc == Nfc.ON && swap == null) swap = runCatching { model.startSwap(id) }.getOrNull() }
     val s = swap
     DisposableEffect(s) { onDispose { if (s != null) model.endSwapLater(s) } }
     if (s != null && activity != null && running) {

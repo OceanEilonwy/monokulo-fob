@@ -1995,35 +1995,30 @@ impl Wallet {
         Ok((share, code))
     }
 
-    /// Touch phones, while Share my profile is open: a swap of the profile
-    /// on a subaddress no one has had, handed out now so it's never given
-    /// again, and kept as a share only once it's gone out (`end_swap`).
-    pub async fn start_swap(&self) -> Result<swap::Session> {
-        let mut state = self.inner.state.lock().await;
+    /// Touch phones, while share `id`'s screen is open: a swap of the
+    /// profile on that share's own address, so one opening of Share my
+    /// profile hands out one address however it goes out.
+    pub async fn start_swap(&self, id: u64) -> Result<swap::Session> {
+        let state = self.inner.state.lock().await;
         let profile = state.profile.profile().cloned().ok_or_else(|| FobError::Profile("Set up your profile first.".into()))?;
-        let mut changed = state.clone();
-        let subaddress = Self::hand_out(&mut changed);
-        let address = self.inner.keys.address(subaddress);
-        let session = swap::Session::new(self.network(), &uri::profile_uri(&address, &profile.name, profile.photo.as_deref()), subaddress, address)?;
-        self.save_state(&changed)?;
-        *state = changed;
-        Ok(session)
+        let share = state.profile.get(id).ok_or_else(|| FobError::Profile("That share was deleted.".into()))?;
+        swap::Session::new(self.network(), &uri::profile_uri(&share.address, &profile.name, profile.photo.as_deref()), share.subaddress, share.address.clone())
     }
 
     /// The swap is over (it worked, or the screen closed): nothing more is
-    /// answered or read. Kept as a share, "Touched phones with Sam", when
-    /// theirs came, or "Touched phones" when only ours went out whole;
-    /// nothing when neither, or when it's kept already. Returns the share
-    /// and their profile, as if scanned.
+    /// answered or read. Its share is kept as "Touched phones with Sam"
+    /// when theirs came, or "Touched phones" when only ours went out whole;
+    /// unchanged when neither, or when it's kept so already. Returns the
+    /// share and their profile, as if scanned.
     pub async fn end_swap(&self, session: &swap::Session) -> Result<Option<(profile::Share, profile::Scanned)>> {
         let (got, gave) = session.end();
-        let mut state = self.inner.state.lock().await;
-        if (got.is_none() && !gave) || state.profile.at(session.subaddress()).is_some() {
+        if got.is_none() && !gave {
             return Ok(None);
         }
+        let mut state = self.inner.state.lock().await;
+        let Some(id) = state.profile.at(session.subaddress()).map(|s| s.id) else { return Ok(None) };
         let mut changed = state.clone();
-        let kind = profile::ShareKind::TouchedPhones { name: got.as_ref().map(|p| p.name.clone()) };
-        let share = changed.profile.share(session.subaddress(), session.address().into(), kind, now())?;
+        let Some(share) = changed.profile.touched(id, got.as_ref().map(|p| p.name.clone())) else { return Ok(None) };
         self.save_state(&changed)?;
         *state = changed;
         Ok(got.map(|code| (share, profile::scanned(&state.contacts, code))))
@@ -3287,29 +3282,36 @@ mod tests {
         }
     }
 
+    /// Share my profile opened on `wallet`, and its swap.
+    async fn share_and_swap(wallet: &Wallet) -> (profile::Share, swap::Session) {
+        let (share, _) = wallet.share_profile().await.unwrap();
+        let session = wallet.start_swap(share.id).await.unwrap();
+        (share, session)
+    }
+
     #[tokio::test]
-    async fn touching_phones_swaps_profiles_each_on_a_new_address_kept_as_a_share() {
+    async fn touching_phones_swaps_profiles_on_the_share_s_own_address() {
         let path = dir("swap-henry");
         let henry = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
         let sam = Wallet::create(&dir("swap-sam"), [2; 32], Network::Stagenet).unwrap();
         let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
-        assert!(henry.start_swap().await.is_err(), "no profile yet");
+        assert!(henry.start_swap(1).await.is_err(), "no profile yet");
         henry.set_profile("Henry", Some(webp(1200))).await.unwrap();
         sam.set_profile("Sam", None).await.unwrap();
+        assert!(henry.start_swap(99).await.is_err(), "no such share");
         let own = henry.receive_address().await.unwrap();
 
-        let ours = henry.start_swap().await.unwrap();
-        let theirs = sam.start_swap().await.unwrap();
-        // A new address, and Receive's New address never gives it.
-        assert_eq!(ours.subaddress(), 2);
+        let (shown, ours) = share_and_swap(&henry).await;
+        let (_, theirs) = share_and_swap(&sam).await;
+        // The swap is on the share's address: one opening, one address.
+        assert_eq!((ours.subaddress(), ours.address()), (2, shown.address.as_str()));
         assert_eq!(henry.new_receive_address().await.unwrap(), henry.inner.keys.address(3));
-        assert_eq!(henry.receive_address().await.unwrap(), henry.inner.keys.address(3));
         assert_ne!(own, henry.inner.keys.address(2));
 
         // Henry's phone reads Sam's: both have the other's.
         assert!(matches!(touch(&ours, &theirs), swap::Step::Done(ref p) if p.name == "Sam"));
         let (share, scanned) = henry.end_swap(&ours).await.unwrap().unwrap();
-        assert_eq!((share.subaddress, share.kind.clone()), (2, profile::ShareKind::TouchedPhones { name: Some("Sam".into()) }));
+        assert_eq!((share.id, share.subaddress, share.kind.clone()), (shown.id, 2, profile::ShareKind::TouchedPhones { name: Some("Sam".into()) }));
         assert_eq!((scanned.code.address.as_str(), scanned.clash.is_none()), (sam.inner.keys.address(theirs.subaddress()).as_str(), true));
         let (_, got) = sam.end_swap(&theirs).await.unwrap().unwrap();
         assert_eq!((got.code.name.as_str(), got.code.photo.clone(), got.code.address.clone()), ("Henry", Some(webp(1200)), henry.inner.keys.address(2)));
@@ -3319,19 +3321,19 @@ mod tests {
         // Adding Sam goes the way a scanned profile does, asking when he clashes.
         let text = uri::profile_uri(&got.code.address, &got.code.name, got.code.photo.as_deref());
         sam.add_contact_from_profile(&text).await.unwrap();
-        let again = sam.start_swap().await.unwrap();
-        let ours = henry.start_swap().await.unwrap();
+        let (_, again) = share_and_swap(&sam).await;
+        let (_, ours) = share_and_swap(&henry).await;
         touch(&again, &ours);
         let (_, rescanned) = sam.end_swap(&again).await.unwrap().unwrap();
         assert_eq!(rescanned.clash.unwrap().why, "You have a contact named Henry.");
         assert_eq!(henry.end_swap(&ours).await.unwrap().unwrap().0.kind, profile::ShareKind::TouchedPhones { name: Some("Sam".into()) });
 
-        // Nobody touched: nothing kept, the address still never given again.
-        let idle = henry.start_swap().await.unwrap();
+        // Nobody touched: the share stays "Code shown".
+        let (idle_share, idle) = share_and_swap(&henry).await;
         assert!(henry.end_swap(&idle).await.unwrap().is_none());
         // Ours went out whole but theirs never came: "Touched phones".
-        let half = henry.start_swap().await.unwrap();
-        let other = sam.start_swap().await.unwrap();
+        let (_, half) = share_and_swap(&henry).await;
+        let (_, other) = share_and_swap(&sam).await;
         let mut apdu = other.reader_start().unwrap();
         while let swap::Step::Send(next) = other.reader_next(&half.card_answer(&apdu)) {
             if next[1] == 0xE2 {
@@ -3343,11 +3345,14 @@ mod tests {
         let none = henry.end_swap(&half).await.unwrap();
         assert!(none.is_none());
         let lines = henry.profile_shares(clock).await;
-        assert_eq!(lines.first().map(|l| l.title.as_str()), Some("Touched phones"));
-        assert!(idle.subaddress() < half.subaddress() && lines.iter().all(|l| l.address != idle.address()));
+        let titles: Vec<&str> = lines.iter().map(|l| l.title.as_str()).collect();
+        assert_eq!(titles, ["Touched phones", "Code shown", "Touched phones with Sam", "Touched phones with Sam"]);
+        assert_eq!(lines[1].address, idle_share.address);
         let reopened = Wallet::open(&path, [1; 32]).unwrap();
-        assert_eq!(reopened.profile_shares(clock).await.len(), 3);
-        assert_eq!(reopened.new_receive_address().await.unwrap(), reopened.inner.keys.address(half.subaddress() + 1));
+        assert_eq!(reopened.profile_shares(clock).await.len(), 4);
+        // Four openings, four addresses (2, 4, 5, 6; 3 was Receive's).
+        assert_eq!(half.subaddress(), 6);
+        assert_eq!(reopened.new_receive_address().await.unwrap(), reopened.inner.keys.address(7));
     }
 
     #[tokio::test]

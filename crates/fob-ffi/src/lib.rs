@@ -1226,10 +1226,10 @@ impl FobWallet {
         Ok(self.inner.share_went_out(id, kind.into()).await?)
     }
 
-    /// Touch phones, while Share my profile is in front: the swap the card
-    /// service and the reader both talk to, on its own new address.
-    pub async fn start_swap(&self) -> Result<Arc<TouchSwap>> {
-        Ok(Arc::new(TouchSwap { inner: self.inner.start_swap().await? }))
+    /// Touch phones, while share `id`'s screen is in front: the swap the
+    /// card service and the reader both talk to, on that share's address.
+    pub async fn start_swap(&self, id: u64) -> Result<Arc<TouchSwap>> {
+        Ok(Arc::new(TouchSwap { inner: self.inner.start_swap(id).await? }))
     }
 
     /// The swap is over, done or the screen closed: kept as a share when
