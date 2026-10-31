@@ -449,33 +449,52 @@ fun ReceiptLines(receipt: Receipt) {
     }
 }
 
+/**
+ * Confirm: what's paid, to whom, the fee; swipe, then the phone's lock.
+ * While it's sending, Back does nothing (Rust finishes and records the
+ * payment whatever happens to the screen). Leaving any other way forgets
+ * the prepared payment, unless the screen is only being made again; an
+ * identity prompt still up then ([identityPending]) carries on here.
+ */
 @Composable
-fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String?, confirmIdentity: suspend (String) -> Boolean) {
+fun ConfirmScreen(
+    model: WalletModel, nav: Nav, prepared: Prepared, note: String?, confirmIdentity: suspend (String) -> Boolean, identityPending: () -> Boolean,
+) {
     val scope = rememberCoroutineScope()
+    val activity = LocalActivity.current
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val split = prepared.split
     val title = split?.title ?: prepared.receipt?.merchant?.let { "Pay $it" } ?: "Send"
+    val sending by rememberUpdatedState(busy)
+    DisposableEffect(prepared.id) {
+        onDispose { if (!sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
+    }
+    BackHandler(enabled = busy) {}
+
+    fun swiped() {
+        busy = true
+        error = null
+        scope.launch {
+            if (!confirmIdentity(title)) {
+                error = "Not sent."
+            } else {
+                runCatching { model.send(prepared) }
+                    // Sent: neither this nor the filled form under it is a step back from Paid.
+                    .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(prepared, tx)) }
+                    .onFailure { error = it.reason() }
+            }
+            busy = false
+        }
+    }
+    // Made again while the phone's lock was asked for: its answer comes here.
+    LaunchedEffect(Unit) { if (identityPending()) swiped() }
     Page(bottom = {
         ErrorText(error)
-        SwipeToSend(if (busy) "Sending…" else split?.swipe ?: "Swipe to send ${prepared.amountText} XMR", enabled = !busy) {
-            busy = true
-            error = null
-            scope.launch {
-                if (!confirmIdentity(title)) {
-                    error = "Not sent."
-                } else {
-                    runCatching { model.send(prepared) }
-                        // Sent: neither this nor the filled form under it is a step back from Paid.
-                        .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(prepared, tx)) }
-                        .onFailure { error = it.reason() }
-                }
-                busy = false
-            }
-        }
+        SwipeToSend(if (busy) "Sending…" else split?.swipe ?: "Swipe to send ${prepared.amountText} XMR", enabled = !busy) { swiped() }
         Text("Then confirm it's you", color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
     }) {
-        TopBar(title, onBack = { scope.launch { model.wallet.value?.cancel(prepared.id) }; nav.back() })
+        TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(prepared.receipt?.total ?: "${prepared.amountText} XMR", style = display(52))

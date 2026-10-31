@@ -2,6 +2,7 @@ package com.monokulo.fob
 
 import android.app.Application
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -405,10 +406,20 @@ class WalletModel(private val app: Application) {
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */
     suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)
 
+    /**
+     * Sends [prepared] on the model's scope: once begun it runs to the end
+     * even if Confirm goes (the screen made again), and Rust records it
+     * whatever happens to this call.
+     */
     suspend fun send(prepared: Prepared): String {
-        val hash = requireNotNull(_wallet.value).send(prepared.id)
-        refresh()
-        return hash
+        val wallet = requireNotNull(_wallet.value)
+        return scope.async { wallet.send(prepared.id).also { refresh() } }.await()
+    }
+
+    /** Forgets a prepared payment Confirm left without sending; on the model's scope, as Confirm is going. */
+    fun cancelLater(prepared: Prepared) {
+        val wallet = _wallet.value ?: return
+        scope.launch { wallet.cancel(prepared.id) }
     }
 
 
