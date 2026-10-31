@@ -1595,3 +1595,32 @@ Calls made while building the first version, with why. Newest last.
     without the old 280 ms content animation, which would trail the
     keyboard. The handle alone is the drag area; the form and the folded
     list scroll as before.
+212. **Your photo in Home's top bar** (decision 4, board HomePeople C):
+    a 48 dp button between the sync chip and Settings with the avatar at
+    32 dp, or a person outline in a sunken circle while there's no
+    profile name (a photo alone shows the outline, as Settings' row
+    does). TalkBack reads Rust's title for Settings' row, "Your profile"
+    or "Add a shareable Fob contact", so no new words. It opens Your
+    profile, which goes on to setting one up while there's none, the same
+    way as Settings' row.
+213. **The model keeps your profile** (`WalletModel.you`: the profile and
+    its row) read when a wallet opens and again when `setProfile` saves,
+    so Home has it at once on coming back from editing it. Home is made
+    again on each return anyway, but loading there would flash the person
+    outline before every photo.
+214. **The top bar gives way in a fixed order.** Its end (chip, photo,
+    Settings) always fits whole. When the row is too narrow, the word
+    "Fob" hides first, then the chip's words (its ring or dot stays, and
+    TalkBack still reads its label), then the Stagenet badge. On a 360 dp
+    phone at normal font with the badge and "6 min left", the word goes
+    and the rest fits. At 200% font the chip shows only its ring and the
+    badge stays. A custom layout measures this rather than a guess from
+    text sizes. The mark always shows. The chip's target is at least
+    48 dp wide when it has no words.
+215. **Activity's header wraps instead of squeezing**: the title, then
+    Contacts (board order: before Coins), then Coins, in a flow row. When
+    a narrow phone or a big font leaves no room beside the title, the
+    chips go to a line under it, one under the other if need be. The
+    "Still finding older ones" note always gets its own line under the
+    header now. Beside the title it never fitted next to two chips on a
+    360 dp phone. The title is now marked as a heading for TalkBack.
