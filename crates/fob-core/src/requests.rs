@@ -14,7 +14,7 @@ use crate::{
     amount, contacts,
     error::{FobError, Result},
     price, uri,
-    wallet::{Activity, Direction},
+    wallet::Activity,
 };
 
 /// What a request asked for, as it was typed.
@@ -60,6 +60,15 @@ pub struct Request {
     /// who it was for.
     #[serde(default)]
     pub deleted: Option<u64>,
+    /// The payments already in (the pool's too) when it was deleted, by
+    /// transaction: those, and only those, still name who it was for.
+    /// `None` for one deleted before these were kept, which goes by time.
+    #[serde(default)]
+    pub paid_before_delete: Option<Vec<String>>,
+    /// The name its code carries (`recipient_name`), as made: the code
+    /// shown again is the one that went out.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// A request about to be made.
@@ -71,6 +80,8 @@ pub struct Draft {
     /// As typed: cut to what a code holds, blank for none.
     pub note: Option<String>,
     pub asked: Option<Asked>,
+    /// Who's asking, for the code: the profile's name while requests carry it.
+    pub name: Option<String>,
 }
 
 /// A note as a request keeps it: control characters and the marks that
@@ -107,10 +118,30 @@ impl Book {
         self.requests.iter().find(|r| r.subaddress == subaddress)
     }
 
-    /// The contact a payment to `subaddress` at `time` is from: the one its
-    /// request was for, unless the request was deleted before it came.
-    pub fn payer(&self, subaddress: u32, time: u64) -> Option<u64> {
-        self.at(subaddress).filter(|r| r.deleted.is_none_or(|d| time <= d)).and_then(|r| r.contact)
+    /// The contact payment `tx` to `subaddress` (at `time`) is from: the
+    /// one its request was for, unless the request was deleted before it
+    /// came.
+    pub fn payer(&self, subaddress: u32, tx: &str, time: u64) -> Option<u64> {
+        let before_delete = |r: &&Request| match (&r.deleted, &r.paid_before_delete) {
+            (None, _) => true,
+            (Some(_), Some(paid)) => paid.iter().any(|t| t == tx),
+            (Some(deleted), None) => time <= *deleted,
+        };
+        self.at(subaddress).filter(before_delete).and_then(|r| r.contact)
+    }
+
+    /// The newest request, when it's what `draft` would make again (the
+    /// same contact, amount as typed, unit, note and name) and nothing has
+    /// come to it: Share and Copy pressed again for the same ask give it
+    /// again, not a new address.
+    pub fn same_again(&self, draft: &Draft, rows: &[Activity]) -> Option<&Request> {
+        let asked = |a: &Option<Asked>| a.as_ref().filter(|a| a.xmr > 0).map(|a| (a.typed.clone(), a.unit.clone()));
+        let newest = self.live().max_by_key(|r| (r.created, r.id))?;
+        let same = newest.contact == draft.contact
+            && newest.note == clean_note(draft.note.as_deref())
+            && newest.name == draft.name.as_deref().and_then(contacts::clean_name)
+            && asked(&newest.asked) == asked(&draft.asked);
+        (same && payments(newest, rows).is_empty()).then_some(newest)
     }
 
     /// Makes a request. Its address must be one no request has had.
@@ -129,17 +160,21 @@ impl Book {
             asked: draft.asked.filter(|a| a.xmr > 0),
             created: now,
             deleted: None,
+            paid_before_delete: None,
+            name: draft.name.as_deref().and_then(contacts::clean_name),
         };
         self.requests.push(request.clone());
         Ok(request)
     }
 
     /// Deletes a request (it's kept, marked, so its address stays this
-    /// wallet's). Returns whether there was one.
-    pub fn delete(&mut self, id: u64, now: u64) -> bool {
+    /// wallet's), with the payments to it in `rows` (the pool's too) kept
+    /// as the ones still named. Returns whether there was one.
+    pub fn delete(&mut self, id: u64, now: u64, rows: &[Activity]) -> bool {
         match self.requests.iter_mut().find(|r| r.id == id && r.deleted.is_none()) {
             Some(r) => {
                 r.deleted = Some(now);
+                r.paid_before_delete = Some(payments(r, rows).into_iter().map(|a| a.tx).collect());
                 true
             }
             None => false,
@@ -148,9 +183,10 @@ impl Book {
 }
 
 /// The payments to `request`'s address, newest first (unconfirmed on top,
-/// as Activity has them).
-pub fn payments<'a>(request: &Request, rows: &'a [Activity]) -> Vec<&'a Activity> {
-    rows.iter().filter(|a| a.direction == Direction::In && a.subaddress == Some(request.subaddress)).collect()
+/// as Activity has them), each as much as came to it: one transaction
+/// paying two requests is each one's part.
+pub fn payments(request: &Request, rows: &[Activity]) -> Vec<Activity> {
+    rows.iter().filter_map(|a| a.part(request.subaddress)).collect()
 }
 
 /// What `request`'s address received, or `None` while nothing has: in the
@@ -272,7 +308,7 @@ pub fn detail(request: &Request, book: &contacts::Book, rows: &[Activity], clock
         .into_iter()
         .map(|a| {
             let mut row = activity::payment_row(a.clone(), clock);
-            let status = activity::waiting(a).map(|w| w.to_lowercase());
+            let status = activity::waiting(&a).map(|w| w.to_lowercase());
             row.line = [Some(activity::when(a.time, clock)), status].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             row
         })
@@ -384,9 +420,9 @@ pub fn sheet(book: &contacts::Book, requests: &Book, rows: &[Activity]) -> Vec<c
 }
 
 /// A request's payment code: its address, the XMR it asked for, its note,
-/// and `name` (who's asking) when the profile puts one in.
-pub fn code_uri(request: &Request, name: Option<&str>) -> String {
-    uri::payment_uri(&request.address, request.asked.as_ref().map(|a| a.xmr), request.note.as_deref(), name)
+/// and the name (who's asking) it was made with.
+pub fn code_uri(request: &Request) -> String {
+    uri::payment_uri(&request.address, request.asked.as_ref().map(|a| a.xmr), request.note.as_deref(), request.name.as_deref())
 }
 
 #[cfg(test)]
@@ -419,7 +455,7 @@ mod tests {
     }
 
     fn draft(keys: &Keys, subaddress: u32, contact: Option<u64>, note: Option<&str>, asked: Option<Asked>) -> Draft {
-        Draft { subaddress, address: keys.address(subaddress), contact, note: note.map(Into::into), asked }
+        Draft { subaddress, address: keys.address(subaddress), contact, note: note.map(Into::into), asked, name: None }
     }
 
     fn paid_in(subaddress: u32, amount: u64, time: u64, price: Option<u64>) -> Activity {
@@ -443,6 +479,7 @@ mod tests {
             contact: None,
             contact_id: None,
             shared: None,
+            parts: vec![],
         }
     }
 
@@ -461,8 +498,8 @@ mod tests {
         assert_eq!(made.asked.as_ref().unwrap().text(), "$80.00");
         // An address goes to one request only, deleted or not.
         assert!(requests.add(draft(&keys, 9, None, None, None), NOW).is_err());
-        assert!(requests.delete(made.id, NOW + 10));
-        assert!(!requests.delete(made.id, NOW + 20));
+        assert!(requests.delete(made.id, NOW + 10, &[]));
+        assert!(!requests.delete(made.id, NOW + 20, &[]));
         assert!(requests.get(made.id).is_none());
         assert!(requests.add(draft(&keys, 9, None, None, None), NOW).is_err());
         // Ids aren't used again; a zero amount or blank note is none.
@@ -482,12 +519,46 @@ mod tests {
         let keys = keys();
         let mut requests = Book::default();
         let r = requests.add(draft(&keys, 4, Some(7), Some("Pizza"), None), NOW).unwrap();
-        assert_eq!(requests.payer(4, NOW + 1), Some(7));
-        requests.delete(r.id, NOW + HOUR);
-        assert_eq!(requests.payer(4, NOW + 1), Some(7));
-        assert_eq!(requests.payer(4, NOW + 2 * HOUR), None);
+        assert_eq!(requests.payer(4, "in", NOW + 1), Some(7));
+        // In the pool when it's deleted; mined after, its block's time later than the delete: still theirs.
+        let pooled = Activity { tx: "pooled".into(), height: None, ..paid_in(4, 1, NOW + 30, None) };
+        requests.delete(r.id, NOW + HOUR, &[pooled, paid_in(5, 1, NOW, None)]);
+        assert_eq!(requests.payer(4, "pooled", NOW + 3 * HOUR), Some(7));
+        assert_eq!(requests.payer(4, "later", NOW + 1), None, "came after, whatever its block's time says");
         assert_eq!(requests.at(4).map(|r| r.id), Some(r.id), "its address is still known");
-        assert_eq!(requests.payer(5, NOW), None);
+        assert_eq!(requests.payer(5, "in", NOW), None);
+        // Deleted before the payments in were kept: by time.
+        let mut old = requests.clone();
+        old.requests[0].paid_before_delete = None;
+        assert_eq!(old.payer(4, "x", NOW + 1), Some(7));
+        assert_eq!(old.payer(4, "x", NOW + 2 * HOUR), None);
+    }
+
+    #[test]
+    fn the_same_ask_again_gives_the_same_request_until_something_comes() {
+        let keys = keys();
+        let mut requests = Book::default();
+        let ask = |sub: u32| Draft { name: Some("Henry".into()), ..draft(&keys, sub, Some(7), Some("Pizza"), usd("20", 120_400_000_000)) };
+        assert!(requests.same_again(&ask(1), &[]).is_none());
+        let first = requests.add(ask(1), NOW).unwrap();
+        assert_eq!(requests.same_again(&ask(2), &[]).map(|r| r.id), Some(first.id));
+        // The same typed amount comes to other XMR at another price: still the same ask.
+        let repriced = Draft { asked: usd("20", 119_000_000_000), ..ask(2) };
+        assert_eq!(requests.same_again(&repriced, &[]).map(|r| r.id), Some(first.id));
+        // Anything else different, or something paid to it: a new one.
+        for other in [
+            Draft { contact: None, ..ask(2) },
+            Draft { note: Some("Pasta".into()), ..ask(2) },
+            Draft { name: None, ..ask(2) },
+            Draft { asked: usd("21", 1), ..ask(2) },
+            Draft { asked: Some(Asked { typed: "20".into(), unit: "XMR".into(), xmr: 1, fiat: None }), ..ask(2) },
+        ] {
+            assert!(requests.same_again(&other, &[]).is_none(), "{other:?}");
+        }
+        assert!(requests.same_again(&ask(2), &[paid_in(1, 5, NOW, None)]).is_none());
+        // Only the newest: an older one alike isn't given again.
+        requests.add(Draft { note: Some("Other".into()), ..ask(2) }, NOW + 1).unwrap();
+        assert!(requests.same_again(&ask(3), &[]).is_none());
     }
 
     #[test]
@@ -530,7 +601,7 @@ mod tests {
         let r = activity_row(&concert, &book, &rows, clock());
         assert_eq!((r.activity, r.request, r.time), (None, Some(concert.id), concert.created));
         // Deleted ones leave; the rest newest first.
-        requests.delete(bike.id, NOW);
+        requests.delete(bike.id, NOW, &[]);
         let ids: Vec<_> = activity_rows(&requests, &book, &rows, clock()).into_iter().map(|r| r.request.unwrap()).collect();
         assert_eq!(ids, [concert.id, plain.id, gone.id]);
     }
@@ -599,9 +670,9 @@ mod tests {
         let sheet: Vec<_> = sheet(&book, &requests, &rows).into_iter().map(|r| (r.name, r.line)).collect();
         assert_eq!(sheet, [("Mum".into(), "No requests yet".into()), ("Sam".into(), "2 requests paid, 1 waiting".into())] as [(String, String); 2]);
         // One of each, and a deleted one counts for nothing.
-        requests.delete(concert.id, NOW);
+        requests.delete(concert.id, NOW, &rows);
         assert_eq!(summary(sam, &requests, &rows), "1 request paid, 1 waiting");
-        requests.delete(lock.id, NOW);
+        requests.delete(lock.id, NOW, &rows);
         assert_eq!(summary(sam, &requests, &rows), "1 request paid");
         assert_eq!(summary(sam, &requests, &[]), "1 request waiting");
         assert_eq!(on_card(sam, &requests, &rows, clock()).len(), 1);
@@ -613,8 +684,8 @@ mod tests {
         let mut requests = Book::default();
         let r = requests.add(draft(&keys, 9, None, Some("Concert tickets"), usd("80", 481_700_000_000)), NOW).unwrap();
         let address = keys.address(9);
-        assert_eq!(code_uri(&r, None), format!("monero:{address}?tx_amount=0.4817&tx_description=Concert%20tickets"));
-        let named = code_uri(&r, Some("Henry H"));
+        assert_eq!(code_uri(&r), format!("monero:{address}?tx_amount=0.4817&tx_description=Concert%20tickets"));
+        let named = code_uri(&Request { name: Some("Henry H".into()), ..r.clone() });
         assert_eq!(named, format!("monero:{address}?tx_amount=0.4817&recipient_name=Henry%20H&tx_description=Concert%20tickets"));
         // Read back as the payer's Fob reads it.
         let read = uri::parse_payment(Network::Stagenet, &named).unwrap();

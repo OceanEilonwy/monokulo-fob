@@ -904,6 +904,7 @@ mod tests {
             contact: None,
             contact_id: None,
             shared: None,
+            parts: vec![],
         }
     }
 
@@ -1244,6 +1245,7 @@ mod tests {
             contact,
             note: Some(note.into()),
             asked: None,
+            name: None,
         };
         reqs.add(draft(9, Some(sam.id), "Concert tickets"), NOW - 2 * DAY).unwrap();
         reqs.add(draft(10, None, "Not Sam's"), NOW).unwrap();
