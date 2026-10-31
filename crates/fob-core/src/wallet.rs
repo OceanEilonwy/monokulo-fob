@@ -37,6 +37,7 @@ use crate::{
     receipt::ReceiptView,
     store,
     uri::{self, WalletCode},
+    zmq::{self, ZmqStatus},
 };
 
 
@@ -54,6 +55,12 @@ const RING_LEN: u8 = 16;
 const MAX_FEE_PER_WEIGHT: u64 = 2_000_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
+/// How often it polls while the node's ZMQ publisher is heard, which
+/// announces each block: only in case an announcement goes missing.
+const POLL_LISTENING: Duration = Duration::from_secs(120);
+/// How long a pool announcement waits before the pool is asked, so a burst
+/// of transactions is one look, not one each.
+const POOL_GAP: Duration = Duration::from_secs(2);
 /// The longest [`Wallet::sync_now`] waits for its round.
 const SYNC_NOW_WAIT: Duration = Duration::from_secs(20);
 /// Confirmations before money can be spent.
@@ -110,6 +117,13 @@ struct Sent {
 #[derive(Clone, Serialize, Deserialize)]
 struct State {
     node: String,
+    /// The node's ZMQ publisher (`tcp://host:port`, on the node's host), as
+    /// last set; kept while turned off, so turning it on again uses it.
+    #[serde(default)]
+    zmq_endpoint: Option<String>,
+    /// Instant updates on. Off by default.
+    #[serde(default)]
+    zmq_on: bool,
     /// First block to scan. `None` until the first sync of a new wallet,
     /// which starts at the chain's tip.
     restore_height: Option<u64>,
@@ -191,6 +205,10 @@ pub struct SyncStatus {
     /// When the last scanned block was mined.
     pub up_to: u64,
     pub error: Option<String>,
+    /// Instant updates from the node's ZMQ publisher.
+    pub zmq: ZmqStatus,
+    /// [`zmq`](Self::zmq) as Settings shows it: "node.example:18083 · listening".
+    pub zmq_text: String,
 }
 
 /// Told about every change while the wallet syncs.
@@ -231,6 +249,13 @@ struct Inner {
     syncing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Wakes the sync loop from its wait for the next poll.
     wake: tokio::sync::Notify,
+    /// Has the waiting sync loop look at the pool (a ZMQ announcement).
+    pool_wake: tokio::sync::Notify,
+    /// Who hears the sync loop, kept to restart the ZMQ subscriber.
+    listener: std::sync::Mutex<Option<Arc<dyn SyncListener>>>,
+    /// The ZMQ subscriber and where it listens, while syncing with instant
+    /// updates on.
+    zmq_task: std::sync::Mutex<Option<(String, tokio::task::JoinHandle<()>)>>,
     /// Counts the sync loop's rounds that ended caught up or failed, so
     /// [`Wallet::sync_now`] knows when its round is over.
     rounds: tokio::sync::watch::Sender<u64>,
@@ -241,6 +266,28 @@ struct Inner {
     pool_seen: std::sync::Mutex<HashSet<String>>,
     /// The last block scanned, to scan pool transactions against.
     last_block: std::sync::Mutex<Option<monero_wallet::block::Block>>,
+}
+
+/// What the ZMQ subscriber hears, passed to the sync loop and the app.
+struct ZmqEvents {
+    wallet: Wallet,
+    endpoint: String,
+    listener: Arc<dyn SyncListener>,
+}
+
+impl zmq::Events for ZmqEvents {
+    fn status(&self, status: ZmqStatus) {
+        let status = self.wallet.set_zmq_status(status, Some(&self.endpoint));
+        self.listener.on_status(status);
+    }
+
+    fn chain(&self) {
+        self.wallet.inner.wake.notify_one();
+    }
+
+    fn pool(&self) {
+        self.wallet.inner.pool_wake.notify_one();
+    }
 }
 
 /// A Fob wallet. Cheap to clone; clones share everything.
@@ -310,6 +357,8 @@ impl Wallet {
     fn new(path: &Path, file_key: [u8; 32], keys: Keys, restore_height: Option<u64>) -> Result<Wallet> {
         let state = State {
             node: keys.network.default_nodes()[0].to_owned(),
+            zmq_endpoint: None,
+            zmq_on: false,
             restore_height,
             next_block: restore_height.unwrap_or(0),
             tip: 0,
@@ -326,11 +375,14 @@ impl Wallet {
     }
 
     fn from_parts(path: &Path, file_key: [u8; 32], keys: Keys, state: State) -> Wallet {
+        let zmq = if state.zmq_on { ZmqStatus::Connecting } else { ZmqStatus::Off };
         let status = SyncStatus {
             scanned: state.next_block,
             tip: state.tip,
             start: state.restore_height.unwrap_or(state.next_block),
             up_to: state.last_block_time,
+            zmq_text: zmq.text(state.zmq_endpoint.as_deref()),
+            zmq,
             ..SyncStatus::default()
         };
         Wallet {
@@ -346,6 +398,9 @@ impl Wallet {
                 status: std::sync::Mutex::new(status),
                 syncing: std::sync::Mutex::new(None),
                 wake: tokio::sync::Notify::new(),
+                pool_wake: tokio::sync::Notify::new(),
+                listener: std::sync::Mutex::new(None),
+                zmq_task: std::sync::Mutex::new(None),
                 rounds: tokio::sync::watch::Sender::new(0),
                 pool: std::sync::Mutex::new(HashMap::new()),
                 pool_seen: std::sync::Mutex::new(HashSet::new()),
@@ -463,14 +518,89 @@ impl Wallet {
         let url = crate::node::normalize(url);
         // A node on the other network would never find this wallet's money.
         crate::node::on_network(self.network(), &url).await.map_err(FobError::Node)?;
-        {
+        let zmq_dropped = {
             let mut state = self.inner.state.lock().await;
+            // Instant updates belong to a node's host: on another host they
+            // go off, and the new host's suggestion is offered instead.
+            let dropped = state.zmq_endpoint.as_ref().is_some_and(|e| zmq::endpoint(&url, e).is_err());
+            if dropped {
+                state.zmq_endpoint = None;
+                state.zmq_on = false;
+            }
             state.node = url;
             self.save_state(&state)?;
+            dropped
+        };
+        if zmq_dropped {
+            self.restart_zmq().await;
         }
         *self.inner.rpc.lock().await = None;
         *self.inner.pipeline.lock().await = None;
         Ok(())
+    }
+
+    /// The node's ZMQ publisher: the one set, else the usual port on the
+    /// node's host, offered for Settings to show and edit.
+    pub async fn zmq_endpoint(&self) -> String {
+        let state = self.inner.state.lock().await;
+        state.zmq_endpoint.clone().or_else(|| zmq::suggest(self.network(), &state.node)).unwrap_or_default()
+    }
+
+    /// Turns instant updates on or off. `endpoint` (checked: TCP, on the
+    /// node's own host) replaces the one set; without it, the one set or
+    /// the suggestion is used. Takes effect at once while syncing.
+    pub async fn set_zmq(&self, on: bool, endpoint: Option<&str>) -> Result<()> {
+        {
+            let mut state = self.inner.state.lock().await;
+            let typed = match endpoint {
+                Some(typed) => Some(typed.to_owned()),
+                None if on => state.zmq_endpoint.clone().or_else(|| zmq::suggest(self.network(), &state.node)),
+                // Off, nothing typed: the one set stays for next time.
+                None => None,
+            };
+            if let Some(typed) = typed {
+                state.zmq_endpoint = Some(zmq::endpoint(&state.node, &typed).map_err(FobError::BadEndpoint)?);
+            } else if on {
+                return Err(FobError::BadEndpoint("set a node first".into()));
+            }
+            state.zmq_on = on;
+            self.save_state(&state)?;
+        }
+        self.restart_zmq().await;
+        Ok(())
+    }
+
+    /// Starts the ZMQ subscriber afresh from the settings, if the sync loop
+    /// runs and instant updates are on; otherwise just stops it.
+    async fn restart_zmq(&self) {
+        if let Some((_, task)) = self.inner.zmq_task.lock().expect("zmq lock").take() {
+            task.abort();
+        }
+        let (on, endpoint) = {
+            let state = self.inner.state.lock().await;
+            (state.zmq_on, state.zmq_endpoint.clone())
+        };
+        self.set_zmq_status(if on { ZmqStatus::Connecting } else { ZmqStatus::Off }, endpoint.as_deref());
+        let listener = self.inner.listener.lock().expect("listener lock").clone();
+        let syncing = self.inner.syncing.lock().expect("sync lock").as_ref().is_some_and(|h| !h.is_finished());
+        if let (true, Some(endpoint), Some(listener), true) = (on, endpoint, listener, syncing) {
+            let events = ZmqEvents { wallet: self.clone(), endpoint: endpoint.clone(), listener };
+            let task = crate::runtime().spawn(zmq::listen(endpoint.clone(), events));
+            if let Some((_, old)) = self.inner.zmq_task.lock().expect("zmq lock").replace((endpoint, task)) {
+                old.abort();
+            }
+            // Stopped meanwhile: stop this one too.
+            if self.inner.syncing.lock().expect("sync lock").is_none() {
+                self.stop_sync();
+            }
+        }
+    }
+
+    fn set_zmq_status(&self, zmq: ZmqStatus, endpoint: Option<&str>) -> SyncStatus {
+        self.set_status(|s| {
+            s.zmq_text = zmq.text(endpoint);
+            s.zmq = zmq;
+        })
     }
 
     async fn rpc(&self) -> Result<Daemon> {
@@ -892,11 +1022,14 @@ impl Wallet {
 
     /// Keeps the wallet up to date in the background until [`stop_sync`]:
     /// catches up as fast as the node allows, then looks for new blocks
-    /// every 20 s. `listener` hears every step.
+    /// every 20 s, or every 2 minutes while the node's ZMQ publisher is
+    /// heard (a new block then wakes it at once). With instant updates on,
+    /// the subscriber runs beside it. `listener` hears every step.
     ///
     /// [`stop_sync`]: Wallet::stop_sync
     pub fn start_sync(&self, listener: Arc<dyn SyncListener>) {
         self.stop_sync();
+        *self.inner.listener.lock().expect("listener lock") = Some(listener.clone());
         let wallet = self.clone();
         let handle = crate::runtime().spawn(async move {
             let mut rate = None;
@@ -909,32 +1042,54 @@ impl Wallet {
                         if !more {
                             rate = None;
                             wallet.inner.rounds.send_modify(|n| *n += 1);
-                            wallet.wait(POLL).await;
+                            let poll = if wallet.status().zmq == ZmqStatus::Listening { POLL_LISTENING } else { POLL };
+                            wallet.wait(poll, listener.as_ref()).await;
                         }
                     }
                     Err(e) => {
                         wallet.report(listener.as_ref(), &mut rate, Some(e.to_string())).await;
                         wallet.inner.rounds.send_modify(|n| *n += 1);
-                        wallet.wait(backoff).await;
+                        wallet.wait(backoff, listener.as_ref()).await;
                         backoff = (backoff * 2).min(Duration::from_secs(60));
                     }
                 }
             }
         });
         *self.inner.syncing.lock().expect("sync lock") = Some(handle);
+        // Beside the loop, while instant updates are on.
+        let wallet = self.clone();
+        crate::runtime().spawn(async move { wallet.restart_zmq().await });
     }
 
     pub fn stop_sync(&self) {
         if let Some(handle) = self.inner.syncing.lock().expect("sync lock").take() {
             handle.abort();
         }
+        if let Some((endpoint, task)) = self.inner.zmq_task.lock().expect("zmq lock").take() {
+            task.abort();
+            // Still on: it connects again with the loop.
+            self.set_zmq_status(ZmqStatus::Connecting, Some(&endpoint));
+        }
+        *self.inner.listener.lock().expect("listener lock") = None;
     }
 
-    /// The sync loop's wait between rounds, cut short by [`sync_now`](Wallet::sync_now).
-    async fn wait(&self, time: Duration) {
-        tokio::select! {
-            _ = tokio::time::sleep(time) => {}
-            _ = self.inner.wake.notified() => {}
+    /// The sync loop's wait between rounds, cut short by [`sync_now`](Wallet::sync_now)
+    /// or a new block announced. A transaction announced in the pool has
+    /// the pool looked at (once caught up) and the wait go on.
+    async fn wait(&self, time: Duration, listener: &dyn SyncListener) {
+        let deadline = tokio::time::Instant::now() + time;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => return,
+                _ = self.inner.wake.notified() => return,
+                _ = self.inner.pool_wake.notified() => {
+                    tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + POOL_GAP)).await;
+                    if self.status().synced && self.status().error.is_none() && let Ok(rpc) = self.rpc().await {
+                        let _ = self.scan_pool(&rpc).await;
+                        self.report(listener, &mut None, None).await;
+                    }
+                }
+            }
         }
     }
 
@@ -1192,6 +1347,75 @@ mod tests {
         assert!(*wallet.inner.rounds.borrow() >= 2);
         assert!(wallet.status().error.is_some());
         wallet.stop_sync();
+    }
+
+    /// A new block announced by the node's publisher ends the loop's wait
+    /// at once: here a 4 s backoff, cut short well inside a second.
+    #[tokio::test]
+    async fn a_block_announced_over_zmq_wakes_the_sync_loop() {
+        let wallet = unreachable("zmq-wake").await;
+        let publisher = crate::zmq::test_publisher::Publisher::bind("tcp://127.0.0.1:0").await;
+        wallet.set_zmq(true, Some(publisher.endpoint())).await.unwrap();
+        assert_eq!(wallet.status().zmq, ZmqStatus::Connecting, "on, not syncing yet");
+        let mut rounds = wallet.inner.rounds.subscribe();
+        wallet.start_sync(Arc::new(Quiet));
+        let listening = async {
+            while wallet.status().zmq != ZmqStatus::Listening {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), listening).await.expect("never listening");
+        assert!(wallet.status().zmq_text.ends_with(" · listening"), "{}", wallet.status().zmq_text);
+        // The first round, and the one connecting wakes for what was missed.
+        while *rounds.borrow_and_update() < 2 {
+            tokio::time::timeout(Duration::from_secs(5), rounds.changed()).await.unwrap().unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let settled = *rounds.borrow_and_update();
+        let started = Instant::now();
+        // Sent until the subscription has reached the publisher.
+        let woke = async {
+            loop {
+                publisher.send(&format!("{}:{{}}", crate::zmq::CHAIN_TOPIC));
+                if tokio::time::timeout(Duration::from_millis(50), rounds.changed()).await.is_ok() {
+                    return;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(3), woke).await.expect("the announcement never woke the loop");
+        assert!(started.elapsed() < Duration::from_secs(1), "woke after {:?}", started.elapsed());
+        assert!(*wallet.inner.rounds.borrow() > settled);
+        // Pool announcements don't start a round of their own.
+        let pooled = *wallet.inner.rounds.borrow();
+        publisher.send(&format!("{}:[]", crate::zmq::POOL_TOPIC));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(*wallet.inner.rounds.borrow(), pooled);
+        wallet.stop_sync();
+        assert_eq!(wallet.status().zmq, ZmqStatus::Connecting, "still on, for when syncing starts again");
+        wallet.set_zmq(false, None).await.unwrap();
+        assert_eq!(wallet.status().zmq, ZmqStatus::Off);
+        assert_eq!(wallet.zmq_endpoint().await, publisher.endpoint(), "kept for turning on again");
+    }
+
+    #[tokio::test]
+    async fn zmq_is_off_until_turned_on_and_follows_the_node_s_host() {
+        let wallet = Wallet::create(&dir("zmq-settings"), [1; 32], Network::Stagenet).unwrap();
+        assert_eq!(wallet.status().zmq, ZmqStatus::Off);
+        assert_eq!(wallet.status().zmq_text, "Off");
+        // Offered, not used: the node's host, stagenet's usual port.
+        assert_eq!(wallet.zmq_endpoint().await, "tcp://stagenet.xmr-tw.org:38083");
+        assert!(matches!(wallet.set_zmq(true, Some("tcp://elsewhere.example:38083")).await, Err(FobError::BadEndpoint(_))));
+        assert_eq!(wallet.status().zmq, ZmqStatus::Off, "refused, so still off");
+        wallet.set_zmq(true, None).await.unwrap();
+        assert_eq!(wallet.status().zmq_text, "stagenet.xmr-tw.org:38083 · connecting");
+        let path = wallet.inner.path.clone();
+        drop(wallet);
+        let again = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(again.status().zmq, ZmqStatus::Connecting, "saved with the wallet");
+        // Another host (set without asking the node, as set_node would):
+        // instant updates go off rather than follow somewhere unchosen.
+        again.inner.state.lock().await.node = "http://127.0.0.1:1".into();
+        assert!(matches!(again.set_zmq(true, Some("tcp://stagenet.xmr-tw.org:38083")).await, Err(FobError::BadEndpoint(_))));
     }
 
     #[tokio::test]
