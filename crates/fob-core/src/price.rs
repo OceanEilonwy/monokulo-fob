@@ -7,7 +7,7 @@
 //! - the **currency** amounts are also shown in, one of the 45 baked into
 //!   [`currencies`], or none: XMR only, and Fob never asks for a price.
 //! - the **provider** ([`Provider`]): whose prices, from which API.
-//!   Kraken's public REST API ([`kraken`]) prices 7 of them, CoinGecko's
+//!   Kraken's public REST API ([`kraken`]) prices 6 of them, CoinGecko's
 //!   keyless one ([`coingecko`]) all 45. Which provider prices which
 //!   currency is the providers' own list ([`providers_for`]).
 //! - the **transport** ([`Transport`]): how the requests travel. Straight
@@ -167,6 +167,9 @@ pub enum Failure {
     BadAnswer,
     /// Asked over Tor, which isn't built yet.
     TorNotYet,
+    /// Kept over Tor in a wallet file for a provider that doesn't answer
+    /// over it: never asked over the web instead without the user's pick.
+    NotOverTor,
 }
 
 impl Failure {
@@ -176,6 +179,7 @@ impl Failure {
             Failure::Busy => "Busy, try again soon",
             Failure::BadAnswer => "Answered without a price",
             Failure::TorNotYet => "Tor isn't built yet",
+            Failure::NotOverTor => "Doesn't answer over Tor",
         }
     }
 }
@@ -328,12 +332,14 @@ impl Default for Stored {
 impl From<Stored> for Settings {
     fn from(s: Stored) -> Self {
         let mut settings = Settings { currency: s.currency.filter(|_| s.on), provider: s.provider, transport: s.transport, fiat_first: s.fiat_first };
-        // A code Fob no longer knows is XMR only; a provider or transport
-        // that doesn't fit moves as choosing would.
+        // A code Fob no longer knows is XMR only; a provider that doesn't
+        // price the currency moves as choosing would. The transport never
+        // moves here: off Tor would show the phone's address unannounced,
+        // so lookups fail saying why until one is picked.
         if settings.code().is_some_and(|c| currencies::find(c).is_none()) {
             settings.currency = None;
         }
-        settings.fit();
+        settings.fit_provider();
         settings
     }
 }
@@ -358,19 +364,24 @@ impl Settings {
     /// transport to the web when the provider doesn't answer over it.
     /// Returns (whether the provider moved, whether the transport did).
     fn fit(&mut self) -> (bool, bool) {
-        let mut moved = (false, false);
-        if let Some(code) = self.code()
-            && !self.provider.prices(code)
-            && let Some(first) = providers_for(code).first()
-        {
-            self.provider = *first;
-            moved.0 = true;
-        }
+        let mut moved = (self.fit_provider(), false);
         if !self.provider.answers_over(self.transport) {
             self.transport = Transport::Web;
             moved.1 = true;
         }
         moved
+    }
+
+    /// Moves the provider to the first that prices the currency; whether it moved.
+    fn fit_provider(&mut self) -> bool {
+        if let Some(code) = self.code()
+            && !self.provider.prices(code)
+            && let Some(first) = providers_for(code).first()
+        {
+            self.provider = *first;
+            return true;
+        }
+        false
     }
 
     /// "Also show amounts in" `code`, or XMR only (`None`). Moves to a

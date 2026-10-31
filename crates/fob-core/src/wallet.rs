@@ -446,6 +446,10 @@ struct Inner {
     prices_asked: std::sync::Mutex<Option<price::alert::Asked>>,
     /// When a money amount typed last had the price task ask.
     typed_asked: std::sync::Mutex<u64>,
+    /// Price lookups started, and the newest of them come back: an older
+    /// one coming back later is dropped.
+    price_lookups: AtomicU64,
+    price_looked_up: AtomicU64,
     /// The run of failed price lookups, for the toast.
     price_alerts: std::sync::Mutex<price::alert::Alerts>,
     /// The node's fee per unit of weight and its rounding mask, as last
@@ -680,6 +684,8 @@ impl Wallet {
                 prices_wake: tokio::sync::Notify::new(),
                 prices_asked: std::sync::Mutex::new(None),
                 typed_asked: std::sync::Mutex::new(0),
+                price_lookups: AtomicU64::new(0),
+                price_looked_up: AtomicU64::new(0),
                 price_alerts: std::sync::Mutex::new(price::alert::Alerts::default()),
                 fee_rate: std::sync::Mutex::new(None),
                 fresh_share: std::sync::Mutex::new(None),
@@ -2120,12 +2126,16 @@ impl Wallet {
         let mut settings = state.prices.clone();
         let said = change(&mut settings)?;
         if settings != state.prices {
+            // Show first only changes how amounts are drawn: nothing to ask.
+            let asks = (settings.code(), settings.provider, settings.transport) != (state.prices.code(), state.prices.provider, state.prices.transport);
             state.prices = settings;
             self.record_prices(&mut state);
             self.save_state(&state)?;
-            // The run was about settings gone; the user's new ones are asked now.
-            self.inner.price_alerts.lock().expect("price lock").reset();
-            self.ask_prices(price::alert::Asked::User);
+            if asks {
+                // The run was about settings gone; the user's new ones are asked now.
+                self.inner.price_alerts.lock().expect("price lock").reset();
+                self.ask_prices(price::alert::Asked::User);
+            }
         }
         Ok(said)
     }
@@ -2737,16 +2747,31 @@ impl Wallet {
             return Ok(false);
         }
         let failed = |failure, day| price::alert::Failed { failure, provider: source.name().into(), currency: code.clone(), day };
-        if !settings.transport.available() {
-            self.inner.price_alerts.lock().expect("price lock").looked_up(Some(failed(price::Failure::TorNotYet, None)), asked);
-            return Err(FobError::PriceFailed(price::Failure::TorNotYet));
+        // Kept over a transport the provider doesn't answer over (an older
+        // wallet file): never asked another way without the user's pick.
+        let refused = match settings.transport {
+            t if !source.answers_over(t) => Some(price::Failure::NotOverTor),
+            t if !t.available() => Some(price::Failure::TorNotYet),
+            _ => None,
+        };
+        if let Some(failure) = refused {
+            self.inner.price_alerts.lock().expect("price lock").looked_up(Some(failed(failure, None)), asked);
+            return Err(FobError::PriceFailed(failure));
         }
+        let lookup = self.inner.price_lookups.fetch_add(1, Ordering::Relaxed) + 1;
         let current = if current_due { Some(source.current(&code, settings.transport).await) } else { None };
         let history = if history_due { Some(source.daily(&code, price::window(source, now), settings.transport).await) } else { None };
 
         let mut state = self.inner.state.lock().await;
         if state.prices != settings {
             // Changed while asking: these answers are for settings gone.
+            return Ok(false);
+        }
+        // A lookup started after this one has already come back (Retry
+        // over a background one hanging): this one's answer, price or
+        // failure, is older news and is dropped.
+        let done = self.inner.price_looked_up.fetch_max(lookup, Ordering::Relaxed);
+        if done > lookup {
             return Ok(false);
         }
         // A failure in a word: the current price's first, else the day's.
@@ -2832,12 +2857,14 @@ impl Wallet {
     }
 
     async fn retry_prices_from(&self, source: &impl price::Source, clock: Clock) -> Retried {
+        // A run about one day's price says that day when it's found.
+        let day = self.price_alert().and_then(|a| a.failed.day);
         let _ = self.refresh_prices_from(source, price::alert::Asked::User, clock.now).await;
         if let Some(toast) = self.price_toast(clock).await {
             return Retried::Failed(toast);
         }
         let state = self.inner.state.lock().await;
-        let (title, line) = price::alert::updated(&state.price_cache, &state.prices, clock.now);
+        let (title, line) = price::alert::updated(&state.price_cache, &state.prices, day, clock);
         Retried::Updated { title, line }
     }
 }
@@ -3124,11 +3151,13 @@ mod tests {
         fail: bool,
         asked_now: AtomicU64,
         asked_days: AtomicU64,
+        /// Answers the current price only once this is notified.
+        hold: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl FakePrices {
         fn new(now: u64, days: Vec<(i64, u64)>) -> FakePrices {
-            FakePrices { now, days, fail: false, asked_now: AtomicU64::new(0), asked_days: AtomicU64::new(0) }
+            FakePrices { now, days, fail: false, asked_now: AtomicU64::new(0), asked_days: AtomicU64::new(0), hold: None }
         }
 
         fn asked(&self) -> (u64, u64) {
@@ -3151,6 +3180,9 @@ mod tests {
 
         async fn current(&self, _: &str, _: price::Transport) -> Result<u64> {
             self.asked_now.fetch_add(1, Ordering::Relaxed);
+            if let Some(hold) = &self.hold {
+                hold.notified().await;
+            }
             if self.fail { Err(FobError::Price("no answer".into())) } else { Ok(self.now) }
         }
 
@@ -3320,6 +3352,77 @@ mod tests {
         assert_eq!(*wallet.inner.prices_asked.lock().unwrap(), Some(Asked::User));
     }
 
+    /// A lookup that comes back after a newer one has changes nothing: a
+    /// background failure landing after Retry worked doesn't bring the
+    /// toast back, and an older price doesn't overwrite a newer one.
+    #[tokio::test]
+    async fn an_older_lookup_coming_back_late_changes_nothing() {
+        let wallet = Wallet::create(&dir("price-late"), [1; 32], Network::Stagenet).unwrap();
+        let clock = clock_now();
+        let late = |fail, price| {
+            let hold = Arc::new(tokio::sync::Notify::new());
+            let fake = Arc::new(FakePrices { fail, hold: Some(hold.clone()), ..FakePrices::new(price, vec![]) });
+            let (w, f) = (wallet.clone(), fake.clone());
+            let task = tokio::spawn(async move { w.refresh_prices_from(&*f, Asked::Background, clock.now).await });
+            (fake, hold, task)
+        };
+        let asked = |fake: &FakePrices| fake.asked().0 == 1;
+        // A background lookup hangs; Retry works meanwhile.
+        let (fake, hold, background) = late(true, 1);
+        while !asked(&fake) {
+            tokio::task::yield_now().await;
+        }
+        let worked = wallet.retry_prices_from(&FakePrices::new(166_100_000, vec![]), clock).await;
+        assert!(matches!(worked, Retried::Updated { .. }), "{worked:?}");
+        hold.notify_one();
+        assert!(!background.await.unwrap().unwrap(), "dropped");
+        assert_eq!(wallet.price_toast(clock).await, None, "no toast after Retry worked");
+        // An older lookup's price landing after a newer one's is dropped too.
+        wallet.inner.state.lock().await.price_cache.current = None;
+        let (fake, hold, background) = late(false, 150_000_000);
+        while !asked(&fake) {
+            tokio::task::yield_now().await;
+        }
+        wallet.refresh_prices_from(&FakePrices::new(170_000_000, vec![]), Asked::User, clock.now).await.unwrap();
+        hold.notify_one();
+        background.await.unwrap().unwrap();
+        assert_eq!(wallet.price_now().await.map(|(_, p)| p), Some(170_000_000));
+    }
+
+    /// An older file's Tor stays Tor: the lookups fail saying why rather
+    /// than going over the web unannounced.
+    #[tokio::test]
+    async fn a_wallet_file_s_tor_is_never_moved_to_the_web_on_opening() {
+        let path = dir("price-tor-file");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        file["state"]["prices"] = serde_json::json!({"currency": "USD", "provider": "kraken", "transport": "tor", "fiat_first": false});
+        store::save(&path, &[1; 32], &file).unwrap();
+        let old = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(old.price_settings().await.transport, price::Transport::Tor);
+        let fake = FakePrices::new(166_100_000, vec![]);
+        let failed = old.refresh_prices_from(&fake, Asked::Background, now()).await.unwrap_err();
+        assert!(matches!(failed, FobError::PriceFailed(price::Failure::NotOverTor)));
+        assert_eq!(fake.asked(), (0, 0), "nothing asked");
+        assert_eq!(old.price_toast(clock_now()).await.unwrap().line, "Kraken doesn't answer over Tor · no USD price yet");
+    }
+
+    /// Show first only changes how amounts are drawn: no lookup, and a run
+    /// of failures goes on.
+    #[tokio::test]
+    async fn flipping_show_first_asks_for_nothing() {
+        let wallet = Wallet::create(&dir("price-show-first"), [1; 32], Network::Stagenet).unwrap();
+        let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
+        wallet.refresh_prices_from(&failing, Asked::Background, now()).await.unwrap_err();
+        let shown = wallet.price_alert().unwrap().id;
+        wallet.set_fiat_first(true).await.unwrap();
+        assert!(wallet.price_settings().await.fiat_first);
+        assert_eq!(*wallet.inner.prices_asked.lock().unwrap(), None);
+        assert_eq!(wallet.price_alert().map(|a| a.id), Some(shown));
+        wallet.set_currency(Some("EUR")).await.unwrap();
+        assert_eq!(*wallet.inner.prices_asked.lock().unwrap(), Some(Asked::User));
+    }
+
     #[tokio::test]
     async fn a_day_s_history_that_fails_is_named() {
         let wallet = Wallet::create(&dir("price-alert-day"), [1; 32], Network::Stagenet).unwrap();
@@ -3335,8 +3438,13 @@ mod tests {
         let clock = Clock { now: t + 60, utc_offset: 0, hours_24: true };
         let toast = wallet.price_toast(clock).await.unwrap();
         let (today, _) = activity::local(t + 60, clock);
-        assert_eq!(toast.title, format!("Couldn't get {}'s USD price", activity::date(price::day(t - 2 * DAY), today)));
+        let date = activity::date(price::day(t - 2 * DAY), today);
+        assert_eq!(toast.title, format!("Couldn't get {date}'s USD price"));
         assert_eq!(toast.line, "Kraken didn't answer · shown as not available");
+        // Retry finds it: the day's price is named, not the current one.
+        let days = vec![(price::day(t - 2 * DAY), 160_120_000), (price::day(t - 5 * DAY), 150_000_000)];
+        let worked = wallet.retry_prices_from(&FakePrices::new(166_100_000, days), clock).await;
+        assert_eq!(worked, Retried::Updated { title: format!("{date}'s USD price found"), line: "1 XMR = $160.12".into() });
     }
 
     #[tokio::test]
