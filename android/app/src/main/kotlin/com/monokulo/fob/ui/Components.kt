@@ -114,6 +114,10 @@ object Icons {
     const val trash = "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"
     /** A person with a plus: Save as a contact. */
     const val personPlus = "M6.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M3.5 19.5c0.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5 M19 8v6 M16 11h6"
+    /** A person: a share of your profile in Activity, and Receive's line naming you. */
+    const val person = "M8.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M5.5 19.5c0.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5"
+    /** Two links of a chain: a share's link copied or shared. */
+    const val link = "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"
     /** Two coins, one behind the other (drawn at stroke 1.8). */
     /** A payment code, drawn loose: a request in Activity. */
     const val request = "M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h2 M18 14h2 M14 18h2 M18 18h2"
@@ -228,7 +232,7 @@ fun OutlineButton(
             StrokeIcon(leading, tint = tint, size = 18.dp)
             Spacer(Modifier.width(8.dp))
         }
-        Text(text, color = if (enabled) tint else Fob.muted, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Text(text, color = if (enabled) tint else Fob.muted, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -339,11 +343,17 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
 fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
     Canvas(modifier.size(size).semantics { contentDescription = description }) {
         val n = code.size.toInt()
-        val cell = this.size.width / (n + quiet * 2)
+        // Each module a whole number of pixels, the code centred, so a dense code (a profile's) stays crisp
+        // rather than blurring at its edges; a code with more modules than pixels falls back to fractions.
+        val whole = kotlin.math.floor(this.size.width / (n + quiet * 2))
+        val cell = if (whole >= 1f) whole else this.size.width / (n + quiet * 2)
+        val start = (this.size.width - cell * n) / 2
+        val origin = if (whole >= 1f) kotlin.math.floor(start) else quiet * cell
+        val bleed = if (whole >= 1f) 0f else 0.5f
         drawRect(Fob.qrLight)
         for (y in 0 until n) for (x in 0 until n) {
             if (code.dark[y * n + x]) {
-                drawRect(Fob.qrDark, topLeft = Offset((x + quiet) * cell, (y + quiet) * cell), size = Size(cell + 0.5f, cell + 0.5f))
+                drawRect(Fob.qrDark, topLeft = Offset(origin + x * cell, origin + y * cell), size = Size(cell + bleed, cell + bleed))
             }
         }
     }

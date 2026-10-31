@@ -38,6 +38,10 @@ import com.monokulo.fob.ui.screens.HomeScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
 import com.monokulo.fob.ui.screens.PaymentScreen
+import com.monokulo.fob.ui.screens.ProfileEditScreen
+import com.monokulo.fob.ui.screens.ProfileScanScreen
+import com.monokulo.fob.ui.screens.ProfileScreen
+import com.monokulo.fob.ui.screens.ProfileShareScreen
 import com.monokulo.fob.ui.screens.ReceiptScreen
 import com.monokulo.fob.ui.screens.ReceiveDraft
 import com.monokulo.fob.ui.screens.ReceiveScreen
@@ -109,6 +113,17 @@ sealed interface Screen {
     data class ContactEdit(val id: ULong? = null, val prefill: ContactDraft? = null, val forRequest: Boolean = false) : Screen
     /** Scanning a contact's send address, from its card's Change. */
     data class ContactScan(val id: ULong) : Screen
+    /** Scanning another Fob's profile, from Contacts. */
+    data object ProfileScan : Screen
+    /** Your profile: the name and photo, Share my profile, the switch and every share. */
+    data object Profile : Screen
+    /**
+     * The profile's editor: [step] ("Step 3 of 3 · optional") as the last
+     * step of a new or restored wallet, with Skip; Edit without one.
+     */
+    data class ProfileEdit(val step: String? = null) : Screen
+    /** A share's code, full screen: just made by Share my profile, or again. */
+    data class ProfileShare(val id: ULong) : Screen
     data object ShowSeed : Screen
     data object ShowWalletCode : Screen
     data object Node : Screen
@@ -243,6 +258,10 @@ class MainActivity : FragmentActivity() {
             is Screen.Contact -> ContactScreen(model, nav, screen.id)
             is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill, screen.forRequest)
             is Screen.ContactScan -> ContactScanScreen(model, nav, screen.id)
+            Screen.ProfileScan -> ProfileScanScreen(model, nav)
+            Screen.Profile -> ProfileScreen(model, nav)
+            is Screen.ProfileEdit -> ProfileEditScreen(model, nav, screen.step)
+            is Screen.ProfileShare -> ProfileShareScreen(model, nav, screen.id)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)

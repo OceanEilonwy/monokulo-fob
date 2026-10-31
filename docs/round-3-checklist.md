@@ -218,3 +218,57 @@ Contact card
 Old wallet and dark mode
 - [ ] An existing wallet from before this step opens; Receive shows the address it showed before; Activity unchanged except notes now lead received lines.
 - [ ] Dark mode: sheet on paper, rows readable, chip on the card colour, request icon and "asked" muted, "Received" green readable, Delete red readable, the full-screen code white.
+
+## Step 9 · Your profile
+
+The real test needs two devices: one shares, the other scans (an emulator's code shown on a monitor, scanned by a phone, will do).
+
+Onboarding
+- [ ] Create a wallet → seed screen → "I've written them down" → "Step 3 of 3 · optional", Skip top right, "Make it yours", photo circle 128 with the camera badge, "Your name", Continue (orange).
+- [ ] Skip → Home; Settings shows the person icon and "Set up your profile".
+- [ ] Continue with an empty name → "Your profile needs a name." above Continue; nothing saved.
+- [ ] Tap the photo → the "Photo" sheet (Take a photo, Choose from your photos; Remove photo only with one); take one, and choose one → the circle shows it; deny the camera → nothing breaks.
+- [ ] Type "Henry", Continue → Your profile with the photo and name; Back → Home.
+- [ ] Restore a wallet (seed, wallet code, view-only) → "Last step · optional" with the same editor.
+
+Your profile
+- [ ] Settings › Wallet: avatar 40, "Your profile", "Henry · name and photo, share as a code", chevron → Your profile.
+- [ ] Edit → "Edit your profile" with Back and Save, filled; change the name and remove the photo → Save → back, the new name and initial.
+- [ ] A 40-character name → wraps on Your profile, ellipsised on one line on the share screen, two lines at most in Settings.
+- [ ] "Name in payment requests" is on at first; off → Receive's line goes and a request's code has no name; on → back.
+- [ ] Your shares with none → the line about what a share is. After a few: newest first, "Code shown" (code icon) / "Link copied" / "Link shared" (link icon), "Today 09:15", "Yesterday …", "28 Oct", the pattern on the right, "nothing yet" muted.
+- [ ] Pay a share's address from another wallet → "+$…" (or "+… XMR" with prices off) in green on that share.
+
+Share my profile
+- [ ] Share my profile → white screen, brightness up, avatar 52 + name + "Scan with Fob to add me", a dense code nearly the screen's width, "A new address for this share, never used again.", Copy link (outline) and Share (orange). No "Or touch phones" strip.
+- [ ] Close at once → the share is still listed ("Code shown") and in Activity.
+- [ ] Copy link → the clipboard holds `monero:…?recipient_name=Henry&recipient_avatar=…`; Your shares says "Link copied". Share → the system sheet; "Link shared".
+- [ ] Each Share my profile shows a different address (the pattern changes); Receive's New address never gives one of them.
+- [ ] Dense code at arm's length: another phone reads it from 30–50 cm with the photo at its largest, and on a small (5") screen too. Modules sharp, not blurred at their edges.
+- [ ] Without a photo → a much smaller code.
+- [ ] Dark mode: the share screen stays white with dark words; Copy link's outline visible.
+
+Receive and requests
+- [ ] With a profile and the switch on → under the note, a person icon and "The code names you as “Henry” · change in Settings"; tap → Your profile.
+- [ ] Share a request → its code has `recipient_name=Henry`; another Fob paying it shows "to a code named “Henry”".
+
+Activity
+- [ ] A share → "Shared your profile", "A new address for this share · 09:15", person icon, no amount; tap → that share's code again (the same address).
+- [ ] A payment to a share's address → its own line "Via your profile", "Shared 09:15 · not ready · 1 of 10 · 09:31" in green; its screen says "Address N · via your profile" under From. Shared on an earlier day → "Shared 30 Oct · …".
+
+Scanning a profile (from a second device)
+- [ ] Send's camera on another Fob's share code → the sheet: photo 88, name, pattern + "89Hn2 … Tq4Lp … 6wKeR", "A Fob profile. The name and photo are Henry's own, not checked by Fob.", Pay Henry (outline), Add contact (orange). Back → the camera; the same code isn't taken again.
+- [ ] Pay Henry → Send's form with To filled; paid → Paid offers "Save as a contact" or "Add to Henry" as for any named code.
+- [ ] Add contact (no Henry, address unknown) → Henry's card with the photo and that send address.
+- [ ] Contacts › scan icon ("Scan a profile" in TalkBack) → full-screen camera "Scan a profile"; a plain address → "That code has no name, so it isn't a profile."; a request with an amount → "That's a payment code, not a profile."
+- [ ] Ask before updating: scan Henry's newer share (a new address) → Add contact → "You have a contact named Henry.", Send address now → new, "Update Henry? Their send address changes to the profile's.", Update Henry / Keep as is / Add as new contact. Keep as is → back to the profile; Henry's card unchanged.
+- [ ] Update Henry → his card with the new send address, the note kept; a profile without a photo keeps his photo.
+- [ ] A contact "Sam"; a stranger's profile named "sam" → asks, showing Sam → sam, the photo (both avatars), the send address; Add as new contact → two Sams.
+- [ ] A profile on an address that's Sam's send address under another name → "This address is Sam's send address."; on one Sam was paid at → "Sam was paid at this address."
+- [ ] The same profile again after adding → "Henry already has this profile's name, photo and send address.", Open Henry.
+- [ ] A profile link with a broken photo (junk after `recipient_avatar=`, opened as a link) → Send shows the form as for a named code; Contacts' scanner says "The photo in that profile is damaged."
+- [ ] Sheets above the gesture bar and inside the sides in landscape; a 40-character name wraps on the sheet, "Pay …" ellipsised on one line.
+
+Old wallet and dark mode
+- [ ] A wallet from before this step opens: no profile, Settings "Set up your profile", Activity unchanged.
+- [ ] Dark mode: editor, Your profile, the switch card, shares, the scanned sheet and the asking view (orange arrows, "now" muted) readable; avatars' initials readable.

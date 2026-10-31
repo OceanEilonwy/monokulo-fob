@@ -100,7 +100,9 @@ import uniffi.fob.CodeKind
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentRequest
+import uniffi.fob.ScannedProfile
 import uniffi.fob.classifyCode
+import uniffi.fob.isProfileCode
 import uniffi.fob.parsePayment
 import uniffi.fob.shortAddress
 
@@ -159,6 +161,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     var busy by remember { mutableStateOf(false) }
     // The camera reads a code many times a second: each one is taken once.
     var lastRead by remember { mutableStateOf(draft?.read) }
+    // A scanned profile, with the code it came from: shown on its own sheet in place of Send's.
+    var profile by remember { mutableStateOf<Pair<String, ScannedProfile>?>(null) }
     var paid by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
     // Contacts with a send address once there are any contacts; until then, who was paid before.
     var contacts by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
@@ -202,9 +206,16 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         }
     }
 
-    /** A scanned, pasted or linked code: an address or a payment code without an amount fills the form; with one, straight to confirm. */
-    fun take(text: String) {
+    /**
+     * A scanned, pasted or linked code: a profile shows who it is first (Pay or Add contact); an address or a
+     * payment code without an amount fills the form; with one, straight to confirm.
+     */
+    fun take(text: String, asProfile: Boolean = true) {
         if (busy) return
+        if (asProfile && isProfileCode(network, text)) {
+            scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { profile = text to s; notice = null } }.onFailure { notice = it.reason() } }
+            return
+        }
         when (classifyCode(network, text)) {
             CodeKind.WALLET -> { notice = "That's a wallet code, not a payment code."; return }
             CodeKind.UNKNOWN -> { notice = runCatching { parsePayment(network, text) }.exceptionOrNull()?.reason() ?: "That isn't a payment code."; return }
@@ -244,6 +255,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     LaunchedEffect(code) { code?.let { read(it) } }
     // Back folds the sheet first, then closes Send.
     BackHandler(enabled = open) { open = false }
+    // A profile's sheet closes first; the camera doesn't take the same code again.
+    BackHandler(enabled = profile != null) { profile = null }
 
     val density = LocalDensity.current
     BoxWithConstraints(Modifier.fillMaxSize().background(Fob.camera)) {
@@ -308,81 +321,90 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             if (dragged < -threshold && !open) { open = true; dragged = 0f }
             if (dragged > threshold && open) { open = false; dragged = 0f }
         }
-        Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                // Folded, at most 62% of the screen, so a landscape phone keeps a strip of camera to aim with.
-                .then(if (open) Modifier.height(maxHeight - openTop) else Modifier.heightIn(max = minOf(maxHeight - barBottom - 16.dp, maxHeight * 0.62f)))
-                .animateContentSize(tween(280, easing = SHEET_EASING))
-                .onSizeChanged { sheetHeight = it.height }
-                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(Fob.paper)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
-                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
-        ) {
-            // The handle: drag it, or tap it.
-            Box(
-                Modifier.fillMaxWidth().height(28.dp)
-                    .draggable(drag, Orientation.Vertical, onDragStopped = { dragged = 0f })
-                    .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { open = !open }
-                    .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
-                contentAlignment = Alignment.Center,
-            ) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
-            if (open) {
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Labelled("To") {
-                        ToField(to, toValid, onChange = { typed ->
-                            // A whole payment code typed or pasted in is read as one.
-                            if (typed.trim().startsWith("monero:", ignoreCase = true)) take(typed.trim())
-                            else { to = typed; request = null; lastRead = null; notice = null }
-                        }, onPaste = ::paste)
-                        ErrorText(notice)
-                    }
-                    Labelled("Amount") {
-                        AmountField(
-                            amount, { amount = it; if (request?.amount != null) request = null }, entry,
-                            onSwitch = { scope.launch { val toFiat = !inFiat; amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
-                        )
-                    }
-                    Labelled("Note (optional)") { NoteField(note) { note = it } }
-                    balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp)) }
-                }
-                Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ErrorText(error)
-                    PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && entry?.sendable == true, onClick = {
-                        val r = request
-                        review(to.trim(), amount, entry?.inFiat == true, r?.receiptJson, note.trim().ifEmpty { null })
-                    })
-                }
-            } else {
-                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    PasteRow(::paste)
-                    if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
-                    ErrorText(error)
-                    // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
-                    if (hasContacts) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "CONTACTS", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
-                                    modifier = Modifier.weight(1f).semantics { heading() },
-                                )
-                                TextButton("All", { nav.go(Screen.Contacts) })
-                            }
-                            if (contacts.isEmpty()) {
-                                Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
-                            }
-                            contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; request = null; notice = null; open = true } }
+        if (profile == null) {
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    // Folded, at most 62% of the screen, so a landscape phone keeps a strip of camera to aim with.
+                    .then(if (open) Modifier.height(maxHeight - openTop) else Modifier.heightIn(max = minOf(maxHeight - barBottom - 16.dp, maxHeight * 0.62f)))
+                    .animateContentSize(tween(280, easing = SHEET_EASING))
+                    .onSizeChanged { sheetHeight = it.height }
+                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(Fob.paper)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                    .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+            ) {
+                // The handle: drag it, or tap it.
+                Box(
+                    Modifier.fillMaxWidth().height(28.dp)
+                        .draggable(drag, Orientation.Vertical, onDragStopped = { dragged = 0f })
+                        .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { open = !open }
+                        .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
+                    contentAlignment = Alignment.Center,
+                ) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
+                if (open) {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Labelled("To") {
+                            ToField(to, toValid, onChange = { typed ->
+                                // A whole payment code typed or pasted in is read as one.
+                                if (typed.trim().startsWith("monero:", ignoreCase = true)) take(typed.trim())
+                                else { to = typed; request = null; lastRead = null; notice = null }
+                            }, onPaste = ::paste)
+                            ErrorText(notice)
                         }
-                    } else if (paid.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                "PAID BEFORE", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
-                                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).semantics { heading() },
+                        Labelled("Amount") {
+                            AmountField(
+                                amount, { amount = it; if (request?.amount != null) request = null }, entry,
+                                onSwitch = { scope.launch { val toFiat = !inFiat; amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
                             )
-                            paid.forEach { p -> PaidRow(p) { to = p.address; request = null; notice = null; open = true } }
                         }
+                        Labelled("Note (optional)") { NoteField(note) { note = it } }
+                        balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp)) }
                     }
-                    balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+                    Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ErrorText(error)
+                        PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && entry?.sendable == true, onClick = {
+                            val r = request
+                            review(to.trim(), amount, entry?.inFiat == true, r?.receiptJson, note.trim().ifEmpty { null })
+                        })
+                    }
+                } else {
+                    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        PasteRow(::paste)
+                        if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
+                        ErrorText(error)
+                        // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
+                        if (hasContacts) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "CONTACTS", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
+                                        modifier = Modifier.weight(1f).semantics { heading() },
+                                    )
+                                    TextButton("All", { nav.go(Screen.Contacts) })
+                                }
+                                if (contacts.isEmpty()) {
+                                    Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
+                                }
+                                contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; request = null; notice = null; open = true } }
+                            }
+                        } else if (paid.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    "PAID BEFORE", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
+                                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).semantics { heading() },
+                                )
+                                paid.forEach { p -> PaidRow(p) { to = p.address; request = null; notice = null; open = true } }
+                            }
+                        }
+                        balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+                    }
                 }
+            }
+        }
+
+        // A profile scanned (Round 6 › "Another Fob scans the code"): Pay fills the form as its code would.
+        profile?.let { (text, found) ->
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                ProfileFound(model, nav, text, found, onPay = { profile = null; take(text, asProfile = false) }, onClose = { profile = null })
             }
         }
     }

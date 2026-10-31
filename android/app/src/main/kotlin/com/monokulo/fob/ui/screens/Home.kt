@@ -304,26 +304,30 @@ private fun DayLabel(text: String) {
     )
 }
 
-/** Opens an Activity row: a payment's screen (its receipt, if it had one), or a request's. */
+/** Opens an Activity row: a payment's screen (its receipt, if it had one), a request's, or a share's code again. */
 fun open(nav: Nav, row: ActivityRow) {
     val a = row.activity
     val request = row.request
+    val share = row.share
     when {
         a != null -> nav.go(if (a.receipt != null) Screen.Receipt(a) else Screen.Payment(a))
         request != null -> nav.go(Screen.Request(request))
+        share != null -> nav.go(Screen.ProfileShare(share))
     }
 }
 
 /**
- * One payment, or a request (Round 5 › "Activity: requests and payments,
- * separate lines": the code icon, the amount asked in grey): what Rust
- * wrote for it, drawn.
+ * One payment, a request (Round 5 › "Activity: requests and payments,
+ * separate lines": the code icon, the amount asked in grey) or a share of
+ * your profile (Round 6 › "Activity: each share is a line": a person, no
+ * amount): what Rust wrote for it, drawn.
  */
 @Composable
 fun PaymentRow(row: ActivityRow, onClick: () -> Unit) {
     val a = row.activity
     val outgoing = a?.outgoing == true
     val (icon, tint) = when {
+        row.share != null -> Icons.person to Fob.muted
         a == null -> Icons.request to Fob.muted
         outgoing -> Icons.up to Fob.ink
         else -> Icons.down to Fob.green

@@ -26,6 +26,9 @@ import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
 import uniffi.fob.Prepared
+import uniffi.fob.Profile
+import uniffi.fob.ProfileShare
+import uniffi.fob.ShareLine
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
 import java.io.File
@@ -364,6 +367,23 @@ class WalletModel(private val app: Application) {
 
     /** Share's sheet: every contact, each with its requests in a line. */
     suspend fun requestContacts(): List<ContactRow> = _wallet.value?.requestContacts() ?: emptyList()
+
+    /** Saves your name and photo; throws what Rust refused. */
+    suspend fun setProfile(name: String, photo: ByteArray?): Profile = requireNotNull(_wallet.value).setProfile(name, photo)
+
+    /** "Share my profile": a share on a new address, kept at once; Activity shows it. */
+    suspend fun shareProfile(): ProfileShare {
+        val share = requireNotNull(_wallet.value).shareProfile()
+        refresh()
+        return share
+    }
+
+    /** Your shares, newest first, each with what came to it. */
+    suspend fun profileShares(): List<ShareLine> {
+        val wallet = _wallet.value ?: return emptyList()
+        val (seconds, offset, hours24) = clock()
+        return wallet.profileShares(seconds, offset, hours24)
+    }
 
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */
     suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)
