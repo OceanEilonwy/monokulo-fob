@@ -37,6 +37,7 @@ use crate::{
     error::{FobError, Result},
     keys::{self, Keys, SeedKind, StoredKeys},
     network::Network,
+    node,
     not_ready::{self, Coins, NotReady, Piece, Source},
     price::{self, Source as _},
     receipt::ReceiptView,
@@ -151,6 +152,10 @@ struct Sent {
 #[derive(Clone, Serialize, Deserialize)]
 struct State {
     node: String,
+    /// The node's certificate is accepted even if self-signed (not
+    /// verified, still encrypted). Off in older files.
+    #[serde(default)]
+    node_self_signed: bool,
     /// The node's ZMQ publisher (`tcp://host:port`, on the node's host), as
     /// last set; kept while turned off, so turning it on again uses it.
     #[serde(default)]
@@ -441,6 +446,9 @@ struct Inner {
     /// The share the last "Share my profile" made, while its screen may
     /// still swap by touching phones: a share reopened later never does.
     fresh_share: std::sync::Mutex<Option<u64>>,
+    /// The last full check of the node in use, while it stays in use:
+    /// Settings' "Working · node.example:38081".
+    node_verdict: std::sync::Mutex<Option<(crate::node::Setting, &'static str)>>,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
 }
@@ -598,6 +606,7 @@ impl Wallet {
     fn new(path: &Path, file_key: [u8; 32], keys: Keys, restore_height: Option<u64>) -> Result<Wallet> {
         let state = State {
             node: keys.network.default_nodes()[0].to_owned(),
+            node_self_signed: false,
             zmq_endpoint: None,
             zmq_on: false,
             restore_height,
@@ -665,6 +674,7 @@ impl Wallet {
                 price_alerts: std::sync::Mutex::new(price::alert::Alerts::default()),
                 fee_rate: std::sync::Mutex::new(None),
                 fresh_share: std::sync::Mutex::new(None),
+                node_verdict: std::sync::Mutex::new(None),
                 live_swap: std::sync::Mutex::new(std::sync::Weak::new()),
             }),
         }
@@ -886,17 +896,69 @@ impl Wallet {
         Self::own_index(&*self.inner.state.lock().await)
     }
 
-    pub async fn node(&self) -> String {
-        self.inner.state.lock().await.node.clone()
+    pub async fn node(&self) -> node::Setting {
+        let state = self.inner.state.lock().await;
+        node::Setting { url: state.node.clone(), self_signed: state.node_self_signed }
     }
 
-    /// Talks to another node from now on.
-    pub async fn set_node(&self, url: &str) -> Result<()> {
+    /// Settings' Node line: "Working · node.example:38081" from the last
+    /// check of it, else what syncing says ("Can't reach node · …"), else
+    /// just the address.
+    pub async fn node_line(&self) -> String {
+        let setting = self.node().await;
+        let address = node::address(&setting.url);
+        let checked = self.inner.node_verdict.lock().expect("node lock").clone();
+        let status = self.status();
+        let verdict = match checked {
+            Some((checked, verdict)) if checked == setting => Some(verdict),
+            _ if status.error.is_some() && !status.synced => Some("Can't reach node"),
+            _ if status.synced || status.tip > 0 => Some("Working"),
+            _ => None,
+        };
+        verdict.map_or(address.clone(), |v| format!("{v} · {address}"))
+    }
+
+    /// Checks `setting`'s node, telling `progress` as each check finishes.
+    pub async fn check_node(&self, setting: &node::Setting, progress: &(dyn Fn(&node::Report) + Sync)) -> node::Report {
+        let tip = self.inner.state.lock().await.tip;
+        let report = node::check(self.network(), setting, tip, now(), progress).await;
+        let current = self.node().await;
+        if node::normalize(&setting.url) == current.url && setting.self_signed == current.self_signed {
+            *self.inner.node_verdict.lock().expect("node lock") = Some((current, report.verdict()));
+        }
+        report
+    }
+
+    /// The nodes to offer besides the one in use: the network's own, then
+    /// `added` (ones checked on the Node screen), each once.
+    pub async fn other_nodes(&self, added: &[node::Setting]) -> Vec<node::Setting> {
+        let current = self.node().await.url;
+        let defaults = self.network().default_nodes().iter().map(|url| node::Setting { url: (*url).to_owned(), self_signed: false });
+        let mut out: Vec<node::Setting> = vec![];
+        for n in defaults.chain(added.iter().cloned()) {
+            let url = node::normalize(&n.url);
+            if url != current && !out.iter().any(|o| o.url == url) {
+                out.push(node::Setting { url, ..n });
+            }
+        }
+        out
+    }
+
+    /// Checks the other nodes at once, each with its line for the list.
+    pub async fn check_nodes(&self, nodes: &[node::Setting]) -> Vec<(node::Report, String)> {
+        let tip = self.inner.state.lock().await.tip;
+        node::check_all(self.network(), nodes, tip, now()).await
+    }
+
+    /// Talks to another node from now on; `self_signed` accepts its
+    /// certificate unverified.
+    pub async fn set_node(&self, url: &str, self_signed: bool) -> Result<()> {
         let url = crate::node::normalize(url);
         // An onion node can't be reached without Tor, and isn't looked up.
         crate::node::reachable(&url).map_err(FobError::BadEndpoint)?;
         // A node on the other network would never find this wallet's money.
-        crate::node::on_network(self.network(), &url).await.map_err(FobError::Node)?;
+        let setting = node::Setting { url: url.clone(), self_signed };
+        crate::node::on_network(self.network(), &setting).await.map_err(FobError::Node)?;
         let zmq_dropped = {
             let mut state = self.inner.state.lock().await;
             // Instant updates belong to a node's host: on another host they
@@ -907,6 +969,7 @@ impl Wallet {
                 state.zmq_on = false;
             }
             state.node = url;
+            state.node_self_signed = self_signed;
             self.save_state(&state)?;
             dropped
         };
@@ -915,6 +978,7 @@ impl Wallet {
         }
         *self.inner.rpc.lock().await = None;
         *self.inner.pipeline.lock().await = None;
+        *self.inner.node_verdict.lock().expect("node lock") = None;
         Ok(())
     }
 
@@ -989,15 +1053,16 @@ impl Wallet {
     /// The node: as a raw transport (for [`fetch`](crate::fetch)), as a
     /// daemon, and as a source of decoys with the output distribution cached.
     async fn connection(&self) -> Result<Connection> {
-        let node = self.inner.state.lock().await.node.clone();
+        let node::Setting { url: node, self_signed } = self.node().await;
         let mut rpc = self.inner.rpc.lock().await;
+        // set_node drops it, so a changed certificate setting is used too.
         if let Some((url, connection)) = rpc.as_ref()
             && *url == node
         {
             return Ok(connection.clone());
         }
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
-        let transport = Transport::new(&node).map_err(err)?;
+        let transport = Transport::new(&node, self_signed).map_err(err)?;
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
         let decoys = Decoys::new(daemon.clone(), transport.clone(), self.inner.path.with_extension("decoys"));
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
@@ -4001,13 +4066,47 @@ mod tests {
         assert_eq!(old.add_contact(contacts::Draft { name: "Mum".into(), ..Default::default() }).await.unwrap().id, 1);
     }
 
+    /// A node with a self-signed certificate is switched to only when
+    /// marked to accept it, and the mark is kept in the wallet file (off in
+    /// a file from before it), with the node's checks and Settings' line.
+    #[tokio::test]
+    async fn a_self_signed_node_is_kept_with_its_mark() {
+        let path = dir("self-signed");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        // From before the mark: opens, unmarked.
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        assert!(file["state"].as_object_mut().unwrap().remove("node_self_signed").is_some(), "the mark is saved");
+        store::save(&path, &[1; 32], &file).unwrap();
+        let wallet = Wallet::open(&path, [1; 32]).unwrap();
+        assert!(!wallet.node().await.self_signed);
+        assert_eq!(wallet.node_line().await, "stagenet.xmr-tw.org:38081");
+
+        let port = crate::node::tests::canned_node(true).await;
+        let url = format!("https://127.0.0.1:{port}");
+        let refused = wallet.set_node(&url, false).await.unwrap_err();
+        assert_eq!(refused.to_string(), "the node didn't answer: self-signed, not accepted");
+        wallet.set_node(&url, true).await.unwrap();
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(reopened.node().await, node::Setting { url: url.clone(), self_signed: true });
+
+        // Checking the node in use names it on Settings' line.
+        let report = reopened.check_node(&reopened.node().await, &|_| {}).await;
+        assert_eq!(report.rows[0].result, "self-signed, accepted");
+        assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
+        // The list leaves out the node in use, and an added one comes once.
+        let added = node::Setting { url: "node.example:38081/".into(), self_signed: true };
+        let others = reopened.other_nodes(&[added.clone(), added]).await;
+        assert_eq!(others.len(), Network::Stagenet.default_nodes().len() + 1);
+        assert_eq!(others.last(), Some(&node::Setting { url: "http://node.example:38081".into(), self_signed: true }));
+    }
+
     /// Fob has no Tor: an onion node is refused when chosen, and one
     /// already in a wallet file is never looked up or connected to.
     #[tokio::test]
     async fn an_onion_node_is_refused_and_never_reached() {
         let wallet = Wallet::create(&dir("onion"), [1; 32], Network::Stagenet).unwrap();
         let before = wallet.node().await;
-        let refused = wallet.set_node("xmrnode.onion:38081").await.unwrap_err();
+        let refused = wallet.set_node("xmrnode.onion:38081", false).await.unwrap_err();
         assert!(matches!(refused, FobError::BadEndpoint(_)));
         assert_eq!(refused.to_string(), "Fob can't reach .onion nodes yet");
         assert_eq!(wallet.node().await, before, "unchanged");

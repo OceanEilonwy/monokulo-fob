@@ -35,7 +35,7 @@ async fn main() {
     r.push(1);
     key(&mut r, "compress", Type::Bool as u8);
     r.push(1);
-    let t = Transport::new(&node).unwrap();
+    let t = Transport::new(&node, false).unwrap();
     let body = t.post("get_output_distribution.bin", r, None).await.unwrap();
     println!("{} bytes", body.len());
     let mut epee = Epee::new(body.as_slice()).unwrap();

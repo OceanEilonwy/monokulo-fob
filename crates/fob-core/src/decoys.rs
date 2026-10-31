@@ -271,7 +271,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a public stagenet node"]
     async fn the_compressed_distribution_matches_monero_oxides_over_http() {
-        let transport = Transport::new("http://stagenet.xmr-tw.org:38081").unwrap();
+        let transport = Transport::new("http://stagenet.xmr-tw.org:38081", false).unwrap();
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.unwrap();
         let tip = daemon.latest_block_number().await.unwrap();
         for (from, to) in [(tip - 500, tip), (1_000_000, 1_000_000), (1_200_000, 1_250_000)] {

@@ -340,10 +340,13 @@ class WalletModel(private val app: Application) {
         refresh()
     }
 
-    /** Talks to another node; on another host, instant updates go off. Throws what Rust refused. */
-    suspend fun setNode(url: String) {
+    /**
+     * Talks to another node, accepting its self-signed certificate with [selfSigned];
+     * on another host, instant updates go off. Throws what Rust refused.
+     */
+    suspend fun setNode(url: String, selfSigned: Boolean) {
         val wallet = _wallet.value ?: return
-        wallet.setNode(url)
+        wallet.setNode(url, selfSigned)
         _status.value = wallet.status()
     }
 

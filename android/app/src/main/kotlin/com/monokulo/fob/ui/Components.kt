@@ -112,6 +112,14 @@ object Icons {
     const val check = "M5 12.5l4.5 4.5L19 7.5"
     const val expand = "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"
     const val plus = "M12 5v14M5 12h14"
+    /** A circling arrow: check the node again. */
+    const val refresh = "M20 11a8 8 0 1 0-2.3 5.7 M20 4v7h-7"
+    /** Three dots: a node check still running. */
+    const val dots = "M6 12h.5 M12 12h.5 M18 12h.5"
+    /** An exclamation mark: a node check that failed. */
+    const val alert = "M12 7v6 M12 17v.5"
+    /** A dash: a node check not run. */
+    const val dash = "M8 12h8"
     const val search = "M10.5 4a6.5 6.5 0 1 0 0.01 0Z M15.5 15.5L20 20"
     /** A camera: Take a photo, and the badge on a contact's photo. */
     const val camera = "M4 8h3l2-3h6l2 3h3v11H4Z M12 10.5a3 3 0 1 0 0.01 0Z"

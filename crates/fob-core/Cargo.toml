@@ -10,6 +10,10 @@ monero-wallet = "0.2"
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
+# The rustls and roots reqwest uses, to check a node's certificate in Fob
+# (saying why one fails) and accept a self-signed one where asked.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+webpki-roots = "1"
 monero-seed = { path = "../../third_party/monero-seed" }
 polyseed = { path = "../../third_party/polyseed" }
 orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "e104a17c0f1a443d826b3d4b8efbeab705cfc39a" }
@@ -30,5 +34,6 @@ sha3 = "0.10"
 unicode-normalization = "0.1.25"
 
 [dev-dependencies]
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio = { version = "1", features = ["test-util"] }
 zeroize = "1"

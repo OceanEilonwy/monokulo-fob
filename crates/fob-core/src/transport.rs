@@ -29,23 +29,134 @@ pub struct Transport {
     requests: Arc<AtomicU64>,
     /// Bytes the block fetcher has taken from the node, for the link speed.
     received: Arc<AtomicU64>,
+    /// What the last TLS handshake made of the node's certificate.
+    certificate: Seen,
 }
 
 pub type Daemon = MoneroDaemon<Transport>;
 
-impl Transport {
-    /// A daemon at `url` (`http://host:port` or `https://…`; user:pass@ in
-    /// the URL is sent as Basic auth).
-    pub async fn connect(url: &str) -> Result<Daemon, InterfaceError> {
-        MoneroDaemon::new(Transport::new(url)?).await
+/// Why a node's certificate didn't verify.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CertProblem {
+    /// Signed by no authority the phone knows: the node's own, usually.
+    /// A private authority's looks the same and is accepted the same way.
+    SelfSigned,
+    Expired,
+    NotYetValid,
+    /// Made out to another host name.
+    OtherName,
+}
+
+impl CertProblem {
+    /// "self-signed", for "self-signed, not accepted".
+    pub fn words(self) -> &'static str {
+        match self {
+            CertProblem::SelfSigned => "self-signed",
+            CertProblem::Expired => "expired",
+            CertProblem::NotYetValid => "not valid yet",
+            CertProblem::OtherName => "for another address",
+        }
     }
 
-    /// The transport alone, to keep a handle on it (see [`requests`](Self::requests)).
+    fn of(error: &rustls::Error) -> CertProblem {
+        use rustls::CertificateError as C;
+        match error {
+            rustls::Error::InvalidCertificate(C::Expired | C::ExpiredContext { .. }) => CertProblem::Expired,
+            rustls::Error::InvalidCertificate(C::NotValidYet | C::NotValidYetContext { .. }) => CertProblem::NotYetValid,
+            rustls::Error::InvalidCertificate(C::NotValidForName | C::NotValidForNameContext { .. }) => CertProblem::OtherName,
+            // Unknown issuer, or (openssl's usual self-signed certificate)
+            // an authority's certificate used as the server's own.
+            _ => CertProblem::SelfSigned,
+        }
+    }
+}
+
+/// The node's certificate as last checked: `None` before any TLS handshake
+/// (and always over plain HTTP).
+type Seen = Arc<std::sync::Mutex<Option<Result<(), CertProblem>>>>;
+
+/// The phone's usual check of a node's certificate (Mozilla's roots, as
+/// reqwest's own), noting what it found. For a node marked to accept
+/// self-signed certificates, any certificate passes: the connection is
+/// still encrypted, and the handshake still proves the node holds the
+/// certificate's key, but nothing says whose key that is. Only that one
+/// node's connections are made with it; price providers have their own
+/// clients with the usual check.
+#[derive(Debug)]
+struct Verifier {
+    usual: Arc<rustls::client::WebPkiServerVerifier>,
+    accept_any: bool,
+    seen: Seen,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Verifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let verdict = self.usual.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
+        *self.seen.lock().expect("certificate lock") = Some(verdict.as_ref().map(|_| ()).map_err(CertProblem::of));
+        match verdict {
+            Err(_) if self.accept_any => Ok(rustls::client::danger::ServerCertVerified::assertion()),
+            verdict => verdict,
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.usual.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.usual.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.usual.supported_verify_schemes()
+    }
+}
+
+/// TLS for one node: the usual check, or any certificate with `accept_any`.
+fn tls(accept_any: bool, seen: Seen) -> Result<rustls::ClientConfig, String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let roots = Arc::new(rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() });
+    let usual = rustls::client::WebPkiServerVerifier::builder_with_provider(roots, provider.clone()).build().map_err(|e| e.to_string())?;
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(Verifier { usual, accept_any, seen }))
+        .with_no_client_auth();
+    // As reqwest offers by default.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+impl Transport {
+    /// A transport to the node at `url` (`http://host:port` or `https://…`;
+    /// user:pass@ in the URL is sent as Basic auth). With `self_signed`,
+    /// an https node's certificate isn't verified (see [`Verifier`]).
     /// An onion node is refused here too, whatever path led to it (an
     /// older wallet file, say): there's no Tor to reach it through.
-    pub fn new(url: &str) -> Result<Transport, InterfaceError> {
+    pub fn new(url: &str, self_signed: bool) -> Result<Transport, InterfaceError> {
         crate::node::reachable(url).map_err(InterfaceError::InternalError)?;
+        let certificate = Seen::default();
+        let tls = tls(self_signed, certificate.clone()).map_err(|e| InterfaceError::InternalError(format!("TLS: {e}")))?;
         let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls)
             .read_timeout(QUIET)
             .connect_timeout(Duration::from_secs(15))
             // monerod closes idle keep-alive connections; reusing one it has
@@ -55,7 +166,19 @@ impl Transport {
             .tcp_keepalive(Duration::from_secs(30))
             .build()
             .map_err(|e| InterfaceError::InternalError(format!("HTTP client: {e}")))?;
-        Ok(Transport { client, base: url.trim_end_matches('/').into(), requests: Arc::new(AtomicU64::new(0)), received: Arc::new(AtomicU64::new(0)) })
+        Ok(Transport {
+            client,
+            base: url.trim_end_matches('/').into(),
+            requests: Arc::new(AtomicU64::new(0)),
+            received: Arc::new(AtomicU64::new(0)),
+            certificate,
+        })
+    }
+
+    /// The node's certificate at the last handshake: verified, or why not
+    /// (accepted anyway for a node marked self-signed). `None` before one.
+    pub fn certificate(&self) -> Option<Result<(), CertProblem>> {
+        *self.certificate.lock().expect("certificate lock")
     }
 
     /// Requests made so far, for tests and benchmarks.
