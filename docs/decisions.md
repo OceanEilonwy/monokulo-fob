@@ -737,3 +737,9 @@ Calls made while building the first version, with why. Newest last.
     3EkYw … e7kQa", `contacts::three_part`), each paid-at address with "Not
     their send address · paid once, 25 Oct" ("paid 3 times, last …", "not
     paid yet").
+105. **Back from Confirm returns to the form as filled** (`SendDraft`):
+    Review puts the form's state (To, the amount as typed and its unit,
+    the note, the code it came from) on the back stack as
+    `Screen.Send(draft)` under Confirm, which opens pulled up and filled,
+    and doesn't take the code it came from again while the camera still
+    sees it. Once sent, both go from the stack, so Back from Paid is Home.

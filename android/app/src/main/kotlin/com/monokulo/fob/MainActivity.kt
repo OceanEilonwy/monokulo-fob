@@ -48,6 +48,7 @@ import com.monokulo.fob.ui.screens.WalletCodeScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
 import com.monokulo.fob.ui.screens.ZmqScreen
 import kotlinx.coroutines.suspendCancellableCoroutine
+import com.monokulo.fob.ui.screens.SendDraft
 import uniffi.fob.Activity
 import uniffi.fob.Prepared
 import kotlin.coroutines.resume
@@ -63,8 +64,12 @@ sealed interface Screen {
     data class RestoreFound(val code: String) : Screen
     data object Home : Screen
     data object Receive : Screen
-    /** Send: the camera under a sheet with the form; [code], from a link, is read as if scanned. */
-    data class Send(val code: String? = null) : Screen
+    /**
+     * Send: the camera under a sheet with the form; [code], from a link, is
+     * read as if scanned. With [draft], the form opens filled, as it was
+     * (back from Confirm).
+     */
+    data class Send(val code: String? = null, val draft: SendDraft? = null) : Screen
     /** [note]: typed on Send, or the payment code's description, shown again before sending. */
     data class Confirm(val prepared: Prepared, val note: String? = null) : Screen
     data class Paid(val prepared: Prepared, val tx: String) : Screen
@@ -195,7 +200,7 @@ class MainActivity : FragmentActivity() {
             is Screen.RestoreFound -> RestoreFoundScreen(model, nav, screen.code)
             Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav) else WelcomeScreen(model, nav)
             Screen.Receive -> ReceiveScreen(model, nav)
-            is Screen.Send -> SendScreen(model, nav, screen.code)
+            is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
             is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
             is Screen.Paid -> PaidScreen(nav, screen.prepared)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)

@@ -278,7 +278,8 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String
                     error = "Not sent."
                 } else {
                     runCatching { model.send(prepared) }
-                        .onSuccess { tx -> nav.back(); nav.go(Screen.Paid(prepared, tx)) }
+                        // Sent: neither this nor the filled form under it is a step back from Paid.
+                        .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(prepared, tx)) }
                         .onFailure { error = it.reason() }
                 }
                 busy = false
