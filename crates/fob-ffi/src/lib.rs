@@ -46,7 +46,7 @@ impl From<fob_core::FobError> for FobError {
             E::NotEnoughFunds { .. } => FobError::NotEnoughFunds { reason },
             E::WrongKey => FobError::WrongKey { reason },
             E::ViewOnly => FobError::ViewOnly { reason },
-            E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::Price(_) => FobError::Other { reason },
+            E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::Price(_) | E::PriceFailed(_) => FobError::Other { reason },
         }
     }
 }
@@ -129,7 +129,7 @@ pub struct Balance {
     /// "2.4813"
     pub total_text: String,
     pub unlocked_text: String,
-    /// What the balance is worth now, "$412.06"; only with prices on and a
+    /// What the balance is worth now, "$412.06"; only with a currency besides XMR and a
     /// current price.
     pub fiat_text: Option<String>,
     /// Show [`fiat_text`](Self::fiat_text) first, the XMR under it.
@@ -147,13 +147,93 @@ pub struct BackupReminder {
     pub line: String,
 }
 
-/// A currency to choose.
+/// One row of the "Also show amounts in" list.
 #[derive(uniffi::Record)]
-pub struct CurrencyChoice {
-    /// "USD"
-    pub code: String,
-    /// "US dollar · USD", or the code alone.
-    pub text: String,
+pub struct CurrencyRow {
+    /// The code to choose ("AUD"), or none for XMR only.
+    pub code: Option<String>,
+    /// In the circle: "A$", "CHF", "ɱ".
+    pub sign: String,
+    /// "Australian dollar", "XMR only".
+    pub name: String,
+    /// "AUD · Kraken, CoinGecko", "Fob never looks up a price".
+    pub line: String,
+    pub chosen: bool,
+}
+
+/// A titled part of the list: "NONE", "THIS PHONE’S", "ALL 45".
+#[derive(uniffi::Record)]
+pub struct CurrencyGroup {
+    pub title: String,
+    pub rows: Vec<CurrencyRow>,
+}
+
+/// The "Also show amounts in" list.
+#[derive(uniffi::Record)]
+pub struct CurrencyList {
+    pub groups: Vec<CurrencyGroup>,
+    /// Instead of the groups when a search finds nothing.
+    pub empty: Option<String>,
+}
+
+impl From<price::CurrencyList> for CurrencyList {
+    fn from(l: price::CurrencyList) -> Self {
+        CurrencyList {
+            groups: l
+                .groups
+                .into_iter()
+                .map(|g| CurrencyGroup {
+                    title: g.title,
+                    rows: g.rows.into_iter().map(|r| CurrencyRow { code: r.code, sign: r.sign, name: r.name, line: r.line, chosen: r.chosen }).collect(),
+                })
+                .collect(),
+            empty: l.empty,
+        }
+    }
+}
+
+/// Whose prices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PriceProvider {
+    Kraken,
+    CoinGecko,
+}
+
+impl From<PriceProvider> for price::Provider {
+    fn from(p: PriceProvider) -> Self {
+        match p {
+            PriceProvider::Kraken => price::Provider::Kraken,
+            PriceProvider::CoinGecko => price::Provider::CoinGecko,
+        }
+    }
+}
+
+impl From<price::Provider> for PriceProvider {
+    fn from(p: price::Provider) -> Self {
+        match p {
+            price::Provider::Kraken => PriceProvider::Kraken,
+            price::Provider::CoinGecko => PriceProvider::CoinGecko,
+        }
+    }
+}
+
+/// One provider's line on Price from, checked as it opens.
+#[derive(uniffi::Record)]
+pub struct PriceCheck {
+    pub provider: PriceProvider,
+    /// "Kraken"
+    pub name: String,
+    /// It answers over the web, and over Tor.
+    pub web: bool,
+    pub tor: bool,
+    pub chosen: bool,
+    /// "A$845.10"; none when it failed or wasn't asked.
+    pub rate: Option<String>,
+    /// "Not answering", "Busy, try again soon".
+    pub failure: Option<String>,
+    pub can_pick: bool,
+    /// For TalkBack: "Kraken, web only, A$845.10".
+    pub label: String,
 }
 
 /// How price requests travel.
@@ -193,17 +273,15 @@ pub struct PriceSourceChoice {
     pub chosen: bool,
 }
 
-/// Settings' "Display" and "Prices" cards.
+/// Settings' money and price rows.
 #[derive(uniffi::Record)]
 pub struct PriceSettings {
-    /// "Show prices".
-    pub on: bool,
-    /// "USD"
-    pub currency: String,
-    /// The Currency row's value: "US dollar", or the code.
+    /// "Also show amounts in": "USD", or none for XMR only.
+    pub currency: Option<String>,
+    /// That row's value: "US dollar", "XMR only".
     pub currency_text: String,
-    pub currencies: Vec<CurrencyChoice>,
-    /// "Show amounts in" the currency, not XMR.
+    pub provider: PriceProvider,
+    /// "Show first" the currency, not XMR.
     pub fiat_first: bool,
     /// "Kraken · over the internet"
     pub source_text: String,
@@ -272,7 +350,7 @@ pub struct ActivityDay {
 pub struct NotReadyPiece {
     /// "0.653"
     pub amount_text: String,
-    /// Worth now, with prices on: "$108.44".
+    /// Worth now, with a currency besides XMR: "$108.44".
     pub fiat_text: Option<String>,
     pub confirmations: u64,
     /// 10, or 60 for a mined reward.
@@ -294,7 +372,7 @@ pub struct NotReadySum {
     pub label: String,
     /// "1.8592"
     pub amount_text: String,
-    /// Worth now, with prices on: "$308.70".
+    /// Worth now, with a currency besides XMR: "$308.70".
     pub fiat_text: Option<String>,
     /// The line for TalkBack: "Ready to spend, 1.8592 XMR, $308.70".
     pub description: String,
@@ -358,7 +436,7 @@ impl From<not_ready::PieceView> for NotReadyPiece {
 pub struct Coin {
     /// "1.2"
     pub amount_text: String,
-    /// Worth now, with prices on: "$199.27".
+    /// Worth now, with a currency besides XMR: "$199.27".
     pub fiat_text: Option<String>,
     /// "Received · 22 Oct", "Split up · 08:31", "Change · Ridge Hardware".
     pub source: String,
@@ -482,7 +560,7 @@ pub struct Prepared {
     pub amount_text: String,
     pub fee_text: String,
     pub total_text: String,
-    /// What they're worth now, with prices on: "$20.00".
+    /// What they're worth now, with a currency besides XMR: "$20.00".
     pub amount_fiat: Option<String>,
     pub fee_fiat: Option<String>,
     pub total_fiat: Option<String>,
@@ -858,7 +936,7 @@ impl FobWallet {
         self.inner.stop_prices();
     }
 
-    /// Settings' "Display" and "Prices" cards.
+    /// Settings' money and price rows.
     pub async fn price_settings(&self) -> PriceSettings {
         let s = self.inner.price_settings().await;
         let sources = [price::Transport::Web, price::Transport::Tor]
@@ -866,36 +944,71 @@ impl FobWallet {
             .map(|t| PriceSourceChoice {
                 transport: t.into(),
                 text: price::Settings { transport: t, ..s.clone() }.source_text(),
-                note: (!t.available()).then(|| "Not available yet".to_owned()),
-                available: t.available(),
+                note: if !t.available() {
+                    Some("Not available yet".to_owned())
+                } else if !s.provider.answers_over(t) {
+                    Some(format!("{} doesn't answer {}", s.provider.name(), t.text()))
+                } else {
+                    None
+                },
+                available: t.available() && s.provider.answers_over(t),
                 chosen: t == s.transport,
             })
             .collect();
         PriceSettings {
-            on: s.on,
-            currencies: s
-                .provider
-                .currencies()
-                .iter()
-                .map(|code| CurrencyChoice { code: (*code).to_owned(), text: price::currency(code).choice_text() })
-                .collect(),
-            currency_text: price::currency(&s.currency).text(),
+            currency_text: price::shown_in_text(&s),
             currency: s.currency.clone(),
+            provider: s.provider.into(),
             fiat_first: s.fiat_first,
             source_text: s.source_text(),
             sources,
-            error: if s.on { self.inner.price_error() } else { None },
+            error: if s.code().is_some() { self.inner.price_error() } else { None },
         }
     }
 
-    /// "Show prices". Off, Fob never asks for one.
-    pub async fn set_prices_on(&self, on: bool) -> Result<()> {
-        Ok(self.inner.set_prices_on(on).await?)
+    /// The "Also show amounts in" list, the chosen one ticked: `phone` is
+    /// the phone's own currency code (its locale's), `query` what's typed
+    /// in the search.
+    pub async fn currency_list(&self, phone: Option<String>, query: String) -> CurrencyList {
+        self.inner.currency_list(phone.as_deref(), &query).await.into()
     }
 
-    /// Prices in `code`, one of `price_settings().currencies`.
-    pub async fn set_currency(&self, code: String) -> Result<()> {
-        Ok(self.inner.set_currency(&code).await?)
+    /// "Also show amounts in" `code` (a row's), or XMR only (none), when Fob
+    /// never asks for a price. Returns words to show when the provider had
+    /// to change for it: "Kraken doesn't price New Zealand dollars, so Fob
+    /// now asks CoinGecko".
+    pub async fn set_currency(&self, code: Option<String>) -> Result<Option<String>> {
+        Ok(self.inner.set_currency(code.as_deref()).await?)
+    }
+
+    /// Prices from `provider`, one that prices the currency. Returns words
+    /// to show when the transport had to change for it.
+    pub async fn set_price_provider(&self, provider: PriceProvider) -> Result<Option<String>> {
+        Ok(self.inner.set_price_provider(provider.into()).await?)
+    }
+
+    /// Price from, as it opens: every provider that prices the chosen
+    /// currency asked at once (8 s each at most); none with XMR only.
+    pub async fn check_prices(&self) -> Option<Vec<PriceCheck>> {
+        let checks = self.inner.check_prices().await?;
+        Some(
+            checks
+                .into_iter()
+                .filter_map(|c| {
+                    Some(PriceCheck {
+                        provider: price::Provider::named(c.name)?.into(),
+                        name: c.name.into(),
+                        web: c.web,
+                        tor: c.tor,
+                        chosen: c.chosen,
+                        rate: c.rate,
+                        failure: c.failure,
+                        can_pick: c.can_pick,
+                        label: c.label,
+                    })
+                })
+                .collect(),
+        )
     }
 
     /// How price requests travel; one not available is refused.
@@ -972,7 +1085,7 @@ impl FobWallet {
     }
 
     /// An amount field for `text`, typed in money (`in_fiat`) or XMR; in
-    /// money only with prices on and a current price.
+    /// money only with a currency besides XMR and a current price.
     pub async fn amount_entry(&self, text: String, in_fiat: bool) -> AmountEntry {
         let f = self.inner.amount_field(&text, in_fiat).await;
         AmountEntry {
@@ -1894,7 +2007,7 @@ pub struct PaymentDetail {
     pub amount_text: String,
     /// "Today 08:40 · Coffee beans"
     pub when: String,
-    /// Prices are on: show the two boxes.
+    /// Amounts also show in a currency: show the two boxes.
     pub priced: bool,
     /// "$83.03" or "Not available"
     pub worth_now: String,

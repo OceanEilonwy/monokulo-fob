@@ -1331,3 +1331,74 @@ Calls made while building the first version, with why. Newest last.
 178. **Settings' currency words come from Rust**: the Currency row's value
     ("US dollar", or the code for one Fob has no name for) and each choice
     ("US dollar · USD", or the code).
+179. **45 currencies, each written one way**: the table in
+    `price/currencies.rs` gives each code its English name, a plural for
+    labels ("Amount in Japanese yen"), a symbol and its decimals. Symbols
+    are kept unique among the 45: "$" is the US dollar only; A$, C$, NZ$,
+    HK$, S$, NT$, R$, MX$, CN¥ (¥ is the yen), R for the rand, Rp, RM and
+    the single-sign ones (£ € ₹ ₩ ₫ ₪ ₺ ₴ ₦ ₽ ₱ ₾ ৳ ฿). Where no short sign is
+    clear (kr, zł, Kč, Ft, the dinars, riyals, dirham, rupees of Pakistan
+    and Sri Lanka, CHF, the pesos of Argentina and Chile, the Bermudian
+    dollar, the kyat) the code goes after the amount ("412.06 CHF").
+    Decimals are ISO 4217's (3 for BHD and KWD, 0 for JPY, KRW, VND and
+    CLP) except the rupiah and the forint, written in whole units (0)
+    everywhere. Settings' Currency choices ("US dollar · USD", decision
+    178) give way to the list of decision 186.
+180. **Kraken prices 7, not 8**: its AssetPairs lists USD/AED, but that
+    market has never traded (the ticker's last price is 0, OHLC has one
+    empty candle), so Kraken can't price the dirham and isn't offered for
+    it; CoinGecko is. The others: USD and EUR from XMRUSD and XMREUR; GBP
+    and AUD as XMR/USD divided by GBP/USD and AUD/USD; CAD, CHF and JPY as
+    XMR/USD times USD/CAD, USD/CHF and USD/JPY. Each rate is the market's
+    last trade, both asked at once. History asks both daily OHLCs and joins
+    them by day; a day with no exchange candle takes the last rate before
+    it. On 2026-10-31 Kraken's way gave A$844.63, CoinGecko A$844.02.
+181. **CoinGecko, keyless**: `simple/price` for now and the daily
+    `market_chart` for 365 days (the keyless limit; more is refused), each
+    day's first point (its start, 00:00 UTC) as that day's price. HTTP
+    429, or a body saying error 429, is "Busy, try again soon"; so is
+    Kraken's "Rate limit exceeded". Prices come as JSON numbers, read from
+    their digits into millionths (from the double only when written with an
+    exponent).
+182. **Old wallet files**: prices off becomes XMR only; on keeps its
+    currency (USD or EUR, both Kraken's). A file from before prices is in
+    dollars, as is a new wallet. The settings no longer write `on`; a
+    `null` currency is XMR only. A code Fob doesn't have becomes XMR only,
+    and a provider or transport that doesn't fit is moved on opening, as
+    choosing would. Records of past prices stay keyed by currency, so a
+    payment priced in dollars shows its dollars again when dollars are
+    chosen again.
+183. **Moving to a provider that fits**: Fob keeps the chosen provider
+    while it prices the currency (back to dollars from New Zealand
+    dollars, CoinGecko stays); otherwise it moves to the first that does,
+    Kraken before CoinGecko, saying "Kraken doesn't price New Zealand
+    dollars, so Fob now asks CoinGecko". A provider that can't price the
+    currency is refused. Picking one without Tor while on Tor moves to the
+    web: "Kraken doesn't answer over Tor, so Fob now asks over the web".
+184. **Web and Tor per provider, until Tor exists**: Kraken web only,
+    CoinGecko both, as placeholders to confirm when Tor is built (said in
+    each provider's `answers_over`). Tor itself stays refused as before.
+    Failures carry a kind (not answering, busy, no price in the answer,
+    Tor not built), so Settings' Price from row reads "Kraken · over the
+    internet · Not answering" rather than a library's message.
+185. **Price from's check**: every provider that prices the chosen
+    currency is asked for the price now, all at once, 8 s each at most,
+    over the chosen transport; one that doesn't answer over it is never
+    asked (over the web while Tor is chosen would show the phone's
+    address) and stays pickable. Each line: rate ("A$845.10") or the
+    failure in words ("Not answering", "Busy, try again soon"), whether it
+    can be picked, and a TalkBack label ("Kraken, web only, A$845.10").
+    Answers aren't kept as the current price: the check is only a look.
+186. **The "Also show amounts in" list**: groups NONE (XMR only, "Fob never
+    looks up a price"), THIS PHONE’S (the locale's currency, when it's one
+    of the 45) and ALL 45 by name, each row with its sign (symbol or
+    code), name and "AUD · Kraken, CoinGecko". Searching matches name,
+    plural, code or symbol, case and accents aside ("zloty" finds the
+    złoty); it drops the phone's row (it's among the rest), titles the
+    rest "3 OF 45", finds XMR only by "xmr", "monero" or "ɱ", and says "No
+    currency matches “…”" when nothing does.
+187. **Android until step 3**: Settings keeps a stopgap: "Also show amounts
+    in" opens the list in a dialog (Rust's groups and rows), "Show first"
+    only with a currency, "Price from" opens a dialog of the check's lines
+    and the two transports; a move's words show as a toast. The Show
+    prices switch and `set_prices_on` are gone.

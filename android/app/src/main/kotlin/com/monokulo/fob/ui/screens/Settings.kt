@@ -62,8 +62,14 @@ import com.monokulo.fob.ui.ThemeChoice
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
+import android.widget.Toast
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
 import uniffi.fob.Activity
+import uniffi.fob.CurrencyList
+import uniffi.fob.PriceCheck
 import uniffi.fob.Network
 import uniffi.fob.NodeCheck
 import uniffi.fob.ZmqStatus
@@ -119,6 +125,17 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     var choosing by remember { mutableStateOf<Pick?>(null) }
     var priceError by remember { mutableStateOf<String?>(null) }
     val prices by model.prices.collectAsState()
+    val context = LocalContext.current
+    // What the price dialogs show, asked of Rust as one opens.
+    var currencyList by remember { mutableStateOf<CurrencyList?>(null) }
+    var checks by remember { mutableStateOf<List<PriceCheck>?>(null) }
+    LaunchedEffect(choosing) {
+        when (choosing) {
+            Pick.CURRENCY -> currencyList = model.currencyList("")
+            Pick.SOURCE -> { checks = null; checks = model.checkPrices() }
+            else -> {}
+        }
+    }
     // Your profile's row, its words from Rust ("Set up your profile" before there's one).
     var profile by remember { mutableStateOf<Profile?>(null) }
     var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
@@ -158,31 +175,31 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 SectionLabel("Display")
                 Card {
                     ValueRow("Theme", theme.label) { choosing = Pick.THEME }
-                    // Only while prices show: with them off there's no money to pick or put first.
-                    prices?.takeIf { it.on }?.let { p ->
-                        ValueRow("Currency", p.currencyText) { choosing = Pick.CURRENCY }
+                    // A stopgap until the Money card: the currency list in a dialog.
+                    prices?.let { p -> ValueRow("Also show amounts in", p.currencyText) { choosing = Pick.CURRENCY } }
+                    // Only with a currency: with XMR only there's no money to put first.
+                    prices?.takeIf { it.currency != null }?.let { p ->
                         Row(
                             Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("Show amounts in", fontSize = 16.sp)
+                                Text("Show first", fontSize = 16.sp)
                                 Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
                             }
                             Segmented(
-                                listOf("XMR", p.currency), if (p.fiatFirst) 1 else 0, { i -> scope.launch { model.setFiatFirst(i == 1) } },
-                                Modifier.semantics { contentDescription = "Show amounts in" }, height = 48.dp,
+                                listOf("XMR", p.currency ?: ""), if (p.fiatFirst) 1 else 0, { i -> scope.launch { model.setFiatFirst(i == 1) } },
+                                Modifier.semantics { contentDescription = "Show first" }, height = 48.dp,
                             )
                         }
                     }
                 }
             }
-            prices?.let { p ->
+            prices?.takeIf { it.currency != null }?.let { p ->
                 Column {
                     SectionLabel("Prices")
                     Card {
-                        SettingRow("Show prices", "Off: Fob never asks for a price", checked = p.on, onChecked = { on -> scope.launch { model.setPricesOn(on) } })
-                        SettingRow("Price source", listOfNotNull(p.sourceText, p.error).joinToString(" · "), onClick = { choosing = Pick.SOURCE })
+                        SettingRow("Price from", listOfNotNull(p.sourceText, p.error).joinToString(" · "), onClick = { choosing = Pick.SOURCE })
                     }
                 }
             }
@@ -244,18 +261,30 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             confirmButton = { TextButton("Done", { choosing = null }, color = Fob.ink) },
         )
     } else if (choosing != null && p != null) {
+        // Rust's words when a choice moved the provider or the transport.
+        val said = { text: String? -> text?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() } }
         AlertDialog(
             onDismissRequest = { choosing = null; priceError = null },
-            title = { Text(if (choosing == Pick.CURRENCY) "Currency" else "Price source") },
+            title = { Text(if (choosing == Pick.CURRENCY) "Also show amounts in" else "Price from") },
             text = {
-                Column {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     if (choosing == Pick.CURRENCY) {
-                        p.currencies.forEach { c ->
-                            Choice(c.text, c.code == p.currency) {
-                                scope.launch { runCatching { model.setCurrency(c.code) }.onSuccess { choosing = null }.onFailure { priceError = it.reason() } }
+                        currencyList?.groups?.forEach { g ->
+                            SectionLabel(g.title)
+                            g.rows.forEach { c ->
+                                Choice("${c.sign} · ${c.name}", c.chosen, subtitle = c.line) {
+                                    scope.launch { runCatching { model.setCurrency(c.code) }.onSuccess { choosing = null; said(it) }.onFailure { priceError = it.reason() } }
+                                }
                             }
                         }
                     } else {
+                        if (checks == null) Text("Asking each provider…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+                        checks?.forEach { c ->
+                            Choice(c.name, c.chosen, subtitle = c.rate ?: c.failure, enabled = c.canPick) {
+                                scope.launch { runCatching { model.setPriceProvider(c.provider) }.onSuccess { choosing = null; said(it) }.onFailure { priceError = it.reason() } }
+                            }
+                        }
+                        SectionLabel("Ask over")
                         p.sources.forEach { s ->
                             Choice(s.text, s.chosen, subtitle = s.note, enabled = s.available) {
                                 scope.launch { runCatching { model.setPriceTransport(s.transport) }.onSuccess { choosing = null }.onFailure { priceError = it.reason() } }
