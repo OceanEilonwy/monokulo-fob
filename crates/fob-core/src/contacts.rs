@@ -331,10 +331,47 @@ pub(crate) fn test_webp(len: usize, side: u32) -> Vec<u8> {
     bytes
 }
 
-/// Whether the app's encoding of a photo is one Fob keeps, for its loop of
-/// lowering the quality, then the size, until it is.
-pub fn photo_fits(bytes: &[u8]) -> bool {
-    check_photo(bytes).is_ok()
+/// The app's encoding of a photo as Fob keeps it, or `None` when it isn't
+/// one (too big, say), for its loop of lowering the quality, then the size,
+/// until it is. Newer Androids' WebP encoder adds an sRGB colour profile
+/// (an `ICCP` chunk of about 450 bytes) under an extended header; Fob's
+/// photos are sRGB anyway, so the profile is taken out, and the extended
+/// header too when that leaves it nothing to say (no alpha).
+pub fn photo_kept(bytes: &[u8]) -> Option<Vec<u8>> {
+    let photo = without_profile(bytes).unwrap_or_else(|| bytes.to_vec());
+    check_photo(&photo).ok().map(|()| photo)
+}
+
+/// `bytes` without its colour profile, or `None` if it has none (or isn't
+/// a WebP whose chunks add up).
+fn without_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.get(..4)? != b"RIFF" || bytes.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    let mut chunks = vec![];
+    let mut rest = &bytes[12..];
+    while !rest.is_empty() {
+        let size = le(rest.get(4..8)?) as usize;
+        let (chunk, after) = rest.split_at_checked(8 + size + (size & 1))?;
+        chunks.push(chunk);
+        rest = after;
+    }
+    let (header, others) = chunks.split_first()?;
+    if &header[..4] != b"VP8X" || header.len() < 18 || !others.iter().any(|c| &c[..4] == b"ICCP") {
+        return None;
+    }
+    let mut header = header.to_vec();
+    // The extended header's flags: the profile's goes.
+    header[8] &= !0x20;
+    let mut body = if header[8] == 0 { vec![] } else { header };
+    for chunk in others.iter().filter(|c| &c[..4] != b"ICCP") {
+        body.extend_from_slice(chunk);
+    }
+    let mut photo = b"RIFF".to_vec();
+    photo.extend_from_slice(&(body.len() as u32 + 4).to_le_bytes());
+    photo.extend_from_slice(b"WEBP");
+    photo.extend(body);
+    Some(photo)
 }
 
 /// The address in a scanned or pasted text (an address, or a payment code,
@@ -906,6 +943,44 @@ mod tests {
             shared: None,
             parts: vec![],
         }
+    }
+
+    fn photo_fits(bytes: &[u8]) -> bool {
+        photo_kept(bytes).is_some()
+    }
+
+    /// `real` (a plain one) as Android 16 encodes it: an extended
+    /// header with the profile flag (and `flags` besides), an sRGB profile,
+    /// then the image's chunks.
+    fn with_profile(real: &[u8], flags: u8) -> Vec<u8> {
+        let (body, header) = if &real[12..16] == b"VP8X" { (&real[30..], Some(&real[20..30])) } else { (&real[12..], None) };
+        let mut x = header.map_or_else(|| vec![0, 0, 0, 0, 15, 0, 0, 15, 0, 0], <[u8]>::to_vec);
+        x[0] |= 0x20 | flags;
+        let mut bytes = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0".to_vec();
+        bytes.extend(x);
+        bytes.extend_from_slice(b"ICCP\xc8\x01\0\0");
+        bytes.extend([7; 456]);
+        bytes.extend_from_slice(body);
+        let riff = (bytes.len() as u32 - 8).to_le_bytes();
+        bytes[4..8].copy_from_slice(&riff);
+        bytes
+    }
+
+    /// Android 16 puts an sRGB colour profile in every WebP it encodes:
+    /// refused as it is, the profile is taken out and the photo kept.
+    #[test]
+    fn a_colour_profile_is_taken_out_of_a_photo() {
+        for (real, flags) in [(LOSSY, 0), (LOSSLESS, 0), (ALPHA, 0x10)] {
+            let plain = hex::decode(real).unwrap();
+            let profiled = with_profile(&plain, flags);
+            assert!(check_photo(&profiled).is_err(), "Fob reads no profile");
+            assert_eq!(photo_kept(&profiled), Some(plain.clone()), "{real}");
+            assert_eq!(photo_kept(&plain), Some(plain), "nothing to take out");
+        }
+        // Still too big without it: refused.
+        let big = test_webp(PHOTO_MAX + 2, 16);
+        assert_eq!(photo_kept(&with_profile(&big, 0)), None);
+        assert_eq!(photo_kept(b"RIFF\x04\0\0\0WEBPVP8X"), None);
     }
 
     #[test]

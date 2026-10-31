@@ -1588,7 +1588,7 @@ impl FobWallet {
         self.inner.receive_name_line().await
     }
 
-    /// Saves your name and photo (a WebP that `contact_photo_fits`); throws
+    /// Saves your name and photo (a WebP from `contact_photo_kept`); throws
     /// what's wrong with them.
     pub async fn set_profile(&self, name: String, photo: Option<Vec<u8>>) -> Result<Profile> {
         Ok(self.inner.set_profile(&name, photo).await?.into())
@@ -2017,7 +2017,7 @@ impl From<contacts::Contact> for Contact {
 pub struct ContactDraft {
     pub name: String,
     pub note: Option<String>,
-    /// A WebP that `contact_photo_fits`.
+    /// A WebP from `contact_photo_kept`.
     pub photo: Option<Vec<u8>>,
     /// An address or a payment code, as scanned or pasted; blank for none.
     pub send_address: Option<String>,
@@ -2250,11 +2250,12 @@ pub fn contact_address(address: String) -> String {
     contacts::three_part(&address)
 }
 
-/// Whether a photo the app encoded is one Fob keeps (a WebP of at most
-/// 1536 bytes); the app lowers the quality, then the size, until it is.
+/// A photo the app encoded as Fob keeps it (a WebP of at most 1536 bytes,
+/// without the colour profile newer Androids add), or none when it isn't
+/// one; the app lowers the quality, then the size, until it is.
 #[uniffi::export]
-pub fn contact_photo_fits(photo: Vec<u8>) -> bool {
-    contacts::photo_fits(&photo)
+pub fn contact_photo_kept(photo: Vec<u8>) -> Option<Vec<u8>> {
+    contacts::photo_kept(&photo)
 }
 
 /// The avatar's letter for a name being typed: "S", "?" for none.

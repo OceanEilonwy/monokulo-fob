@@ -43,7 +43,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import uniffi.fob.contactPhotoFits
+import uniffi.fob.contactPhotoKept
 import java.io.ByteArrayOutputStream
 
 /**
@@ -168,7 +168,7 @@ private fun smallPhoto(source: Bitmap): ByteArray? {
     for ((side, quality) in PHOTO_STEPS) {
         val bitmap = scaled.getOrPut(side) { Bitmap.createScaledBitmap(square, side, side, true) }
         val bytes = ByteArrayOutputStream().also { bitmap.compress(format, quality, it) }.toByteArray()
-        if (contactPhotoFits(bytes)) return bytes
+        contactPhotoKept(bytes)?.let { return it }
     }
     return null
 }
