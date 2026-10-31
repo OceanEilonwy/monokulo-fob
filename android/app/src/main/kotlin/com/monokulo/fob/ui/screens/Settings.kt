@@ -15,7 +15,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
+import kotlin.math.roundToInt
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.contentDescription
@@ -263,14 +269,67 @@ private fun ProfileSettingRow(row: ProfileRow, profile: Profile?, onClick: () ->
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(row.title, fontSize = 16.sp)
             val suffix = row.suffix
-            if (name != null && suffix != null) {
-                Row {
-                    Text(name, fontSize = 13.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    Text(suffix, fontSize = 13.sp, color = Fob.muted, maxLines = 1)
-                }
-            }
+            if (name != null && suffix != null) NameAndSuffix(name, suffix)
         }
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+    }
+}
+
+/**
+ * "Henry · share as a code" on one line, only the name cut short; when the
+ * line can't hold a few of the name's letters with the rest (a big font),
+ * the name over "· share as a code", which wraps rather than being cut.
+ */
+@Composable
+private fun NameAndSuffix(name: String, suffix: String) {
+    BoxWithConstraints {
+        val measurer = rememberTextMeasurer()
+        val style = LocalTextStyle.current.copy(fontSize = 13.sp)
+        val density = LocalDensity.current
+        val few = minOf(measurer.measure(name, style, maxLines = 1).size.width, with(density) { (13.sp * 3).toPx() }.roundToInt())
+        if (few + measurer.measure(suffix, style, maxLines = 1).size.width <= constraints.maxWidth) {
+            Row {
+                Text(name, fontSize = 13.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(suffix, fontSize = 13.sp, color = Fob.muted, maxLines = 1)
+            }
+        } else {
+            Column {
+                Text(name, fontSize = 13.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(suffix.trimStart(), fontSize = 13.sp, color = Fob.muted)
+            }
+        }
+    }
+}
+
+/**
+ * The Money card's first row: the title (and its line) at the start, the
+ * value at the end, at most 152 dp and wrapping a long name; when that
+ * would break the title inside a word (a big font), the value goes under
+ * it instead, still at the end.
+ */
+@Composable
+private fun TitleAndValue(modifier: Modifier, gap: Dp = 12.dp, title: @Composable () -> Unit, value: @Composable () -> Unit) {
+    Layout(content = { Box { title() }; Box { value() } }, modifier = modifier) { (t, v), c ->
+        val width = c.maxWidth
+        val space = gap.roundToPx()
+        val room = minOf(152.dp.roundToPx(), width - space - t.minIntrinsicWidth(Constraints.Infinity))
+        if (room >= v.minIntrinsicWidth(Constraints.Infinity)) {
+            val vp = v.measure(Constraints(maxWidth = room))
+            val tp = t.measure(Constraints(maxWidth = width - space - vp.width))
+            val height = maxOf(tp.height, vp.height, c.minHeight)
+            layout(width, height) {
+                tp.placeRelative(0, (height - tp.height) / 2)
+                vp.placeRelative(width - vp.width, (height - vp.height) / 2)
+            }
+        } else {
+            val tp = t.measure(Constraints(maxWidth = width))
+            val vp = v.measure(Constraints(maxWidth = width))
+            val under = 2.dp.roundToPx()
+            layout(width, maxOf(tp.height + under + vp.height, c.minHeight)) {
+                tp.placeRelative(0, 0)
+                vp.placeRelative(width - vp.width, tp.height + under)
+            }
+        }
     }
 }
 
@@ -307,13 +366,19 @@ private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () 
             .semantics(mergeDescendants = true) {}.padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Also show amounts in", fontSize = 16.sp)
-            Text(p.currencyLine, fontSize = 13.sp, color = Fob.muted)
-        }
-        // At the row's end by the chevron, as Theme's; a long name ("New
-        // Taiwan dollar") wraps rather than squeezing the title.
-        Text(p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 152.dp))
+        // The value at the row's end by the chevron, as Theme's; a long name
+        // ("New Taiwan dollar") wraps, and goes under the title rather than
+        // squeezing it.
+        TitleAndValue(
+            Modifier.weight(1f),
+            title = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Also show amounts in", fontSize = 16.sp)
+                    Text(p.currencyLine, fontSize = 13.sp, color = Fob.muted)
+                }
+            },
+            value = { Text(p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        )
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }
     val code = p.currency ?: return
