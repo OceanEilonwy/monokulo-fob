@@ -54,8 +54,10 @@ const RING_LEN: u8 = 16;
 const MAX_FEE_PER_WEIGHT: u64 = 2_000_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
+/// The longest [`Wallet::sync_now`] waits for its round.
+const SYNC_NOW_WAIT: Duration = Duration::from_secs(20);
 /// Confirmations before money can be spent.
-const UNLOCK: u64 = monero_wallet::DEFAULT_LOCK_WINDOW as u64;
+pub(crate) const UNLOCK: u64 = monero_wallet::DEFAULT_LOCK_WINDOW as u64;
 const COINBASE_UNLOCK: u64 = monero_wallet::COINBASE_LOCK_WINDOW as u64;
 
 fn now() -> u64 {
@@ -145,6 +147,14 @@ pub struct Balance {
     pub confirming: u64,
 }
 
+impl Balance {
+    /// "0.5 XMR ready to spend", under the balance while some of it can't be
+    /// spent yet; nothing once all of it can.
+    pub fn ready_text(&self) -> Option<String> {
+        (self.unlocked < self.total).then(|| format!("{} XMR ready to spend", amount::format_short(self.unlocked)))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     In,
@@ -219,6 +229,11 @@ struct Inner {
     next_id: AtomicU64,
     status: std::sync::Mutex<SyncStatus>,
     syncing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Wakes the sync loop from its wait for the next poll.
+    wake: tokio::sync::Notify,
+    /// Counts the sync loop's rounds that ended caught up or failed, so
+    /// [`Wallet::sync_now`] knows when its round is over.
+    rounds: tokio::sync::watch::Sender<u64>,
     /// Payments to this wallet still in the node's pool: amount by
     /// transaction. Not saved: the pool is asked again after every block.
     pool: std::sync::Mutex<HashMap<String, (u64, u64)>>,
@@ -330,6 +345,8 @@ impl Wallet {
                 next_id: AtomicU64::new(1),
                 status: std::sync::Mutex::new(status),
                 syncing: std::sync::Mutex::new(None),
+                wake: tokio::sync::Notify::new(),
+                rounds: tokio::sync::watch::Sender::new(0),
                 pool: std::sync::Mutex::new(HashMap::new()),
                 pool_seen: std::sync::Mutex::new(HashSet::new()),
                 last_block: std::sync::Mutex::new(None),
@@ -891,12 +908,14 @@ impl Wallet {
                         wallet.report(listener.as_ref(), &mut rate, None).await;
                         if !more {
                             rate = None;
-                            tokio::time::sleep(POLL).await;
+                            wallet.inner.rounds.send_modify(|n| *n += 1);
+                            wallet.wait(POLL).await;
                         }
                     }
                     Err(e) => {
                         wallet.report(listener.as_ref(), &mut rate, Some(e.to_string())).await;
-                        tokio::time::sleep(backoff).await;
+                        wallet.inner.rounds.send_modify(|n| *n += 1);
+                        wallet.wait(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(60));
                     }
                 }
@@ -909,6 +928,33 @@ impl Wallet {
         if let Some(handle) = self.inner.syncing.lock().expect("sync lock").take() {
             handle.abort();
         }
+    }
+
+    /// The sync loop's wait between rounds, cut short by [`sync_now`](Wallet::sync_now).
+    async fn wait(&self, time: Duration) {
+        tokio::select! {
+            _ = tokio::time::sleep(time) => {}
+            _ = self.inner.wake.notified() => {}
+        }
+    }
+
+    /// Asks the node for new blocks and its pool now, rather than at the next
+    /// poll (pull to refresh). Returns once that round is over: caught up,
+    /// failed (the error is in [`status`](Wallet::status)), or 20 s passed.
+    /// Without the sync loop running it does one step itself.
+    pub async fn sync_now(&self) {
+        let running = self.inner.syncing.lock().expect("sync lock").as_ref().is_some_and(|h| !h.is_finished());
+        if !running {
+            let _ = tokio::time::timeout(SYNC_NOW_WAIT, self.sync_step()).await;
+            self.refresh_status().await;
+            return;
+        }
+        let mut rounds = self.inner.rounds.subscribe();
+        rounds.mark_unchanged();
+        // A round already under way ends this wait; the stored permit then
+        // starts the next one at once, which is what pulling asked for.
+        self.inner.wake.notify_one();
+        let _ = tokio::time::timeout(SYNC_NOW_WAIT, rounds.changed()).await;
     }
 
     /// Builds a payment to `to`, choosing the money to spend and the fee.
@@ -944,7 +990,7 @@ impl Wallet {
             let available = candidates.iter().map(|c| c.1).sum::<u64>();
             (candidates, available)
         };
-        let not_enough = |needed: u64| FobError::NotEnoughFunds { available: amount::format(available, 4), needed: amount::format(needed, 4) };
+        let not_enough = |needed: u64| FobError::NotEnoughFunds { available: amount::format(available), needed: amount::format(needed) };
         if available < amount {
             return Err(not_enough(amount));
         }
@@ -1110,5 +1156,49 @@ mod tests {
         let wallet = Wallet::create(&dir("empty"), [1; 32], Network::Stagenet).unwrap();
         assert_eq!(wallet.balance().await, Balance::default());
         assert!(wallet.activity().await.is_empty());
+    }
+
+    #[test]
+    fn the_ready_line_shows_only_while_some_money_is_waiting() {
+        let all = Balance { total: 2_500_000_000_000, unlocked: 2_500_000_000_000, confirming: 0 };
+        assert_eq!(all.ready_text(), None);
+        let some = Balance { total: 2_500_000_000_000, unlocked: 500_000_000_000, confirming: 2_000_000_000_000 };
+        assert_eq!(some.ready_text().as_deref(), Some("0.5 XMR ready to spend"));
+    }
+
+    struct Quiet;
+    impl SyncListener for Quiet {
+        fn on_status(&self, _: SyncStatus) {}
+    }
+
+    /// A wallet whose node refuses connections, so every round fails at once.
+    async fn unreachable(name: &str) -> Wallet {
+        let wallet = Wallet::create(&dir(name), [1; 32], Network::Stagenet).unwrap();
+        wallet.inner.state.lock().await.node = "http://127.0.0.1:1".into();
+        wallet
+    }
+
+    #[tokio::test]
+    async fn sync_now_cuts_the_wait_short_and_returns_when_the_round_ends() {
+        let wallet = unreachable("sync-now").await;
+        wallet.start_sync(Arc::new(Quiet));
+        // Let the first round fail; the loop then waits out its backoff.
+        let mut rounds = wallet.inner.rounds.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), rounds.changed()).await.unwrap().unwrap();
+        let started = Instant::now();
+        wallet.sync_now().await;
+        // Sooner than the 2 s backoff it cut short.
+        assert!(started.elapsed() < Duration::from_secs(1), "waited {:?}", started.elapsed());
+        assert!(*wallet.inner.rounds.borrow() >= 2);
+        assert!(wallet.status().error.is_some());
+        wallet.stop_sync();
+    }
+
+    #[tokio::test]
+    async fn sync_now_without_the_loop_runs_one_round_itself() {
+        let wallet = unreachable("sync-now-alone").await;
+        let started = Instant::now();
+        wallet.sync_now().await;
+        assert!(started.elapsed() < SYNC_NOW_WAIT);
     }
 }

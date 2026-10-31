@@ -170,3 +170,36 @@ Calls made while building the first version, with why. Newest last.
     f and b in Manrope ExtraBold: 0.125 em from the f, 0.1 em to the b
     (the f's crossbar points straight at the seal, so equal gaps looked
     tight on that side), and 1.24 x-heights tall, centred on the x-height.
+
+## Second round of designs
+
+36. **Amounts drop trailing zeros everywhere**: "0.5", "0.653", "1", never
+    "0.5000". Balances and lists are still cut (not rounded) to four
+    decimals, as item 29; `amount::format` no longer pads.
+37. **Activity is grouped by day in Rust (`activity::by_day`).** The app
+    passes the phone's time, its UTC offset and whether it uses a 24-hour
+    clock; Rust returns the day labels ("TODAY", "YESTERDAY", "27 OCT", the
+    year when it isn't this one) and each row's title, one line of status,
+    receipt and time, and signed amount. So item 1's "the app formats dates"
+    no longer covers Activity. One offset serves every row: a payment from
+    the other side of a daylight-saving change can land an hour off near
+    midnight. A row still unconfirmed from yesterday goes under yesterday.
+    Incoming money under 10 confirmations reads "Not ready · 3 of 10";
+    outgoing "Confirming · 3 of 10"; a settled payment with a receipt says
+    "Receipt, 3 items" rather than "Sent".
+38. **Pull to refresh calls `Wallet::sync_now`**: it wakes the sync loop
+    from its 20 s wait (or its backoff after an error) and returns when a
+    round ends caught up or failed, at most 20 s later. With no loop running
+    it does one step itself.
+39. **Dark mode.** Colour roles are a `FobColors` per theme behind a
+    CompositionLocal; `Fob.ink` and the rest read the current one, so screens
+    keep naming roles. The orange, the text on it and what's drawn over the
+    camera are the same in both. QR codes are always dark on a white card.
+    The choice ("Same as the phone", Light, Dark) is an Android preference
+    beside the network, not in the wallet file: it is only how Fob looks,
+    the same for every wallet, and is needed before any wallet opens.
+    Dialogs use the card colour instead of Material's tinted default.
+40. **Seed words never wrap**: two columns numbered down (1–8, 9–16; 13 and
+    12 for 25 words), one column from a font scale of 1.6.
+41. **"0.5 XMR ready to spend"** shows under the balance only while some of
+    it can't be spent yet (`Balance::ready_text`).

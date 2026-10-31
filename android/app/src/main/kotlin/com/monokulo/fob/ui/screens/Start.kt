@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -160,22 +161,34 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
                 color = Fob.muted, fontSize = 16.sp, lineHeight = 22.sp,
             )
             if (seed != null) {
-                Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        seed.words.withIndex().chunked(3).forEach { row ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                row.forEach { (i, word) ->
-                                    Row(Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(Fob.sunken).padding(horizontal = 10.dp, vertical = 10.dp)) {
-                                        Text("${i + 1}", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.width(24.dp))
-                                        Text(word, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                    }
-                                }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-                            }
-                        }
+                Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed.words) }
+                if (seed.kind == "polyseed") Text("A 16-word Polyseed: it also remembers when the wallet was made, so restoring is quick.", color = Fob.muted, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+/**
+ * Seed words in two columns, numbered down each one (1–8 then 9–16; 13 and
+ * 12 for a 25-word seed), never wrapping a word. At a very large font size,
+ * one column.
+ */
+@Composable
+fun SeedWords(words: List<String>) {
+    val columns = if (LocalDensity.current.fontScale >= 1.6f) 1 else 2
+    val perColumn = (words.size + columns - 1) / columns
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        words.withIndex().chunked(perColumn).forEach { column ->
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                column.forEach { (i, word) ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Fob.sunken).padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text("${i + 1}", color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.End, maxLines = 1, softWrap = false, modifier = Modifier.widthIn(min = 20.dp))
+                        Text(word, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
                     }
                 }
-                if (seed.kind == "polyseed") Text("A 16-word Polyseed: it also remembers when the wallet was made, so restoring is quick.", color = Fob.muted, fontSize = 13.sp)
             }
         }
     }
@@ -281,18 +294,18 @@ fun RestoreScanScreen(model: WalletModel, nav: Nav) {
             }
         }
         Column(Modifier.fillMaxSize().padding(top = 32.dp)) {
-            TopBar("Scan a wallet code", onBack = { nav.back() }, tint = Fob.paper)
+            TopBar("Scan a wallet code", onBack = { nav.back() }, tint = Fob.onCamera)
             Spacer(Modifier.weight(1f))
             Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(notice ?: "Point at the wallet code", color = Fob.paper, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-                Text("In your other wallet it's under Settings, often called Export wallet or Show keys as QR.", color = Fob.line, fontSize = 15.sp, textAlign = TextAlign.Center)
+                Text(notice ?: "Point at the wallet code", color = Fob.onCamera, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                Text("In your other wallet it's under Settings, often called Export wallet or Show keys as QR.", color = Fob.cameraHint, fontSize = 15.sp, textAlign = TextAlign.Center)
             }
             Row(
-                Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(androidx.compose.ui.graphics.Color(0xFF3A3732)).padding(horizontal = 18.dp, vertical = 16.dp),
+                Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.cameraCard).padding(horizontal = 18.dp, vertical = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                StrokeIcon(Icons.warning, tint = androidx.compose.ui.graphics.Color(0xFFFF8A3D), size = 22.dp, width = 1.8f)
-                Text("A wallet code can hold the keys to spend your money. Scan only your own, somewhere no one can see the screen.", color = Fob.paper, fontSize = 14.sp, lineHeight = 20.sp)
+                StrokeIcon(Icons.warning, tint = Fob.cameraWarning, size = 22.dp, width = 1.8f)
+                Text("A wallet code can hold the keys to spend your money. Scan only your own, somewhere no one can see the screen.", color = Fob.onCamera, fontSize = 14.sp, lineHeight = 20.sp)
             }
             Spacing(16.dp)
         }
@@ -314,7 +327,7 @@ fun RestoreFoundScreen(model: WalletModel, nav: Nav, code: String) {
                 return@Column
             }
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(44.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, size = 24.dp) }
+                Box(Modifier.size(44.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, tint = Fob.onGreen, size = 24.dp) }
                 Column {
                     Text("Wallet code found", style = display(24))
                     Text(if (p.canSpend) "Full wallet · can spend" else "View-only · sees payments", color = Fob.muted, fontSize = 14.sp)
@@ -346,7 +359,7 @@ fun CameraOrAsk(modifier: Modifier, onText: (String) -> Unit) {
         QrScanner(onText, modifier)
     } else {
         Box(modifier, contentAlignment = Alignment.Center) {
-            OutlineButton("Allow the camera", { ask.launch(android.Manifest.permission.CAMERA) }, tint = Fob.paper)
+            OutlineButton("Allow the camera", { ask.launch(android.Manifest.permission.CAMERA) }, tint = Fob.onCamera)
         }
     }
 }

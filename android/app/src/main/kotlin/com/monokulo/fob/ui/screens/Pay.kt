@@ -93,7 +93,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
     }) {
         TopBar("Receive", onBack = { nav.back() })
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            Box(Modifier.clip(RoundedCornerShape(36.dp)).background(Fob.card).padding(20.dp)) {
+            Box(Modifier.clip(RoundedCornerShape(36.dp)).background(Fob.qrLight).padding(20.dp)) {
                 val qr = code?.let { runCatching { qrCode(it) }.getOrNull() }
                 if (qr != null) QrImage(qr, 260.dp) else Spacer(Modifier.size(260.dp))
             }
@@ -132,17 +132,17 @@ fun ScanPayScreen(model: WalletModel, nav: Nav) {
     Box(Modifier.fillMaxSize().background(Fob.camera)) {
         CameraOrAsk(Modifier.fillMaxSize(), ::read)
         Column(Modifier.fillMaxSize().padding(top = 32.dp)) {
-            TopBar("Scan to pay", onBack = { nav.back() }, closeIcon = true, tint = Fob.paper) {
+            TopBar("Scan to pay", onBack = { nav.back() }, closeIcon = true, tint = Fob.onCamera) {
                 OutlineButton("Paste", {
                     scope.launch {
                         val text = clipboard.getClipEntry()?.clipData?.getItemAt(0)?.text?.toString()
                         if (text != null) read(text) else notice = "Nothing to paste."
                     }
-                }, height = 40.dp, tint = Fob.paper)
+                }, height = 40.dp, tint = Fob.onCamera)
             }
             Spacer(Modifier.weight(1f))
             Text(
-                notice ?: "Point at a Monero payment code", color = Fob.paper, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
+                notice ?: "Point at a Monero payment code", color = Fob.onCamera, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(32.dp),
             )
         }
@@ -253,7 +253,7 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, confirmIdent
 fun PaidScreen(nav: Nav, prepared: Prepared) {
     Page(bottom = { PrimaryButton("Done", { nav.reset(Screen.Home) }) }) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 72.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            Box(Modifier.size(96.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, size = 52.dp, width = 2f) }
+            Box(Modifier.size(96.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, tint = Fob.onGreen, size = 52.dp, width = 2f) }
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Paid", style = display(34))
                 Text(prepared.receipt?.let { "${it.total} to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)

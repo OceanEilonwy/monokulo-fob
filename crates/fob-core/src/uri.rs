@@ -96,7 +96,7 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
 /// A payment code for receiving: an address and, optionally, an amount.
 pub fn payment_uri(address: &str, amount: Option<u64>) -> String {
     match amount {
-        Some(a) if a > 0 => format!("monero:{address}?tx_amount={}", amount::format(a, 0)),
+        Some(a) if a > 0 => format!("monero:{address}?tx_amount={}", amount::format(a)),
         _ => format!("monero:{address}"),
     }
 }

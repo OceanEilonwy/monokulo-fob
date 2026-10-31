@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -24,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -48,6 +51,7 @@ import com.monokulo.fob.ui.SectionLabel
 import com.monokulo.fob.ui.SettingRow
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TextButton
+import com.monokulo.fob.ui.ThemeChoice
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.full
@@ -115,7 +119,7 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
 fun SettingsScreen(model: WalletModel, nav: Nav) {
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
-    val scope = rememberCoroutineScope()
+    val theme by model.theme.collectAsState()
     var node by remember { mutableStateOf("") }
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
@@ -144,6 +148,15 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                         "Use mainnet", if (network == Network.MAINNET) "Real money. Each network has its own wallet." else "Off: stagenet, with test coins",
                         checked = network == Network.MAINNET, onChecked = { switching = true },
                     )
+                }
+            }
+            Column {
+                SectionLabel("Theme")
+                Card {
+                    ThemeChoice.entries.forEachIndexed { i, choice ->
+                        if (i > 0) Divider()
+                        Choice(choice.label, choice == theme) { model.setTheme(choice) }
+                    }
                 }
             }
             Column {
@@ -178,6 +191,18 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             confirmButton = { TextButton("Remove", { forgetting = false; model.forget(); nav.reset(Screen.Welcome) }, color = Fob.red) },
             dismissButton = { TextButton("Cancel", { forgetting = false }, color = Fob.ink) },
         )
+    }
+}
+
+/** One of a few choices: its name, and a tick when it's the one chosen. */
+@Composable
+private fun Choice(title: String, chosen: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(chosen, role = Role.RadioButton, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        if (chosen) StrokeIcon(Icons.check, size = 20.dp)
     }
 }
 
@@ -268,7 +293,7 @@ fun WalletCodeScreen(model: WalletModel, nav: Nav) {
             val c = code
             if (shown && c != null) {
                 runCatching { qrCode(c) }.getOrNull()?.let { qr ->
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Fob.card).padding(16.dp)) { QrImage(qr, 280.dp, description = "Wallet code") }
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Fob.qrLight).padding(16.dp)) { QrImage(qr, 280.dp, description = "Wallet code") }
                 }
                 Text("Scan it in Fob, the Monero GUI or Cake Wallet.", color = Fob.muted, fontSize = 14.sp)
             }
