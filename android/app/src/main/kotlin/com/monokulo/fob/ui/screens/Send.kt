@@ -108,6 +108,20 @@ private const val CLIPBOARD = "M9 4h6v3H9z M7 5H5v15h14V5h-2"
 /** The viewfinder's four corners, on a 280 × 280 grid. */
 private const val CORNERS = "M8 64V24a16 16 0 0 1 16-16h40 M216 8h40a16 16 0 0 1 16 16v40 M272 216v40a16 16 0 0 1-16 16h-40 M64 272H24a16 16 0 0 1-16-16v-40"
 
+/**
+ * Send's form as it was filled: kept on the back stack under Confirm so
+ * Back returns to it. [read] is the code that filled it, not taken again
+ * if the camera still sees it.
+ */
+data class SendDraft(
+    val to: String,
+    val amount: String = "",
+    val inFiat: Boolean = false,
+    val note: String = "",
+    val request: PaymentRequest? = null,
+    val read: String? = null,
+)
+
 /** The sheet's movement, as the board's. */
 private val SHEET_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
@@ -117,37 +131,39 @@ private val SHEET_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
  * what's ready to spend; pulled up (dragged or tapped), it's the form, the
  * camera a small live frame above it, still scanning. A payment code with
  * an amount goes straight to the confirm screen; one without, or an
- * address, fills the form. [code] is a payment code from a link, if any.
+ * address, fills the form. [code] is a payment code from a link, if any;
+ * [draft] opens the form filled.
  */
 @Composable
-fun SendScreen(model: WalletModel, nav: Nav, code: String?) {
+fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = null) {
     val network by model.network.collectAsState()
     val wallet by model.wallet.collectAsState()
     val balance by model.balance.collectAsState()
     val prices by model.prices.collectAsState()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    var open by rememberSaveable { mutableStateOf(false) }
+    var open by rememberSaveable { mutableStateOf(draft != null) }
     var torch by remember { mutableStateOf(false) }
     var hasTorch by remember { mutableStateOf(false) }
-    var to by remember { mutableStateOf("") }
-    var amount by remember { mutableStateOf("") }
-    var note by remember { mutableStateOf("") }
+    var to by remember { mutableStateOf(draft?.to ?: "") }
+    var amount by remember { mutableStateOf(draft?.amount ?: "") }
+    var note by remember { mutableStateOf(draft?.note ?: "") }
     // The payment code the form came from: its receipt goes with the payment until the address or amount is changed.
-    var request by remember { mutableStateOf<PaymentRequest?>(null) }
+    var request by remember { mutableStateOf(draft?.request) }
     // What a scan or paste found that isn't a payment code; under the viewfinder folded, under To pulled up.
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     // The camera reads a code many times a second: each one is taken once.
-    var lastRead by remember { mutableStateOf<String?>(null) }
+    var lastRead by remember { mutableStateOf(draft?.read) }
     var paid by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
     LaunchedEffect(wallet, balance) { paid = model.paidBefore() }
 
     // The amount in money (Rust converts it to XMR) while there's a price, as on Receive.
     var entry by remember { mutableStateOf<AmountEntry?>(null) }
-    var inFiat by remember { mutableStateOf(false) }
-    var defaulted by remember { mutableStateOf(false) }
+    // A form filled before keeps its unit; an empty one opens in money while there's a price.
+    var inFiat by remember { mutableStateOf(draft?.inFiat ?: false) }
+    var defaulted by remember { mutableStateOf(draft != null && draft.amount.isNotBlank()) }
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
         val e = wallet?.amountEntry(amount, inFiat) ?: return@LaunchedEffect
         if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
@@ -163,7 +179,13 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?) {
         error = null
         scope.launch {
             runCatching { model.prepare(address, typed, fiat, receiptJson, withNote) }
-                .onSuccess { if (nav.current is Screen.Send) { nav.back(); nav.go(Screen.Confirm(it, withNote)) } }
+                .onSuccess {
+                    if (nav.current is Screen.Send) {
+                        // Under Confirm, the form as filled: Back returns to it, not Home.
+                        val filled = SendDraft(address, typed, fiat, note, request, lastRead)
+                        nav.back(); nav.go(Screen.Send(draft = filled)); nav.go(Screen.Confirm(it, withNote))
+                    }
+                }
                 .onFailure { error = it.reason(); open = true }
             busy = false
         }

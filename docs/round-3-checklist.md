@@ -85,7 +85,7 @@ Pulling up and back
 Scanning
 - [ ] Plain address QR → To filled, sheet up, amount empty in money ($ sign, USD chip), Review disabled until an amount.
 - [ ] `monero:` code with tx_description, no amount → To filled, Note prefilled with the description, sheet up.
-- [ ] `monero:` code with tx_amount → straight to Confirm with that XMR; Back from Confirm → Home.
+- [ ] `monero:` code with tx_amount → straight to Confirm with that XMR; Back from Confirm → the form pulled up and filled (see Back from Confirm below).
 - [ ] Code with an ORF receipt (and amount) → straight to Confirm with the shop's title and the receipt card, as before; after sending, the receipt is on the payment.
 - [ ] Code with an amount more than is ready → form opens filled (amount in XMR), the "not enough" reason above Review.
 - [ ] Wallet code → "That's a wallet code, not a payment code."
@@ -110,3 +110,9 @@ Rust only; checked through the screens of step 6.
 - [ ] Pay a contact's send address → Activity's row is titled with the contact's name; the payment's screen says "To  Sam".
 - [ ] Delete that contact → the payment is still in Activity, titled "86Ux … 7kQa" again, and its address is under "Paid, not saved".
 - [ ] A wallet made before this build opens with no contacts and nothing else changed.
+
+## Back from Confirm
+
+- [ ] Send, type To, an amount in USD and a note, Review → Confirm; Back (arrow or system) → Send with the sheet pulled up, To, the amount (still in USD) and the note as typed; Review again works.
+- [ ] Scan a code with an amount (and a receipt) → Confirm; Back → the form filled with the code's address, amount in XMR and description; holding the same code in view doesn't jump back to Confirm; Review keeps the receipt.
+- [ ] Swipe to send → Paid; system Back from Paid → Home, never the filled form.
