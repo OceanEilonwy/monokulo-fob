@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -22,12 +24,15 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -39,6 +44,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import uniffi.fob.AmountEntry
 
 /** Two arrows, one up and one down: the amount field's switch. */
@@ -56,7 +63,10 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
     var turns by rememberSaveable { mutableIntStateOf(0) }
     val spin by animateFloatAsState(turns * 180f, tween(260, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)), label = "swap")
     val style = TextStyle(fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Fob.ink)
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Typing, the whole field and its line show above the keyboard and what's pinned over it, not only the cursor.
+    val whole = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    Column(modifier.fillMaxWidth().bringIntoViewRequester(whole), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(Fob.card)
                 .border(1.dp, Fob.outline, RoundedCornerShape(16.dp)).padding(start = 16.dp, end = 8.dp),
@@ -72,7 +82,8 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
             BasicTextField(
                 value = value, onValueChange = onChange, singleLine = true, textStyle = style, cursorBrush = SolidColor(Fob.ink),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                modifier = Modifier.weight(1f).semantics { entry?.let { contentDescription = it.label } },
+                modifier = Modifier.weight(1f).semantics { entry?.let { contentDescription = it.label } }
+                    .onFocusChanged { if (it.isFocused) scope.launch { delay(350); whole.bringIntoView() } },
                 decorationBox = { field ->
                     Box(contentAlignment = Alignment.CenterStart) {
                         if (value.isEmpty() && placeholder.isNotEmpty()) Text(placeholder, style = style.copy(color = Fob.muted, fontWeight = FontWeight.Medium, fontSize = 17.sp))
