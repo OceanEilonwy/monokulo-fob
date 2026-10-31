@@ -602,3 +602,28 @@ Calls made while building the first version, with why. Newest last.
     once it's another year's), "Split up · 08:31" for a split's coins and
     its change (it was "Change · Split up"), "Change · Corner Café" for a
     payment's change, "Change" when the payment isn't known.
+89. **One amount field, toggle B** (Round 3 › "Toggle B"; Shared ›
+    "Amount field"): the sign in front, what's typed (Manrope 22 bold), an
+    orange chip naming the unit with two arrows that turn half a turn in
+    260 ms per tap (always the same way round), and a muted line under it.
+    Rust (`price::amount_field`, `Wallet::amount_field`) writes the sign
+    ("$", "€", "ɱ" for XMR; none for a currency without a symbol, which the
+    chip already names), the unit, the line ("≈ 0.1204 XMR · 1 XMR =
+    $166.10", "≈ $20.00 · 1 XMR = $166.10", the rate alone while empty,
+    "That isn't an amount"), the field's TalkBack label ("Amount in US
+    dollars", "Amount in euros", "Amount in CHF") and the chip's ("Amount in
+    XMR. Switch to US dollars"); tapping converts what's typed in Rust, as
+    before (`convert_amount`). Without a price the field takes XMR with ɱ
+    and has no chip. Receive uses it in place of its in-field segmented
+    control; its "The code asks for 0.1204 XMR" line (`ReceiveCode::asks`)
+    gave way to the field's line, which is the same conversion, and
+    `receive_currency` to `amount_field`. Settings' "Show amounts in" keeps
+    its segmented control (decision 3 of the plan).
+90. **ɱ isn't in Manrope**: the bundled `manrope.ttf` has no U+0271 (its
+    cmap's 0x0260–0x027F word is empty; checked with fc-query), so the XMR
+    sign is drawn in the system font (Roboto, which has it) at the same
+    bold weight and size; "$" and "€" stay in Manrope.
+91. **Send keeps its XMR-only amount field until step 4**: switching it to
+    toggle B means `prepare` taking an amount in money (or converting
+    first, with the price moving between the two), and the Send screen is
+    redrawn in step 4 anyway, so it moves to the new field there.

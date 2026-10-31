@@ -36,3 +36,19 @@ every step is in. Each item: what to do, what should happen.
 - [ ] TalkBack → each coin row read as one item; ring reads "n of 10 confirmations"; card titles are headings.
 - [ ] Dark mode → dots and bar readable on dark cards; the pill sunken, not black.
 - [ ] Long change name (a long shop name) → source ellipsised on one line.
+
+## Step 3 · Currency toggle B with ɱ
+
+- [ ] Receive with prices on → amount field: "$" in front, "Amount (optional)" placeholder, orange "USD ⇅" chip at the right, "1 XMR = $…" under it.
+- [ ] Type 20 → line "≈ 0.1204 XMR · 1 XMR = $…"; the code asks for that XMR (expanded code shows "$20.00" and "0.1204 XMR").
+- [ ] Tap the chip → arrows turn half a turn (quick, smooth), sign becomes ɱ, chip "XMR", value converts to 0.1204, line "≈ $20.00 · …". Tap again → back to dollars, arrows keep turning the same way.
+- [ ] ɱ looks like the same weight and size as "$" (system font, bold) and sits on the same baseline as the digits.
+- [ ] Type "abc" or "20.123" in dollars → line "That isn't an amount"; the code shows the address only.
+- [ ] Currency EUR → sign "€", chip "EUR", TalkBack "Amount in euros".
+- [ ] Prices off (or no price yet) → sign ɱ, no chip, nothing under the field; typing XMR works; a bad value says "That isn't an amount".
+- [ ] Turn prices off while Receive shows a money amount → field drops to XMR and clears.
+- [ ] TalkBack: field reads "Amount in US dollars"; chip reads "Amount in US dollars. Switch to XMR", is a button, ≥ 48 dp to touch.
+- [ ] Decimal keyboard opens; a comma works as the point.
+- [ ] Dark mode → field on the card colour with the outline, typed text light, chip orange with dark text.
+- [ ] Settings › Show amounts in → still the segmented control.
+- [ ] Send → still the XMR-only amount field (moves to toggle B in step 4).

@@ -35,7 +35,7 @@ use std::{future::Future, ops::Range, sync::LazyLock, time::Duration};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    amount::ATOMIC_PER_XMR,
+    amount::{self, ATOMIC_PER_XMR},
     error::{FobError, Result},
 };
 
@@ -311,20 +311,88 @@ pub struct Currency {
     pub symbol: Option<&'static str>,
     /// "US dollar"; empty for one Fob doesn't know.
     pub name: &'static str,
+    /// "US dollars", "euros", as in "Amount in euros"; the code for one Fob
+    /// doesn't know.
+    pub plural: &'static str,
     /// Digits after the point in its smallest unit.
     pub decimals: u32,
 }
 
-/// The currencies Fob knows how to write: (code, symbol, name). Only the
-/// dollar and the euro have their symbol: either is unmistakable, while "£"
-/// or "kr" would want more care than a fallback to the code.
-const KNOWN: &[(&str, &str, &str)] = &[("USD", "$", "US dollar"), ("EUR", "€", "Euro")];
+/// The currencies Fob knows how to write: (code, symbol, name, plural).
+/// Only the dollar and the euro have their symbol: either is unmistakable,
+/// while "£" or "kr" would want more care than a fallback to the code.
+const KNOWN: &[(&str, &str, &str, &str)] = &[("USD", "$", "US dollar", "US dollars"), ("EUR", "€", "Euro", "euros")];
 
 /// How Fob writes `code`. One it doesn't know is written by its code, with
 /// two decimals.
 pub fn currency(code: &str) -> Currency {
     let known = KNOWN.iter().find(|k| k.0 == code);
-    Currency { code: code.to_owned(), symbol: known.map(|k| k.1), name: known.map(|k| k.2).unwrap_or(""), decimals: 2 }
+    Currency {
+        code: code.to_owned(),
+        symbol: known.map(|k| k.1),
+        name: known.map(|k| k.2).unwrap_or(""),
+        plural: known.map(|k| k.3).unwrap_or(""),
+        decimals: 2,
+    }
+}
+
+/// An amount field (toggle B), every word ready to draw: a sign before
+/// what's typed, a chip naming the unit that switches it while there's a
+/// price, and a line under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AmountField {
+    /// Typing in money: there's a price and the field is switched to it.
+    pub in_fiat: bool,
+    /// Before what's typed: "$", "€", or "ɱ" for XMR; none for a currency
+    /// without a symbol, which the chip names.
+    pub sign: Option<String>,
+    /// The chip: "USD", "XMR".
+    pub unit: String,
+    /// The chip switches: there's a price to convert with.
+    pub can_switch: bool,
+    /// Under the field: "≈ 0.1204 XMR · 1 XMR = $166.10", "≈ $20.00 · 1
+    /// XMR = $166.10", the rate alone while it's empty, "That isn't an
+    /// amount"; nothing in XMR without a price.
+    pub line: Option<String>,
+    /// For TalkBack: "Amount in US dollars", "Amount in XMR".
+    pub label: String,
+    /// The chip for TalkBack: "Amount in XMR. Switch to US dollars".
+    pub switch_label: Option<String>,
+}
+
+/// The field for `text` typed in money (`in_fiat`) or XMR, at `price` when
+/// there is one (without, it takes XMR only).
+pub fn amount_field(text: &str, in_fiat: bool, price: Option<(&Currency, u64)>) -> AmountField {
+    let text = text.trim();
+    let in_fiat = in_fiat && price.is_some();
+    // "US dollars", "XMR".
+    let unit_name = |fiat: bool| match price {
+        Some((c, _)) if fiat && c.plural.is_empty() => c.code.clone(),
+        Some((c, _)) if fiat => c.plural.to_owned(),
+        _ => "XMR".to_owned(),
+    };
+    let line = match price {
+        _ if text.is_empty() => price.map(|(c, p)| rate(p, c)),
+        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| format!("≈ {} XMR · {}", amount::format(a), rate(p, c))),
+        Some((c, p)) => amount::parse(text).ok().map(|a| format!("≈ {} · {}", value(a, p, c), rate(p, c))),
+        None => None,
+    };
+    let valid = text.is_empty() || if in_fiat { line.is_some() } else { amount::parse(text).is_ok() };
+    AmountField {
+        in_fiat,
+        sign: match price {
+            Some((c, _)) if in_fiat => c.symbol.map(str::to_owned),
+            _ => Some(amount::SIGN.to_owned()),
+        },
+        unit: match price {
+            Some((c, _)) if in_fiat => c.code.clone(),
+            _ => "XMR".into(),
+        },
+        can_switch: price.is_some(),
+        line: if valid { line } else { Some("That isn't an amount".into()) },
+        label: format!("Amount in {}", unit_name(in_fiat)),
+        switch_label: price.map(|_| format!("Amount in {}. Switch to {}", unit_name(in_fiat), unit_name(!in_fiat))),
+    }
 }
 
 fn pow10(n: u32) -> u128 {
@@ -514,6 +582,36 @@ mod tests {
 
     fn gbp() -> Currency {
         currency("GBP")
+    }
+
+    #[test]
+    fn the_amount_field_reads_like_toggle_b() {
+        let (usd, eur, chf) = (usd(), eur(), currency("CHF"));
+        let p = 166_100_000;
+        // In dollars, as the board: "$ 20 [USD ⇅]", "≈ 0.1204 XMR · 1 XMR = $166.10".
+        let f = amount_field("20", true, Some((&usd, p)));
+        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch), (Some("$"), "USD", true, true));
+        assert_eq!(f.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+        assert_eq!((f.label.as_str(), f.switch_label.as_deref()), ("Amount in US dollars", Some("Amount in US dollars. Switch to XMR")));
+        // In XMR: the sign becomes ɱ.
+        let f = amount_field("0.1204", false, Some((&usd, p)));
+        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat), (Some("ɱ"), "XMR", false));
+        assert_eq!(f.line.as_deref(), Some("≈ $20.00 · 1 XMR = $166.10"));
+        assert_eq!((f.label.as_str(), f.switch_label.as_deref()), ("Amount in XMR", Some("Amount in XMR. Switch to US dollars")));
+        // Empty: the rate alone. Not an amount: says so.
+        assert_eq!(amount_field(" ", true, Some((&usd, p))).line.as_deref(), Some("1 XMR = $166.10"));
+        assert_eq!(amount_field("20.123", true, Some((&usd, p))).line.as_deref(), Some("That isn't an amount"));
+        assert_eq!(amount_field("abc", false, Some((&usd, p))).line.as_deref(), Some("That isn't an amount"));
+        // Euros, and a currency without a symbol: the chip names it, no sign.
+        let f = amount_field("5", true, Some((&eur, p)));
+        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.label.as_str()), (Some("€"), "EUR", "Amount in euros"));
+        let f = amount_field("5", true, Some((&chf, p)));
+        assert_eq!((f.sign, f.unit.as_str(), f.label.as_str()), (None, "CHF", "Amount in CHF"));
+        assert_eq!(f.line.as_deref(), Some("≈ 0.0301 XMR · 1 XMR = 166.10 CHF"));
+        // No price: XMR only, no switch, nothing under it unless it's wrong.
+        let f = amount_field("20", true, None);
+        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch, f.line, f.switch_label), (Some("ɱ"), "XMR", false, false, None, None));
+        assert_eq!(amount_field("x", false, None).line.as_deref(), Some("That isn't an amount"));
     }
 
     #[test]

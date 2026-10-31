@@ -33,14 +33,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,6 +58,7 @@ import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
+import com.monokulo.fob.ui.AmountField
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
@@ -72,7 +69,6 @@ import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.QrImage
-import com.monokulo.fob.ui.Segmented
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.TextButton
@@ -87,7 +83,7 @@ import uniffi.fob.Prepared
 import uniffi.fob.QrCode
 import uniffi.fob.Receipt
 import uniffi.fob.ReceiveCode
-import uniffi.fob.ReceiveCurrency
+import uniffi.fob.AmountEntry
 import uniffi.fob.addressGroups
 import uniffi.fob.classifyCode
 import uniffi.fob.fitReceiveNote
@@ -111,7 +107,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
     // The amount in money (Rust converts it to XMR for the code) while there's a price; XMR otherwise.
     val prices by model.prices.collectAsState()
     val balance by model.balance.collectAsState()
-    var currency by remember { mutableStateOf<ReceiveCurrency?>(null) }
+    var entry by remember { mutableStateOf<AmountEntry?>(null) }
     var inFiat by remember { mutableStateOf(false) }
     var defaulted by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf<ReceiveCode?>(null) }
@@ -120,18 +116,18 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
         address = w.receiveAddress()
         index = w.receiveIndex()
     }
-    // A new price comes with a new balance.
-    LaunchedEffect(wallet, prices, balance) {
-        val c = wallet?.receiveCurrency()
-        currency = c
-        if (c != null && !defaulted && amount.isBlank()) inFiat = true
-        if (c != null) defaulted = true
-        if (c == null && inFiat) { inFiat = false; amount = "" }
+    // A new price comes with a new balance. In money by default while there's one.
+    LaunchedEffect(wallet, prices, balance, amount, inFiat) {
+        val e = wallet?.amountEntry(amount, inFiat) ?: return@LaunchedEffect
+        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
+        if (e.canSwitch) defaulted = true
+        if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
+        entry = e
     }
-    LaunchedEffect(wallet, address, amount, inFiat, note, currency) {
+    LaunchedEffect(wallet, address, amount, entry, note) {
         val w = wallet ?: return@LaunchedEffect
         val a = address ?: return@LaunchedEffect
-        code = runCatching { w.receiveCode(a, amount, inFiat && currency != null, note) }.getOrNull()
+        code = runCatching { w.receiveCode(a, amount, entry?.inFiat == true, note) }.getOrNull()
     }
     // The note goes with the address it was typed for, kept when the screen or the address changes.
     val latestNote by rememberUpdatedState(note)
@@ -194,34 +190,11 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
                 AddressGroups(groups)
             }
             AmountField(
-                amount, { amount = it }, currency, inFiat,
-                onSwitch = { toFiat -> scope.launch { amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
-                hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else code?.asks,
+                amount, { amount = it }, entry, placeholder = "Amount (optional)",
+                onSwitch = { scope.launch { val toFiat = !inFiat; amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
             )
             Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
         }
-    }
-}
-
-/**
- * Receive's amount: in money with its symbol before it while there's a
- * price, a <CUR> | XMR switch at the right; XMR only, no switch, without.
- */
-@Composable
-private fun AmountField(value: String, onChange: (String) -> Unit, currency: ReceiveCurrency?, inFiat: Boolean, onSwitch: (Boolean) -> Unit, hint: String?) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        OutlinedTextField(
-            value = value, onValueChange = onChange, singleLine = true,
-            label = { Text(if (currency == null) "Amount in XMR (optional)" else "Amount (optional)") },
-            prefix = if (inFiat && currency != null) ({ Text(currency.prefix, fontSize = 16.sp) }) else null,
-            trailingIcon = currency?.let { c ->
-                { Segmented(listOf(c.code, "XMR"), if (inFiat) 0 else 1, { i -> onSwitch(i == 0) }, Modifier.padding(end = 8.dp), height = 32.dp) }
-            },
-            shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth(),
-            textStyle = TextStyle(fontSize = 16.sp),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        )
-        if (hint != null) Text(hint, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }
 

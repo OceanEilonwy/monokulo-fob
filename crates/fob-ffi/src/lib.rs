@@ -923,14 +923,15 @@ impl FobWallet {
         Ok(self.inner.remember_receive_note(index, &note).await?)
     }
 
-    /// The money Receive's amount can be typed in; `None` with prices off
-    /// or no current price, when it takes XMR only.
-    pub async fn receive_currency(&self) -> Option<ReceiveCurrency> {
-        self.inner.receive_currency().await.map(|(prefix, code)| ReceiveCurrency { prefix, code })
+    /// An amount field for `text`, typed in money (`in_fiat`) or XMR; in
+    /// money only with prices on and a current price.
+    pub async fn amount_entry(&self, text: String, in_fiat: bool) -> AmountEntry {
+        let f = self.inner.amount_field(&text, in_fiat).await;
+        AmountEntry { in_fiat: f.in_fiat, sign: f.sign, unit: f.unit, can_switch: f.can_switch, line: f.line, label: f.label, switch_label: f.switch_label }
     }
 
-    /// Receive's amount switched between money and XMR (`to_fiat`): the
-    /// typed text converted, or blank.
+    /// An amount field's text switched between money and XMR (`to_fiat`):
+    /// the typed text converted, or blank.
     pub async fn convert_amount(&self, text: String, to_fiat: bool) -> String {
         self.inner.convert_amount(&text, to_fiat).await
     }
@@ -940,7 +941,7 @@ impl FobWallet {
     /// amount isn't one.
     pub async fn receive_code(&self, address: String, amount: Option<String>, in_fiat: bool, note: Option<String>) -> Result<ReceiveCode> {
         let r = self.inner.receive_code(&address, amount.as_deref(), in_fiat, note.as_deref()).await?;
-        Ok(ReceiveCode { uri: r.uri, headline: r.headline, detail: r.detail, asks: r.asks })
+        Ok(ReceiveCode { uri: r.uri, headline: r.headline, detail: r.detail })
     }
 
     /// The payment `tx` for its own screen; the clock as for `activity_days`.
@@ -1006,18 +1007,27 @@ pub struct ReceiveCode {
     pub headline: Option<String>,
     /// The small line under it: "0.1204 XMR · Coffee beans", or the note.
     pub detail: Option<String>,
-    /// Under the field for an amount in money: "The code asks for 0.1204
-    /// XMR · 1 XMR = $166.10".
-    pub asks: Option<String>,
 }
 
-/// The money Receive's amount can be typed in.
+/// An amount field (toggle B), every word from Rust.
 #[derive(uniffi::Record)]
-pub struct ReceiveCurrency {
-    /// Before what's typed: "$", or the code for a currency without a symbol.
-    pub prefix: String,
-    /// "USD", for the toggle.
-    pub code: String,
+pub struct AmountEntry {
+    /// Typing in money: there's a price and the field is switched to it.
+    pub in_fiat: bool,
+    /// Before what's typed: "$", "€", "ɱ" for XMR; none for a currency
+    /// without a symbol.
+    pub sign: Option<String>,
+    /// The chip: "USD", "XMR".
+    pub unit: String,
+    /// The chip switches: there's a price.
+    pub can_switch: bool,
+    /// Under the field: "≈ 0.1204 XMR · 1 XMR = $166.10", "That isn't an
+    /// amount".
+    pub line: Option<String>,
+    /// "Amount in US dollars"
+    pub label: String,
+    /// "Amount in US dollars. Switch to XMR"
+    pub switch_label: Option<String>,
 }
 
 /// A payment's own screen, every word from Rust.

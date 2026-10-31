@@ -250,9 +250,6 @@ pub struct ReceiveCode {
     pub headline: Option<String>,
     /// The line under it: "0.1204 XMR · Coffee beans", or the note.
     pub detail: Option<String>,
-    /// Under the field, for an amount in money: "The code asks for 0.1204
-    /// XMR · 1 XMR = $166.10".
-    pub asks: Option<String>,
 }
 
 /// How far syncing has got.
@@ -1740,15 +1737,14 @@ impl Wallet {
         Some(activity::detail(&row, now.as_ref().map(|(c, p)| (c, *p)), settings.on, settings.provider.name(), clock))
     }
 
-    /// Whether Receive can take an amount in money: the currency and what
-    /// goes before what's typed ("$", or the code), with prices on and a
-    /// current price.
-    pub async fn receive_currency(&self) -> Option<(String, String)> {
-        let (currency, _) = self.price_now().await?;
-        Some((currency.symbol.map(str::to_owned).unwrap_or_else(|| currency.code.clone()), currency.code))
+    /// An amount field for `text`, typed in money (`in_fiat`) or XMR: in
+    /// money only with prices on and a current price.
+    pub async fn amount_field(&self, text: &str, in_fiat: bool) -> price::AmountField {
+        let now = self.price_now().await;
+        price::amount_field(text, in_fiat, now.as_ref().map(|(c, p)| (c, *p)))
     }
 
-    /// Receive's amount as typed, the other way: money to XMR (`to_fiat`
+    /// An amount field's text as typed, the other way: money to XMR (`to_fiat`
     /// false) or XMR to money, for switching the field. Blank, or nothing to
     /// convert with, gives blank.
     pub async fn convert_amount(&self, text: &str, to_fiat: bool) -> String {
@@ -1778,14 +1774,13 @@ impl Wallet {
         let xmr = xmr.filter(|a| *a > 0);
         let xmr_text = xmr.map(amount::format);
         let code = uri::receive(address, xmr_text.as_deref(), note)?;
-        Ok(match (fiat.filter(|_| xmr.is_some()), xmr_text, price) {
-            (Some(fiat), Some(xmr), Some((currency, p))) => ReceiveCode {
+        Ok(match (fiat.filter(|_| xmr.is_some()), xmr_text) {
+            (Some(fiat), Some(xmr)) => ReceiveCode {
                 uri: code.uri,
                 headline: Some(fiat),
                 detail: Some([Some(format!("{xmr} XMR")), code.detail].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
-                asks: Some(format!("The code asks for {xmr} XMR · {}", price::rate(p, &currency))),
             },
-            _ => ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail, asks: None },
+            _ => ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail },
         })
     }
 
@@ -2327,19 +2322,21 @@ mod tests {
         let wallet = Wallet::create(&dir("receive-fiat"), [1; 32], Network::Stagenet).unwrap();
         let address = wallet.receive_address().await.unwrap();
         // No price yet: XMR only.
-        assert_eq!(wallet.receive_currency().await, None);
+        assert!(!wallet.amount_field("", true).await.can_switch);
         assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Price(_))));
         wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, now()).await.unwrap();
-        assert_eq!(wallet.receive_currency().await, Some(("$".into(), "USD".into())));
+        let field = wallet.amount_field("20", true).await;
+        assert_eq!((field.sign.as_deref(), field.unit.as_str(), field.in_fiat), (Some("$"), "USD", true));
+        // What the field says the code asks for is what it asks for.
+        assert_eq!(field.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
 
         let code = wallet.receive_code(&address, Some("20"), true, Some("Coffee beans")).await.unwrap();
         assert_eq!(code.uri, format!("monero:{address}?tx_amount=0.1204&tx_description=Coffee%20beans"));
         assert_eq!(code.headline.as_deref(), Some("$20.00"));
         assert_eq!(code.detail.as_deref(), Some("0.1204 XMR · Coffee beans"));
-        assert_eq!(code.asks.as_deref(), Some("The code asks for 0.1204 XMR · 1 XMR = $166.10"));
         // In XMR, as before.
         let code = wallet.receive_code(&address, Some("0.5"), false, None).await.unwrap();
-        assert_eq!((code.headline.as_deref(), code.detail, code.asks), (Some("0.5 XMR"), None, None));
+        assert_eq!((code.headline.as_deref(), code.detail), (Some("0.5 XMR"), None));
         assert!(wallet.receive_code(&address, Some("20.123"), true, None).await.is_err());
         // Switching the field converts what's typed.
         assert_eq!(wallet.convert_amount("20", false).await, "0.1204");
@@ -2347,7 +2344,7 @@ mod tests {
         assert_eq!(wallet.convert_amount("", true).await, "");
         // Prices off: no money at all.
         wallet.set_prices_on(false).await.unwrap();
-        assert_eq!(wallet.receive_currency().await, None);
+        assert_eq!(wallet.amount_field("20", true).await.unit, "XMR");
         assert_eq!(wallet.convert_amount("20", false).await, "");
     }
 
