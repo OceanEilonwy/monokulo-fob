@@ -145,6 +145,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     var people by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
     // The request made by the last Share or Copy, and what it was made from.
     var made by remember { mutableStateOf<Pair<Asked, MadeRequest>?>(null) }
+    // A request on its way: a second tap waits for it, not another (Rust gives the same one again anyway).
+    var making by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // "The code names you as “Henry” · change in Settings", while requests carry the profile's name.
     var nameLine by remember { mutableStateOf<String?>(null) }
@@ -169,14 +171,17 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
         entry = e
     }
-    val asked = Asked(forId, amount, entry?.inFiat == true, note)
+    // What's typed, in the unit Rust last said it's in; none while Rust is behind (the chip just tapped), so
+    // nothing is made, copied or shared from an amount read in the wrong unit.
+    val asked = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }?.let { Asked(forId, amount, it.inFiat, note) }
     // The request's code while the form is as it was made from; Receive's own otherwise.
     val request = made?.takeIf { it.first == asked }?.second
     LaunchedEffect(wallet, address, asked, request) {
         if (request != null) { code = request.code; return@LaunchedEffect }
         val w = wallet ?: return@LaunchedEffect
         val a = address ?: return@LaunchedEffect
-        code = runCatching { w.receiveCode(a, amount, asked.inFiat, note) }.getOrNull()
+        val q = asked ?: return@LaunchedEffect
+        code = runCatching { w.receiveCode(a, q.amount, q.inFiat, q.note) }.getOrNull()
     }
     // A note typed for Receive's own code goes with its address, kept when the screen or the address changes;
     // one that went into a request is the request's.
@@ -190,21 +195,24 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
 
     /** The request for what's typed, for [contact] (the one already made, if it's the same), then [then] with it. */
     fun withRequest(contact: ULong?, then: (MadeRequest) -> Unit) {
+        if (making) return
+        val now = asked?.copy(contact = contact) ?: return
         error = null
-        val now = Asked(contact, amount, entry?.inFiat == true, note)
         made?.takeIf { it.first == now }?.let { then(it.second); return }
+        making = true
         scope.launch {
             runCatching { model.makeRequest(now.contact, now.amount, now.inFiat, now.note) }
                 .onSuccess { made = now to it; then(it) }
                 .onFailure { error = it.reason() }
+            making = false
         }
     }
     fun share(contact: ULong?) = withRequest(contact) {
         context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, it.code.uri), null))
     }
     // Back from New contact, made for this request: share with them now.
-    LaunchedEffect(forContact, entry) {
-        if (screen.shareOnOpen && forContact != null && entry != null) { screen.shareOnOpen = false; share(forId) }
+    LaunchedEffect(forContact, asked) {
+        if (screen.shareOnOpen && forContact != null && asked != null) { screen.shareOnOpen = false; share(forId) }
     }
 
     val qr = code?.let { runCatching { qrCode(it.uri) }.getOrNull() }
@@ -218,12 +226,13 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         Page(bottom = {
             ErrorText(error)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                val ready = code != null && asked != null && !making
                 OutlineButton("Copy", {
-                    if (code != null) withRequest(forId) { scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Monero address", it.address).toClipEntry()) } }
-                }, Modifier.weight(1f))
+                    if (ready) withRequest(forId) { scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Monero address", it.address).toClipEntry()) } }
+                }, Modifier.weight(1f), enabled = ready)
                 PrimaryButton(forContact?.let { "Share with ${it.name}" } ?: "Share", {
-                    if (code != null) { if (forContact != null) share(forId) else choosing = true }
-                }, Modifier.weight(1f))
+                    if (ready) { if (forContact != null) share(forId) else choosing = true }
+                }, Modifier.weight(1f), enabled = ready)
             }
         }) {
             TopBar("Receive", onBack = { nav.back() })
@@ -270,7 +279,16 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                 }
                 AmountField(
                     amount, { amount = it }, entry, placeholder = "Amount (optional)",
-                    onSwitch = { scope.launch { val toFiat = !inFiat; amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
+                    onSwitch = {
+                        // The text, unit and Rust's word on them change together.
+                        scope.launch {
+                            val w = wallet ?: return@launch
+                            val toFiat = !inFiat
+                            val switched = w.convertAmount(amount, toFiat)
+                            val e = w.amountEntry(switched, toFiat)
+                            amount = switched; inFiat = toFiat; entry = e
+                        }
+                    },
                 )
                 Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
                 // While requests carry your profile's name: tapping it opens Your profile, where the switch is.

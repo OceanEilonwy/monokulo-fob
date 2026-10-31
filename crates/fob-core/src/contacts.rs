@@ -507,7 +507,7 @@ pub struct Paid {
     pub when: String,
     /// "−0.1204", "+0.5"
     pub amount: String,
-    /// The receipt's total or its worth when sent: "$20.00".
+    /// Its worth when it moved: "$20.00".
     pub fiat: Option<String>,
 }
 
@@ -576,10 +576,7 @@ pub fn card(contact: &Contact, requests: &requests::Book, rows: &[Activity], clo
                 title: p.note.clone().or_else(|| p.receipt.as_ref().map(|r| r.merchant.clone())).unwrap_or_else(|| "Sent".into()),
                 when: activity::day_name(p.time, clock),
                 amount: format!("−{}", amount::format_short(p.amount)),
-                fiat: match (&p.receipt, &p.price) {
-                    (None, None) => None,
-                    _ => Some(activity::paid_amount(p)),
-                },
+                fiat: p.price.as_ref().map(|_| activity::paid_amount(p)),
             },
         })
         .collect();
@@ -1033,7 +1030,8 @@ mod tests {
             shown,
             [
                 (stranger.clone(), short_address(&stranger), "Paid yesterday · 0.001 XMR".to_owned()),
-                (shop.clone(), short_address(&shop), "Paid 25 Oct · $33.21".to_owned()),
+                // What was paid, not the receipt's $33.21.
+                (shop.clone(), short_address(&shop), "Paid 25 Oct · 0.000000000001 XMR".to_owned()),
             ]
         );
     }

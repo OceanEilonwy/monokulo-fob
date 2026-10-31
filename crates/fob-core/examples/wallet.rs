@@ -32,7 +32,7 @@ async fn main() {
         }
         Some("send") => {
             while wallet.sync_step().await.unwrap() {}
-            let prepared = wallet.prepare(&args[2], amount::parse(&args[3]).unwrap(), None, None, None).await.unwrap();
+            let prepared = wallet.prepare(&args[2], amount::parse(&args[3]).unwrap(), None, None).await.unwrap();
             println!("fee {}", amount::format(prepared.fee));
             println!("sent {}", wallet.send(prepared.id).await.unwrap());
         }

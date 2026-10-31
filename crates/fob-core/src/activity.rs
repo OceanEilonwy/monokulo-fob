@@ -366,13 +366,13 @@ pub struct PaidBefore {
 /// How many people Send's sheet lists as paid before.
 pub const PAID_BEFORE: usize = 3;
 
-/// What a payment came to, for a line: the receipt's total, else its
-/// worth when sent, else the XMR: "$24.50", "0.1421 XMR".
+/// What a payment came to, for a line: its worth when sent, else the XMR:
+/// "$24.50", "0.1421 XMR". Never a receipt's total: that's what the payee
+/// wrote, not what was paid.
 pub(crate) fn paid_amount(payment: &Activity) -> String {
-    match (&payment.receipt, &payment.price) {
-        (Some(r), _) => r.total.clone(),
-        (None, Some(p)) => price::value(payment.amount, p.price, &price::currency(&p.currency)),
-        (None, None) => format!("{} XMR", amount::format_short(payment.amount)),
+    match &payment.price {
+        Some(p) => price::value(payment.amount, p.price, &price::currency(&p.currency)),
+        None => format!("{} XMR", amount::format_short(payment.amount)),
     }
 }
 
@@ -720,7 +720,8 @@ mod tests {
         assert_eq!(
             shown,
             [
-                ("Kiosk Café".to_owned(), "Today · $13.50".to_owned()),
+                // The shop's name from its receipt, but what was paid, not the receipt's $13.50.
+                ("Kiosk Café".to_owned(), "Today · 0.1421 XMR".to_owned()),
                 ("86Ux … 7kQb".to_owned(), "Lunch money · 27 Oct".to_owned()),
                 ("86Ux … 7kQc".to_owned(), "3 Oct · $50.00".to_owned()),
             ]

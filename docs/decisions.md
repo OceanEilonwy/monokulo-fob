@@ -1176,3 +1176,39 @@ Calls made while building the first version, with why. Newest last.
     a profile, the card answers "not available"; once the card side has
     one, an exchange the reader was in takes nothing. Ending a swap reads
     what came and stops it under one lock.
+155. **An address paid as a named code's stays one they were paid at**:
+    Paid's offer and "Paid, not saved" both take the name from the newest
+    payment to the address that came from a code with a name, so paying
+    it again without the name (from Paid before, or pasted) never offers
+    it as a send address.
+156. **Rust decides what a payment code carries over**: Send hands Rust the
+    code its form was filled from, as read, with the address, amount and
+    note as they stand. The code's name goes with the payment while it
+    goes to the code's address (an amount edited, or its unit switched,
+    keeps it; decision 111); its receipt only while the amount is the
+    one the code asked too, so a switched or edited amount can't arrive
+    with a merchant's receipt for another. A code without an amount
+    carries no receipt.
+157. **Nothing is sent or shared from an amount Rust is behind on**: the
+    amount field's word from Rust says what text and unit it was made
+    for, and Review, Copy and Share wait until that's what the field
+    holds. The chip fetches the converted text and Rust's word on it in
+    one go and sets them together.
+158. **A code seen while To is filled is asked about**: with the form
+    pulled up and To filled (typed, pasted, picked, or an earlier code),
+    a code the camera sees to another address shows "The camera found
+    another code, to 84Bv … 9fQ2. Use it instead?" with Keep and Use it;
+    anything else it sees is left alone. Editing To doesn't take the code
+    still in view again; clearing it does. A code seen while the fee is
+    being fetched isn't marked as read, so it's taken after. A link's
+    code is read once even if the screen is made again.
+159. **The note follows the code**: taking a code sets the note to its
+    description, or clears it; the form kept under Confirm keeps the note
+    Confirm showed.
+160. **A line about a payment says what was paid**: Paid before, a
+    contact's lines and card, and "Paid, not saved" show a payment's worth
+    when it was sent, else its XMR, never a receipt's total (what the
+    payee wrote). The shop's name from the receipt may still title it.
+161. **Send's small fixes**: the sheet's handle is 48 dp to touch, its bar
+    still small; in a landscape strip too short for words over the camera,
+    what a scan found shows on the folded sheet instead.

@@ -1435,19 +1435,22 @@ impl Wallet {
         let _ = tokio::time::timeout(SYNC_NOW_WAIT, rounds.changed()).await;
     }
 
-    /// Builds a payment to `to`, choosing the money to spend and the fee.
-    /// Nothing leaves the wallet until [`send`](Wallet::send). `note` (the
-    /// payment code's description) and `recipient_name` (the name in the
-    /// code) are kept with the payment once sent.
-    pub async fn prepare(&self, to: &str, amount: u64, receipt_json: Option<String>, note: Option<String>, recipient_name: Option<String>) -> Result<Prepared> {
+    /// Builds a payment of `amount` to `to`, choosing the money to spend
+    /// and the fee. Nothing leaves the wallet until [`send`](Wallet::send).
+    /// `note` (typed, or the payment code's description) is kept with the
+    /// payment once sent; `code` is the payment code the form was filled
+    /// from, if any, whose name and receipt go with it as
+    /// [`uri::code_terms`] says.
+    pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
         self.inner.keys.spend()?;
         let network = self.network();
         let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::BadAddress(network.name()))?;
         if amount == 0 {
             return Err(FobError::BadAmount);
         }
-        let name = recipient_name.as_deref().and_then(contacts::clean_name);
-        self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, name, None).await
+        let terms = uri::code_terms(network, to, amount, code);
+        let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
+        self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await
     }
 
     /// Asks the node its fee rate, keeping it for Split up's estimate.
@@ -1876,17 +1879,9 @@ impl Wallet {
     /// XMR, or in money (`in_fiat`) converted at the current price, the
     /// conversion the field's line showed. Otherwise as
     /// [`prepare`](Wallet::prepare).
-    pub async fn prepare_typed(
-        &self,
-        to: &str,
-        amount_text: &str,
-        in_fiat: bool,
-        receipt_json: Option<String>,
-        note: Option<String>,
-        recipient_name: Option<String>,
-    ) -> Result<Prepared> {
+    pub async fn prepare_typed(&self, to: &str, amount_text: &str, in_fiat: bool, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
         let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
-        self.prepare(to, atomic, receipt_json, note, recipient_name).await
+        self.prepare(to, atomic, note, code).await
     }
 
     /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70", the money
@@ -2232,13 +2227,24 @@ impl Wallet {
         self.change_contacts(|book, network| book.add_paid_at(network, id, address)).await
     }
 
+    /// The payment to `address` a contact made from it would be named by:
+    /// the newest one from a code with a name (once paid as a named code's,
+    /// an address is never offered as a send address), else the newest.
+    fn naming_payment<'a>(state: &'a State, address: &str) -> Option<&'a Sent> {
+        let mut paid: Vec<&Sent> = state.sent.iter().filter(|s| s.to == address && s.pieces.is_none()).collect();
+        paid.sort_by_key(|s| std::cmp::Reverse(s.time));
+        paid.iter().find(|s| s.recipient_name.is_some()).or(paid.first()).copied()
+    }
+
     /// What the Paid screen offers for the payment `tx` (Add to Sam, or
     /// Save as a contact), or `None`: a split, or an address that's already
-    /// a contact's.
+    /// a contact's. Its name is this payment's code's, else the one any
+    /// earlier payment to the address went under.
     pub async fn save_offer(&self, tx: &str) -> Option<contacts::Offer> {
         let state = self.inner.state.lock().await;
         let sent = state.sent.iter().find(|s| s.tx == tx && s.pieces.is_none())?;
-        contacts::offer(&state.contacts, &sent.to, sent.recipient_name.as_deref(), sent.note.as_deref())
+        let name = sent.recipient_name.as_deref().or_else(|| Self::naming_payment(&state, &sent.to)?.recipient_name.as_deref());
+        contacts::offer(&state.contacts, &sent.to, name, sent.note.as_deref())
     }
 
     /// New contact for an address paid that's no contact's ("Paid, not
@@ -2246,9 +2252,7 @@ impl Wallet {
     /// payment, a code's name making it an address they were paid at.
     pub async fn new_contact_for(&self, address: &str) -> contacts::Draft {
         let state = self.inner.state.lock().await;
-        let mut paid: Vec<&Sent> = state.sent.iter().filter(|s| s.to == address && s.pieces.is_none()).collect();
-        paid.sort_by_key(|s| std::cmp::Reverse(s.time));
-        let named = paid.iter().find(|s| s.recipient_name.is_some()).or(paid.first());
+        let named = Self::naming_payment(&state, address);
         contacts::new_contact(address, named.and_then(|s| s.recipient_name.as_deref()), named.and_then(|s| s.note.as_deref()))
     }
 
@@ -2550,7 +2554,7 @@ mod tests {
         let watch =
             Wallet::restore_view_only(&dir("watch"), [1; 32], Network::Stagenet, &full.primary_address(), &full.view_key_hex(), Some(5)).unwrap();
         assert!(!watch.can_spend());
-        assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None, None).await, Err(FobError::ViewOnly)));
+        assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::ViewOnly)));
     }
 
     #[tokio::test]
@@ -2858,16 +2862,16 @@ mod tests {
         // No price: XMR only.
         assert_eq!(wallet.typed_amount(" 0.5 ", false).await.unwrap(), (XMR / 2, None));
         assert!(matches!(wallet.typed_amount("20", true).await, Err(FobError::Price(_))));
-        assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None, None).await, Err(FobError::Price(_))));
+        assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Price(_))));
         wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, now()).await.unwrap();
         // The XMR the field's line showed for it.
         assert_eq!(wallet.amount_field("20", true).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
         assert_eq!(wallet.typed_amount("20", true).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
         assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::BadAmount)));
         // Converted before the address and amount are checked, as prepare checks them.
-        assert!(matches!(wallet.prepare_typed("86Ux", "20", true, None, None, None).await, Err(FobError::BadAddress(_))));
-        assert!(matches!(wallet.prepare_typed(&address, "0", true, None, None, None).await, Err(FobError::BadAmount)));
-        assert!(matches!(wallet.prepare_typed(&address, "abc", false, None, None, None).await, Err(FobError::BadAmount)));
+        assert!(matches!(wallet.prepare_typed("86Ux", "20", true, None, None).await, Err(FobError::BadAddress(_))));
+        assert!(matches!(wallet.prepare_typed(&address, "0", true, None, None).await, Err(FobError::BadAmount)));
+        assert!(matches!(wallet.prepare_typed(&address, "abc", false, None, None).await, Err(FobError::BadAmount)));
     }
 
     #[tokio::test]
@@ -3107,6 +3111,10 @@ mod tests {
         let henry_draft = wallet.new_contact_for(&henry).await;
         assert_eq!((henry_draft.name.as_str(), henry_draft.send_address, henry_draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
         assert_eq!(wallet.new_contact_for(&plain).await.send_address.as_deref(), Some(plain.as_str()));
+        // So too on Paid after paying it again without the name (from Paid before, or pasted).
+        let again = wallet.save_offer("henry-again").await.unwrap();
+        assert_eq!((again.draft.name.as_str(), again.draft.send_address, again.draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
+        assert_eq!(again.named.as_deref(), Some("to a code named “Henry”"));
         // Added to Sam, the payment is Sam's and nothing more is offered.
         wallet.add_contact_paid_at(sam.id, &add.address).await.unwrap();
         assert!(wallet.save_offer("named-sam").await.is_none());

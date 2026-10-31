@@ -289,11 +289,11 @@ class WalletModel(private val app: Application) {
     /**
      * [amount] as the amount field took it, in money when [inFiat] (Rust
      * converts at the current price); [note] (typed, or the payment
-     * code's description) and [recipientName] (the name in the code) are
-     * kept with the payment.
+     * code's description) is kept with the payment, and Rust keeps what
+     * still applies of [code], the payment code the form came from.
      */
-    suspend fun prepare(to: String, amount: String, inFiat: Boolean, receiptJson: String?, note: String?, recipientName: String?): Prepared =
-        requireNotNull(_wallet.value).prepare(to, amount, inFiat, receiptJson, note, recipientName)
+    suspend fun prepare(to: String, amount: String, inFiat: Boolean, note: String?, code: String?): Prepared =
+        requireNotNull(_wallet.value).prepare(to, amount, inFiat, note, code)
 
     /** What the Paid screen offers for payment [tx]; null for a split or an address that's already a contact's. */
     suspend fun saveOffer(tx: String): SaveOffer? = _wallet.value?.saveOffer(tx)

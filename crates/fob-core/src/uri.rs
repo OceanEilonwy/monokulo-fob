@@ -94,6 +94,26 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
     })
 }
 
+/// What a payment code a form was filled from carries over to the payment
+/// made from the form.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CodeTerms {
+    /// The code's name, while the payment goes to the code's address:
+    /// changing the amount (or its unit) keeps it, changing the address
+    /// drops it.
+    pub name: Option<String>,
+    /// The code's receipt, only while the payment is to the code's address
+    /// for the amount the code asked: a receipt is for what it asked.
+    pub receipt: Option<orf_codec::Receipt>,
+}
+
+/// What `code` (the payment code as read, if any) gives a payment of
+/// `amount` to `to`.
+pub fn code_terms(network: Network, to: &str, amount: u64, code: Option<&str>) -> CodeTerms {
+    let Some(code) = code.and_then(|c| parse_payment(network, c).ok()).filter(|c| c.address == to.trim()) else { return CodeTerms::default() };
+    CodeTerms { receipt: code.receipt.filter(|_| code.amount == Some(amount)), name: code.recipient_name }
+}
+
 /// What a value in a code is encoded with: everything but letters, digits
 /// and `-._~` (RFC 3986's unreserved), so a space is `%20` and a `+` is
 /// `%2B`, which every reader decodes the same.
@@ -355,6 +375,26 @@ mod tests {
         assert_eq!(request.address, address);
         assert_eq!(request.amount, Some(142_100_000_000));
         assert_eq!(request.receipt.unwrap().merchant.legal_name, "Corner Café");
+    }
+
+    #[test]
+    fn a_code_s_name_stays_while_its_address_does_and_its_receipt_while_its_amount_does() {
+        let (address, other) = (wallet().address(4), wallet().address(5));
+        let receipt: orf_codec::Receipt = serde_json::from_str(RECEIPT).unwrap();
+        let code = orf_codec::query::append(&format!("monero:{address}?tx_amount=0.1421&recipient_name=Corner%20Caf%C3%A9"), &receipt).unwrap();
+        let terms = |to: &str, amount: u64| code_terms(Network::Stagenet, to, amount, Some(&code));
+        // As asked: both.
+        let asked = terms(&format!(" {address} "), 142_100_000_000);
+        assert_eq!((asked.name.as_deref(), asked.receipt.map(|r| r.merchant.legal_name)), (Some("Corner Café"), Some("Corner Café".into())));
+        // Another amount (edited, or the unit switched and converted back): the name stays, the receipt goes.
+        assert_eq!(terms(&address, 142_140_000_000), CodeTerms { name: Some("Corner Café".into()), receipt: None });
+        // Another address: neither.
+        assert_eq!(terms(&other, 142_100_000_000), CodeTerms::default());
+        // A receipt in a code without an amount is for nothing in particular: not kept.
+        let open = orf_codec::query::append(&format!("monero:{address}?recipient_name=Sam"), &receipt).unwrap();
+        assert_eq!(code_terms(Network::Stagenet, &address, 5, Some(&open)), CodeTerms { name: Some("Sam".into()), receipt: None });
+        assert_eq!(code_terms(Network::Stagenet, &address, 5, None), CodeTerms::default());
+        assert_eq!(code_terms(Network::Stagenet, &address, 5, Some("not a code")), CodeTerms::default());
     }
 
     #[test]

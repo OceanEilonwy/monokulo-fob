@@ -69,7 +69,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
@@ -99,7 +101,6 @@ import uniffi.fob.AmountEntry
 import uniffi.fob.CodeKind
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
-import uniffi.fob.PaymentRequest
 import uniffi.fob.ScannedProfile
 import uniffi.fob.classifyCode
 import uniffi.fob.isProfileCode
@@ -115,15 +116,17 @@ private const val CORNERS = "M8 64V24a16 16 0 0 1 16-16h40 M216 8h40a16 16 0 0 1
 
 /**
  * Send's form as it was filled: kept on the back stack under Confirm so
- * Back returns to it. [read] is the code that filled it, not taken again
- * if the camera still sees it.
+ * Back returns to it, its note the one Confirm showed. [code] is the
+ * payment code it was filled from, whose name and receipt Rust keeps with
+ * the payment as long as they still apply; [read] is the last code the
+ * camera saw, not taken again while it still sees it.
  */
 data class SendDraft(
     val to: String,
     val amount: String = "",
     val inFiat: Boolean = false,
     val note: String = "",
-    val request: PaymentRequest? = null,
+    val code: String? = null,
     val read: String? = null,
 )
 
@@ -153,14 +156,17 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     var to by remember { mutableStateOf(draft?.to ?: "") }
     var amount by remember { mutableStateOf(draft?.amount ?: "") }
     var note by remember { mutableStateOf(draft?.note ?: "") }
-    // The payment code the form came from: its receipt goes with the payment until the address or amount is changed.
-    var request by remember { mutableStateOf(draft?.request) }
+    // The payment code the form came from, as read: Rust keeps its name while To is its address, its receipt while
+    // the amount is its too.
+    var filledFrom by remember { mutableStateOf(draft?.code) }
+    // A code the camera saw while the form held a To already: asked about, never taken unasked.
+    var pending by remember { mutableStateOf<Pair<String, String>?>(null) }
     // What a scan or paste found that isn't a payment code; under the viewfinder folded, under To pulled up.
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    // The camera reads a code many times a second: each one is taken once.
-    var lastRead by remember { mutableStateOf(draft?.read) }
+    // The camera reads a code many times a second: each one is taken once, a link's too after the screen is made again.
+    var lastRead by rememberSaveable { mutableStateOf(draft?.read) }
     // A scanned profile, with the code it came from: shown on its own sheet in place of Send's.
     var profile by remember { mutableStateOf<Pair<String, ScannedProfile>?>(null) }
     var paid by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
@@ -185,19 +191,20 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
         entry = e
     }
+    // Rust's word on what the field holds now; none while it's behind (the chip just tapped), so Review waits.
+    val current = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }
 
     val toValid = remember(to, network) { to.isNotBlank() && runCatching { parsePayment(network, to) }.getOrNull()?.address == to.trim() }
 
-    fun review(address: String, typed: String, fiat: Boolean, receiptJson: String?, withNote: String?) {
+    fun review(address: String, typed: String, fiat: Boolean, withNote: String?) {
         busy = true
         error = null
         scope.launch {
-            // The code's name goes with it while the form is the code's.
-            runCatching { model.prepare(address, typed, fiat, receiptJson, withNote, request?.recipientName) }
+            runCatching { model.prepare(address, typed, fiat, withNote, filledFrom) }
                 .onSuccess {
                     if (nav.current is Screen.Send) {
-                        // Under Confirm, the form as filled: Back returns to it, not Home.
-                        val filled = SendDraft(address, typed, fiat, note, request, lastRead)
+                        // Under Confirm, the form as filled, with the note Confirm shows: Back returns to it, not Home.
+                        val filled = SendDraft(address, typed, fiat, withNote ?: "", filledFrom, lastRead)
                         nav.back(); nav.go(Screen.Send(draft = filled)); nav.go(Screen.Confirm(it, withNote))
                     }
                 }
@@ -224,24 +231,36 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         val r = runCatching { parsePayment(network, text) }.getOrElse { notice = it.reason(); return }
         notice = null
         error = null
+        pending = null
         to = r.address
-        r.description?.let { note = it }
-        request = r
+        // The note follows the code: its description, or none.
+        note = r.description ?: ""
+        filledFrom = text
         val fixed = r.amountText
         if (fixed != null) {
             // Filled too, so a payment that can't be prepared (not enough ready) shows what was asked.
             amount = fixed
             inFiat = false
             defaulted = true
-            review(r.address, fixed, false, r.receiptJson, r.description)
+            review(r.address, fixed, false, r.description)
         } else {
             open = true
         }
     }
 
+    /**
+     * What the camera read. Taken only while getting the fee isn't under way, and once. With the form pulled up
+     * and To filled, a code is never taken unasked (one on the counter beside the shop's, say): one to another
+     * address is asked about, anything else left alone.
+     */
     fun read(text: String) {
-        if (text == lastRead) return
+        if (busy || text == lastRead) return
         lastRead = text
+        if (open && to.isNotBlank() && !isProfileCode(network, text)) {
+            val found = runCatching { parsePayment(network, text) }.getOrNull()
+            if (found != null && found.address != to.trim()) pending = text to found.address
+            return
+        }
         take(text)
     }
 
@@ -341,9 +360,9 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
                     .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
             ) {
-                // The handle: drag it, or tap it.
+                // The handle: drag it, or tap it; 48 dp to touch, its bar small.
                 Box(
-                    Modifier.fillMaxWidth().height(28.dp)
+                    Modifier.fillMaxWidth().height(48.dp)
                         .draggable(drag, Orientation.Vertical, onDragStopped = { dragged = 0f })
                         .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { pull(!open) }
                         .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
@@ -355,14 +374,25 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                             ToField(to, toValid, onChange = { typed ->
                                 // A whole payment code typed or pasted in is read as one.
                                 if (typed.trim().startsWith("monero:", ignoreCase = true)) take(typed.trim())
-                                else { to = typed; request = null; lastRead = null; notice = null }
+                                // A code still in view isn't taken again for an edit; cleared, To takes the next one read.
+                                else { to = typed; pending = null; notice = null; if (typed.isBlank()) lastRead = null }
                             }, onPaste = ::paste)
                             ErrorText(notice)
+                            pending?.let { (seen, address) -> OtherCode(address, onUse = { take(seen) }, onKeep = { pending = null }) }
                         }
                         Labelled("Amount") {
                             AmountField(
-                                amount, { amount = it; if (request?.amount != null) request = null }, entry,
-                                onSwitch = { scope.launch { val toFiat = !inFiat; amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
+                                amount, { amount = it }, entry,
+                                onSwitch = {
+                                    // The text, unit and Rust's word on them change together.
+                                    scope.launch {
+                                        val w = wallet ?: return@launch
+                                        val toFiat = !inFiat
+                                        val switched = w.convertAmount(amount, toFiat)
+                                        val e = w.amountEntry(switched, toFiat)
+                                        amount = switched; inFiat = toFiat; entry = e
+                                    }
+                                },
                             )
                         }
                         Labelled("Note (optional)") { NoteField(note) { note = it } }
@@ -370,13 +400,15 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                     }
                     Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         ErrorText(error)
-                        PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && entry?.sendable == true, onClick = {
-                            val r = request
-                            review(to.trim(), amount, entry?.inFiat == true, r?.receiptJson, note.trim().ifEmpty { null })
+                        PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
+                            val e = current ?: return@PrimaryButton
+                            review(to.trim(), amount, e.inFiat, note.trim().ifEmpty { null })
                         })
                     }
                 } else {
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        // No room over the camera for what a scan found (a short landscape window): it shows here.
+                        if (sheetTop - barBottom < 40.dp) ErrorText(notice)
                         PasteRow(::paste)
                         if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
                         ErrorText(error)
@@ -393,7 +425,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                                 if (contacts.isEmpty()) {
                                     Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
                                 }
-                                contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; request = null; notice = null; open = true } }
+                                contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; filledFrom = null; pending = null; notice = null; open = true } }
                             }
                         } else if (paid.isNotEmpty()) {
                             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -401,7 +433,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                                     "PAID BEFORE", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
                                     modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).semantics { heading() },
                                 )
-                                paid.forEach { p -> PaidRow(p) { to = p.address; request = null; notice = null; open = true } }
+                                paid.forEach { p -> PaidRow(p) { to = p.address; filledFrom = null; pending = null; notice = null; open = true } }
                             }
                         }
                         balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
@@ -416,6 +448,28 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             Box(Modifier.align(Alignment.BottomCenter).onSizeChanged { sheetHeight = it.height }) {
                 ProfileFound(model, nav, text, found, onPay = { profile = null; take(text, asProfile = false) }, onClose = { profile = null })
             }
+        }
+    }
+}
+
+/**
+ * A code the camera saw while To was filled: its address's pattern and ends, and whether to use it in place of
+ * what's there. Nothing changes until Use it.
+ */
+@Composable
+private fun OtherCode(address: String, onUse: () -> Unit, onKeep: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Fob.sunken).padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 4.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            AddressPattern(address, 24.dp)
+            Text("The camera found another code, to ${shortAddress(address)}. Use it instead?", fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+        }
+        Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton("Keep", onKeep)
+            TextButton("Use it", onUse)
         }
     }
 }
