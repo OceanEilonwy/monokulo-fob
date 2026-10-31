@@ -301,3 +301,17 @@ Two phones (A and B)
 - [ ] Pulled apart just as B buzzes (rare) → B has A, A hasn't B; A's shares may show "Touched phones" with no name; touching again swaps both.
 - [ ] A 40-character name → "Swapped with …" wraps; the card's name two lines at most.
 - [ ] TalkBack: the strip reads as one button; Swapped's photos are described; a failure line is announced.
+
+## Step 11 · Settings
+
+- [ ] Settings → sections in order: Wallet, Display, Prices, Syncing, Network, Receipts, This phone; no dividers between rows inside a card; scrolls to "Fob 0.1.0".
+- [ ] Wallet with a profile → avatar 40 (photo or initial), "Your profile", "Henry · name and photo, share as a code", chevron → Your profile. Without one → person icon, "Set up your profile" → the editor; saved → Your profile.
+- [ ] A 40-character name → the profile row's line two lines at most, ellipsised.
+- [ ] Wallet → Contacts → Contacts; Back up seed phrase → the words (absent on a view-only wallet); Show wallet code → the wallet code screen.
+- [ ] Display → "Theme" with "Same as the phone" and a chevron → a dialog of Same as the phone / Light / Dark, a tick on the current; pick Dark → the app turns dark at once and the row says "Dark".
+- [ ] Display → "Currency" with "US dollar" → the currency dialog; pick another → the row and Home follow.
+- [ ] "Show amounts in" with "Tap the balance to swap any time" and XMR / USD segmented (orange on the chosen); switch → Home's balance leads with that; tap Home's balance → the segmented control here follows.
+- [ ] Prices off → Currency and Show amounts in go; Show prices and Price source stay.
+- [ ] Prices → Show prices switch, Price source with its source and how it's asked. Syncing → Node with the address; Instant updates (ZMQ) switch and status.
+- [ ] TalkBack: Theme and Currency read title and value as one button; the segmented control is "Show amounts in" with each option a radio button; switches name their rows.
+- [ ] Dark mode: cards, muted values, chevrons, the segmented track and orange choice, switches, avatar and person icon all readable; no black.

@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -152,6 +155,38 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 }
             }
             Column {
+                SectionLabel("Display")
+                Card {
+                    ValueRow("Theme", theme.label) { choosing = Pick.THEME }
+                    prices?.let { p ->
+                        val name = p.currencies.firstOrNull { it.code == p.currency }?.name
+                        ValueRow("Currency", name?.ifEmpty { null } ?: p.currency) { choosing = Pick.CURRENCY }
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Show amounts in", fontSize = 16.sp)
+                                Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
+                            }
+                            Segmented(
+                                listOf("XMR", p.currency), if (p.fiatFirst) 1 else 0, { i -> scope.launch { model.setFiatFirst(i == 1) } },
+                                Modifier.semantics { contentDescription = "Show amounts in" }, height = 48.dp,
+                            )
+                        }
+                    }
+                }
+            }
+            prices?.let { p ->
+                Column {
+                    SectionLabel("Prices")
+                    Card {
+                        SettingRow("Show prices", "Off: Fob never asks for a price", checked = p.on, onChecked = { on -> scope.launch { model.setPricesOn(on) } })
+                        SettingRow("Price source", listOfNotNull(p.sourceText, p.error).joinToString(" · "), onClick = { choosing = Pick.SOURCE })
+                    }
+                }
+            }
+            Column {
                 SectionLabel("Syncing")
                 Card {
                     SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
@@ -170,35 +205,6 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                         "Use mainnet", if (network == Network.MAINNET) "Real money. Each network has its own wallet." else "Off: stagenet, with test coins",
                         checked = network == Network.MAINNET, onChecked = { switching = true },
                     )
-                }
-            }
-            Column {
-                SectionLabel("Display")
-                Card {
-                    ThemeChoice.entries.forEachIndexed { i, choice ->
-                        if (i > 0) Divider()
-                        Choice(choice.label, choice == theme) { model.setTheme(choice) }
-                    }
-                    prices?.let { p ->
-                        Divider()
-                        val name = p.currencies.firstOrNull { it.code == p.currency }?.name
-                        SettingRow("Currency", listOfNotNull(name, p.currency).joinToString(" · "), onClick = { choosing = Pick.CURRENCY })
-                        Divider()
-                        Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Show amounts in", fontSize = 16.sp, modifier = Modifier.weight(1f))
-                            Segmented(listOf("XMR", p.currency), if (p.fiatFirst) 1 else 0, { i -> scope.launch { model.setFiatFirst(i == 1) } })
-                        }
-                    }
-                }
-            }
-            prices?.let { p ->
-                Column {
-                    SectionLabel("Prices")
-                    Card {
-                        SettingRow("Show prices", "Off: Fob never asks for a price", checked = p.on, onChecked = { on -> scope.launch { model.setPricesOn(on) } })
-                        Divider()
-                        SettingRow("Price source", listOfNotNull(p.sourceText, p.error).joinToString(" · "), onClick = { choosing = Pick.SOURCE })
-                    }
                 }
             }
             Column {
@@ -226,7 +232,18 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
         )
     }
     val p = prices
-    if (choosing != null && p != null) {
+    if (choosing == Pick.THEME) {
+        AlertDialog(
+            onDismissRequest = { choosing = null },
+            title = { Text("Theme") },
+            text = {
+                Column(Modifier.selectableGroup()) {
+                    ThemeChoice.entries.forEach { choice -> Choice(choice.label, choice == theme) { model.setTheme(choice); choosing = null } }
+                }
+            },
+            confirmButton = { TextButton("Done", { choosing = null }, color = Fob.ink) },
+        )
+    } else if (choosing != null && p != null) {
         AlertDialog(
             onDismissRequest = { choosing = null; priceError = null },
             title = { Text(if (choosing == Pick.CURRENCY) "Currency" else "Price source") },
@@ -263,7 +280,20 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
 }
 
 /** Which list Settings has open in a dialog. */
-private enum class Pick { CURRENCY, SOURCE }
+private enum class Pick { THEME, CURRENCY, SOURCE }
+
+/** A setting whose value shows at the row's end ("Theme · Same as the phone"), opening a choice. */
+@Composable
+private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Text(value, fontSize = 15.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+    }
+}
 
 /** One of a few choices: its name, and a tick when it's the one chosen; one not [enabled] is muted with why under it. */
 @Composable
