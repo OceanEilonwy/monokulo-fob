@@ -302,9 +302,10 @@ private fun NameAndSuffix(name: String, suffix: String) {
 }
 
 /**
- * The Money card's first row: the title (and its line) at the start, the
- * value at the end, at most 152 dp and wrapping a long name; when that
- * would break the title inside a word (a big font), the value goes under
+ * A Money card row (the currency, Show first): the title (and its line)
+ * at the start, the value at the end, at most 152 dp and wrapping a long name; when sitting
+ * beside the value would wrap the title onto more lines than it takes
+ * alone (a big font: "Also / show / amounts / in"), the value goes under
  * it instead, still at the end.
  */
 @Composable
@@ -313,7 +314,10 @@ private fun TitleAndValue(modifier: Modifier, gap: Dp = 12.dp, title: @Composabl
         val width = c.maxWidth
         val space = gap.roundToPx()
         val room = minOf(152.dp.roundToPx(), width - space - t.minIntrinsicWidth(Constraints.Infinity))
-        if (room >= v.minIntrinsicWidth(Constraints.Infinity)) {
+        val beside = minOf(room, v.maxIntrinsicWidth(Constraints.Infinity))
+        if (room >= v.minIntrinsicWidth(Constraints.Infinity) &&
+            t.minIntrinsicHeight(width - space - beside) <= t.minIntrinsicHeight(width)
+        ) {
             val vp = v.measure(Constraints(maxWidth = room))
             val tp = t.measure(Constraints(maxWidth = width - space - vp.width))
             val height = maxOf(tp.height, vp.height, c.minHeight)
@@ -386,11 +390,17 @@ private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () 
         Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Show first", fontSize = 16.sp)
-            Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
-        }
-        Segmented(listOf("XMR", code), if (p.fiatFirst) 1 else 0, { i -> onFiatFirst(i == 1) }, Modifier.semantics { contentDescription = "Show first" }, height = 48.dp)
+        // The switch goes under its title too at a big font.
+        TitleAndValue(
+            Modifier.weight(1f),
+            title = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Show first", fontSize = 16.sp)
+                    Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
+                }
+            },
+            value = { Segmented(listOf("XMR", code), if (p.fiatFirst) 1 else 0, { i -> onFiatFirst(i == 1) }, Modifier.semantics { contentDescription = "Show first" }, height = 48.dp) },
+        )
     }
     Row(
         Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button, onClick = onPriceFrom)
