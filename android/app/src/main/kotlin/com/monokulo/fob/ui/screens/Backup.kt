@@ -52,6 +52,7 @@ import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.SectionLabel
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TopBar
+import com.monokulo.fob.ui.Warning
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.fob.BackupHub
@@ -78,13 +79,7 @@ fun BackupKeysScreen(model: WalletModel, nav: Nav) {
         TopBar("Backup and keys", onBack = { nav.back() })
         val h = hub ?: return@Page
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.highlight).padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                StrokeIcon(Icons.warning, tint = Fob.orangeText, size = 22.dp, width = 1.8f)
-                Text(h.warning, fontSize = 14.sp, lineHeight = 20.sp)
-            }
+            Warning(h.warning)
             HubCard("Back up", h.backup, nav)
             HubCard("For other wallets", h.other, nav)
             Text(h.footer, color = Fob.muted, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 8.dp))

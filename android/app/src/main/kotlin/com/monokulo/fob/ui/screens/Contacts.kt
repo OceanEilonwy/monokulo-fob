@@ -81,6 +81,7 @@ import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
+import com.monokulo.fob.ui.Warning
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.launch
@@ -523,13 +524,7 @@ private fun FoundContent(f: FoundAddress, other: String, onOther: () -> Unit, on
             }
         }
         f.warning?.let {
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Fob.highlight).padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                StrokeIcon(Icons.warning, tint = Fob.orangeText, size = 18.dp)
-                Text(it, fontSize = 13.5.sp, lineHeight = 19.sp)
-            }
+            Warning(it)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlineButton(other, onOther, Modifier.weight(1f), height = 52.dp)

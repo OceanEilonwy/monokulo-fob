@@ -61,6 +61,7 @@ import com.monokulo.fob.ui.Spacing
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
+import com.monokulo.fob.ui.Warning
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.short
@@ -174,12 +175,10 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
     }) {
         TopBar(if (afterCreate) "Back up your wallet" else "Seed phrase", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text(
-                if (seed == null) "This wallet only watches, so it has no seed phrase."
-                else "These ${seed.words.size} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored.",
-                color = Fob.muted, fontSize = 16.sp, lineHeight = 22.sp,
-            )
-            if (seed != null) {
+            if (seed == null) {
+                Text("This wallet only watches, so it has no seed phrase.", color = Fob.muted, fontSize = 16.sp, lineHeight = 22.sp)
+            } else {
+                Warning("These ${seed.words.size} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored.")
                 Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed.words) }
             }
         }
@@ -324,13 +323,10 @@ fun RestoreScanScreen(model: WalletModel, nav: Nav) {
                 Text(notice ?: "Point at the wallet code", color = Fob.onCamera, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                 Text("In your other wallet it's under Settings, often called Export wallet or Show keys as QR.", color = Fob.cameraHint, fontSize = 15.sp, textAlign = TextAlign.Center)
             }
-            Row(
-                Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.cameraCard).padding(horizontal = 18.dp, vertical = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                StrokeIcon(Icons.warning, tint = Fob.cameraWarning, size = 22.dp, width = 1.8f)
-                Text("A wallet code can hold the keys to spend your money. Scan only your own, somewhere no one can see the screen.", color = Fob.onCamera, fontSize = 14.sp, lineHeight = 20.sp)
-            }
+            Warning(
+                "A wallet code can hold the keys to spend your money. Scan only your own, somewhere no one can see the screen.",
+                Modifier.padding(16.dp), surface = Fob.cameraCard, ink = Fob.onCamera, mark = Fob.cameraWarning,
+            )
             Spacing(16.dp)
         }
     }

@@ -622,6 +622,9 @@ pub struct Coins {
     pub not_ready_sum: String,
     /// Soonest ready first.
     pub not_ready_coins: Vec<NotReadyPiece>,
+    /// Split up can be pressed: a coin is ready to spend in a wallet that
+    /// can spend. Otherwise it shows greyed out.
+    pub can_split: bool,
 }
 
 impl From<not_ready::Coins> for Coins {
@@ -638,6 +641,7 @@ impl From<not_ready::Coins> for Coins {
             not_ready_title: c.not_ready_title,
             not_ready_sum: c.not_ready_sum,
             not_ready_coins: c.not_ready_coins.into_iter().map(Into::into).collect(),
+            can_split: c.can_split,
         }
     }
 }

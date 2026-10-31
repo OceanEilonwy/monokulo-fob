@@ -241,6 +241,9 @@ pub struct Coins {
     pub not_ready_sum: String,
     /// Soonest ready first.
     pub not_ready_coins: Vec<PieceView>,
+    /// Split up can be pressed: some coin is ready to spend. Without one
+    /// (no coins, or none ready yet) the button shows but is greyed out.
+    pub can_split: bool,
 }
 
 /// Every coin as the Coins screen shows it: the `ready` ones and those not
@@ -301,6 +304,7 @@ pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unl
         not_ready_title: format!("Not ready · {}", coins_text(pieces.len())),
         not_ready_sum: if pieces.is_empty() { String::new() } else { format!("all by {all_ready}") },
         not_ready_coins: pieces,
+        can_split: ready_total > 0,
     }
 }
 
@@ -381,15 +385,30 @@ mod tests {
     fn no_coins_says_so() {
         let empty = coins(vec![], vec![], NOW, 10, None, None, clock());
         assert_eq!(empty.intro, "No coins yet. Each payment to this wallet arrives as a coin.");
+        assert!(!empty.can_split);
         assert!(empty.ready_coins.is_empty() && empty.not_ready_coins.is_empty());
         assert_eq!((empty.ready_sum.as_str(), empty.not_ready_sum.as_str(), empty.progress), ("0", "", 0.0));
         // One coin, all ready, without a price.
         let one = coins(vec![piece(XMR, 12, Source::Received, NOW)], vec![], NOW, 10, None, None, clock());
         assert!(one.intro.starts_with("Your 1 XMR is held as 1 coin. "), "{}", one.intro);
         assert_eq!((one.ready_title.as_str(), one.ready_sum.as_str()), ("Ready · 1 coin", "1"));
+        assert!(one.can_split);
         // A date from another year says the year.
         let old = coins(vec![piece(XMR, 12, Source::Received, NOW - 400 * 86_400)], vec![], NOW, 10, None, None, clock());
         assert_eq!(old.ready_coins[0].source, "Received · 26 Sep 2025");
+    }
+
+    #[test]
+    fn split_up_waits_for_a_coin_ready_to_spend() {
+        // Only coins not ready yet: Split up shows, greyed out.
+        let waiting = coins(vec![], vec![piece(XMR, 3, Source::Received, NOW)], NOW, 10, None, None, clock());
+        assert!(!waiting.can_split);
+        // A ready coin of nothing doesn't count.
+        let zero = coins(vec![piece(0, 10, Source::Received, NOW)], vec![], NOW, 10, None, None, clock());
+        assert!(!zero.can_split);
+        // One ready beside one waiting: it can be pressed.
+        let both = coins(vec![piece(1, 10, Source::Received, NOW)], vec![piece(XMR, 3, Source::Received, NOW)], NOW, 10, None, None, clock());
+        assert!(both.can_split);
     }
 
     #[test]
