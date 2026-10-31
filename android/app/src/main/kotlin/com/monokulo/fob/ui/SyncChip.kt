@@ -168,33 +168,6 @@ private object BelowAtEnd : PopupPositionProvider {
     }
 }
 
-/**
- * A row of the card: the label at the start, the value at the end. At a
- * big font the value keeps room for its longest word ("2,240,749",
- * "Today,") and the label wraps first, so nothing breaks inside a word.
- */
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Layout(
-        content = {
-            Text(label, fontSize = 14.sp, color = Fob.muted)
-            Text(value, fontSize = 14.sp, textAlign = TextAlign.End)
-        },
-        modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
-    ) { (l, v), c ->
-        val gap = 14.dp.roundToPx()
-        val width = c.maxWidth
-        val labelWidth = minOf(l.maxIntrinsicWidth(c.maxHeight), maxOf(width - gap - v.minIntrinsicWidth(c.maxHeight), width / 3))
-        val lp = l.measure(Constraints(maxWidth = labelWidth))
-        val vp = v.measure(Constraints(maxWidth = (width - gap - lp.width).coerceAtLeast(0)))
-        val height = maxOf(lp.height, vp.height)
-        layout(width, height) {
-            lp.placeRelative(0, 0)
-            vp.placeRelative(width - vp.width, 0)
-        }
-    }
-}
-
 /** The details card: Rust's title, percent, rows and line, a bar while catching up, and a way to Node. */
 @Composable
 private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
@@ -211,7 +184,11 @@ private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
         d.progress?.let { ProgressBar(it) }
         if (d.rows.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                d.rows.forEach { row -> DetailRow(row.label, row.amount) }
+                d.rows.forEach { row ->
+                    LabelAndValue(Modifier.semantics(mergeDescendants = true) {}, label = { Text(row.label, fontSize = 14.sp, color = Fob.muted) }) {
+                        Text(row.amount, fontSize = 14.sp, textAlign = TextAlign.End)
+                    }
+                }
             }
         }
         d.note?.let { Text(it, fontSize = 12.5.sp, color = Fob.muted) }

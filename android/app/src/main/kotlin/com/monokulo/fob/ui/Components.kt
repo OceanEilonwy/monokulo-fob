@@ -10,6 +10,8 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.layout.Layout
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -665,4 +667,27 @@ fun BottomSheet(title: String, onDismiss: () -> Unit, background: Color = Fob.pa
 @Composable
 fun SheetHandle() {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
+}
+
+/**
+ * A label at the start and a value at the end of a row (the sync card's
+ * rows, Node's checks). At a big font the value keeps room for its
+ * longest word ("2,240,749", "stagenet") and the label wraps first, so
+ * nothing breaks inside a word; the label keeps at least a third.
+ * [centred] puts both on the row's middle, else on its top.
+ */
+@Composable
+fun LabelAndValue(modifier: Modifier = Modifier, gap: Dp = 14.dp, centred: Boolean = false, label: @Composable () -> Unit, value: @Composable () -> Unit) {
+    Layout(content = { Box { label() }; Box { value() } }, modifier = modifier.fillMaxWidth()) { (l, v), c ->
+        val space = gap.roundToPx()
+        val width = c.maxWidth
+        val labelWidth = minOf(l.maxIntrinsicWidth(Constraints.Infinity), maxOf(width - space - v.minIntrinsicWidth(Constraints.Infinity), width / 3))
+        val lp = l.measure(Constraints(maxWidth = labelWidth))
+        val vp = v.measure(Constraints(maxWidth = (width - space - lp.width).coerceAtLeast(0)))
+        val height = maxOf(lp.height, vp.height, c.minHeight)
+        layout(width, height) {
+            lp.placeRelative(0, if (centred) (height - lp.height) / 2 else 0)
+            vp.placeRelative(width - vp.width, if (centred) (height - vp.height) / 2 else 0)
+        }
+    }
 }
