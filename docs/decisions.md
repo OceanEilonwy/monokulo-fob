@@ -1087,3 +1087,29 @@ Calls made while building the first version, with why. Newest last.
     midway and just before done, codes that aren't profiles, commands in
     the wrong state; two wallets swapping through sessions). The two-phone
     checks are in the checklist.
+
+## Round 3: Settings
+
+145. **Settings follows the board's sections** (Round 2 · Money ›
+    "Settings: display, prices, node"), in this order: Wallet, Display,
+    Prices, Syncing, then Network, Receipts and This phone, which the board
+    doesn't show and stay as they were. Rows run without dividers inside a
+    card, as on the board.
+146. **The Wallet card is settled** (decisions 106 and 132 left it open):
+    Your profile (avatar 40, "Henry · name and photo, share as a code", or
+    the person icon and "Set up your profile"), Contacts, Back up seed
+    phrase (not on a view-only wallet), Show wallet code. The board draws
+    Your profile in Display; it stays in Wallet, beside what else is this
+    wallet's. Nothing was a stopgap to remove: Contacts and Your profile
+    were each one row already. There's no fingerprint row: Fob always asks
+    for the phone's lock before money leaves (decision 13), so there's
+    nothing to set.
+147. **Display**: Theme and Currency are rows with their value at the end
+    and a chevron ("Same as the phone", "US dollar", the code when a
+    currency has no name), each opening its choice in a dialog; the three
+    theme choices no longer sit in the card. "Show amounts in" keeps its
+    segmented control (decision 3 of the plan), 48 dp tall for touch, with
+    the board's "Tap the balance to swap any time" (Home's balance does)
+    and the group named for TalkBack. Currency and Show amounts in show
+    only with prices, as before. The board's "Address check" row isn't
+    drawn: Fob has no setting for it.
