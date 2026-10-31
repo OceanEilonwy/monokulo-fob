@@ -21,6 +21,7 @@ use monero_wallet::interface::InterfaceError;
 use tokio::time::Instant;
 
 use crate::{
+    FobError,
     catch_up::link_speed,
     fetch,
     network::Network,
@@ -264,6 +265,21 @@ impl Report {
         let step = if matches!(failure, Failure::Certificate(_)) { Step::Certificate } else { Step::Answers };
         self.set(step, Mark::Fail, failure.words(ANSWER));
         self.stop()
+    }
+}
+
+/// The sync card's words for a failed sync step: what the node checks
+/// would say ("Address not found", "Refused to connect"), not the
+/// transport's own error text.
+pub(crate) fn sync_words(e: &FobError) -> String {
+    match e {
+        FobError::Node(text) => match Failure::from_text(text) {
+            // Syncing's limits are its own (15 s to connect, 30 s quiet).
+            Failure::TimedOut => "Stopped answering".into(),
+            Failure::Other if text.contains("scanning") || text.contains("InvalidNode") => capitalized(&Failure::Unreadable.words(ANSWER)),
+            failure => capitalized(&failure.words(ANSWER)),
+        },
+        e => capitalized(&e.to_string()),
     }
 }
 

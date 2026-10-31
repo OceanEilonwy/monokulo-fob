@@ -901,17 +901,18 @@ impl Wallet {
         node::Setting { url: state.node.clone(), self_signed: state.node_self_signed }
     }
 
-    /// Settings' Node line: "Working · node.example:38081" from the last
-    /// check of it, else what syncing says ("Can't reach node · …"), else
-    /// just the address.
+    /// Settings' Node line: "Can't reach node · node.example:38081" while
+    /// syncing fails (as Home's chip), else the last check of it ("Working
+    /// · …"), else what syncing says, else just the address.
     pub async fn node_line(&self) -> String {
         let setting = self.node().await;
         let address = node::address(&setting.url);
         let checked = self.inner.node_verdict.lock().expect("node lock").clone();
         let status = self.status();
         let verdict = match checked {
+            // A failing sync is newer than any check: syncing retries every minute at most.
+            _ if status.error.is_some() => Some("Can't reach node"),
             Some((checked, verdict)) if checked == setting => Some(verdict),
-            _ if status.error.is_some() && !status.synced => Some("Can't reach node"),
             _ if status.synced || status.tip > 0 => Some("Working"),
             _ => None,
         };
@@ -1651,7 +1652,7 @@ impl Wallet {
                         }
                     }
                     Err(e) => {
-                        wallet.report(listener.as_ref(), &mut pace, Some(e.to_string())).await;
+                        wallet.report(listener.as_ref(), &mut pace, Some(node::sync_words(&e))).await;
                         wallet.inner.rounds.send_modify(|n| *n += 1);
                         wallet.wait(backoff, listener.as_ref()).await;
                         backoff = (backoff * 2).min(Duration::from_secs(60));
@@ -4092,6 +4093,15 @@ mod tests {
         // Checking the node in use names it on Settings' line.
         let report = reopened.check_node(&reopened.node().await, &|_| {}).await;
         assert_eq!(report.rows[0].result, "self-signed, accepted");
+        assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
+        // Syncing failing since, the line says so, as Home's chip, over the
+        // check (and over having synced before); working again, the check's back.
+        reopened.set_status(|s| {
+            s.synced = true;
+            s.error = Some("Address not found".into());
+        });
+        assert_eq!(reopened.node_line().await, format!("Can't reach node · 127.0.0.1:{port}"));
+        reopened.set_status(|s| s.error = None);
         assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
         // The list leaves out the node in use, and an added one comes once.
         let added = node::Setting { url: "node.example:38081/".into(), self_signed: true };

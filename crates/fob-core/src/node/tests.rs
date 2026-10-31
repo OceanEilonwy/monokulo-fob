@@ -234,6 +234,22 @@ fn transport_errors_are_told_apart() {
     assert_eq!(Failure::from_text("something else"), Failure::Other);
 }
 
+/// The sync card says why syncing failed as the checks would, never the
+/// transport's debug text.
+#[test]
+fn sync_failures_are_told_in_words() {
+    let offline = FobError::Node(r#"InterfaceError("error sending request: client error (Connect): dns error: failed to lookup address information: No address associated with hostname")"#.into());
+    assert_eq!(sync_words(&offline), "Address not found");
+    let refused = FobError::Node("InterfaceError(\"error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)\")".into());
+    assert_eq!(sync_words(&refused), "Refused to connect");
+    assert_eq!(sync_words(&FobError::Node("InterfaceError(\"operation timed out\")".into())), "Stopped answering");
+    assert_eq!(sync_words(&FobError::Node("InterfaceError(\"node answered 401 Unauthorized\")".into())), "Wants a login");
+    assert_eq!(sync_words(&FobError::Node("scanning block 12: InvalidScannableBlock(\"x\")".into())), "Sent blocks Fob can't read");
+    assert_eq!(sync_words(&FobError::Node("InvalidNode(\"bad\")".into())), "Sent blocks Fob can't read");
+    assert_eq!(sync_words(&FobError::Node("rejected".into())), "Couldn't connect");
+    assert_eq!(sync_words(&FobError::Storage("disk full".into())), "Couldn't read or save the wallet: disk full");
+}
+
 #[test]
 fn monerods_answers_are_read() {
     let info = br#"{"height":1792005,"target_height":0,"nettype":"stagenet","synchronized":true,"status":"OK"}"#;
