@@ -1275,3 +1275,17 @@ Calls made while building the first version, with why. Newest last.
 170. **A request's code again is the one that went out**: the name put in
     it is kept on the request, so renaming yourself or turning the switch
     off later doesn't change an old request's code.
+171. **Restores look further and hand out past what another phone may
+    have used**: scanning watches 200 subaddresses past the highest one
+    handed out or paid (was 50; wallet2's gap limit), and a payment found
+    near the edge moves the edge on from the next block, not the next
+    batch. A wallet restored from words or a code hands out its first new
+    address 50 past the highest one found paid (51 when none was), and
+    again past any older one found later, so the other phone's requests
+    and shares that were never paid aren't given out a second time and a
+    late payment to one isn't taken for a new request. What's left: a
+    payment more than 200 addresses past the last one found isn't found
+    by a restore, and an old phone's unpaid addresses more than 50 past
+    its last paid one can still be handed out again; neither phone's file
+    says how far the other went. A wallet restored before this build
+    reads as one made here and skips nothing.
