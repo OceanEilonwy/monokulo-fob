@@ -248,20 +248,23 @@ need the device checks below.
 | L23 | NodeReport.mark from Rust | 7fd1939 |
 | L24 | R1-R7 read again: all findings above; not fixed: R4's note that a transport swapped between two reports whose new count already passed the old one is taken as a delta (listed under "checked, no issues"; a one-report blip) | - |
 
-Device checks (emulator re-check not done: see below):
-- [ ] Confirm with a failing price → toast's cog greyed, does nothing; Back from Confirm still works
-- [ ] Receive $20 against a 20 h old price, price comes back → QR's XMR line and Share agree with the field
-- [ ] Settings → Backup and keys → Keys, toast cog → Price from, Home button, back → Keys gone, lock asked again; same via Recents
-- [ ] Copy secret spend key, wait 60 s → clipboard empty; copy, Home → clipboard empty; copy address → stays
-- [ ] Android 9/10 emulator with a PIN → Backup and keys asks for the lock
-- [ ] Catching up against a slow node → time left never goes up; a big slowdown shows "Catching up" / "Working it out" then a new countdown
-- [ ] Failing node, switch to a working one → chip and Node line stop being red at once
-- [ ] Settings at 200% font: Money row value under its title, profile row name over "· share as a code"
-- [ ] Type money on Receive with Kraken failing → toast at the top above the field, TalkBack reads it
-- [ ] Remove animations on → Send sheet snaps; Send open and Confirm → Back show no height flash
-- [ ] Price from with TalkBack → summary read when checks finish
+Device checks (emulator re-check 2026-11-01, below):
+- [~] Confirm with a failing price → toast's cog greyed, does nothing; Back from Confirm still works (needs a funded wallet to reach Confirm; the emulator's stagenet wallets hold nothing)
+- [x] Receive $20 against a 20 h old price, price comes back → QR's XMR line and Share agree with the field (checked with the 5-minute refresh instead of a 20 h old price: ¥3,000 went 0.03185 → 0.03186 XMR in the QR's tx_amount and the field's line together)
+- [x] Settings → Backup and keys → Keys, toast cog → Price from, Home button, back → Keys gone, lock asked again; same via Recents (back to Settings, Back → Home; Backup and keys asks for the PIN again)
+- [x] Copy secret spend key, wait 60 s → clipboard empty; copy, Home → clipboard empty; copy address → stays (read by pasting into Receive's note)
+- [~] Android 9/10 emulator with a PIN → Backup and keys asks for the lock (no API 28-29 AVD or system image here)
+- [x] Catching up against a slow node → time left never goes up; a big slowdown shows "Catching up" / "Working it out" then a new countdown (two restores logged every 5 s: only falling; with the emulator's network cut to GSM the chip dropped the time for 15 s, then counted down afresh from 2 min)
+- [x] Failing node, switch to a working one → chip and Node line stop being red at once (Settings' Node line "Working" and Home "Synced" within a second of Use, the old node's failure 30 s earlier)
+- [x] Settings at 200% font: Money row value under its title, profile row name over "· share as a code" — fixed in 57b5086 (on a 360 dp phone the value stayed beside, squeezing "Also / show / amounts / in" a word a line, and Show first likewise; both now go under)
+- [x] Type money on Receive with Kraken failing → toast at the top above the field, TalkBack reads it (the toast is a polite live region in the tree; not listened to)
+- [~] Remove animations on → Send sheet snaps; Send open and Confirm → Back show no height flash (snap and Send's open seen frame by frame at 10 fps, no flash; Confirm → Back needs a funded wallet)
+- [x] Price from with TalkBack → summary read when checks finish ("Kraken A$850.73, CoinGecko A$851.04" in the live region; not listened to)
+- [x] Kraken's AUD after the mid-price change: A$850.73 against CoinGecko's A$851.04 (0.04 %)
+- [x] Japanese yen lists "JPY · CoinGecko"; picking it with Kraken chosen moves to CoinGecko with "Kraken doesn't price Japanese yen, so Fob now asks CoinGecko"
+- [x] Backup and keys' warning: "…and asks for your phone's lock first." with a PIN, no lock sentence without one
 
-The emulator re-check couldn't run: Pixel_9_Pro_qa (emulator-5558) had
-gone offline and its process was gone, and /tmp (the tmpfs the emulator
-and adb use) was full with RenderThread core dumps, so it couldn't be
-started again without deleting files this pass didn't make.
+Re-check 2026-11-01 on `Pixel_9_Pro_qa` (emulator-5562, Android 16,
+stagenet, real Kraken/CoinGecko, airplane mode for failures): 14 checks,
+11 passed (1 after a fix, 57b5086), 3 can't be checked here (Confirm
+needs a funded wallet, twice; no Android 9/10 AVD).
