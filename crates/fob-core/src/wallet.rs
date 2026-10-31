@@ -48,8 +48,15 @@ use crate::{
 /// The most blocks scanned per sync step: whatever the pipeline has ready,
 /// up to this, so progress shows often.
 const BATCH: u64 = 1_000;
-/// Subaddresses watched past the last one handed out.
-const LOOKAHEAD: u32 = 50;
+/// Subaddresses watched past the last one handed out or paid: a restore
+/// finds payments up to this many addresses past the highest it has found
+/// so far (wallet2's gap limit). Requests and shares each take one, often
+/// never paid.
+const LOOKAHEAD: u32 = 200;
+/// How far past the highest address a restore found its first new one
+/// goes, so another phone's handed out but unpaid addresses (requests,
+/// shares) aren't given out again.
+const RESTORE_SKIP: u32 = 50;
 /// Recent block hashes kept to notice a reorganisation.
 const KEEP_HASHES: usize = 30;
 /// Ring size for transactions since the 2022 hard fork.
@@ -195,6 +202,14 @@ struct State {
     /// Your name and photo, and every share of them.
     #[serde(default)]
     profile: profile::Book,
+    /// Restored from words or a code: another phone may have handed out
+    /// addresses this file doesn't know.
+    #[serde(default)]
+    restored: bool,
+    /// The first address this restored wallet handed out: payments found
+    /// below it went to the other phone's.
+    #[serde(default)]
+    fresh_from: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -532,6 +547,8 @@ impl Wallet {
             contacts: contacts::Book::default(),
             requests: requests::Book::default(),
             profile: profile::Book::default(),
+            restored: restore_height.is_some(),
+            fresh_from: None,
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -665,16 +682,45 @@ impl Wallet {
     }
 
     /// The next subaddress no one has had: past every one handed out to
-    /// Receive or a request, and never the address splits pay to.
+    /// Receive or a request, and never the address splits pay to. In a
+    /// restored wallet, also [`RESTORE_SKIP`] past the highest the other
+    /// phone was paid at, as found so far: the addresses it handed out
+    /// after that aren't known here, and aren't given out again.
     fn hand_out(state: &mut State) -> u32 {
         // Receive keeps the one it shows (a file from before requests
         // showed the last one handed out).
         state.receive_own.get_or_insert(state.receive_index);
+        if state.restored {
+            let theirs = state.outputs.iter().map(|o| o.subaddress).filter(|s| state.fresh_from.is_none_or(|f| *s < f) && Some(*s) != state.split_index);
+            if let Some(highest) = theirs.max().filter(|h| *h > 0) {
+                state.receive_index = state.receive_index.max(highest + RESTORE_SKIP);
+            } else if state.fresh_from.is_none() {
+                state.receive_index = state.receive_index.max(RESTORE_SKIP);
+            }
+        }
         state.receive_index += 1;
         if Some(state.receive_index) == state.split_index {
             state.receive_index += 1;
         }
+        if state.restored {
+            state.fresh_from.get_or_insert(state.receive_index);
+        }
         state.receive_index
+    }
+
+    /// The highest subaddress scanning watches: [`LOOKAHEAD`] past the
+    /// highest handed out or paid.
+    fn watched(receive_index: u32) -> u32 {
+        receive_index.saturating_add(LOOKAHEAD)
+    }
+
+    /// Has `scanner` watch subaddresses `from..=to` too.
+    fn watch(scanner: &mut Scanner, from: u32, to: u32) {
+        for i in from..=to {
+            if let Some(sub) = SubaddressIndex::new(0, i) {
+                scanner.register_subaddress(sub);
+            }
+        }
     }
 
     /// Receive's address, by index: the last one it showed.
@@ -1159,12 +1205,14 @@ impl Wallet {
         }
         let keys = &self.inner.keys;
         let mut scanner = Scanner::new(keys.view_pair());
-        for i in 1..=state.receive_index.saturating_add(LOOKAHEAD) {
-            if let Some(sub) = SubaddressIndex::new(0, i) {
-                scanner.register_subaddress(sub);
-            }
-        }
+        let mut watching = Self::watched(state.receive_index);
+        Self::watch(&mut scanner, 1, watching);
         for scannable in blocks {
+            // A payment near the edge moves it on, from the next block.
+            if Self::watched(state.receive_index) > watching {
+                Self::watch(&mut scanner, watching + 1, Self::watched(state.receive_index));
+                watching = Self::watched(state.receive_index);
+            }
             let height = scannable.block.number() as u64;
             let time = scannable.block.header.timestamp;
             let block_hash = hex::encode(scannable.block.hash());
@@ -1300,11 +1348,7 @@ impl Wallet {
         };
         let receive_index = self.inner.state.lock().await.receive_index;
         let mut scanner = Scanner::new(self.inner.keys.view_pair());
-        for i in 1..=receive_index.saturating_add(LOOKAHEAD) {
-            if let Some(sub) = SubaddressIndex::new(0, i) {
-                scanner.register_subaddress(sub);
-            }
-        }
+        Self::watch(&mut scanner, 1, Self::watched(receive_index));
         let found = scanner.scan(stand_in).map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
         let outputs = found.ignore_additional_timelock().into_iter().filter(|o| o.transaction() != miner);
         self.pool_found(outputs.map(|o| (hex::encode(o.transaction()), o.subaddress().map(|s| s.address()), o.commitment().amount)), now());
@@ -3343,6 +3387,44 @@ mod tests {
         let detail = wallet.request(for_jo.id, clock).await.unwrap();
         assert_eq!(detail.payments.iter().map(|p| p.amount.as_str()).collect::<Vec<_>>(), ["+0.25"]);
         assert_eq!(wallet.request_contacts().await.iter().map(|c| c.line.as_str()).collect::<Vec<_>>(), ["1 request paid", "1 request paid"]);
+    }
+
+    #[tokio::test]
+    async fn a_restored_wallet_hands_out_past_the_other_phone_s_addresses_and_watches_far_enough() {
+        let words = Wallet::create(&dir("restore-from"), [1; 32], Network::Stagenet).unwrap().seed_words().unwrap().1;
+        let restored = Wallet::restore_words(&dir("restore-to"), [1; 32], Network::Stagenet, &words, Some(0)).unwrap();
+        // The other phone was paid at its request on 60, found so far; it may have handed out more, unpaid.
+        restored.inner.state.lock().await.outputs.push(Owned { subaddress: 60, ..received("old", 1, XMR) });
+        restored.inner.state.lock().await.receive_index = 60;
+        let (first, _) = restored.make_request(None, None, false, Some("Rent")).await.unwrap();
+        assert_eq!(first.subaddress, 60 + RESTORE_SKIP + 1);
+        let (share_free, _) = restored.make_request(None, None, false, Some("Bills")).await.unwrap();
+        assert_eq!(share_free.subaddress, first.subaddress + 1);
+        // Scanning on finds another of the other phone's, paid at 80: the next new one goes past it too.
+        restored.inner.state.lock().await.outputs.push(Owned { subaddress: 80, ..received("old-80", 1, XMR) });
+        let (after, _) = restored.make_request(None, None, false, Some("Gas")).await.unwrap();
+        assert_eq!(after.subaddress, 80 + RESTORE_SKIP + 1);
+        // A payment to one of the other phone's old request addresses (say 70) is no new request's.
+        restored.inner.state.lock().await.outputs.push(Owned { subaddress: 70, ..received("to-old-request", 2, XMR) });
+        let row = restored.activity().await.into_iter().find(|r| r.tx == "to-old-request").unwrap();
+        assert_eq!((row.note, row.contact), (None, None));
+        // Paid at what this wallet handed out: no further jump.
+        restored.inner.state.lock().await.outputs.push(Owned { subaddress: after.subaddress, ..received("mine", 3, XMR) });
+        assert_eq!(restored.make_request(None, None, false, Some("Water")).await.unwrap().0.subaddress, after.subaddress + 1);
+        // Nothing found: new ones start past the skip anyway.
+        let empty = Wallet::restore_words(&dir("restore-empty"), [1; 32], Network::Stagenet, &words, Some(0)).unwrap();
+        assert_eq!(empty.make_request(None, None, false, None).await.unwrap().0.subaddress, RESTORE_SKIP + 1);
+        // A wallet made here skips nothing.
+        let made = Wallet::create(&dir("restore-none"), [1; 32], Network::Stagenet).unwrap();
+        assert_eq!(made.make_request(None, None, false, None).await.unwrap().0.subaddress, 1);
+        // Scanning watches 200 past the highest handed out or paid: 150 unpaid requests or shares in a row past the
+        // last paid one are still found by a restore, and a payment found moves the edge on.
+        assert_eq!(Wallet::watched(60), 260);
+        assert!(Wallet::watched(0) >= 150);
+        // A file from before restores were marked reads as a wallet made here.
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&made.inner.keys), state: &*made.inner.state.lock().await }).unwrap();
+        file["state"].as_object_mut().unwrap().remove("restored");
+        assert!(!serde_json::from_value::<FileIn>(file).unwrap().state.restored);
     }
 
     #[tokio::test]
