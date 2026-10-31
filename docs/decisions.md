@@ -1951,3 +1951,16 @@ Calls made while building the first version, with why. Newest last.
     through `backup_hub(phone_lock)`): "Fob hides them from screenshots
     and asks for your phone's lock first." or, with no lock, "Fob hides
     them from screenshots."
+258. **Send's sheet settles as Android's animator duration scale says**
+    (review R5): its 300 ms is stretched or shortened with the scale, and
+    with "Remove animations" (scale 0) it goes to its stop at once, as the
+    profile frame on the same screen does. The hand-written frame loop
+    stays (rather than `Animatable`) because it eases to a stop measured
+    while it runs.
+259. **Send's sheet is sized in the layout pass**: a `Layout` measures what
+    it holds unbounded and is that tall at rest, or the finger's or the
+    settle's height while moving, in the same pass, so it no longer
+    flashes a guessed height as Send opens or comes back from Confirm, and
+    Review rises with the keyboard in the same frame. The measured heights
+    stay in state only for the drag's clamp, the settle's target and the
+    camera frame's maths (which may still follow a frame behind).

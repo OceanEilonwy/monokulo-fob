@@ -30,7 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalDensity
@@ -83,6 +84,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
@@ -113,6 +115,7 @@ import uniffi.fob.isProfileCode
 import uniffi.fob.parsePayment
 import uniffi.fob.shortAddress
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** A torch: the lamp's head and its handle. */
 private const val TORCH = "M8 3h8l-2 6h-4L8 3Z M10 9v11h4V9"
@@ -341,17 +344,24 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         var profileHeight by remember { mutableIntStateOf(0) }
         val height = if (moving) live else stop(open)
 
-        /** From [from] to the stop [open] names, eased over 300 ms; a stop measured meanwhile is eased to. */
+        /**
+         * From [from] to the stop [open] names, eased over 300 ms (as Android's animator duration scale stretches it,
+         * at once with "Remove animations"); a stop measured meanwhile is eased to.
+         */
         fun settleFrom(from: Float) {
             settle?.cancel()
             live = from
             moving = true
             settle = scope.launch {
-                val start = withFrameNanos { it }
-                do {
-                    val t = ((withFrameNanos { it } - start) / 300_000_000f).coerceIn(0f, 1f)
-                    live = from + (stop(open) - from) * SHEET_EASING.transform(t)
-                } while (t < 1f)
+                val scale = coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f
+                if (scale > 0f) {
+                    val span = 300_000_000f * scale
+                    val start = withFrameNanos { it }
+                    do {
+                        val t = ((withFrameNanos { it } - start) / span).coerceIn(0f, 1f)
+                        live = from + (stop(open) - from) * SHEET_EASING.transform(t)
+                    } while (t < 1f)
+                }
                 moving = false
             }
         }
@@ -428,13 +438,15 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             if (dragging) live = (live - delta).coerceIn(minOf(foldNow, openNow), maxOf(foldNow, openNow))
         }
         if (profile == null) {
-            // Its height is the stop's or the finger's; what it holds keeps its own height, top first, clipped below.
-            Box(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(with(density) { height.toDp() })
+            // Its height is the finger's or the settle's while moving; at rest, what it holds, measured in the same
+            // layout pass (from state it would be a frame late: a flash as Send opens, Review under the rising
+            // keyboard). What it holds keeps its own height, top first, clipped below.
+            Layout(
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(Fob.paper),
-            ) {
+                content = {
                 Column(
-                    Modifier.fillMaxWidth().wrapContentHeight(Alignment.Top, unbounded = true)
+                    Modifier.fillMaxWidth()
                         .heightIn(max = if (form) openCap else foldCap)
                         .onSizeChanged { if (form) openMeasured = it.height.toFloat() else foldMeasured = it.height.toFloat() }
                         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
@@ -537,6 +549,11 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                         }
                     }
                 }
+                },
+            ) { measurables, constraints ->
+                val content = measurables.single().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+                val sheet = if (moving) live.roundToInt() else content.height
+                layout(constraints.maxWidth, sheet.coerceIn(constraints.minHeight, constraints.maxHeight)) { content.place(0, 0) }
             }
         }
 
