@@ -242,7 +242,11 @@ class WalletModel(private val app: Application) {
             toastDone = failed.id
             val asking = PriceToastState.Retrying(failed)
             _priceToast.value = asking
+            val started = System.currentTimeMillis()
             val result = wallet.retryPrices(seconds, offset, hours24)
+            // Offline, the answer is back at once: "Trying again…" stays long
+            // enough to be seen, so Retry visibly did something.
+            delay(RETRY_SHOWN_MS - (System.currentTimeMillis() - started))
             // Swiped away meanwhile: nothing more to say.
             if (_priceToast.value !== asking) return@launch
             when (result) {
@@ -576,6 +580,8 @@ class WalletModel(private val app: Application) {
     private companion object {
         /** About a day of blocks. */
         const val FAR_BEHIND = 720u
+        /** The least time the price toast says "Trying again…". */
+        const val RETRY_SHOWN_MS = 800L
     }
 }
 

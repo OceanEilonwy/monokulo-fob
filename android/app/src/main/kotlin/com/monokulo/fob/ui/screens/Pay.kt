@@ -163,6 +163,12 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (forContact == null) forId = null
     }
     LaunchedEffect(choosing) { if (choosing) people = model.requestContacts() }
+    // The price toast's cog opens Price from over this: Back finds the form as typed.
+    DisposableEffect(nav) {
+        val keep = { nav.replace(Screen.Receive(forId, ReceiveDraft(amount, inFiat, note))) }
+        nav.keepForm = keep
+        onDispose { if (nav.keepForm === keep) nav.keepForm = null }
+    }
     // A new price comes with a new balance. In money by default while there's one.
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
         if (wallet == null) return@LaunchedEffect

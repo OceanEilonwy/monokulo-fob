@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -91,8 +93,11 @@ fun Modifier.bottomSpace(extra: Dp = 0.dp): Modifier {
  * above the gesture bar and the screen's bottom bar ([LocalBottomSpace]).
  * Swiped down or sideways it goes ([onDismiss]); [onSettings] is the cog.
  * A [notice] (Rust's words when a price choice moved something) sits
- * above it for a few seconds; tapped, it goes.
+ * above it for a few seconds; tapped, it goes. While the keyboard is up
+ * the toast steps aside, back when it goes: above the keyboard it would
+ * cover the field being typed in, whose own line says how old the price is.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PriceToastHost(
     state: PriceToastState?, onRetry: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit,
@@ -110,7 +115,7 @@ fun PriceToastHost(
             AnimatedVisibility(notice != null, enter = slideInVertically { it } + fadeIn(), exit = fadeOut()) {
                 said?.let { Notice(it, onNoticeDismiss) }
             }
-            AnimatedVisibility(state != null, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+            AnimatedVisibility(state != null && !WindowInsets.isImeVisible, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
                 shown?.let { ToastCard(it, onRetry, onSettings, onDismiss) }
             }
         }
