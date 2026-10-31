@@ -94,6 +94,7 @@ object Icons {
     const val share = "M12 15V4M7 8l5-5 5 5M5 13v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-6"
     const val warning = "M12 3l9.5 17h-19L12 3Z M12 10v4.5 M12 17.5v.5"
     const val check = "M5 12.5l4.5 4.5L19 7.5"
+    const val expand = "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"
 }
 
 @Composable
@@ -280,12 +281,11 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
     }
 }
 
-/** A QR code from the Rust library's module grid, with a quiet zone: dark on white in both themes. */
+/** A QR code from the Rust library's module grid, with a quiet zone of [quiet] modules: dark on white in both themes. */
 @Composable
-fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code") {
+fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
     Canvas(modifier.size(size).semantics { contentDescription = description }) {
         val n = code.size.toInt()
-        val quiet = 2
         val cell = this.size.width / (n + quiet * 2)
         drawRect(Fob.qrLight)
         for (y in 0 until n) for (x in 0 until n) {
@@ -460,11 +460,6 @@ fun Throwable.reason(): String = when (this) {
 }.replaceFirstChar { it.uppercase() }
 
 @Composable
-fun Mono(text: String, size: Int = 15) {
-    Text(text, fontFamily = FontFamily.Monospace, fontSize = size.sp, lineHeight = (size + 7).sp, letterSpacing = 0.5.sp, textAlign = TextAlign.Center)
-}
-
-@Composable
 fun Spacing(h: Dp) = Spacer(Modifier.height(h))
 
 @Composable
@@ -478,8 +473,6 @@ fun short(address: String, groups: Int = 3): String {
     val tail = address.takeLast(4 * groups).chunked(4).joinToString(" ")
     return "$head … $tail"
 }
-
-fun full(address: String): String = address.chunked(4).joinToString(" ")
 
 val small = 13.sp
 

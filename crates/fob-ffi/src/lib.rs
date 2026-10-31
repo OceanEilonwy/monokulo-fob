@@ -569,11 +569,37 @@ pub fn parse_payment(network: Network, text: String) -> Result<PaymentRequest> {
     })
 }
 
-/// A payment code to show: address and, if given, an amount as typed.
+/// Receive's payment code and the words around it.
+#[derive(uniffi::Record)]
+pub struct ReceiveCode {
+    /// The payment code: `monero:<address>?tx_amount=…&tx_description=…`.
+    pub uri: String,
+    /// The big line on the expanded code: "0.5 XMR", when there's an amount.
+    pub headline: Option<String>,
+    /// The small line under it: the note, when there is one.
+    pub detail: Option<String>,
+}
+
+/// A payment code to show: the address and, if typed, an amount and a note
+/// for the payer. Throws when the amount isn't one.
 #[uniffi::export]
-pub fn payment_code(address: String, amount: Option<String>) -> Result<String> {
-    let amount = amount.filter(|a| !a.trim().is_empty()).map(|a| amount::parse(&a)).transpose()?;
-    Ok(uri::payment_uri(&address, amount))
+pub fn receive_code(address: String, amount: Option<String>, note: Option<String>) -> Result<ReceiveCode> {
+    let r = uri::receive(&address, amount.as_deref(), note.as_deref())?;
+    Ok(ReceiveCode { uri: r.uri, headline: r.headline, detail: r.detail })
+}
+
+/// A piece of an address, as Receive shows it.
+#[derive(uniffi::Record)]
+pub struct AddressGroup {
+    pub text: String,
+    /// The first, middle and last groups: the ones people check.
+    pub highlighted: bool,
+}
+
+/// An address in groups of five, the first, middle and last highlighted.
+#[uniffi::export]
+pub fn address_groups(address: String) -> Vec<AddressGroup> {
+    uri::address_groups(&address).into_iter().map(|g| AddressGroup { text: g.text, highlighted: g.highlighted }).collect()
 }
 
 #[uniffi::export]

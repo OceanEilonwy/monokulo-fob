@@ -304,3 +304,28 @@ Calls made while building the first version, with why. Newest last.
     #B34700, #1F7A45, #2F5AA8, #7A3FA0, #A3324A, #1D6F7A, #5B5F17,
     #3D3A8C. The badge stays white in dark mode, with a 1 dp ring in the
     line colour so it doesn't vanish on a white card.
+55. **Receive, second version.** The code sits on a white card (20 dp
+    padding, 14 dp corners, no icon in the middle, about 220 dp) with a
+    round 32 dp button on its corner; it or the code opens the code full
+    screen: white in both themes, the amount large with the note under it,
+    the code at 320 dp with a 4-module quiet zone, the address pattern,
+    and the window's brightness at full until it closes (the window's own
+    setting, put back after; no permission needed). The 32 dp button is
+    below the 48 dp touch size, as drawn, since the whole code is a target
+    too.
+56. **The address in full, in groups of five (`uri::address_groups`)**:
+    19 groups for a 95-character address, an integrated one split the
+    same way with its last group shorter; the first, middle (index
+    count ÷ 2) and last are highlighted, in two new theme roles
+    (`addressMark` #FBE3CC / #4A2A12, `onAddressMark` #7A2F00 / #FFC9A0),
+    bold. The four-character grouping it replaces (`full`, `Mono`) is gone.
+57. **A note for the payer** goes into the code as `tx_description`, the
+    name the Monero URI scheme and other wallets use. Rust builds the code
+    (`uri::receive`, replacing `payment_code`): values percent-encoded
+    except RFC 3986's unreserved characters, so a space is `%20` and a `+`
+    `%2B`, which round-trips through Fob's own reader (which takes `+` as a
+    space, as forms do). A blank note or amount is left out. On paying,
+    the description shows on the Send form as before and now again under
+    the amount on the confirm screen. The expanded code shows the amount
+    in XMR large and the note under it; step 4 moves the fiat amount into
+    the large line and the XMR beside the note.

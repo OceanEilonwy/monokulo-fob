@@ -23,6 +23,6 @@ fn main() {
     let address = args.next().unwrap_or_else(|| Keys::generate(Network::Stagenet).keys.address(1));
     let amount = args.next().map(|a| fob_core::amount::parse(&a).unwrap()).unwrap_or(142_100_000_000);
     let receipt: orf_codec::Receipt = serde_json::from_str(RECEIPT).unwrap();
-    let uri = orf_codec::query::append(&uri::payment_uri(&address, Some(amount)), &receipt).unwrap();
+    let uri = orf_codec::query::append(&uri::payment_uri(&address, Some(amount), None), &receipt).unwrap();
     println!("{uri}");
 }

@@ -2,7 +2,13 @@ package com.monokulo.fob.ui.screens
 
 import android.content.ClipData
 import android.content.Intent
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,25 +17,38 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -44,7 +63,6 @@ import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.InfoRow
-import com.monokulo.fob.ui.Mono
 import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
@@ -54,18 +72,21 @@ import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
-import com.monokulo.fob.ui.full
 import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.short
 import kotlinx.coroutines.launch
+import uniffi.fob.AddressGroup
 import uniffi.fob.CodeKind
 import uniffi.fob.Prepared
+import uniffi.fob.QrCode
 import uniffi.fob.Receipt
+import uniffi.fob.ReceiveCode
+import uniffi.fob.addressGroups
 import uniffi.fob.classifyCode
 import uniffi.fob.isAmount
 import uniffi.fob.parsePayment
-import uniffi.fob.paymentCode
 import uniffi.fob.qrCode
+import uniffi.fob.receiveCode
 
 @Composable
 fun ReceiveScreen(model: WalletModel, nav: Nav) {
@@ -76,31 +97,47 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
     var address by remember { mutableStateOf<String?>(null) }
     var index by remember { mutableStateOf(0u) }
     var amount by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
         address = w.receiveAddress()
         index = w.receiveIndex()
     }
-    val code = address?.let { runCatching { paymentCode(it, amount.ifBlank { null }) }.getOrNull() }
+    val code = address?.let { runCatching { receiveCode(it, amount, note) }.getOrNull() }
+    val qr = code?.let { runCatching { qrCode(it.uri) }.getOrNull() }
+    val groups = remember(address) { address?.let { addressGroups(it) } ?: emptyList() }
+    if (expanded && code != null && qr != null && address != null) {
+        ExpandedQr(code, qr, address!!) { expanded = false }
+        return
+    }
     Page(bottom = {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlineButton("Copy", {
                 code?.let { scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Monero address", address).toClipEntry()) } }
             }, Modifier.weight(1f))
             PrimaryButton("Share", {
-                code?.let { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, it), null)) }
+                code?.let { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, it.uri), null)) }
             }, Modifier.weight(1f))
         }
     }) {
         TopBar("Receive", onBack = { nav.back() })
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            Box(Modifier.clip(RoundedCornerShape(36.dp)).background(Fob.qrLight).padding(20.dp)) {
-                val qr = code?.let { runCatching { qrCode(it) }.getOrNull() }
-                if (qr != null) QrImage(qr, 260.dp) else Spacer(Modifier.size(260.dp))
-            }
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Address $index · a new one each time you ask", color = Fob.muted, fontSize = 13.sp)
-                address?.let { Mono(full(it), 14) }
+            // The code on a white card; the round button on its corner, or the code itself, opens it full screen.
+            Box(Modifier.padding(top = 4.dp)) {
+                Box(
+                    Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
+                        .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
+                        .padding(20.dp),
+                ) {
+                    if (qr != null) QrImage(qr, 220.dp) else Spacer(Modifier.size(220.dp))
+                }
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
+                        .clickable(enabled = qr != null, role = Role.Button) { expanded = true }
+                        .semantics { contentDescription = "Show larger" },
+                    contentAlignment = Alignment.Center,
+                ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
             }
             address?.let {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -108,17 +145,77 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
                     Text("The payer's Fob shows this pattern too", color = Fob.muted, fontSize = 13.sp)
                 }
             }
-            Field(amount, { amount = it }, "Amount in XMR (optional)", hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else null)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Used this address before?", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                TextButton("New address", {
-                    scope.launch {
-                        val w = wallet ?: return@launch
-                        address = w.newReceiveAddress()
-                        index = w.receiveIndex()
-                    }
-                })
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Address $index · a new one each time", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    TextButton("New address", {
+                        scope.launch {
+                            val w = wallet ?: return@launch
+                            address = w.newReceiveAddress()
+                            index = w.receiveIndex()
+                        }
+                    })
+                }
+                AddressGroups(groups)
             }
+            Field(amount, { amount = it }, "Amount in XMR (optional)", hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else null)
+            Field(note, { note = it }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true)
+        }
+    }
+}
+
+/** The address in full, in Rust's groups of five; the first, middle and last stand out. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AddressGroups(groups: List<AddressGroup>) {
+    FlowRow(
+        Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        groups.forEach { g ->
+            Text(
+                g.text, fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp,
+                fontWeight = if (g.highlighted) FontWeight.Bold else FontWeight.Normal,
+                color = if (g.highlighted) Fob.onAddressMark else Fob.ink,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(if (g.highlighted) Fob.addressMark else Color.Transparent).padding(horizontal = 3.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The payment code full screen, white in both themes, with the screen as
+ * bright as it goes until it closes.
+ */
+@Composable
+private fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Unit) {
+    BackHandler(onBack = onClose)
+    val activity = LocalActivity.current
+    DisposableEffect(activity) {
+        val window = activity?.window
+        val before = window?.attributes?.screenBrightness
+        window?.attributes = window?.attributes?.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL }
+        onDispose { if (before != null) window.attributes = window.attributes.apply { screenBrightness = before } }
+    }
+    Column(Modifier.fillMaxSize().background(Fob.qrLight).safeDrawingPadding()) {
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onClose, modifier = Modifier.semantics { contentDescription = "Close" }) { StrokeIcon(Icons.close, tint = Fob.qrDark, size = 20.dp) }
+        }
+        Column(
+            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+        ) {
+            if (code.headline != null || code.detail != null) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Step 4 puts the fiat amount here and the XMR in the line below.
+                    code.headline?.let { Text(it, style = display(34), color = Fob.qrDark, textAlign = TextAlign.Center) }
+                    code.detail?.let { Text(it, color = Fob.qrMuted, fontSize = 16.sp, textAlign = TextAlign.Center) }
+                }
+            }
+            QrImage(qr, 320.dp, quiet = 4)
+            AddressPattern(address, 48.dp)
+            Text("Screen brightness turned up while this is open", color = Fob.qrMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
     }
 }
@@ -186,7 +283,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?) {
             error = null
             scope.launch {
                 runCatching { model.prepare(to.trim(), amount, r?.receiptJson) }
-                    .onSuccess { nav.back(); nav.go(Screen.Confirm(it)) }
+                    .onSuccess { nav.back(); nav.go(Screen.Confirm(it, r?.description)) }
                     .onFailure { error = it.reason() }
                 busy = false
             }
@@ -215,7 +312,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?) {
 }
 
 @Composable
-fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, confirmIdentity: suspend (String) -> Boolean) {
+fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String?, confirmIdentity: suspend (String) -> Boolean) {
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -243,6 +340,7 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, confirmIdent
             Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(prepared.receipt?.total ?: "${prepared.amountText} XMR", style = display(52))
                 if (prepared.receipt != null) Text("${prepared.amountText} XMR", color = Fob.muted, fontSize = 18.sp)
+                note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
             Card {
                 InfoRow("To", short(prepared.to, 2), mono = true)

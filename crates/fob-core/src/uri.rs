@@ -2,7 +2,7 @@
 //! receipt, or a whole wallet (`monero_wallet:`, or bare seed words).
 
 use monero_wallet::address::MoneroAddress;
-use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use zeroize::Zeroizing;
 
 use crate::amount;
@@ -93,12 +93,66 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
     })
 }
 
-/// A payment code for receiving: an address and, optionally, an amount.
-pub fn payment_uri(address: &str, amount: Option<u64>) -> String {
-    match amount {
-        Some(a) if a > 0 => format!("monero:{address}?tx_amount={}", amount::format(a)),
-        _ => format!("monero:{address}"),
+/// What a value in a code is encoded with: everything but letters, digits
+/// and `-._~` (RFC 3986's unreserved), so a space is `%20` and a `+` is
+/// `%2B`, which every reader decodes the same.
+const VALUE: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
+
+/// A payment code for receiving: an address and, optionally, an amount and
+/// a note for the payer (`tx_description`).
+pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>) -> String {
+    let mut params = vec![];
+    if let Some(a) = amount.filter(|a| *a > 0) {
+        params.push(format!("tx_amount={}", amount::format(a)));
     }
+    if let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) {
+        params.push(format!("tx_description={}", utf8_percent_encode(note, VALUE)));
+    }
+    if params.is_empty() { format!("monero:{address}") } else { format!("monero:{address}?{}", params.join("&")) }
+}
+
+/// A request to be paid, as Receive shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receive {
+    /// The payment code.
+    pub uri: String,
+    /// The big line on the expanded code: "0.5 XMR", when there's an amount.
+    pub headline: Option<String>,
+    /// The small line under it: the note, when there is one.
+    pub detail: Option<String>,
+}
+
+/// Receive's payment code and the words around it. `amount` and `note` as
+/// typed; a blank one is left out.
+pub fn receive(address: &str, amount: Option<&str>, note: Option<&str>) -> Result<Receive> {
+    let amount = amount.map(str::trim).filter(|a| !a.is_empty()).map(amount::parse).transpose()?.filter(|a| *a > 0);
+    let note = note.map(str::trim).filter(|n| !n.is_empty());
+    Ok(Receive {
+        uri: payment_uri(address, amount, note),
+        headline: amount.map(|a| format!("{} XMR", amount::format(a))),
+        detail: note.map(str::to_owned),
+    })
+}
+
+/// A piece of an address as Receive shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressGroup {
+    pub text: String,
+    /// The first, middle and last groups stand out: the ones people check.
+    pub highlighted: bool,
+}
+
+/// An address in groups of five characters (19 for a 95-character address;
+/// an integrated one splits the same way, its last group shorter), with the
+/// first, the middle (index count ÷ 2) and the last highlighted.
+pub fn address_groups(address: &str) -> Vec<AddressGroup> {
+    let chars: Vec<char> = address.trim().chars().collect();
+    let count = chars.len().div_ceil(5);
+    chars
+        .chunks(5)
+        .enumerate()
+        .map(|(i, group)| AddressGroup { text: group.iter().collect(), highlighted: i == 0 || i == count / 2 || i + 1 == count })
+        .collect()
 }
 
 /// A wallet code: `monero_wallet:` with keys or seed (the form the Monero GUI
@@ -225,10 +279,57 @@ mod tests {
     #[test]
     fn receive_codes_round_trip() {
         let address = wallet().address(2);
-        let uri = payment_uri(&address, Some(500_000_000_000));
+        let uri = payment_uri(&address, Some(500_000_000_000), None);
         assert_eq!(uri, format!("monero:{address}?tx_amount=0.5"));
         assert_eq!(parse_payment(Network::Stagenet, &uri).unwrap().amount, Some(500_000_000_000));
-        assert_eq!(payment_uri(&address, None), format!("monero:{address}"));
+        assert_eq!(payment_uri(&address, None, None), format!("monero:{address}"));
+        assert_eq!(payment_uri(&address, Some(0), Some("  ")), format!("monero:{address}"));
+    }
+
+    #[test]
+    fn a_note_goes_in_as_tx_description_and_comes_back_whole() {
+        let address = wallet().address(3);
+        let note = "Two coffees + a croissant, 50% off & café ☕ #12/b?=~";
+        let uri = payment_uri(&address, Some(142_100_000_000), Some(note));
+        assert_eq!(
+            uri,
+            format!(
+                "monero:{address}?tx_amount=0.1421&tx_description=Two%20coffees%20%2B%20a%20croissant%2C%2050%25%20off%20%26%20caf%C3%A9%20%E2%98%95%20%2312%2Fb%3F%3D~"
+            )
+        );
+        let read = parse_payment(Network::Stagenet, &uri).unwrap();
+        assert_eq!((read.amount, read.description.as_deref()), (Some(142_100_000_000), Some(note)));
+        let only_note = payment_uri(&address, None, Some(" Rent "));
+        assert_eq!(only_note, format!("monero:{address}?tx_description=Rent"));
+        assert_eq!(parse_payment(Network::Stagenet, &only_note).unwrap().description.as_deref(), Some("Rent"));
+    }
+
+    #[test]
+    fn receive_writes_the_code_and_its_words() {
+        let address = wallet().address(1);
+        let r = receive(&address, Some(" 0.50 "), Some("Lunch")).unwrap();
+        assert_eq!(r.uri, format!("monero:{address}?tx_amount=0.5&tx_description=Lunch"));
+        assert_eq!((r.headline.as_deref(), r.detail.as_deref()), (Some("0.5 XMR"), Some("Lunch")));
+        let bare = receive(&address, Some(""), None).unwrap();
+        assert_eq!((bare.uri, bare.headline, bare.detail), (format!("monero:{address}"), None, None));
+        assert!(receive(&address, Some("lots"), None).is_err());
+    }
+
+    #[test]
+    fn addresses_show_in_groups_of_five_ends_and_middle_marked() {
+        let address = wallet().address(1);
+        assert_eq!(address.len(), 95);
+        let groups = address_groups(&address);
+        assert_eq!(groups.len(), 19);
+        assert_eq!(groups.iter().map(|g| g.text.as_str()).collect::<String>(), address);
+        let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
+        assert_eq!(marked, [0, 9, 18]);
+        // An integrated address: 106 characters, the last group one long.
+        let integrated = "4".repeat(106);
+        let groups = address_groups(&integrated);
+        assert_eq!((groups.len(), groups[21].text.as_str()), (22, "4"));
+        let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
+        assert_eq!(marked, [0, 11, 21]);
     }
 
     #[test]
@@ -263,7 +364,7 @@ mod tests {
     #[test]
     fn codes_are_told_apart() {
         let keys = wallet();
-        assert_eq!(classify(Network::Stagenet, &payment_uri(&keys.address(1), None)), CodeKind::Payment);
+        assert_eq!(classify(Network::Stagenet, &payment_uri(&keys.address(1), None, None)), CodeKind::Payment);
         assert_eq!(classify(Network::Stagenet, &keys.seed_words().unwrap().1), CodeKind::Wallet);
         assert_eq!(classify(Network::Stagenet, "https://example.com"), CodeKind::Unknown);
     }
