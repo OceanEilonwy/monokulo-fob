@@ -22,6 +22,9 @@ pub enum FobError {
     BadEndpoint(String),
     #[error("the node didn't answer: {0}")]
     Node(String),
+    /// Prices couldn't be had, or a price setting isn't one Fob has.
+    #[error("{0}")]
+    Price(String),
     #[error("couldn't build the transaction: {0}")]
     Send(String),
     #[error("couldn't read or save the wallet: {0}")]

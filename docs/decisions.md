@@ -329,3 +329,65 @@ Calls made while building the first version, with why. Newest last.
     the amount on the confirm screen. The expanded code shows the amount
     in XMR large and the note under it; step 4 moves the fiat amount into
     the large line and the XMR beside the note.
+
+## Fourth round: prices
+
+58. **Provider and transport are chosen apart (`price`).** A provider is a
+    trait, `price::Source` (its name, the currencies it lists, the price
+    now, daily prices over a range, how far back it reaches); the setting
+    names one through `price::Provider`, an enum dispatching to it, so the
+    wallet file stores a word ("kraken") and adding a provider is a
+    variant and a module. The trait isn't object-safe (its calls are
+    `async`), which the enum makes moot; tests pass a fake `Source`. The
+    transport is `price::Transport`: `Web` (HTTPS through reqwest and
+    rustls, `https_only`, no redirects, 15 s to connect, 30 s in all, 1 MiB
+    at most) or `Tor`, which fails every request with "prices over Tor
+    aren't available yet" until an arti-based one is written. A Monokulo
+    provider (asking the Monokulo app on the phone, through its app
+    integration, for the price its till uses) has its marked place on
+    `Provider`; it isn't built.
+59. **Kraken (`price::kraken`).** Public REST, no key: `Ticker` for now (the
+    last trade, `c[0]`), `OHLC` at 1440 minutes for history. Kraken lists
+    XMR in two currencies of money, USD (`XMRUSD`, answered as `XXMRZUSD`)
+    and EUR (`XMREUR`, `XXMRZEUR`), checked against `AssetPairs` on
+    2026-10-31 (its other XMR pairs are USDC, USDT and XBT); the list is
+    hard-coded and tested. A day's price is its volume-weighted average
+    (nearer any moment of the day than the close), or the close for a day
+    without trades. OHLC returns at most 720 days; older is "not
+    available". One live test, ignored like the node tests, asks Kraken
+    once each way; it passed on 2026-10-31.
+60. **What a price request may say.** Nothing at all while "Show prices" is
+    off. Only the pair, never anything of the wallet, with
+    `User-Agent: Fob` and reqwest's bare defaults (no cookies). Never a
+    price for a payment's moment: history is always the provider's whole
+    window in one request (no `since`, which would give away the oldest day
+    wanted), at most once a day, and only while some payment within the
+    window lacks a price; days are looked up on the phone. The current
+    price is asked at most every 5 minutes while Fob is on screen (a task
+    started and stopped with the screen, woken at once by a price setting
+    changing) and on pull to refresh, at most once a minute.
+61. **Prices are whole numbers**: millionths of the currency per XMR, from
+    the decimal text without going through floats. Values round half up to
+    the cent. A current price older than an hour isn't shown or recorded.
+62. **A payment's price is recorded with it in the wallet file**
+    (`price_records`, by transaction, one record per currency: currency,
+    price, provider, when the price is from, and whether it is a day's).
+    When a payment is first seen (a sync step, the pool, sending) it takes
+    the current price if that was asked within an hour of the payment's
+    time; otherwise, or for one seen while prices were off or before
+    prices, the day's price from the history (UTC days, as Kraken's
+    candles), recorded once the history has the day. A restored wallet's
+    old payments therefore get their day's price, not today's. Without
+    either, the payment has no price and screens say so (see Part B). The
+    daily histories are kept too (1,000 days, three currencies at most, the
+    oldest asked dropped). A wallet file from before prices opens with them
+    on, in dollars, from Kraken over the internet (serde defaults), as
+    tested.
+63. **Money is written one way whatever the phone's language**: the symbol
+    before for the dollar and the euro ("$412.06", "€12.50"), otherwise the
+    code after ("412.06 GBP"); a point before the cents, commas between
+    thousands, always the cents. Typed money takes "12.5", "12,50" (a comma
+    as the point, as XMR amounts), "$12.50" or "12.50 USD"; no thousands
+    separators, no more decimals than the currency has. Money to XMR uses
+    as few decimals (at least 4) as still come to the same cents, so a
+    code asks for "0.1204", not "0.120409391932".

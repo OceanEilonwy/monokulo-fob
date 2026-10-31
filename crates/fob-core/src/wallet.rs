@@ -36,6 +36,7 @@ use crate::{
     keys::{Keys, SeedKind, StoredKeys},
     network::Network,
     not_ready::{self, NotReady, Piece, Source},
+    price::{self, Source as _},
     receipt::ReceiptView,
     store,
     uri::{self, WalletCode},
@@ -144,6 +145,17 @@ struct State {
     outputs: Vec<Owned>,
     spends: Vec<ChainSpend>,
     sent: Vec<Sent>,
+    /// How prices are shown; on, in dollars, from Kraken over the internet
+    /// for a file from before prices.
+    #[serde(default)]
+    prices: price::Settings,
+    /// The last current price and the daily histories asked for.
+    #[serde(default)]
+    price_cache: price::Cache,
+    /// What XMR was worth when each payment moved, by transaction: one
+    /// record per currency.
+    #[serde(default)]
+    price_records: HashMap<String, Vec<price::Record>>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +207,9 @@ pub struct Activity {
     pub confirmations: u64,
     pub receipt: Option<ReceiptView>,
     pub receipt_json: Option<String>,
+    /// What one XMR was worth when it moved, in the currency prices are
+    /// shown in; `None` with prices off or no price to be had.
+    pub price: Option<price::Record>,
 }
 
 /// How far syncing has got.
@@ -271,6 +286,12 @@ struct Inner {
     pool_seen: std::sync::Mutex<HashSet<String>>,
     /// The last block scanned, to scan pool transactions against.
     last_block: std::sync::Mutex<Option<monero_wallet::block::Block>>,
+    /// Asks for prices every 5 minutes while Fob is on screen.
+    prices_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Has the price task ask at once (a setting changed).
+    prices_wake: tokio::sync::Notify,
+    /// Why the last price request failed, until one works.
+    price_error: std::sync::Mutex<Option<String>>,
 }
 
 /// What the ZMQ subscriber hears, passed to the sync loop and the app.
@@ -373,6 +394,9 @@ impl Wallet {
             outputs: vec![],
             spends: vec![],
             sent: vec![],
+            prices: price::Settings::default(),
+            price_cache: price::Cache::default(),
+            price_records: HashMap::new(),
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -410,6 +434,9 @@ impl Wallet {
                 pool: std::sync::Mutex::new(HashMap::new()),
                 pool_seen: std::sync::Mutex::new(HashSet::new()),
                 last_block: std::sync::Mutex::new(None),
+                prices_task: std::sync::Mutex::new(None),
+                prices_wake: tokio::sync::Notify::new(),
+                price_error: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -708,6 +735,7 @@ impl Wallet {
                 confirmations: sent.height.map(|h| confirmations(&state, h)).unwrap_or(0),
                 receipt: receipt.as_ref().map(ReceiptView::from),
                 receipt_json: sent.receipt.clone(),
+                price: None,
             });
         }
         // Spends found on the chain that this wallet didn't send (a restored
@@ -729,6 +757,7 @@ impl Wallet {
                 confirmations: confirmations(&state, spend.height),
                 receipt: None,
                 receipt_json: None,
+                price: None,
             });
         }
         let mut incoming: HashMap<&str, Activity> = HashMap::new();
@@ -744,6 +773,7 @@ impl Wallet {
                 confirmations: confirmations(&state, output.height),
                 receipt: None,
                 receipt_json: None,
+                price: None,
             });
             row.amount += output.amount;
         }
@@ -761,7 +791,13 @@ impl Wallet {
                     confirmations: 0,
                     receipt: None,
                     receipt_json: None,
+                    price: None,
                 });
+            }
+        }
+        if state.prices.on {
+            for row in &mut rows {
+                row.price = state.price_records.get(&row.tx).and_then(|r| r.iter().find(|r| r.currency == state.prices.currency)).cloned();
             }
         }
         rows.sort_by_key(|r| std::cmp::Reverse((r.height.is_none(), r.height, r.time)));
@@ -933,6 +969,7 @@ impl Wallet {
             state.next_block = height + 1;
             state.last_block_time = time;
         }
+        self.record_prices(&mut state);
         self.save_state(&state)?;
         let more = state.next_block < tip;
         drop(state);
@@ -997,15 +1034,22 @@ impl Wallet {
             }
         }
         let found = scanner.scan(stand_in).map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
-        let mut pool = self.inner.pool.lock().expect("pool lock");
-        for output in found.ignore_additional_timelock() {
-            if output.transaction() == miner {
-                continue;
+        {
+            let mut pool = self.inner.pool.lock().expect("pool lock");
+            for output in found.ignore_additional_timelock() {
+                if output.transaction() == miner {
+                    continue;
+                }
+                let entry = pool.entry(hex::encode(output.transaction())).or_insert((0, now()));
+                entry.0 += output.commitment().amount;
             }
-            let entry = pool.entry(hex::encode(output.transaction())).or_insert((0, now()));
-            entry.0 += output.commitment().amount;
         }
         self.inner.pool_seen.lock().expect("pool lock").extend(new.iter().map(hex::encode));
+        // A payment first seen in the pool is priced as it's seen.
+        let mut state = self.inner.state.lock().await;
+        if self.record_prices(&mut state) {
+            self.save_state(&state)?;
+        }
         Ok(())
     }
 
@@ -1292,6 +1336,7 @@ impl Wallet {
             height: None,
             receipt: prepared.receipt,
         });
+        self.record_prices(&mut state);
         self.save_state(&state)?;
         Ok(hash)
     }
@@ -1299,6 +1344,228 @@ impl Wallet {
     /// Forgets a prepared payment that won't be sent.
     pub async fn cancel(&self, id: u64) {
         self.inner.prepared.lock().await.remove(&id);
+    }
+
+    /// Every payment and when it moved: sent, spent on the chain, received,
+    /// and on its way in the pool.
+    fn payment_times(&self, state: &State) -> Vec<(String, u64)> {
+        let mut times: HashMap<String, u64> = HashMap::new();
+        let sent = state.sent.iter().map(|s| (&s.tx, s.time));
+        let spent = state.spends.iter().map(|s| (&s.tx, s.time));
+        let received = state.outputs.iter().map(|o| (&o.tx, o.time));
+        for (tx, time) in sent.chain(spent).chain(received) {
+            times.entry(tx.clone()).or_insert(time);
+        }
+        for (tx, (_, seen)) in self.inner.pool.lock().expect("pool lock").iter() {
+            times.entry(tx.clone()).or_insert(*seen);
+        }
+        times.into_iter().collect()
+    }
+
+    /// Records what XMR was worth with each payment that has no price yet
+    /// in the currency shown: the current price if it was asked within an
+    /// hour of the payment, else the day's from the history. Nothing while
+    /// prices are off; a payment with nothing to go on stays without, and
+    /// gets one if the history later has its day. Returns whether any was
+    /// recorded.
+    fn record_prices(&self, state: &mut State) -> bool {
+        if !state.prices.on {
+            return false;
+        }
+        let mut recorded = false;
+        for (tx, time) in self.payment_times(state) {
+            let records = state.price_records.get(&tx);
+            if records.is_some_and(|r| r.iter().any(|r| r.currency == state.prices.currency)) {
+                continue;
+            }
+            if let Some(record) = state.price_cache.value_at(&state.prices, time) {
+                state.price_records.entry(tx).or_default().push(record);
+                recorded = true;
+            }
+        }
+        recorded
+    }
+
+    /// How prices are shown.
+    pub async fn price_settings(&self) -> price::Settings {
+        self.inner.state.lock().await.prices.clone()
+    }
+
+    /// Why prices couldn't be had last time, until they can.
+    pub fn price_error(&self) -> Option<String> {
+        self.inner.price_error.lock().expect("price lock").clone()
+    }
+
+    async fn change_prices(&self, change: impl FnOnce(&mut price::Settings) -> Result<()>) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        let mut settings = state.prices.clone();
+        change(&mut settings)?;
+        if settings != state.prices {
+            state.prices = settings;
+            self.record_prices(&mut state);
+            self.save_state(&state)?;
+            *self.inner.price_error.lock().expect("price lock") = None;
+            self.inner.prices_wake.notify_one();
+        }
+        Ok(())
+    }
+
+    /// "Show prices". Off, Fob never asks for one.
+    pub async fn set_prices_on(&self, on: bool) -> Result<()> {
+        self.change_prices(|s| {
+            s.on = on;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Prices in `code`, one the provider lists.
+    pub async fn set_currency(&self, code: &str) -> Result<()> {
+        self.change_prices(|s| {
+            if !s.provider.currencies().contains(&code) {
+                return Err(FobError::Price(format!("{} has no XMR price in {code}", s.provider.name())));
+            }
+            s.currency = code.to_owned();
+            Ok(())
+        })
+        .await
+    }
+
+    /// How price requests travel. Tor isn't available yet, and is refused.
+    pub async fn set_price_transport(&self, transport: price::Transport) -> Result<()> {
+        self.change_prices(|s| {
+            if !transport.available() {
+                return Err(FobError::Price("prices over Tor aren't available yet".into()));
+            }
+            s.transport = transport;
+            Ok(())
+        })
+        .await
+    }
+
+    /// "Show amounts in": the currency first, or XMR.
+    pub async fn set_fiat_first(&self, fiat_first: bool) -> Result<()> {
+        self.change_prices(|s| {
+            s.fiat_first = fiat_first;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The current price shown now, when prices are on and one was asked
+    /// within the hour: (currency, price).
+    pub async fn price_now(&self) -> Option<(price::Currency, u64)> {
+        let state = self.inner.state.lock().await;
+        if !state.prices.on {
+            return None;
+        }
+        state.price_cache.fresh(&state.prices, now()).map(|c| (price::currency(&c.currency), c.price))
+    }
+
+    /// What `atomic` XMR is worth now: "$83.03"; `None` without a current price.
+    pub async fn worth_now(&self, atomic: u64) -> Option<String> {
+        self.price_now().await.map(|(currency, p)| price::value(atomic, p, &currency))
+    }
+
+    /// Asks the provider for what's due, if prices are on: the current price
+    /// every 5 minutes (a minute when `pulled`), the daily history once a
+    /// day while a payment lacks a price. Returns whether anything changed.
+    pub async fn refresh_prices(&self, pulled: bool) -> Result<bool> {
+        let provider = self.inner.state.lock().await.prices.provider;
+        let result = self.refresh_prices_from(&provider, pulled, now()).await;
+        *self.inner.price_error.lock().expect("price lock") = result.as_ref().err().map(ToString::to_string);
+        result
+    }
+
+    async fn refresh_prices_from(&self, source: &impl price::Source, pulled: bool, now: u64) -> Result<bool> {
+        let (settings, current_due, history_due) = {
+            let state = self.inner.state.lock().await;
+            let settings = state.prices.clone();
+            if !settings.on {
+                return Ok(false);
+            }
+            let window = price::window(source, now);
+            let lacking = self.payment_times(&state).into_iter().any(|(tx, time)| {
+                window.contains(&price::day(time))
+                    && !state.price_records.get(&tx).is_some_and(|r| r.iter().any(|r| r.currency == settings.currency))
+            });
+            let current_due = price::current_due(&state.price_cache, &settings, now, pulled);
+            let history_due = lacking && price::history_due(&state.price_cache, &settings, now);
+            (settings, current_due, history_due)
+        };
+        if !settings.transport.available() {
+            return Err(FobError::Price("prices over Tor aren't available yet".into()));
+        }
+        let current = if current_due { Some(source.current(&settings.currency, settings.transport).await) } else { None };
+        let history = if history_due { Some(source.daily(&settings.currency, price::window(source, now), settings.transport).await) } else { None };
+
+        let mut state = self.inner.state.lock().await;
+        if state.prices != settings {
+            // Changed while asking: these answers are for settings gone.
+            return Ok(false);
+        }
+        let mut changed = false;
+        let mut error = None;
+        match current {
+            Some(Ok(p)) => {
+                state.price_cache.current = Some(price::Current { currency: settings.currency.clone(), provider: source.name().into(), price: p, at: now });
+                changed = true;
+            }
+            Some(Err(e)) => error = Some(e),
+            None => {}
+        }
+        match history {
+            Some(Ok(days)) => {
+                price::store_history(&mut state.price_cache, &settings, days, now);
+                changed = true;
+            }
+            Some(Err(e)) => error = error.or(Some(e)),
+            None => {}
+        }
+        if changed {
+            self.record_prices(&mut state);
+            self.save_state(&state)?;
+        }
+        match error {
+            Some(e) => Err(e),
+            None => Ok(changed),
+        }
+    }
+
+    /// Asks for prices while Fob is on screen, until [`stop_prices`]: at
+    /// once, then every 5 minutes, and at once again when a price setting
+    /// changes. `listener` hears of each new price, so the app redraws.
+    ///
+    /// [`stop_prices`]: Wallet::stop_prices
+    pub fn start_prices(&self, listener: Arc<dyn SyncListener>) {
+        self.stop_prices();
+        let wallet = self.clone();
+        let handle = crate::runtime().spawn(async move {
+            loop {
+                let before = wallet.price_error();
+                let changed = wallet.refresh_prices(false).await.unwrap_or(false);
+                if changed || wallet.price_error() != before {
+                    listener.on_status(wallet.status());
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(price::REFRESH)) => {}
+                    _ = wallet.inner.prices_wake.notified() => {}
+                }
+            }
+        });
+        *self.inner.prices_task.lock().expect("price lock") = Some(handle);
+    }
+
+    pub fn stop_prices(&self) {
+        if let Some(handle) = self.inner.prices_task.lock().expect("price lock").take() {
+            handle.abort();
+        }
+    }
+
+    /// Pull to refresh: new blocks and the pool as [`sync_now`](Wallet::sync_now),
+    /// and the price if a minute has passed. Returns when both are done.
+    pub async fn pull(&self) {
+        let _ = tokio::join!(self.sync_now(), self.refresh_prices(true));
     }
 }
 
@@ -1543,6 +1810,198 @@ mod tests {
         // instant updates go off rather than follow somewhere unchosen.
         again.inner.state.lock().await.node = "http://127.0.0.1:1".into();
         assert!(matches!(again.set_zmq(true, Some("tcp://stagenet.xmr-tw.org:38083")).await, Err(FobError::BadEndpoint(_))));
+    }
+
+    /// A provider standing in for Kraken: a fixed price now, and a history.
+    struct FakePrices {
+        now: u64,
+        days: Vec<(i64, u64)>,
+        fail: bool,
+        asked_now: AtomicU64,
+        asked_days: AtomicU64,
+    }
+
+    impl FakePrices {
+        fn new(now: u64, days: Vec<(i64, u64)>) -> FakePrices {
+            FakePrices { now, days, fail: false, asked_now: AtomicU64::new(0), asked_days: AtomicU64::new(0) }
+        }
+
+        fn asked(&self) -> (u64, u64) {
+            (self.asked_now.load(Ordering::Relaxed), self.asked_days.load(Ordering::Relaxed))
+        }
+    }
+
+    impl price::Source for FakePrices {
+        fn name(&self) -> &'static str {
+            "Kraken"
+        }
+
+        fn currencies(&self) -> &'static [&'static str] {
+            &["USD", "EUR"]
+        }
+
+        async fn current(&self, _: &str, _: price::Transport) -> Result<u64> {
+            self.asked_now.fetch_add(1, Ordering::Relaxed);
+            if self.fail { Err(FobError::Price("no answer".into())) } else { Ok(self.now) }
+        }
+
+        async fn daily(&self, _: &str, days: std::ops::Range<i64>, _: price::Transport) -> Result<Vec<(i64, u64)>> {
+            self.asked_days.fetch_add(1, Ordering::Relaxed);
+            if self.fail { Err(FobError::Price("no answer".into())) } else { Ok(self.days.iter().copied().filter(|d| days.contains(&d.0)).collect()) }
+        }
+
+        fn history_days(&self) -> i64 {
+            720
+        }
+    }
+
+    const XMR: u64 = amount::ATOMIC_PER_XMR;
+    const DAY: u64 = 86_400;
+
+    fn received(tx: &str, time: u64, amount: u64) -> Owned {
+        Owned {
+            output: String::new(),
+            tx: tx.into(),
+            height: 10,
+            time,
+            amount,
+            subaddress: 1,
+            coinbase: false,
+            unlock_block: 0,
+            key: tx.into(),
+            key_image: None,
+            spent_in: None,
+        }
+    }
+
+    fn price_of(activity: &[Activity], tx: &str) -> Option<(u64, bool)> {
+        activity.iter().find(|a| a.tx == tx).and_then(|a| a.price.as_ref()).map(|p| (p.price, p.daily))
+    }
+
+    #[tokio::test]
+    async fn a_payment_seen_now_keeps_the_price_of_the_moment() {
+        let wallet = Wallet::create(&dir("price-now"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let fake = FakePrices::new(166_060_000, vec![]);
+        // Nothing to price yet: the current price only, no history.
+        assert!(wallet.refresh_prices_from(&fake, false, t).await.unwrap());
+        assert_eq!(fake.asked(), (1, 0));
+        assert_eq!(wallet.worth_now(XMR / 2).await.as_deref(), Some("$83.03"));
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.outputs.push(received("in", t - 120, XMR / 2));
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None });
+            assert!(wallet.record_prices(&mut state));
+            wallet.save_state(&state).unwrap();
+        }
+        let activity = wallet.activity().await;
+        assert_eq!(price_of(&activity, "in"), Some((166_060_000, false)));
+        assert_eq!(price_of(&activity, "out"), Some((166_060_000, false)));
+        // Kept in the wallet file, with who priced it.
+        let again = Wallet::open(&wallet.inner.path, [1; 32]).unwrap();
+        let record = again.activity().await.into_iter().find(|a| a.tx == "in").unwrap().price.unwrap();
+        assert_eq!((record.currency.as_str(), record.provider.as_str(), record.at), ("USD", "Kraken", t));
+        // Asked again only after 5 minutes (a minute when pulled).
+        assert!(!wallet.refresh_prices_from(&fake, false, t + 299).await.unwrap());
+        assert!(wallet.refresh_prices_from(&fake, true, t + 60).await.unwrap());
+        assert_eq!(fake.asked(), (2, 0));
+    }
+
+    #[tokio::test]
+    async fn older_payments_are_priced_from_the_daily_history() {
+        let wallet = Wallet::create(&dir("price-history"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let today = price::day(t);
+        let fake = FakePrices::new(170_000_000, vec![(today - 10, 150_000_000), (today - 1, 160_000_000), (today, 165_000_000)]);
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.outputs.push(received("ten-days", t - 10 * DAY, XMR));
+            state.outputs.push(received("too-old", t - 900 * DAY, XMR));
+            // No price on hand: nothing recorded yet.
+            assert!(!wallet.record_prices(&mut state));
+        }
+        assert!(wallet.refresh_prices_from(&fake, false, t).await.unwrap());
+        assert_eq!(fake.asked(), (1, 1), "the whole window, once");
+        let activity = wallet.activity().await;
+        assert_eq!(price_of(&activity, "ten-days"), Some((150_000_000, true)));
+        // Older than Kraken's window: not available, and not asked about.
+        assert_eq!(price_of(&activity, "too-old"), None);
+        // A payment found later is priced from what's cached, as a sync
+        // step finds it, and the history isn't asked for again that day.
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.push(received("yesterday", t - DAY, XMR));
+        assert!(wallet.record_prices(&mut state));
+        drop(state);
+        assert_eq!(price_of(&wallet.activity().await, "yesterday"), Some((160_000_000, true)));
+        state = wallet.inner.state.lock().await;
+        state.outputs.push(received("last-week", t - 7 * DAY, XMR));
+        assert!(!wallet.record_prices(&mut state), "not in the history fetched");
+        drop(state);
+        wallet.refresh_prices_from(&fake, false, t + 600).await.unwrap();
+        assert_eq!(fake.asked(), (2, 1));
+        assert_eq!(price_of(&wallet.activity().await, "last-week"), None);
+        // The next day it is.
+        wallet.refresh_prices_from(&fake, false, t + DAY).await.unwrap();
+        assert_eq!(fake.asked(), (3, 2));
+    }
+
+    #[tokio::test]
+    async fn with_prices_off_nothing_is_asked_or_shown() {
+        let wallet = Wallet::create(&dir("price-off"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let fake = FakePrices::new(166_000_000, vec![(price::day(t), 165_000_000)]);
+        wallet.refresh_prices_from(&fake, false, t).await.unwrap();
+        wallet.set_prices_on(false).await.unwrap();
+        wallet.inner.state.lock().await.outputs.push(received("while-off", t, XMR));
+        assert!(!wallet.refresh_prices_from(&fake, true, t + DAY).await.unwrap());
+        assert_eq!(fake.asked(), (1, 0), "no request while off");
+        assert_eq!(wallet.worth_now(XMR).await, None);
+        assert!(!wallet.record_prices(&mut *wallet.inner.state.lock().await));
+        assert!(wallet.activity().await.iter().all(|a| a.price.is_none()));
+        // Back on: the payment seen while off is priced from what's cached.
+        wallet.set_prices_on(true).await.unwrap();
+        assert_eq!(price_of(&wallet.activity().await, "while-off"), Some((166_000_000, false)));
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_leaves_the_payment_not_available() {
+        let wallet = Wallet::create(&dir("price-fail"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        wallet.inner.state.lock().await.outputs.push(received("in", t - 3 * DAY, XMR));
+        let fake = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
+        assert!(wallet.refresh_prices_from(&fake, false, t).await.is_err());
+        assert_eq!(fake.asked(), (1, 1));
+        assert_eq!(price_of(&wallet.activity().await, "in"), None);
+        assert_eq!(wallet.worth_now(XMR).await, None);
+    }
+
+    #[tokio::test]
+    async fn price_settings_refuse_what_fob_cant_do() {
+        let wallet = Wallet::create(&dir("price-settings"), [1; 32], Network::Stagenet).unwrap();
+        assert!(matches!(wallet.set_currency("GBP").await, Err(FobError::Price(_))));
+        assert_eq!(
+            wallet.set_price_transport(price::Transport::Tor).await.unwrap_err().to_string(),
+            "prices over Tor aren't available yet"
+        );
+        wallet.set_currency("EUR").await.unwrap();
+        wallet.set_fiat_first(true).await.unwrap();
+        let again = Wallet::open(&wallet.inner.path, [1; 32]).unwrap();
+        let settings = again.price_settings().await;
+        assert_eq!((settings.currency.as_str(), settings.fiat_first, settings.transport), ("EUR", true, price::Transport::Web));
+    }
+
+    #[tokio::test]
+    async fn a_wallet_file_from_before_prices_opens_with_them_on() {
+        let path = dir("price-old-file");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        let state = file["state"].as_object_mut().unwrap();
+        for new in ["prices", "price_cache", "price_records"] {
+            assert!(state.remove(new).is_some(), "{new} is saved");
+        }
+        store::save(&path, &[1; 32], &file).unwrap();
+        let old = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(old.price_settings().await, price::Settings::default());
     }
 
     #[tokio::test]

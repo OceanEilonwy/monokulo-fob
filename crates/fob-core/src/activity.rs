@@ -181,6 +181,7 @@ mod tests {
             confirmations,
             receipt: None,
             receipt_json: None,
+            price: None,
         }
     }
 

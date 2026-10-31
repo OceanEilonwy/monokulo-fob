@@ -29,6 +29,18 @@ pub struct NodeCheck {
     pub error: Option<String>,
 }
 
+/// What Fob says when asked to reach an onion service: it has no Tor yet,
+/// and resolving one through the phone's DNS would tell the network which.
+pub const NO_ONION: &str = "Fob can't reach .onion addresses yet";
+
+/// Whether `host` is an onion service's (`….onion`, any case, with or
+/// without the root's dot).
+pub fn is_onion(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    let n = host.len();
+    host.eq_ignore_ascii_case("onion") || n > 6 && host.is_char_boundary(n - 6) && host[n - 6..].eq_ignore_ascii_case(".onion")
+}
+
 /// A node address as people type it: `host:port` gets `http://`, no trailing slash.
 pub fn normalize(url: &str) -> String {
     let url = url.trim().trim_end_matches('/');
