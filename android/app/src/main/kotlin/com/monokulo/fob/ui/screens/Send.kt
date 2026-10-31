@@ -188,7 +188,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         busy = true
         error = null
         scope.launch {
-            runCatching { model.prepare(address, typed, fiat, receiptJson, withNote) }
+            // The code's name goes with it while the form is the code's.
+            runCatching { model.prepare(address, typed, fiat, receiptJson, withNote, request?.recipientName) }
                 .onSuccess {
                     if (nav.current is Screen.Send) {
                         // Under Confirm, the form as filled: Back returns to it, not Home.

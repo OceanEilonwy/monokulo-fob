@@ -100,11 +100,17 @@ pub struct Draft {
     pub also_paid_at: Vec<String>,
 }
 
+/// Characters a name or note keeps: no control characters (a line break,
+/// a bell) and none of the marks that turn text round on screen.
+fn shown(c: &char) -> bool {
+    !c.is_control() && !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
 /// A name with control characters taken out and spaces trimmed, cut to
 /// [`NAME_MAX`] characters; `None` when nothing is left. For names that
 /// come from payment codes.
 pub fn clean_name(text: &str) -> Option<String> {
-    let kept: String = text.chars().filter(|c| !c.is_control()).collect();
+    let kept: String = text.chars().filter(shown).collect();
     let cut: String = kept.trim().chars().take(NAME_MAX).collect();
     let cut = cut.trim_end();
     (!cut.is_empty()).then(|| cut.to_owned())
@@ -113,7 +119,7 @@ pub fn clean_name(text: &str) -> Option<String> {
 /// A typed name, checked: 1 to [`NAME_MAX`] characters once trimmed (control
 /// characters, a pasted line break, dropped).
 pub fn check_name(text: &str) -> Result<String> {
-    let kept: String = text.chars().filter(|c| !c.is_control()).collect();
+    let kept: String = text.chars().filter(shown).collect();
     let name = kept.trim();
     match name.chars().count() {
         0 => Err(FobError::Contact("A contact needs a name.".into())),
@@ -124,7 +130,7 @@ pub fn check_name(text: &str) -> Result<String> {
 
 /// A typed note, checked: blank is none, at most [`NOTE_MAX`] characters.
 pub fn check_note(text: Option<&str>) -> Result<Option<String>> {
-    let kept: Option<String> = text.map(|t| t.chars().filter(|c| !c.is_control()).collect());
+    let kept: Option<String> = text.map(|t| t.chars().filter(shown).collect());
     let Some(note) = kept.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
     if note.chars().count() > NOTE_MAX {
         return Err(FobError::Contact(format!("A note can be up to {NOTE_MAX} characters.")));
@@ -570,6 +576,73 @@ pub fn found(network: Network, name: Option<&str>, current: Option<&str>, text: 
     Ok(Found { short: three_part(&address), title: "Found an address".into(), warning, address })
 }
 
+/// What the Paid screen offers after a payment (Round 4 › "Sent: a small
+/// Save contact button"; Round 5 › "Paid a code named Sam").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offer {
+    /// The address paid.
+    pub address: String,
+    /// The contact the code's name matches (any case): the button keeps
+    /// the address with them.
+    pub add_to: Option<Contact>,
+    /// "Add to Sam", "Save as a contact"
+    pub button: String,
+    /// "A different Sam? New contact", with Add to.
+    pub other: Option<String>,
+    /// "to a code named “Sam”", for a code with a name.
+    pub named: Option<String>,
+    /// Under the buttons, for a code with a name.
+    pub footnote: Option<String>,
+    /// New contact, filled.
+    pub draft: Draft,
+}
+
+/// Under a named code's buttons.
+pub const NAMED_FOOTNOTE: &str =
+    "The name comes from their code, not checked by Fob. The address is kept with the contact as one they were paid at, not as their send address.";
+
+/// New contact for `address`, paid with a code named `name` (if it had one)
+/// for `note`: a name from a code only names them, so the address is one
+/// they were paid at; without one, it's their send address.
+pub fn new_contact(address: &str, name: Option<&str>, note: Option<&str>) -> Draft {
+    let note = note.map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().filter(shown).take(NOTE_MAX).collect::<String>());
+    match name.and_then(clean_name) {
+        Some(name) => Draft { name, note, photo: None, send_address: None, also_paid_at: vec![address.to_owned()] },
+        None => Draft { name: String::new(), note, photo: None, send_address: Some(address.to_owned()), also_paid_at: vec![] },
+    }
+}
+
+/// What to offer after paying `address` with a code named `name` (if any)
+/// for `note`: nothing when the address is already a contact's; Add to the
+/// contact the name matches; otherwise Save as a contact.
+pub fn offer(book: &Book, address: &str, name: Option<&str>, note: Option<&str>) -> Option<Offer> {
+    if book.owner(address).is_some() {
+        return None;
+    }
+    let draft = new_contact(address, name, note);
+    let name = name.and_then(clean_name);
+    let add_to = name.as_deref().and_then(|n| book.named(n)).cloned();
+    Some(Offer {
+        address: address.to_owned(),
+        button: add_to.as_ref().map(|c| format!("Add to {}", c.name)).unwrap_or_else(|| "Save as a contact".into()),
+        other: add_to.as_ref().zip(name.as_ref()).map(|(_, n)| format!("A different {n}? New contact")),
+        named: name.as_ref().map(|n| format!("to a code named “{n}”")),
+        footnote: name.as_ref().map(|_| NAMED_FOOTNOTE.to_owned()),
+        add_to,
+        draft,
+    })
+}
+
+/// Under the send address on New contact, saved with the addresses of
+/// codes named for them: what happens to them.
+pub fn paid_at_note(addresses: &[String]) -> Option<String> {
+    match addresses {
+        [] => None,
+        [one] => Some(format!("Paid at {} from their code: kept with them, not as their send address.", three_part(one))),
+        many => Some(format!("Paid at {} addresses from their codes: kept with them, not as their send address.", many.len())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,6 +715,8 @@ mod tests {
         assert_eq!(clean_name(" Sam\u{7}\n ").as_deref(), Some("Sam"));
         assert_eq!(clean_name("\u{1b}[31m").as_deref(), Some("[31m"));
         assert_eq!(clean_name(" \t "), None);
+        assert_eq!(clean_name("\u{202e}maS\u{2066}").as_deref(), Some("maS"));
+        assert_eq!(check_name("\u{202e}").ok(), None);
         assert_eq!(clean_name(&format!("{} tail", "x".repeat(39))).as_deref(), Some(&*"x".repeat(39)));
     }
 
@@ -826,6 +901,45 @@ mod tests {
         // Deleted, the payments are still there and no one's.
         book.delete(sam.id);
         assert_eq!(unsaved(&book, &rows, clock()).len(), 3);
+    }
+
+    #[test]
+    fn after_paying_a_named_code_fob_offers_its_contact_or_a_new_one() {
+        let mut book = Book::default();
+        let (sam_send, code, henry, plain) = (address(1), address(2), address(3), address(4));
+        let sam = book.add(Network::Stagenet, Draft { send_address: Some(sam_send.clone()), ..draft("Sam") }, NOW).unwrap();
+        // The name matches Sam, any case: Add to Sam, or a new contact named Sam paid at that address.
+        let o = offer(&book, &code, Some(" sAm "), Some("Pizza")).unwrap();
+        assert_eq!(o.add_to.as_ref().map(|c| c.id), Some(sam.id));
+        assert_eq!(
+            (o.button.as_str(), o.other.as_deref(), o.named.as_deref()),
+            ("Add to Sam", Some("A different sAm? New contact"), Some("to a code named “sAm”"))
+        );
+        assert_eq!(o.footnote.as_deref(), Some(NAMED_FOOTNOTE));
+        assert_eq!(o.draft, Draft { name: "sAm".into(), note: Some("Pizza".into()), photo: None, send_address: None, also_paid_at: vec![code.clone()] });
+        // A name that's nobody's: Save as a contact, the address one they were paid at, never their send address.
+        let o = offer(&book, &henry, Some("Henry"), None).unwrap();
+        assert_eq!((o.add_to, o.button.as_str(), o.other), (None, "Save as a contact", None));
+        assert_eq!((o.draft.name.as_str(), o.draft.send_address, o.draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
+        // No name: the address is their send address, the payment's note theirs.
+        let o = offer(&book, &plain, None, Some(" Lunch ")).unwrap();
+        assert_eq!((o.named, o.footnote, o.button.as_str()), (None, None, "Save as a contact"));
+        assert_eq!(o.draft, Draft { name: String::new(), note: Some("Lunch".into()), photo: None, send_address: Some(plain.clone()), also_paid_at: vec![] });
+        // A name that cleans to nothing counts as none.
+        assert_eq!(offer(&book, &plain, Some("\n"), None).unwrap().draft.send_address.as_deref(), Some(plain.as_str()));
+        // Already a contact's (send address or paid at): nothing.
+        assert!(offer(&book, &sam_send, Some("Henry"), None).is_none());
+        book.add_paid_at(Network::Stagenet, sam.id, &code).unwrap();
+        assert!(offer(&book, &code, Some("Sam"), None).is_none());
+        // Saving the offered draft keeps the address apart from the send address.
+        let saved = book.add(Network::Stagenet, new_contact(&henry, Some("Henry"), None), NOW).unwrap();
+        assert_eq!((saved.send_address, saved.also_paid_at), (None, vec![henry.clone()]));
+        assert_eq!(
+            paid_at_note(std::slice::from_ref(&henry)).unwrap(),
+            format!("Paid at {} from their code: kept with them, not as their send address.", three_part(&henry))
+        );
+        assert_eq!(paid_at_note(&[]), None);
+        assert!(paid_at_note(&[henry, code]).unwrap().starts_with("Paid at 2 addresses"));
     }
 
     #[test]

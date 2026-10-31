@@ -22,6 +22,7 @@ import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentDetail
 import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
+import uniffi.fob.SaveOffer
 import uniffi.fob.Prepared
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
@@ -281,10 +282,14 @@ class WalletModel(private val app: Application) {
     /**
      * [amount] as the amount field took it, in money when [inFiat] (Rust
      * converts at the current price); [note] (typed, or the payment
-     * code's description) is kept with the payment.
+     * code's description) and [recipientName] (the name in the code) are
+     * kept with the payment.
      */
-    suspend fun prepare(to: String, amount: String, inFiat: Boolean, receiptJson: String?, note: String?): Prepared =
-        requireNotNull(_wallet.value).prepare(to, amount, inFiat, receiptJson, note)
+    suspend fun prepare(to: String, amount: String, inFiat: Boolean, receiptJson: String?, note: String?, recipientName: String?): Prepared =
+        requireNotNull(_wallet.value).prepare(to, amount, inFiat, receiptJson, note, recipientName)
+
+    /** What the Paid screen offers for payment [tx]; null for a split or an address that's already a contact's. */
+    suspend fun saveOffer(tx: String): SaveOffer? = _wallet.value?.saveOffer(tx)
 
     /** Who this wallet paid before, for Send's sheet; empty without a wallet. */
     suspend fun paidBefore(): List<PaidBefore> {

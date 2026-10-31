@@ -103,6 +103,7 @@ import uniffi.fob.PaidBefore
 import uniffi.fob.contactAddress
 import uniffi.fob.contactEditTexts
 import uniffi.fob.contactInitial
+import uniffi.fob.contactPaidAtNote
 import uniffi.fob.contactPhotoFits
 import uniffi.fob.foundSendAddress
 import uniffi.fob.sendAddressScan
@@ -125,6 +126,7 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
     var saved by remember { mutableStateOf<List<ContactRow>?>(null) }
     var any by remember { mutableStateOf(false) }
     var unsaved by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(wallet, activity, search) {
         val found = model.contacts(search)
         any = if (search.isBlank()) found.isNotEmpty() else model.contacts().isNotEmpty()
@@ -158,7 +160,8 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
                 )
                 Card {
                     unsaved.forEach { p ->
-                        UnsavedRow(p) { nav.go(Screen.ContactEdit(prefill = ContactDraft("", null, null, p.address, emptyList()))) }
+                        // Filled as the Paid screen would have been: a code's name makes it an address they were paid at.
+                        UnsavedRow(p) { scope.launch { wallet?.newContactFor(p.address)?.let { nav.go(Screen.ContactEdit(prefill = it)) } } }
                     }
                 }
             }
@@ -473,6 +476,10 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
                         ) { Text("Paste", fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
                     }
                     Text(texts.addressHint, color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(start = 4.dp))
+                    // Saved after paying a code named for them: that address stays theirs, but not to pay.
+                    remember(alsoPaidAt) { contactPaidAtNote(alsoPaidAt) }?.let {
+                        Text(it, color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(start = 4.dp))
+                    }
                 }
                 ErrorText(error)
                 if (id != null) {

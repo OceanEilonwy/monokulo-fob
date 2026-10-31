@@ -87,7 +87,8 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
     Ok(PaymentRequest {
         address: address.to_owned(),
         amount,
-        recipient_name: get(&pairs, &["recipient_name"]).map(str::to_owned),
+        // Shown as typed by whoever made the code: cleaned and cut.
+        recipient_name: get(&pairs, &["recipient_name"]).and_then(crate::contacts::clean_name),
         description: get(&pairs, &["tx_description", "description"]).map(str::to_owned),
         receipt,
     })
@@ -296,6 +297,18 @@ mod tests {
                 .unwrap();
         assert_eq!(named.recipient_name.as_deref(), Some("Corner Café"));
         assert_eq!(named.description.as_deref(), Some("Two coffees"));
+    }
+
+    #[test]
+    fn a_code_s_name_is_decoded_trimmed_cleaned_and_cut() {
+        let address = wallet().primary_address();
+        let name = |value: &str| parse_payment(Network::Stagenet, &format!("monero:{address}?recipient_name={value}")).unwrap().recipient_name;
+        assert_eq!(name("%20%20Sam%0A%07%20").as_deref(), Some("Sam"));
+        assert_eq!(name("Sam+Smith").as_deref(), Some("Sam Smith"));
+        assert_eq!(name("%0A%09"), None);
+        assert_eq!(name(&"x".repeat(60)).map(|n| n.chars().count()), Some(40));
+        // A direction override can't turn the name around on screen.
+        assert_eq!(name("%E2%80%AEevil").as_deref(), Some("evil"));
     }
 
     #[test]

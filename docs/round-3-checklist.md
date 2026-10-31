@@ -169,3 +169,19 @@ Send's sheet
 
 Dark mode
 - [ ] Contacts, card, edit card, sheets: cards on the dark card colour, search and chips sunken, Save pill light on dark (ink role), scrim darkens without going black-on-black, avatar initials readable, warning box on the highlight colour, Delete's red readable.
+
+## Step 7 · Saving a contact after paying
+
+Codes to make (Receive on another wallet, or a QR generator): `monero:<addr>?tx_amount=0.01&tx_description=Pizza&recipient_name=Sam` (Sam a contact), the same with `recipient_name=Henry` (nobody), and one with no name.
+- [ ] Pay an address with no name in the code, not a contact's → Paid shows an outline "Save as a contact" (person-plus icon); no footnote. Tap → New contact, name empty, note = the payment's note, send address = that address. Save → the card; Back → Paid, button gone.
+- [ ] Pay the code named "Sam" (Sam is a contact, different address) → "to a code named “Sam”" under the status; outline button with Sam's avatar "Add to Sam"; "A different Sam? New contact" in orange; the footnote "The name comes from their code, not checked by Fob. …".
+- [ ] Add to Sam → Sam's card; "Also paid at · codes named Sam" lists the address, "Not their send address · paid once, today"; the send address unchanged; "Paid to Sam" has the payment. Back → Paid with nothing offered.
+- [ ] A different Sam? New contact → New contact named "Sam", note "Pizza", send address empty ("None yet, optional"), and the line "Paid at … from their code: kept with them, not as their send address."
+- [ ] Code named "sAM" → still matches Sam.
+- [ ] Code named "Henry" (no contact) → "Save as a contact" + footnote; New contact named Henry, note filled, send address empty, the paid-at line. Saved → Henry's card shows it under Also paid at, Send opens Send's camera (no send address).
+- [ ] Pay a contact's own send address → nothing offered on Paid.
+- [ ] A very long name in the code (60 characters) → cut to 40; the button ellipsised on one line, not wrapping.
+- [ ] A name with a line break or a right-to-left override in the code → shown on one line, left to right.
+- [ ] Paid, not saved → Save on an address once paid with a code named "Henry" → New contact named Henry with the address as paid at; on an address paid without a name → as the send address.
+- [ ] Split up → Paid shows no contact button.
+- [ ] Dark mode: outline button and avatar readable, footnote muted, link orange.
