@@ -1964,3 +1964,14 @@ Calls made while building the first version, with why. Newest last.
     Review rises with the keyboard in the same frame. The measured heights
     stay in state only for the drag's clamp, the settle's target and the
     camera frame's maths (which may still follow a frame behind).
+260. **Money's value goes under its title when both don't fit** (review
+    R3): beside the title it takes at most 152 dp and never more than
+    leaves the title its longest word; when its own longest word doesn't
+    fit in that, it moves under the title (and its line), still at the
+    row's end by the chevron, as Keys' badge moves under its title.
+261. **The profile row wraps to two lines at a big font** (review R3): on
+    one line the name is cut with an ellipsis so "· share as a code"
+    always shows (decision 11), as long as at least three letters' width
+    of the name (about 13 sp × 3) fits beside it; otherwise the name goes
+    over "· share as a code", the name still cut to one line and the rest
+    wrapping, never clipped.
