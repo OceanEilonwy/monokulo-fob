@@ -115,6 +115,9 @@ pub struct NotReady {
     pub description: String,
     /// Ready to spend, not ready, and all of it.
     pub sums: Vec<Sum>,
+    /// How old the price the sums are worth at is, once it's missed a
+    /// refresh: "23 h old".
+    pub price_age: Option<String>,
     /// How far along, weighted by amount: Σ(amount × confirmations ÷ needed) ÷ total.
     pub progress: f32,
     /// Soonest ready first.
@@ -194,6 +197,7 @@ pub fn summarise(pieces: Vec<Piece>, ready: u64, last_block_time: u64, clock: Cl
             sum(format!("Not ready · {}", coins_text(views.len())), total),
             sum("All of it".into(), ready + total),
         ],
+        price_age: None,
         progress: progress as f32,
         pieces: views,
     })
@@ -242,7 +246,9 @@ pub struct Coins {
 /// Every coin as the Coins screen shows it: the `ready` ones and those not
 /// ready yet, valued at `price` when there is one. A new coin, change
 /// included, waits `unlock` blocks.
-pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unlock: u64, price: Option<(&price::Currency, u64)>, clock: Clock) -> Coins {
+/// `age` says how old the price is once it's missed a refresh ("23 h old"),
+/// beside the ready sum.
+pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unlock: u64, price: Option<(&price::Currency, u64)>, age: Option<&str>, clock: Clock) -> Coins {
     let worth = |atomic: u64| price.map(|(currency, p)| price::value(atomic, p, currency));
     let ready_total: u64 = ready.iter().map(|p| p.amount).sum();
     let mut ready_coins: Vec<CoinView> = ready
@@ -286,7 +292,11 @@ pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unl
         progress,
         bar_description,
         ready_title: format!("Ready · {}", coins_text(ready_coins.len())),
-        ready_sum: [Some(amount::format_short(ready_total)), worth(ready_total)].into_iter().flatten().collect::<Vec<_>>().join(" · "),
+        ready_sum: [Some(amount::format_short(ready_total)), worth(ready_total), worth(ready_total).and(age.map(str::to_owned))]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · "),
         ready_coins,
         not_ready_title: format!("Not ready · {}", coins_text(pieces.len())),
         not_ready_sum: if pieces.is_empty() { String::new() } else { format!("all by {all_ready}") },
@@ -326,6 +336,7 @@ mod tests {
             NOW - 30,
             10,
             Some((&price::currency("USD"), 166_060_000)),
+            None,
             clock(),
         );
         assert_eq!(
@@ -350,7 +361,10 @@ mod tests {
         assert_eq!((coins.ready, coins.not_ready), (1_725 * XMR / 1000, 52 * XMR / 100));
         // The bar for TalkBack says what it shows, not a bare percentage.
         assert_eq!(coins.bar_description, "1.725 XMR ready, 0.52 XMR not yet, 32% of the way");
-        let all_ready = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, None, clock());
+        // An old price says its age beside the sum it values.
+        let aged = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, Some((&price::currency("USD"), 166_060_000)), Some("23 h old"), clock());
+        assert_eq!(aged.ready_sum, "1 · $166.06 · 23 h old");
+        let all_ready = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, None, None, clock());
         assert_eq!(all_ready.bar_description, "1 XMR ready");
     }
 
@@ -365,16 +379,16 @@ mod tests {
 
     #[test]
     fn no_coins_says_so() {
-        let empty = coins(vec![], vec![], NOW, 10, None, clock());
+        let empty = coins(vec![], vec![], NOW, 10, None, None, clock());
         assert_eq!(empty.intro, "No coins yet. Each payment to this wallet arrives as a coin.");
         assert!(empty.ready_coins.is_empty() && empty.not_ready_coins.is_empty());
         assert_eq!((empty.ready_sum.as_str(), empty.not_ready_sum.as_str(), empty.progress), ("0", "", 0.0));
         // One coin, all ready, without a price.
-        let one = coins(vec![piece(XMR, 12, Source::Received, NOW)], vec![], NOW, 10, None, clock());
+        let one = coins(vec![piece(XMR, 12, Source::Received, NOW)], vec![], NOW, 10, None, None, clock());
         assert!(one.intro.starts_with("Your 1 XMR is held as 1 coin. "), "{}", one.intro);
         assert_eq!((one.ready_title.as_str(), one.ready_sum.as_str()), ("Ready · 1 coin", "1"));
         // A date from another year says the year.
-        let old = coins(vec![piece(XMR, 12, Source::Received, NOW - 400 * 86_400)], vec![], NOW, 10, None, clock());
+        let old = coins(vec![piece(XMR, 12, Source::Received, NOW - 400 * 86_400)], vec![], NOW, 10, None, None, clock());
         assert_eq!(old.ready_coins[0].source, "Received · 26 Sep 2025");
     }
 

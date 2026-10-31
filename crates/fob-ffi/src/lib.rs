@@ -395,6 +395,9 @@ pub struct PriceSettings {
     /// Lookups are failing: the row is red, with Try again.
     pub failing: bool,
     pub sources: Vec<PriceSourceChoice>,
+    /// When the price shown was asked, none without one: new with every
+    /// new price, so screens converting money (Receive's code) convert again.
+    pub price_at: Option<u64>,
 }
 
 /// The price toast while lookups fail, every word from Rust.
@@ -533,6 +536,9 @@ pub struct NotReady {
     pub description: String,
     /// Ready to spend, not ready, all of it.
     pub sums: Vec<NotReadySum>,
+    /// How old the price the sums are worth at is, once it's missed a
+    /// refresh: "23 h old".
+    pub price_age: Option<String>,
     /// Weighted by amount, 0 to 1: how much of the not-ready part is green.
     pub progress: f32,
 }
@@ -548,6 +554,7 @@ impl From<not_ready::NotReady> for NotReady {
             all_ready_line: n.all_ready_line,
             description: n.description,
             sums: n.sums.into_iter().map(|s| NotReadySum { description: s.description(), label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
+            price_age: n.price_age,
             progress: n.progress,
         }
     }
@@ -760,7 +767,11 @@ pub struct Prepared {
     /// What they're worth now, with a currency besides XMR: "$20.00".
     pub amount_fiat: Option<String>,
     pub fee_fiat: Option<String>,
+    /// With the price's age once it's missed a refresh: "$20.03 · 23 h old".
     pub total_fiat: Option<String>,
+    /// How old the price they're worth at is, once it's missed a refresh:
+    /// "23 h old".
+    pub fiat_age: Option<String>,
     pub receipt: Option<Receipt>,
     /// Set for a split: what the confirm and done screens say instead.
     pub split: Option<SplitSummary>,
@@ -930,6 +941,7 @@ fn height(network: Network, restore_point: Option<String>) -> Result<Option<u64>
 /// A prepared payment or split for the confirm screen, with what it's
 /// worth now.
 async fn prepared(wallet: &fob_core::Wallet, p: fob_core::Prepared) -> Prepared {
+    let age = wallet.price_age_now().await;
     let split = p.pieces.map(|n| SplitSummary {
         title: split::TITLE.into(),
         to: split::TO.into(),
@@ -946,7 +958,12 @@ async fn prepared(wallet: &fob_core::Wallet, p: fob_core::Prepared) -> Prepared 
         total_text: amount::format(p.amount + p.fee),
         amount_fiat: wallet.worth_now(p.amount).await,
         fee_fiat: wallet.worth_now(p.fee).await,
-        total_fiat: wallet.worth_now(p.amount + p.fee).await,
+        // The total says how old the price is, once it's missed a refresh.
+        total_fiat: match (wallet.worth_now(p.amount + p.fee).await, &age) {
+            (Some(total), Some(age)) => Some(format!("{total} · {age}")),
+            (total, _) => total,
+        },
+        fiat_age: age,
         receipt: p.receipt.map(Into::into),
         split,
     }
@@ -1217,6 +1234,7 @@ impl FobWallet {
             failing: failing && s.code().is_some(),
             source_text,
             sources,
+            price_at: self.inner.price_at(now).await,
         }
     }
 
@@ -1320,8 +1338,8 @@ impl FobWallet {
     }
 
     /// Split up's screen for `counts` pieces of each note.
-    pub async fn split_view(&self, counts: Vec<u32>) -> SplitView {
-        self.inner.split_view(&counts).await.into()
+    pub async fn split_view(&self, counts: Vec<u32>, now: u64, utc_offset: i32, hours_24: bool) -> SplitView {
+        self.inner.split_view(&counts, activity::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
     /// One more piece of note `index`; throws why not (15 pieces at most,

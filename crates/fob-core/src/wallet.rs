@@ -1161,7 +1161,8 @@ impl Wallet {
     pub async fn coins(&self, clock: Clock) -> Coins {
         let (ready, waiting, last_block_time) = self.coin_pieces().await;
         let price = self.price_now().await;
-        not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), clock)
+        let age = self.price_age(clock.now).await;
+        not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), age.as_deref(), clock)
     }
 
     /// The money not ready yet as Home shows it, beside what's ready to
@@ -1174,6 +1175,10 @@ impl Wallet {
         if let Some((currency, p)) = self.price_now().await {
             for sum in &mut summary.sums {
                 sum.fiat = Some(price::value(sum.atomic, p, &currency));
+            }
+            summary.price_age = self.price_age(clock.now).await;
+            if let Some(age) = &summary.price_age {
+                summary.all_ready_line = format!("{} · price {age}", summary.all_ready_line);
             }
         }
         Some(summary)
@@ -1920,10 +1925,20 @@ impl Wallet {
         split::suggest(&notes, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)))
     }
 
-    /// Split up's screen for `counts` of each note.
-    pub async fn split_view(&self, counts: &[u32]) -> split::View {
+    /// Split up's screen for `counts` of each note, at `clock` (the
+    /// phone's), which says how old the price the coins are set at is.
+    pub async fn split_view(&self, counts: &[u32], clock: Clock) -> split::View {
         let (money, notes, budget) = self.split_setup().await;
-        split::view(&notes, counts, &budget, money.as_ref().map(|(c, p)| (c, *p)))
+        let priced = {
+            let state = self.inner.state.lock().await;
+            let shown = state.price_cache.shown(&state.prices, clock.now);
+            match shown.and_then(|c| Some((c.at, price::alert::old(c.at, clock.now)?))) {
+                // "the 09:00 price · 23 h old", "yesterday's 09:00 price · 23 h old".
+                Some((at, old)) => format!("{} · {old}", price::alert::price_from(at, clock, true)),
+                None => split::TODAY.to_owned(),
+            }
+        };
+        split::view(&notes, counts, &budget, money.as_ref().map(|(c, p)| (c, *p)), &priced)
     }
 
     /// One more piece of note `index`, or why not (the 15-piece cap, or not
@@ -2191,6 +2206,25 @@ impl Wallet {
         state.price_cache.shown(&state.prices, now()).map(|c| (price::currency(&c.currency), c.price))
     }
 
+    /// When the price shown at `now` was asked: new with every new price,
+    /// so a screen converting money knows to convert again.
+    pub async fn price_at(&self, now: u64) -> Option<u64> {
+        let state = self.inner.state.lock().await;
+        state.price_cache.shown(&state.prices, now).map(|c| c.at)
+    }
+
+    /// How old the price shown at `now` is, once it's missed a refresh:
+    /// "23 h old"; `None` while it's fresh, or without one.
+    pub async fn price_age(&self, now: u64) -> Option<String> {
+        let state = self.inner.state.lock().await;
+        state.price_cache.shown(&state.prices, now).and_then(|c| price::alert::old(c.at, now))
+    }
+
+    /// [`price_age`](Wallet::price_age) now, by the phone's clock.
+    pub async fn price_age_now(&self) -> Option<String> {
+        self.price_age(now()).await
+    }
+
     /// What `atomic` XMR is worth now: "$83.03"; `None` without a current price.
     pub async fn worth_now(&self, atomic: u64) -> Option<String> {
         self.price_now().await.map(|(currency, p)| price::value(atomic, p, &currency))
@@ -2211,20 +2245,28 @@ impl Wallet {
         let row = self.activity().await.into_iter().find(|a| a.tx == tx)?;
         let settings = self.price_settings().await;
         let now = self.price_now().await;
-        Some(activity::detail(&row, now.as_ref().map(|(c, p)| (c, *p)), settings.code().is_some(), settings.provider.name(), clock))
+        let mut detail = activity::detail(&row, now.as_ref().map(|(c, p)| (c, *p)), settings.code().is_some(), settings.provider.name(), clock);
+        // "Now" at an old price says how old.
+        if let Some(age) = self.price_age(clock.now).await {
+            detail.rate_now = detail.rate_now.map(|rate| format!("{rate} · {age}"));
+        }
+        Some(detail)
     }
 
     /// An amount field for `text`, typed in money (`in_fiat`) or XMR: in
     /// money only with a currency besides XMR and a price from within the
     /// day, saying when it's from once it's aged (`clock`, the phone's).
     /// Money typed against a price 5 minutes old or more has the price
-    /// task ask (at most once a minute), a failure shown as the user's.
+    /// task ask (at most once a minute), a failure shown as the user's; so
+    /// does the field with no price at all (opened or typed in, the field
+    /// then in XMR), while a currency is chosen.
     pub async fn amount_field(&self, text: &str, in_fiat: bool, clock: Clock) -> price::AmountField {
         let (wanted, shown) = {
             let state = self.inner.state.lock().await;
             (state.prices.code().map(price::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
         };
-        if in_fiat && !text.trim().is_empty() && wanted.is_some() && shown.as_ref().is_none_or(|c| clock.now.saturating_sub(c.at) >= price::REFRESH) {
+        let stale = shown.as_ref().is_some_and(|c| clock.now.saturating_sub(c.at) >= price::REFRESH);
+        if wanted.is_some() && (shown.is_none() || stale && in_fiat && !text.trim().is_empty()) {
             let mut last = self.inner.typed_asked.lock().expect("price lock");
             if clock.now.saturating_sub(*last) >= price::PULL_REFRESH {
                 *last = clock.now;
@@ -3484,6 +3526,86 @@ mod tests {
         assert_eq!(f.line.as_deref(), Some("No USD price now · type the amount in XMR"));
     }
 
+    /// Everything converted at the shown price says how old it is once it's
+    /// missed a refresh, up to the day it's shown for: Coins, Home's
+    /// not-ready sums, a payment's "Now", Split up's footer and Confirm.
+    #[tokio::test]
+    async fn every_amount_at_an_old_price_says_how_old() {
+        let wallet = Wallet::create(&dir("price-age-everywhere"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let at = |now| Clock { now, utc_offset: 0, hours_24: true };
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.tip = 100;
+            state.outputs.push(received("in", t - 3600, XMR));
+            let mut waiting = received("new", t - 60, XMR / 2);
+            waiting.height = 95;
+            state.outputs.push(waiting);
+        }
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
+        // Fresh: no age anywhere.
+        assert_eq!(wallet.price_age(t).await, None);
+        assert_eq!(wallet.coins(at(t)).await.ready_sum, "1 · $166.10");
+        assert_eq!(wallet.not_ready(at(t)).await.unwrap().price_age, None);
+        assert_eq!(wallet.payment("in", at(t)).await.unwrap().rate_now.as_deref(), Some("1 XMR = $166.10"));
+        assert!(wallet.split_view(&[1], at(t)).await.footer.ends_with("coins are set in XMR at today's price"));
+        // A second short of a day: still shown, and how old it is said.
+        let late = t + price::SHOWN - 1;
+        assert_eq!(wallet.price_age(late).await.as_deref(), Some("23 h old"));
+        assert_eq!(wallet.coins(at(late)).await.ready_sum, "1 · $166.10 · 23 h old");
+        let n = wallet.not_ready(at(late)).await.unwrap();
+        assert_eq!(n.price_age.as_deref(), Some("23 h old"));
+        assert!(n.all_ready_line.ends_with(" · price 23 h old"), "{}", n.all_ready_line);
+        assert_eq!(wallet.payment("in", at(late)).await.unwrap().rate_now.as_deref(), Some("1 XMR = $166.10 · 23 h old"));
+        let footer = wallet.split_view(&[1], at(late)).await.footer;
+        let from = price::alert::price_from(t, at(late), true);
+        assert!(footer.ends_with(&format!("coins are set in XMR at {from} · 23 h old")), "{footer}");
+        assert!(!footer.contains("today's"));
+        // A day: no price, so no age.
+        assert_eq!(wallet.price_age(t + price::SHOWN).await, None);
+    }
+
+    /// Receive's code and its field convert at the same price: a new price
+    /// changes both, and says it's new.
+    #[tokio::test]
+    async fn receive_s_code_and_field_agree_after_a_new_price() {
+        let wallet = Wallet::create(&dir("receive-new-price"), [1; 32], Network::Stagenet).unwrap();
+        let address = wallet.receive_address().await.unwrap();
+        let t = now();
+        wallet.refresh_prices_from(&FakePrices::new(100_000_000, vec![]), Asked::Background, t - 20 * 3600).await.unwrap();
+        let old = wallet.price_at(t).await;
+        assert_eq!(wallet.receive_code(&address, Some("20"), true, None).await.unwrap().detail.as_deref(), Some("0.2 XMR"));
+        wallet.refresh_prices_from(&FakePrices::new(200_000_000, vec![]), Asked::Typing, t).await.unwrap();
+        assert_ne!(wallet.price_at(t).await, old, "a new price is told apart");
+        let field = wallet.amount_field("20", true, clock_now()).await;
+        let code = wallet.receive_code(&address, Some("20"), true, None).await.unwrap();
+        assert_eq!(field.line.as_deref(), Some("≈ 0.1 XMR · 1 XMR = $200.00"));
+        assert_eq!(code.detail.as_deref(), Some("0.1 XMR"));
+        assert_eq!(code.uri, format!("monero:{address}?tx_amount=0.1"));
+    }
+
+    /// With no price at all the field is in XMR, and opening or typing in it
+    /// asks for one (once a minute), as money typed against an old one does.
+    #[tokio::test]
+    async fn with_no_price_the_field_asks_for_one() {
+        let wallet = Wallet::create(&dir("price-none-asks"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let at = |now| Clock { now, utc_offset: 0, hours_24: true };
+        let asked = || wallet.inner.prices_asked.lock().unwrap().take();
+        let f = wallet.amount_field("", false, at(t)).await;
+        assert!(!f.can_switch);
+        assert_eq!(asked(), Some(Asked::Typing), "opening asks");
+        wallet.amount_field("0.5", false, at(t + 30)).await;
+        assert_eq!(asked(), None, "not again within the minute");
+        wallet.amount_field("0.55", false, at(t + 60)).await;
+        assert_eq!(asked(), Some(Asked::Typing));
+        // XMR only: never.
+        wallet.set_currency(None).await.unwrap();
+        asked();
+        wallet.amount_field("1", false, at(t + 600)).await;
+        assert_eq!(asked(), None);
+    }
+
     #[tokio::test]
     async fn money_typed_against_an_old_price_asks_again_at_most_once_a_minute() {
         let wallet = Wallet::create(&dir("price-typed"), [1; 32], Network::Stagenet).unwrap();
@@ -3643,7 +3765,7 @@ mod tests {
         let suggestion = wallet.split_suggestion().await;
         assert_eq!(suggestion.text, "Picked from your last 30 days: most payments were about 0.1 XMR.");
         assert_eq!(suggestion.counts, [0, 0, 15, 0, 0, 0]);
-        let view = wallet.split_view(&suggestion.counts).await;
+        let view = wallet.split_view(&suggestion.counts, clock_now()).await;
         assert_eq!((view.summary.as_deref(), view.button.as_str()), (Some("15 coins · 1.5 XMR"), "Split into 15 coins"));
         assert!(view.footer.starts_with("Network fee about 0.0001"), "{}", view.footer);
         let refused = wallet.split_add(&suggestion.counts, 0).await.unwrap_err();

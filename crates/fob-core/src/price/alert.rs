@@ -144,7 +144,7 @@ pub fn toast(alert: &Alert, last: Option<&Current>, clock: Clock) -> Toast {
 
 /// When a price is from: "14:02", "yesterday's 14:02", "29 Oct's" (with
 /// `the`, "the 14:02 price"), or "14:02", "yesterday 14:02", "29 Oct".
-fn price_from(at: u64, clock: Clock, the: bool) -> String {
+pub(crate) fn price_from(at: u64, clock: Clock, the: bool) -> String {
     let (day, seconds) = activity::local(at, clock);
     let (today, _) = activity::local(clock.now, clock);
     let time = activity::time_of_day(seconds, clock);

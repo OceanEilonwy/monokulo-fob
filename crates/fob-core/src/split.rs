@@ -33,6 +33,8 @@ const EVEN_PIECES: u32 = 12;
 const USUAL_PER_WEIGHT: u64 = 20_000;
 
 pub const TITLE: &str = "Split up";
+/// Which price the coins are set at, while it's fresh.
+pub const TODAY: &str = "today's price";
 pub const INTRO: &str = "Each payment locks what's left of a coin for about 20 minutes. More, smaller coins keep money ready to spend.";
 const LEARNED: &str = "Picked from your last 30 days";
 const EVEN: &str = "Not enough payments yet to learn from, so here's an even mix. Change it to suit.";
@@ -337,7 +339,9 @@ fn plural(n: u32) -> String {
 }
 
 /// The screen for `counts` of `notes`.
-pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money) -> View {
+/// `priced` says which price the coins are set at: "today's price", or "the
+/// 09:00 price · 23 h old" once it's missed a refresh.
+pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money, priced: &str) -> View {
     let counts = sized(notes, counts);
     let n = pieces(&counts);
     let total = value(notes, &counts);
@@ -375,7 +379,7 @@ pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money) -> Vi
     };
     let mut footer = format!("Network fee about {}", fee_text(fee, money));
     if money.is_some() {
-        footer.push_str(" · coins are set in XMR at today's price");
+        footer.push_str(&format!(" · coins are set in XMR at {priced}"));
     }
     View {
         title: TITLE.into(),
@@ -534,7 +538,7 @@ mod tests {
         assert_eq!(s.text, "Picked from your last 30 days: most payments were $5–$25.");
         // Shares 2 × $5, 1 × $10, 2 × $20, 2 × $50 of 7, filled to 15 in turn.
         assert_eq!(s.counts, [5, 2, 4, 4, 0, 0]);
-        assert_eq!(view(&notes, &s.counts, &budget(2_000), money).summary.as_deref(), Some("15 coins · $325.00"));
+        assert_eq!(view(&notes, &s.counts, &budget(2_000), money, TODAY).summary.as_deref(), Some("15 coins · $325.00"));
         // The same payments with $90: pieces in turn while they fit, $85.
         let small = suggest(&notes, &payments, &budget(300), money);
         assert_eq!(small.counts, [3, 0, 1, 1, 0, 0]);
@@ -584,7 +588,7 @@ mod tests {
         let notes = notes(money);
         // $5 × 4, $10 × 4, $20 × 3: 11 pieces, $120. With 1 XMR ($300) ready.
         let b = budget(1_000);
-        let v = view(&notes, &[4, 4, 3], &b, money);
+        let v = view(&notes, &[4, 4, 3], &b, money, TODAY);
         assert_eq!(v.summary.as_deref(), Some("11 coins · $120.00"));
         let (fee, left) = b.plan(11, value(&notes, &[4, 4, 3]));
         assert_eq!(v.left_over, Some(format!("+ {} left as one coin", price::value(left.unwrap(), PRICE, &usd))));
@@ -604,10 +608,10 @@ mod tests {
         assert_eq!(v.bar[11].height, 1.0);
         assert!((v.bar[0].height - (20.0f32 / 180.0).sqrt()).abs() < 0.01, "{}", v.bar[0].height);
 
-        let empty = view(&notes, &[], &b, money);
+        let empty = view(&notes, &[], &b, money, TODAY);
         assert_eq!((empty.button.as_str(), empty.ready, empty.summary, empty.left_over, empty.bar.len()), ("Add a coin to split", false, None, None, 0));
 
-        let xmr = view(&super::notes(None), &[0, 0, 1], &b, None);
+        let xmr = view(&super::notes(None), &[0, 0, 1], &b, None, TODAY);
         assert_eq!(xmr.summary.as_deref(), Some("1 coin · 0.1 XMR"));
         assert!(xmr.footer.starts_with("Network fee about 0.000") && !xmr.footer.contains("today's price"), "{}", xmr.footer);
         assert_eq!(xmr.button, "Split into 1 coin");
