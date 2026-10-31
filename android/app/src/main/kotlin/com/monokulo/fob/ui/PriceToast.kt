@@ -94,14 +94,16 @@ fun Modifier.bottomSpace(extra: Dp = 0.dp): Modifier {
  * Swiped down or sideways it goes ([onDismiss]); [onSettings] is the cog.
  * A [notice] (Rust's words when a price choice moved something) sits
  * above it for a few seconds; tapped, it goes. While the keyboard is up
- * the toast steps aside, back when it goes: above the keyboard it would
- * cover the field being typed in, whose own line says how old the price is.
+ * the toast moves to the top of the screen, clear of the keyboard and of
+ * the field being typed in (which the keyboard keeps just above it), and
+ * still says what failed as it comes. The cog is off while
+ * [settingsEnabled] is false: leaving Confirm would cancel its payment.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PriceToastHost(
     state: PriceToastState?, onRetry: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit,
-    notice: String? = null, onNoticeDismiss: () -> Unit = {},
+    notice: String? = null, onNoticeDismiss: () -> Unit = {}, settingsEnabled: Boolean = true,
 ) {
     val space by LocalBottomSpace.current
     // The last state drawn, so the toast keeps its words as it goes.
@@ -110,14 +112,21 @@ fun PriceToastHost(
     var said by remember { mutableStateOf(notice) }
     if (notice != null) said = notice
     val lift by animateDpAsState(if (space > 0.dp) space + 8.dp else 16.dp, label = "toast lift")
+    val ime = WindowInsets.isImeVisible
     Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(bottom = lift), contentAlignment = Alignment.BottomCenter) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             AnimatedVisibility(notice != null, enter = slideInVertically { it } + fadeIn(), exit = fadeOut()) {
                 said?.let { Notice(it, onNoticeDismiss) }
             }
-            AnimatedVisibility(state != null && !WindowInsets.isImeVisible, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
-                shown?.let { ToastCard(it, onRetry, onSettings, onDismiss) }
+            AnimatedVisibility(state != null && !ime, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+                shown?.let { ToastCard(it, onRetry, onSettings, onDismiss, settingsEnabled) }
             }
+        }
+    }
+    // With the keyboard up, at the top: the failure typing caused is seen (and heard) while it applies.
+    Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 8.dp), contentAlignment = Alignment.TopCenter) {
+        AnimatedVisibility(state != null && ime, enter = slideInVertically { -it } + fadeIn(), exit = slideOutVertically { -it } + fadeOut()) {
+            shown?.let { ToastCard(it, onRetry, onSettings, onDismiss, settingsEnabled) }
         }
     }
 }
@@ -139,7 +148,7 @@ private fun Notice(text: String, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun ToastCard(state: PriceToastState, onRetry: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit) {
+private fun ToastCard(state: PriceToastState, onRetry: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit, settingsEnabled: Boolean) {
     val scope = rememberCoroutineScope()
     // Where a swipe has it; let go short of [far], it springs back.
     val dx = remember { Animatable(0f) }
@@ -189,10 +198,11 @@ private fun ToastCard(state: PriceToastState, onRetry: () -> Unit, onSettings: (
                 Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onRetry).padding(horizontal = 10.dp),
                 contentAlignment = Alignment.Center,
             ) { Text("Retry", color = Fob.inverseAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
+            // Off on Confirm: leaving it would cancel the payment it shows.
             Box(
-                Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onSettings).semantics { contentDescription = "Price settings" },
+                Modifier.size(48.dp).clip(CircleShape).clickable(enabled = settingsEnabled, role = Role.Button, onClick = onSettings).semantics { contentDescription = "Price settings" },
                 contentAlignment = Alignment.Center,
-            ) { StrokeIcon(Icons.gear, tint = Fob.onInverse, size = 20.dp, width = 1.6f) }
+            ) { StrokeIcon(Icons.gear, tint = if (settingsEnabled) Fob.onInverse else Fob.inverseMuted, size = 20.dp, width = 1.6f) }
         }
     }
 }

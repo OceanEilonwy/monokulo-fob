@@ -252,6 +252,8 @@ class MainActivity : FragmentActivity() {
                                 }
                             },
                             notice = notice, onNoticeDismiss = model::dismissNotice,
+                            // Confirm cancels its payment as it goes, sending or not: no Price from over it.
+                            settingsEnabled = nav.current !is Screen.Confirm,
                         )
                     }
                 }

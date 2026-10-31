@@ -191,12 +191,18 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     // A form filled before keeps its unit; an empty one opens in money while there's a price.
     var inFiat by remember { mutableStateOf(draft?.inFiat ?: false) }
     var defaulted by remember { mutableStateOf(draft != null && draft.amount.isNotBlank()) }
+    // Money typed when the price went, kept aside until one comes.
+    var heldMoney by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
         if (wallet == null) return@LaunchedEffect
         val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
         if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
-        if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
+        // The price gone (another provider not answered yet, or over a day old): the money typed is kept
+        // aside, never read as XMR, and put back once a price comes.
+        if (e.canSwitch && heldMoney != null && amount.isBlank() && !inFiat) { amount = heldMoney!!; heldMoney = null; inFiat = true; return@LaunchedEffect }
+        if (!inFiat && amount.isNotBlank()) heldMoney = null
+        if (!e.canSwitch && inFiat) { if (amount.isNotBlank()) heldMoney = amount; inFiat = false; amount = ""; return@LaunchedEffect }
         entry = e
     }
     // Rust's word on what the field holds now; none while it's behind (the chip just tapped), so Review waits.
@@ -205,7 +211,10 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     // The price toast's cog opens Price from over this: Back finds the form as filled, pulled up.
     DisposableEffect(nav) {
         val keep = {
-            if (open || to.isNotBlank() || amount.isNotBlank()) nav.replace(Screen.Send(draft = SendDraft(to, amount, inFiat, note, filledFrom, lastRead)))
+            val money = heldMoney
+            if (open || to.isNotBlank() || amount.isNotBlank() || money != null) {
+                nav.replace(Screen.Send(draft = SendDraft(to, money ?: amount, money != null || inFiat, note, filledFrom, lastRead)))
+            }
         }
         nav.keepForm = keep
         onDispose { if (nav.keepForm === keep) nav.keepForm = null }

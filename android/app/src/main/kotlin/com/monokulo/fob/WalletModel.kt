@@ -248,8 +248,12 @@ class WalletModel(private val app: Application) {
             // Offline, the answer is back at once: "Trying again…" stays long
             // enough to be seen, so Retry visibly did something.
             delay(RETRY_SHOWN_MS - (System.currentTimeMillis() - started))
-            // Swiped away meanwhile: nothing more to say.
-            if (_priceToast.value !== asking) return@launch
+            // Swiped away meanwhile: nothing more to say, and a failure it
+            // came to (a new id) stays swiped rather than coming back.
+            if (_priceToast.value !== asking) {
+                if (result is PriceRetry.Failed) toastDone = maxOf(toastDone, result.toast.id)
+                return@launch
+            }
             when (result) {
                 is PriceRetry.Updated -> {
                     val updated = PriceToastState.Updated(result.title, result.line)

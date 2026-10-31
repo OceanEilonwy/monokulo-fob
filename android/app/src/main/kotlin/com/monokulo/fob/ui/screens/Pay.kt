@@ -137,6 +137,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     var entry by remember { mutableStateOf<AmountEntry?>(null) }
     var inFiat by remember { mutableStateOf(screen.draft?.inFiat ?: false) }
     var defaulted by remember { mutableStateOf(screen.draft != null) }
+    // Money typed when the price went, kept aside until one comes.
+    var heldMoney by remember { mutableStateOf<String?>(null) }
     var code by remember { mutableStateOf<ReceiveCode?>(null) }
     // Who it's for: chosen on the sheet, or the contact whose card opened it.
     var forId by remember { mutableStateOf(screen.contact) }
@@ -165,7 +167,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     LaunchedEffect(choosing) { if (choosing) people = model.requestContacts() }
     // The price toast's cog opens Price from over this: Back finds the form as typed.
     DisposableEffect(nav) {
-        val keep = { nav.replace(Screen.Receive(forId, ReceiveDraft(amount, inFiat, note))) }
+        val keep = { nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note))) }
         nav.keepForm = keep
         onDispose { if (nav.keepForm === keep) nav.keepForm = null }
     }
@@ -175,7 +177,11 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
         if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
-        if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
+        // The price gone (another provider not answered yet, or over a day old): the money typed is kept
+        // aside, never read as XMR, and put back once a price comes.
+        if (e.canSwitch && heldMoney != null && amount.isBlank() && !inFiat) { amount = heldMoney!!; heldMoney = null; inFiat = true; return@LaunchedEffect }
+        if (!inFiat && amount.isNotBlank()) heldMoney = null
+        if (!e.canSwitch && inFiat) { if (amount.isNotBlank()) heldMoney = amount; inFiat = false; amount = ""; return@LaunchedEffect }
         entry = e
     }
     // What's typed, in the unit Rust last said it's in; none while Rust is behind (the chip just tapped), so
@@ -320,7 +326,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                     onNew = {
                         choosing = false
                         // Back from New contact, Receive comes back filled, with them chosen and shared with.
-                        nav.replace(Screen.Receive(forId, ReceiveDraft(amount, inFiat, note)))
+                        nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note)))
                         nav.go(Screen.ContactEdit(forRequest = true))
                     },
                     onNoName = { choosing = false; forId = null; forContact = null; share(null) },
