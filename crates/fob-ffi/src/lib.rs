@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 use fob_core::{
     activity, amount, contacts, not_ready, pattern,
     price::{self, Source as _},
+    profile,
     qr, receipt, split, uri,
 };
 
@@ -38,7 +39,7 @@ impl From<fob_core::FobError> for FobError {
         use fob_core::FobError as E;
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) => {
+            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) | E::Profile(_) => {
                 FobError::Invalid { reason }
             }
             E::Node(_) => FobError::Node { reason },
@@ -220,14 +221,18 @@ fn activity(a: fob_core::Activity) -> Activity {
     }
 }
 
-/// One row of Home's Activity, ready to draw: a payment or a request.
+/// One row of Home's Activity, ready to draw: a payment, a request or a
+/// share of your profile.
 #[derive(uniffi::Record)]
 pub struct ActivityRow {
-    /// The payment, for its own screen; none for a request.
+    /// The payment, for its own screen; none for a request or a share.
     pub activity: Option<Activity>,
     /// The request, for its own screen; none for a payment.
     pub request: Option<u64>,
-    /// The shop, who was paid, "From Sam", "Received", "Request to Sam".
+    /// The share of your profile, whose code it shows again.
+    pub share: Option<u64>,
+    /// The shop, who was paid, "From Sam", "Received", "Request to Sam",
+    /// "Shared your profile", "Via your profile".
     pub title: String,
     /// "Receipt, 3 items · 09:12", "Pizza · not ready · 3 of 10 · 08:40".
     pub line: String,
@@ -240,7 +245,7 @@ pub struct ActivityRow {
 
 impl From<activity::Row> for ActivityRow {
     fn from(r: activity::Row) -> Self {
-        ActivityRow { activity: r.activity.map(activity), request: r.request, title: r.title, line: r.line, amount_text: r.amount, fiat_text: r.fiat }
+        ActivityRow { activity: r.activity.map(activity), request: r.request, share: r.share, title: r.title, line: r.line, amount_text: r.amount, fiat_text: r.fiat }
     }
 }
 
@@ -1172,6 +1177,242 @@ impl FobWallet {
     pub async fn cancel(&self, id: u64) {
         self.inner.cancel(id).await;
     }
+
+    /// Your profile, once it's set up.
+    pub async fn profile(&self) -> Option<Profile> {
+        self.inner.profile().await.map(Into::into)
+    }
+
+    /// Settings' row: "Your profile" with "Henry · name and photo, share as
+    /// a code", or "Set up your profile".
+    pub async fn profile_row(&self) -> ProfileRow {
+        let (title, line) = self.inner.profile_row().await;
+        ProfileRow { title, line }
+    }
+
+    /// Under Receive's note while requests carry your name: "The code names
+    /// you as “Henry” · change in Settings"; none while they don't.
+    pub async fn receive_name_line(&self) -> Option<String> {
+        self.inner.receive_name_line().await
+    }
+
+    /// Saves your name and photo (a WebP that `contact_photo_fits`); throws
+    /// what's wrong with them.
+    pub async fn set_profile(&self, name: String, photo: Option<Vec<u8>>) -> Result<Profile> {
+        Ok(self.inner.set_profile(&name, photo).await?.into())
+    }
+
+    /// "Name in payment requests", on or off.
+    pub async fn set_name_in_requests(&self, on: bool) -> Result<()> {
+        Ok(self.inner.set_name_in_requests(on).await?)
+    }
+
+    /// "Share my profile": a share on a new address, kept from now on
+    /// however briefly its code shows, with its code.
+    pub async fn share_profile(&self) -> Result<ProfileShare> {
+        let (share, code) = self.inner.share_profile().await?;
+        Ok(ProfileShare { id: share.id, address: share.address, code })
+    }
+
+    /// A share's code again, from Your shares or Activity; none for no such
+    /// share.
+    pub async fn share_code(&self, id: u64) -> Option<ProfileShare> {
+        let (share, code) = self.inner.share_code(id).await?;
+        Some(ProfileShare { id: share.id, address: share.address, code })
+    }
+
+    /// Copy link or Share pressed on a share's screen.
+    pub async fn share_went_out(&self, id: u64, kind: ShareKind) -> Result<()> {
+        Ok(self.inner.share_went_out(id, kind.into()).await?)
+    }
+
+    /// Your shares, newest first; the clock as for `activity_days`.
+    pub async fn profile_shares(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ShareLine> {
+        let clock = activity::Clock { now, utc_offset, hours_24 };
+        self.inner
+            .profile_shares(clock)
+            .await
+            .into_iter()
+            .map(|l| ShareLine { id: l.id, address: l.address, kind: l.kind.into(), title: l.title, when: l.when, received: l.received, any: l.any })
+            .collect()
+    }
+
+    /// A scanned profile code ("Another Fob scans the code"), with the
+    /// contact it would change; throws when it isn't a profile.
+    pub async fn scanned_profile(&self, text: String) -> Result<ScannedProfile> {
+        let s = self.inner.scanned_profile(&text).await?;
+        Ok(ScannedProfile {
+            address: s.code.address,
+            name: s.code.name,
+            photo: s.code.photo,
+            initial: s.initial,
+            address_short: s.address_short,
+            note: s.note,
+            pay: s.pay,
+            add: s.add,
+            clash: s.clash.map(|c| ProfileClash {
+                contact: c.contact.into(),
+                why: c.why,
+                changes: c.changes.into_iter().map(|c| ProfileChange { label: c.label, now: c.now, new: c.new }).collect(),
+                photo_changes: c.photo_changes,
+                ask: c.ask,
+                update: c.update,
+                keep: c.keep,
+                add_new: c.add_new,
+            }),
+        })
+    }
+
+    /// "Add contact" or "Add as new contact" on a scanned profile.
+    pub async fn add_contact_from_profile(&self, text: String) -> Result<Contact> {
+        Ok(self.inner.add_contact_from_profile(&text).await?.into())
+    }
+
+    /// "Update Sam" on a scanned profile, once asked.
+    pub async fn update_contact_from_profile(&self, id: u64, text: String) -> Result<Contact> {
+        Ok(self.inner.update_contact_from_profile(id, &text).await?.into())
+    }
+}
+
+/// Your name and photo.
+#[derive(uniffi::Record)]
+pub struct Profile {
+    pub name: String,
+    /// The avatar's letter without a photo.
+    pub initial: String,
+    /// A small WebP.
+    pub photo: Option<Vec<u8>>,
+    /// "Name in payment requests"
+    pub name_in_requests: bool,
+}
+
+impl From<profile::Profile> for Profile {
+    fn from(p: profile::Profile) -> Self {
+        Profile { initial: p.initial(), name: p.name, photo: p.photo, name_in_requests: p.name_in_requests }
+    }
+}
+
+/// Settings' row for the profile.
+#[derive(uniffi::Record)]
+pub struct ProfileRow {
+    /// "Your profile", "Set up your profile"
+    pub title: String,
+    /// "Henry · name and photo, share as a code"
+    pub line: String,
+}
+
+/// How a share went out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ShareKind {
+    CodeShown,
+    LinkCopied,
+    LinkShared,
+}
+
+impl From<ShareKind> for profile::ShareKind {
+    fn from(k: ShareKind) -> Self {
+        match k {
+            ShareKind::CodeShown => profile::ShareKind::CodeShown,
+            ShareKind::LinkCopied => profile::ShareKind::LinkCopied,
+            ShareKind::LinkShared => profile::ShareKind::LinkShared,
+        }
+    }
+}
+
+impl From<profile::ShareKind> for ShareKind {
+    fn from(k: profile::ShareKind) -> Self {
+        match k {
+            profile::ShareKind::CodeShown => ShareKind::CodeShown,
+            profile::ShareKind::LinkCopied => ShareKind::LinkCopied,
+            profile::ShareKind::LinkShared => ShareKind::LinkShared,
+        }
+    }
+}
+
+/// A share of your profile and its code.
+#[derive(uniffi::Record)]
+pub struct ProfileShare {
+    pub id: u64,
+    /// Its own address, used for nothing else.
+    pub address: String,
+    /// `monero:<address>?recipient_name=…&recipient_avatar=…`
+    pub code: String,
+}
+
+/// A share on Your profile.
+#[derive(uniffi::Record)]
+pub struct ShareLine {
+    pub id: u64,
+    pub address: String,
+    pub kind: ShareKind,
+    /// "Code shown", "Link copied"
+    pub title: String,
+    /// "Today 09:15", "28 Oct"
+    pub when: String,
+    /// "+$4.98", or "nothing yet".
+    pub received: String,
+    /// Something came: green.
+    pub any: bool,
+}
+
+/// What a scanned profile would change in a contact.
+#[derive(uniffi::Record)]
+pub struct ProfileChange {
+    /// "Name", "Photo", "Send address"
+    pub label: String,
+    pub now: String,
+    pub new: String,
+}
+
+/// The contact a scanned profile matches, asked about before it changes.
+#[derive(uniffi::Record)]
+pub struct ProfileClash {
+    pub contact: Contact,
+    /// "You have a contact named Henry."
+    pub why: String,
+    /// Empty when nothing would change.
+    pub changes: Vec<ProfileChange>,
+    /// Draw both photos.
+    pub photo_changes: bool,
+    /// "Update Sam? Their name and send address change to the profile's."
+    pub ask: String,
+    /// "Update Sam", or "Open Sam" when nothing would change.
+    pub update: String,
+    /// "Keep as is"
+    pub keep: String,
+    /// "Add as new contact"
+    pub add_new: String,
+}
+
+/// Another Fob's profile, scanned.
+#[derive(uniffi::Record)]
+pub struct ScannedProfile {
+    pub address: String,
+    pub name: String,
+    pub photo: Option<Vec<u8>>,
+    pub initial: String,
+    /// "89Hn2 … Tq4Lp … 6wKeR"
+    pub address_short: String,
+    /// "A Fob profile. The name and photo are Henry's own, not checked by Fob."
+    pub note: String,
+    /// "Pay Henry"
+    pub pay: String,
+    /// "Add contact"
+    pub add: String,
+    pub clash: Option<ProfileClash>,
+}
+
+/// Whether a scanned code is a profile (a name, maybe a photo, nothing to
+/// pay) rather than a payment code; one with a bad photo isn't.
+#[uniffi::export]
+pub fn is_profile_code(network: Network, text: String) -> bool {
+    uri::parse_profile(network.into(), &text).is_ok()
+}
+
+/// Why a scanned code isn't a profile, for the contacts' scanner.
+#[uniffi::export]
+pub fn profile_code_problem(network: Network, text: String) -> Option<String> {
+    uri::parse_profile(network.into(), &text).err().map(|e| e.to_string())
 }
 
 /// Reads a scanned or pasted payment code.

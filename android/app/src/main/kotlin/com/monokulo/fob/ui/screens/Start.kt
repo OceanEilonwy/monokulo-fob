@@ -157,7 +157,8 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
     val wallet by model.wallet.collectAsState()
     val seed = remember(wallet) { wallet?.seedPhrase() }
     Page(bottom = {
-        if (afterCreate) PrimaryButton("I've written them down", { nav.back() }) else PrimaryButton("Done", { nav.back() })
+        // A new wallet's last step is its profile (optional, with Skip).
+        if (afterCreate) PrimaryButton("I've written them down", { nav.replace(Screen.ProfileEdit(NEW_WALLET_STEP)) }) else PrimaryButton("Done", { nav.back() })
     }) {
         TopBar(if (afterCreate) "Back up your wallet" else "Seed phrase", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -237,6 +238,11 @@ private fun Way(path: String, title: String, text: String, quickest: Boolean = f
     }
 }
 
+/** A new wallet: Create, the seed phrase, then the profile. */
+private const val NEW_WALLET_STEP = "Step 3 of 3 · optional"
+/** Restoring takes two to four screens, depending on the way chosen. */
+private const val RESTORED_STEP = "Last step · optional"
+
 private const val START_HINT = "A date (YYYY-MM-DD) or block height from before the wallet's first payment. Earlier is safer; later is quicker."
 
 @Composable
@@ -250,7 +256,8 @@ private fun Restoring(model: WalletModel, nav: Nav, label: String, enabled: Bool
             busy = true
             error = null
             scope.launch {
-                runCatching { model.action() }.onSuccess { nav.reset(Screen.Home) }.onFailure { error = it.reason() }
+                // A restored wallet is offered a profile too, as its last step.
+                runCatching { model.action() }.onSuccess { nav.reset(Screen.Home); nav.go(Screen.ProfileEdit(RESTORED_STEP)) }.onFailure { error = it.reason() }
                 busy = false
             }
         })

@@ -901,3 +901,116 @@ Calls made while building the first version, with why. Newest last.
     none until step 9's profile and "Name in payment requests" fill
     `Wallet::name_in_requests` (marked), and Receive's line saying so has
     its spot marked in `Pay.kt`.
+
+## Round 3: your profile
+
+124. **The profile is kept in the wallet file** (`profile::Book`, the
+    state's `profile`, none in older files): a name (1–40 characters,
+    cleaned as a contact's; "Your profile needs a name."), an optional
+    photo (the contact-photo pipeline, now `ui/Photo.kt`: the same WebP of
+    at most 1536 bytes, hex in the JSON) and "Name in payment requests",
+    on for a first profile and left as set by later edits. There's no way
+    to delete a profile: Edit changes it, Remove photo drops the photo.
+125. **Requests carry the name while the switch is on**
+    (`Wallet::name_in_requests` now reads the profile): the code made on
+    Share or Copy, and "Show the code again", put it in as
+    `recipient_name`. Codes are built when shown and the name isn't kept
+    with a request, so turning the switch off takes it out of every code
+    shown after, a request's made before included. Receive says so under
+    the note with a person icon, "The code names you as “Henry” · change
+    in Settings" (`profile::receive_line`); tapping it opens Your profile,
+    where the switch is.
+126. **No fixed profile address: every share is one**
+    (`Wallet::share_profile`, decision 6 of the plan): pressing Share my
+    profile takes the next subaddress from the one counter (`hand_out`, as
+    requests do, so it's never Receive's, a request's or the split's) and
+    keeps the share (id, subaddress, address, kind, when) before its code
+    shows. Receive's own address is never a share's.
+127. **A share's kind** (`ShareKind`, kept by name: `code_shown`,
+    `link_copied`, `link_shared`): every share starts as Code shown; Copy
+    link or Share on its screen makes it Link copied or Link shared, the
+    last pressed; nothing makes it Code shown again. Step 10 adds a
+    touched-phones kind, with whom, beside these (serde's external tags,
+    so files written now read the same); `ShareRow` and the share screen
+    mark where.
+128. **The profile code** (`uri::profile_uri`, `parse_profile`):
+    `monero:<share address>?recipient_name=<name>&recipient_avatar=<photo>`,
+    the name percent-encoded as a request's, the photo URL-safe base64
+    without padding (padding is read too). Other wallets see an address
+    with a name. It's read as a profile only with a name and nothing to
+    pay (no amount, note or receipt); a photo that isn't base64
+    ("damaged"), is over 1536 bytes (measured before decoding) or isn't a
+    WebP refuses the whole profile. The largest (95-character subaddress,
+    40 emoji, a 1536-byte photo) is 2664 bytes.
+129. **Dense codes at low error correction** (`qr::encode`): a code that
+    would be past version 20 at medium is made at low instead, a lower
+    version; payment codes (version 18 or below) don't change. Version 40
+    at low holds 2953 bytes, so every profile encodes (tested); a usual
+    one (a short name, a photo near the budget) is version 33 or below.
+    `QrImage` now draws each module a whole number of pixels, centred, so
+    a dense code stays crisp (every code gains from it).
+130. **A share's code again shows the profile as it is now**: the address
+    is the share's, the name and photo today's; the code isn't kept.
+131. **Activity**: a share is its own line among requests and payments,
+    "Shared your profile", "A new address for this share · 09:15", the
+    person icon on the sunken disc, no amount; tapping it shows that
+    share's code again. A payment to a share's address is "Via your
+    profile" with "Shared 09:15 · not ready · 1 of 10 · 09:31" (the
+    share's time when made today, its date before), and its own screen
+    says "Address 12 · via your profile" under From.
+132. **Your profile** (Round 6 › "Your profile: every share listed"):
+    avatar 80, name, Edit (the onboarding editor with a Back arrow and
+    Save), orange Share my profile, the switch card ("Requests carry your
+    name; only this profile code carries the photo"), and Your shares,
+    newest first: Code shown (code icon) or Link copied / Link shared
+    (link icon), "Today 09:15" ("Yesterday 18:02", "28 Oct"), the
+    address's pattern, and what came, "+$4.98" in green (in the money
+    prices are shown in when every payment has a price, else "+0.03 XMR")
+    or "nothing yet". Tapping one shows its code again. With none, a line
+    says what a share is. Settings opens it from a row at the top of the
+    Wallet card (avatar 40 and "Henry · name and photo, share as a code",
+    or the person icon and "Set up your profile", which opens the editor;
+    saved, it opens Your profile). Step 11 may move the row.
+133. **Share my profile** (Round 6 › "Share my profile"): white in both
+    themes with the screen at full brightness (the expanded code's, now
+    `FullBrightness`), Close, the avatar 52 with the name and "Scan with
+    Fob to add me", the code as wide as the screen less 8 dp a side (it
+    keeps its own 4-module quiet zone), "A new address for this share,
+    never used again.", then Copy link (the code, as text) and Share (the
+    system share sheet). The "Or touch phones" strip is left out until
+    step 10; its spot is marked.
+134. **Make it yours, after a new wallet and after a restore**: the seed
+    screen's "I've written them down" goes on to it as "Step 3 of 3 ·
+    optional"; a restored wallet gets it too, as "Last step · optional"
+    (restoring takes two to four screens), since a restored file has no
+    profile and moving a wallet is when people set one up. Skip goes
+    Home; Continue saves (Rust's refusal shows above it) and opens Your
+    profile. The photo sheet is the contact's, its footnote saying the
+    photo leaves the phone only in the profile's code.
+135. **Scanning a profile** (Round 6 › "Another Fob scans the code"):
+    from Send's camera, a paste or a link (Send's sheet gives way to the
+    profile's), and from a scan button on Contacts' top bar (a
+    full-screen camera, "Scan a profile", which says why a code isn't
+    one). The sheet: the photo at 88, the name, the address's pattern and
+    three parts, "A Fob profile. The name and photo are Henry's own, not
+    checked by Fob.", Pay Henry (outline: Send's form with To filled and
+    the code's name kept with the payment, so Paid offers to save them as
+    decision 112 says) and Add contact (orange: name, photo, the address
+    as send address; opens the card). A code with a name and nothing else
+    (a bare named address from any wallet) shows as a profile too: Pay
+    does what such a code always did. A profile whose photo is refused
+    is, on Send, a named payment code. Back or the handle closes the
+    sheet; the camera doesn't take the same code again until another.
+136. **Never changes a contact without asking** (decision 5,
+    `profile::scanned`): a contact owning the address (send address, else
+    paid at) or, failing that, the oldest with the same name (any case)
+    is a clash. Add contact then shows why ("You have a contact named
+    Henry.", "This address is Sam's send address.", "Sam was paid at this
+    address."), each change as now → new (the name; the photo, drawn as
+    both avatars; the send address in three parts), a line asking
+    ("Update Sam? Their name and send address change to the profile's."),
+    then Update Sam, Keep as is (back to the profile) and Add as new
+    contact. Update takes the name, the photo (a profile without one
+    leaves theirs) and the address as send address (moved out of paid
+    at); the note stays. When nothing would change it says so and offers
+    Open Sam instead.

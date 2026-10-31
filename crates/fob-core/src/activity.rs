@@ -22,14 +22,16 @@ pub struct Clock {
 /// (its own line, apart from the payments to it).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
-    /// The payment; `None` for a request.
+    /// The payment; `None` for a request or a share.
     pub activity: Option<Activity>,
     /// The request, by id; `None` for a payment.
     pub request: Option<u64>,
-    /// When it moved, or the request was made.
+    /// The share of your profile, by id: its own line, no amount.
+    pub share: Option<u64>,
+    /// When it moved, or the request or share was made.
     pub time: u64,
     /// The shop, who was paid ("86Ux … 7kQa"), "From Sam", "Received",
-    /// "Request to Sam".
+    /// "Request to Sam", "Shared your profile", "Via your profile".
     pub title: String,
     /// Note, status, receipt and time, no date: "Receipt, 3 items · 09:12",
     /// "Pizza · not ready · 3 of 10 · 08:40", "Sent · 10:15".
@@ -235,6 +237,8 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
                 Some(name) => format!("{name} · {address}"),
                 None => address,
             };
+            // Paid to a share's address.
+            let address = if activity.shared.is_some() { format!("{address} · via your profile") } else { address };
             match &activity.note {
                 Some(note) => format!("{address} · {note}"),
                 None => address,
@@ -277,6 +281,8 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         _ if out && activity.contact.is_some() => activity.contact.clone().unwrap_or_default(),
         // Paid to a request made for a contact.
         _ if !out && activity.contact.is_some() => format!("From {}", activity.contact.as_deref().unwrap_or_default()),
+        // Paid to a share of your profile.
+        _ if !out && activity.shared.is_some() => crate::profile::VIA.into(),
         (Some(r), _) => r.merchant.clone(),
         (None, Some(to)) if out => short_address(to),
         _ if out => "Sent".into(),
@@ -295,12 +301,14 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         if status.is_none() { format!("Receipt, {items}") } else { format!("receipt, {items}") }
     });
     // What a payment in was for (its request's note, or the note put in
-    // Receive's code) comes first, and the status after it in lower case.
-    let note = activity.note.clone().filter(|_| !out);
+    // Receive's code, or when the share it came through was made) comes
+    // first, and the status after it in lower case.
+    let note = activity.note.clone().or_else(|| activity.shared.map(|t| crate::profile::shared_text(t, clock))).filter(|_| !out);
     let status = if note.is_some() { status.map(|s| s.to_lowercase()) } else { status };
     let line = [note, status, pieces, receipt, Some(time_of_day(time, clock))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     Row {
         request: None,
+        share: None,
         time: activity.time,
         title,
         line,
@@ -316,7 +324,8 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
 }
 
 /// `rows` (as [`Wallet::activity`](crate::Wallet::activity) gives them)
-/// with `requests`' lines (newest first) among them by time, grouped by the
+/// with `requests`' lines (requests' and shares', newest first) among them
+/// by time, grouped by the
 /// phone's calendar day, newest day first; each day keeps the rows' order.
 /// Payments not yet mined stay on top.
 pub fn by_day(rows: Vec<Activity>, requests: Vec<Row>, clock: Clock) -> Vec<Day> {
@@ -446,6 +455,7 @@ mod tests {
             split: None,
             contact: None,
             contact_id: None,
+            shared: None,
         }
     }
 
@@ -548,6 +558,7 @@ mod tests {
         let request = |id: u64, time: u64| Row {
             activity: None,
             request: Some(id),
+            share: None,
             time,
             title: "Request".into(),
             line: String::new(),

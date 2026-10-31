@@ -209,6 +209,7 @@ pub fn activity_row(request: &Request, book: &contacts::Book, rows: &[Activity],
     activity::Row {
         activity: None,
         request: Some(request.id),
+        share: None,
         time: request.created,
         title: name.map(|n| format!("Request to {n}")).unwrap_or_else(|| "Request".into()),
         line: capitalised(&parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")),
@@ -441,6 +442,7 @@ mod tests {
             split: None,
             contact: None,
             contact_id: None,
+            shared: None,
         }
     }
 

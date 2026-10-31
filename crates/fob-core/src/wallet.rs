@@ -39,7 +39,7 @@ use crate::{
     not_ready::{self, Coins, NotReady, Piece, Source},
     price::{self, Source as _},
     receipt::ReceiptView,
-    requests, split, store,
+    profile, requests, split, store,
     uri::{self, WalletCode},
     zmq::{self, ZmqStatus},
 };
@@ -192,6 +192,9 @@ struct State {
     /// Requests to be paid, each on its own subaddress.
     #[serde(default)]
     requests: requests::Book,
+    /// Your name and photo, and every share of them.
+    #[serde(default)]
+    profile: profile::Book,
 }
 
 #[derive(Serialize)]
@@ -259,6 +262,9 @@ pub struct Activity {
     pub contact: Option<String>,
     /// That contact, by id.
     pub contact_id: Option<u64>,
+    /// For a payment in to a share of your profile's address: when that
+    /// share was made ("Via your profile", "Shared 09:15").
+    pub shared: Option<u64>,
 }
 
 /// Receive's payment code and the words around it.
@@ -478,6 +484,7 @@ impl Wallet {
             split_index: None,
             contacts: contacts::Book::default(),
             requests: requests::Book::default(),
+            profile: profile::Book::default(),
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -624,7 +631,7 @@ impl Wallet {
     pub async fn receive_address(&self) -> Result<String> {
         let mut state = self.inner.state.lock().await;
         let own = Self::own_index(&state);
-        if own == 0 || Some(own) == state.split_index || state.requests.at(own).is_some() {
+        if own == 0 || Some(own) == state.split_index || state.requests.at(own).is_some() || state.profile.at(own).is_some() {
             let index = Self::hand_out(&mut state);
             state.receive_own = Some(index);
             self.save_state(&state)?;
@@ -882,6 +889,7 @@ impl Wallet {
                 split: None,
                 contact: None,
                 contact_id: None,
+                shared: None,
             });
         }
         // Spends found on the chain that this wallet didn't send (a restored
@@ -911,6 +919,7 @@ impl Wallet {
                 split: None,
                 contact: None,
                 contact_id: None,
+                shared: None,
             });
         }
         let mut incoming: HashMap<&str, Activity> = HashMap::new();
@@ -934,6 +943,7 @@ impl Wallet {
                 split: None,
                 contact: None,
                 contact_id: None,
+                shared: None,
             });
             row.amount += output.amount;
         }
@@ -959,6 +969,7 @@ impl Wallet {
                     split: None,
                     contact: None,
                     contact_id: None,
+                    shared: None,
                 });
             }
         }
@@ -982,6 +993,8 @@ impl Wallet {
                         }
                         None => row.note = row.subaddress.and_then(|s| state.notes.get(&s)).cloned(),
                     }
+                    // A share's address: "Via your profile".
+                    row.shared = row.subaddress.and_then(|s| state.profile.at(s)).map(|s| s.created);
                 }
                 Direction::Out => {
                     row.pieces = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(row.tx.as_str())).map(|o| o.amount).collect();
@@ -1908,21 +1921,121 @@ impl Wallet {
         state.contacts.get(id).map(|c| contacts::card(c, &state.requests, &rows, clock))
     }
 
-    /// Activity as Home shows it: every payment and every request, by day.
+    /// Activity as Home shows it: every payment, request and share of your
+    /// profile, by day.
     pub async fn activity_days(&self, clock: Clock) -> Vec<activity::Day> {
         let rows = self.activity().await;
         let lines = {
             let state = self.inner.state.lock().await;
-            requests::activity_rows(&state.requests, &state.contacts, &rows, clock)
+            let mut lines = requests::activity_rows(&state.requests, &state.contacts, &rows, clock);
+            lines.extend(profile::activity_rows(&state.profile, clock));
+            lines.sort_by_key(|l| std::cmp::Reverse(l.time));
+            lines
         };
         activity::by_day(rows, lines, clock)
     }
 
-    /// The name a request's code carries (`recipient_name`), if any.
-    fn name_in_requests(_state: &State) -> Option<String> {
-        // Step 9 hook: the profile's name, when Settings has one and "Name
-        // in payment requests" is on.
-        None
+    /// The name a request's code carries (`recipient_name`): the profile's,
+    /// while "Name in payment requests" is on.
+    fn name_in_requests(state: &State) -> Option<String> {
+        state.profile.name_in_requests().map(Into::into)
+    }
+
+    /// Your profile, once it's set up.
+    pub async fn profile(&self) -> Option<profile::Profile> {
+        self.inner.state.lock().await.profile.profile().cloned()
+    }
+
+    /// Settings' row: "Your profile" with "Henry · name and photo, share as
+    /// a code", or "Set up your profile".
+    pub async fn profile_row(&self) -> (String, String) {
+        profile::settings_row(self.inner.state.lock().await.profile.profile())
+    }
+
+    /// Under Receive's note while requests carry your name: "The code names
+    /// you as “Henry” · change in Settings".
+    pub async fn receive_name_line(&self) -> Option<String> {
+        profile::receive_line(&self.inner.state.lock().await.profile)
+    }
+
+    /// Changes the profile and saves it, or leaves it as it was when
+    /// `change` refuses.
+    async fn change_profile<T>(&self, change: impl FnOnce(&mut profile::Book) -> Result<T>) -> Result<T> {
+        let mut state = self.inner.state.lock().await;
+        let mut book = state.profile.clone();
+        let done = change(&mut book)?;
+        let before = std::mem::replace(&mut state.profile, book);
+        if let Err(e) = self.save_state(&state) {
+            state.profile = before;
+            return Err(e);
+        }
+        Ok(done)
+    }
+
+    /// Sets your name and photo ("Make it yours", or Edit).
+    pub async fn set_profile(&self, name: &str, photo: Option<Vec<u8>>) -> Result<profile::Profile> {
+        self.change_profile(|book| book.set(name, photo)).await
+    }
+
+    /// "Name in payment requests", on or off.
+    pub async fn set_name_in_requests(&self, on: bool) -> Result<()> {
+        self.change_profile(|book| book.set_name_in_requests(on)).await
+    }
+
+    /// "Share my profile": a share on a subaddress no one has had, recorded
+    /// now, however briefly its code is shown. Returns it with its code.
+    pub async fn share_profile(&self) -> Result<(profile::Share, String)> {
+        let mut state = self.inner.state.lock().await;
+        let mut changed = state.clone();
+        let subaddress = Self::hand_out(&mut changed);
+        let share = changed.profile.share(subaddress, self.inner.keys.address(subaddress), now())?;
+        self.save_state(&changed)?;
+        *state = changed;
+        let code = profile::code(state.profile.profile().expect("a share needs a profile"), &share);
+        Ok((share, code))
+    }
+
+    /// A share's code again (its address, the profile as it is now); `None`
+    /// for no such share or no profile.
+    pub async fn share_code(&self, id: u64) -> Option<(profile::Share, String)> {
+        let state = self.inner.state.lock().await;
+        let share = state.profile.get(id)?;
+        Some((share.clone(), profile::code(state.profile.profile()?, share)))
+    }
+
+    /// Copy link or Share pressed on a share's screen: kept as that kind.
+    pub async fn share_went_out(&self, id: u64, kind: profile::ShareKind) -> Result<()> {
+        self.change_profile(|book| Ok(book.went_out(id, kind))).await.map(|_| ())
+    }
+
+    /// Your shares, newest first, each with what came to its address.
+    pub async fn profile_shares(&self, clock: Clock) -> Vec<profile::Line> {
+        let rows = self.activity().await;
+        profile::lines(&self.inner.state.lock().await.profile, &rows, clock)
+    }
+
+    /// A scanned profile code, and the contact it would change, if any.
+    pub async fn scanned_profile(&self, text: &str) -> Result<profile::Scanned> {
+        let code = uri::parse_profile(self.network(), text)?;
+        Ok(profile::scanned(&self.inner.state.lock().await.contacts, code))
+    }
+
+    /// "Add contact" (or "Add as new contact") on a scanned profile: its
+    /// name, photo and address as the send address.
+    pub async fn add_contact_from_profile(&self, text: &str) -> Result<Contact> {
+        let code = uri::parse_profile(self.network(), text)?;
+        self.change_contacts(|book, network| book.add(network, profile::new_contact(&code), now())).await
+    }
+
+    /// "Update Sam" on a scanned profile, once asked: the contact takes its
+    /// name, photo and address as the send address.
+    pub async fn update_contact_from_profile(&self, id: u64, text: &str) -> Result<Contact> {
+        let code = uri::parse_profile(self.network(), text)?;
+        self.change_contacts(|book, network| {
+            let contact = book.get(id).ok_or_else(|| FobError::Contact("That contact was deleted.".into()))?;
+            book.edit(network, id, profile::updated(contact, &code))
+        })
+        .await
     }
 
     /// Makes a request, when Share or Copy is pressed on Receive (never by
@@ -3080,5 +3193,106 @@ mod tests {
         let started = Instant::now();
         wallet.sync_now().await;
         assert!(started.elapsed() < SYNC_NOW_WAIT);
+    }
+
+    fn webp(len: usize) -> Vec<u8> {
+        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
+        bytes.resize(len, 3);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn each_share_of_the_profile_is_a_new_address_and_its_own_line() {
+        let path = dir("profile-shares");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let clock = Clock { now: t, utc_offset: 0, hours_24: true };
+        let address = |i: u32| wallet.inner.keys.address(i);
+        assert!(wallet.share_profile().await.is_err(), "no profile yet");
+        assert_eq!(wallet.profile_row().await.0, "Set up your profile");
+        wallet.set_profile("Henry", Some(webp(300))).await.unwrap();
+        let own = wallet.receive_address().await.unwrap();
+        let (first, code) = wallet.share_profile().await.unwrap();
+        let (second, _) = wallet.share_profile().await.unwrap();
+        assert_eq!((first.subaddress, second.subaddress), (2, 3));
+        assert_eq!(code, uri::profile_uri(&address(2), "Henry", Some(&webp(300))));
+        // Receive keeps its own address, and New address never gives a share's.
+        assert_eq!(wallet.receive_address().await.unwrap(), own);
+        assert_eq!(wallet.new_receive_address().await.unwrap(), address(4));
+        wallet.share_went_out(first.id, profile::ShareKind::LinkCopied).await.unwrap();
+
+        // A payment to a share's address comes "Via your profile".
+        wallet.inner.state.lock().await.outputs.push(Owned { subaddress: 2, ..received("via", t - 60, XMR / 4) });
+        let days = wallet.activity_days(clock).await;
+        let rows: Vec<_> = days[0].rows.iter().map(|r| (r.title.as_str(), r.share, r.amount.as_str())).collect();
+        assert_eq!(rows.iter().filter(|r| r.0 == "Shared your profile").count(), 2, "{rows:?}");
+        let via = days[0].rows.iter().find(|r| r.title == "Via your profile").unwrap();
+        let shared = activity::time_of_day(activity::local(first.created, clock).1, clock);
+        assert!(via.line.starts_with(&format!("Shared {shared} · ")), "{}", via.line);
+        let detail = wallet.payment("via", clock).await.unwrap();
+        assert_eq!(detail.party.as_deref(), Some("Address 2 · via your profile"));
+        let lines = wallet.profile_shares(clock).await;
+        assert_eq!(lines.iter().map(|l| (l.title.as_str(), l.received.as_str())).collect::<Vec<_>>(), [("Code shown", "nothing yet"), ("Link copied", "+0.25 XMR")]);
+
+        // Kept in the file; a share's code again is the profile as it is now.
+        let again = Wallet::open(&path, [1; 32]).unwrap();
+        again.set_profile("Hen", None).await.unwrap();
+        assert_eq!(again.share_code(first.id).await.unwrap().1, uri::profile_uri(&address(2), "Hen", None));
+        assert_eq!(again.share_profile().await.unwrap().0.subaddress, 5);
+        assert!(again.share_code(99).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn requests_carry_the_profile_s_name_while_the_switch_is_on() {
+        let wallet = Wallet::create(&dir("profile-name-in-requests"), [1; 32], Network::Stagenet).unwrap();
+        let (bare, code) = wallet.make_request(None, None, false, None).await.unwrap();
+        assert!(!code.uri.contains("recipient_name"));
+        assert!(wallet.set_name_in_requests(true).await.is_err(), "no profile yet");
+        assert_eq!(wallet.receive_name_line().await, None);
+        wallet.set_profile("Henry", None).await.unwrap();
+        let (_, code) = wallet.make_request(None, Some("0.5"), false, None).await.unwrap();
+        assert_eq!(code.uri, format!("monero:{}?tx_amount=0.5&recipient_name=Henry", wallet.inner.keys.address(2)));
+        assert_eq!(wallet.receive_name_line().await.as_deref(), Some("The code names you as “Henry” · change in Settings"));
+        assert!(wallet.request_code(bare.id).await.unwrap().uri.contains("recipient_name=Henry"));
+        wallet.set_name_in_requests(false).await.unwrap();
+        assert!(!wallet.make_request(None, None, false, None).await.unwrap().1.uri.contains("recipient_name"));
+        assert_eq!(wallet.receive_name_line().await, None);
+        assert!(!wallet.profile().await.unwrap().name_in_requests);
+    }
+
+    #[tokio::test]
+    async fn a_scanned_profile_adds_a_contact_or_updates_one_only_when_asked() {
+        let wallet = Wallet::create(&dir("profile-scan"), [1; 32], Network::Stagenet).unwrap();
+        let other = Keys::generate(Network::Stagenet).keys;
+        let code = uri::profile_uri(&other.address(4), "Henry", Some(&webp(200)));
+        let scanned = wallet.scanned_profile(&code).await.unwrap();
+        assert!(scanned.clash.is_none());
+        let henry = wallet.add_contact_from_profile(&code).await.unwrap();
+        assert_eq!((henry.name.as_str(), henry.send_address.clone(), henry.photo.clone()), ("Henry", Some(other.address(4)), Some(webp(200))));
+        // Scanned again from a new share: the same name, a new address. Nothing changes until Update.
+        let newer = uri::profile_uri(&other.address(9), "Henry", None);
+        let clash = wallet.scanned_profile(&newer).await.unwrap().clash.unwrap();
+        assert_eq!((clash.contact.id, clash.changes.len()), (henry.id, 1));
+        assert_eq!(wallet.contact(henry.id).await.unwrap().send_address, Some(other.address(4)));
+        let updated = wallet.update_contact_from_profile(henry.id, &newer).await.unwrap();
+        assert_eq!((updated.send_address, updated.photo), (Some(other.address(9)), Some(webp(200))));
+        // Add as new contact keeps both.
+        wallet.add_contact_from_profile(&newer).await.unwrap();
+        assert_eq!(wallet.contacts("henry", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 2);
+        assert!(wallet.scanned_profile(&format!("monero:{}", other.address(4))).await.is_err());
+        assert!(wallet.update_contact_from_profile(99, &newer).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_wallet_file_from_before_profiles_opens_with_none() {
+        let path = dir("profile-old-file");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        wallet.set_profile("Henry", None).await.unwrap();
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        assert!(file["state"].as_object_mut().unwrap().remove("profile").is_some(), "the profile is saved");
+        store::save(&path, &[1; 32], &file).unwrap();
+        let old = Wallet::open(&path, [1; 32]).unwrap();
+        assert!(old.profile().await.is_none());
+        assert!(old.profile_shares(Clock { now: now(), utc_offset: 0, hours_24: true }).await.is_empty());
     }
 }

@@ -1,17 +1,6 @@
 package com.monokulo.fob.ui.screens
 
-import android.Manifest
-import android.content.Context
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageDecoder
-import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -57,7 +46,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -71,7 +59,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
@@ -85,15 +72,16 @@ import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
+import com.monokulo.fob.ui.PhotoButton
+import com.monokulo.fob.ui.PhotoSheet
+import com.monokulo.fob.ui.rememberPhotoChooser
 import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import uniffi.fob.ContactCard
 import uniffi.fob.ContactDraft
 import uniffi.fob.ContactRow
@@ -104,14 +92,8 @@ import uniffi.fob.contactAddress
 import uniffi.fob.contactEditTexts
 import uniffi.fob.contactInitial
 import uniffi.fob.contactPaidAtNote
-import uniffi.fob.contactPhotoFits
 import uniffi.fob.foundSendAddress
 import uniffi.fob.sendAddressScan
-import java.io.ByteArrayOutputStream
-
-/** A photo's sides tried in turn, and the WebP qualities at each, until Rust keeps it (decision 4 of the plan). */
-private val PHOTO_SIZES = listOf(96, 72, 64)
-private val PHOTO_QUALITIES = listOf(80, 70, 60, 50, 40, 30, 20)
 
 /**
  * Contacts (Round 4 › "Contacts"): the search, everyone saved by name with
@@ -135,6 +117,10 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
     }
     Page {
         TopBar("Contacts", onBack = { nav.back() }) {
+            // Another Fob's profile: add them in one scan.
+            IconButton(onClick = { nav.go(Screen.ProfileScan) }, modifier = Modifier.semantics { contentDescription = "Scan a profile" }) {
+                StrokeIcon(Icons.scan, size = 22.dp)
+            }
             IconButton(onClick = { nav.go(Screen.ContactEdit()) }, modifier = Modifier.semantics { contentDescription = "Add a contact" }) {
                 StrokeIcon(Icons.plus, size = 22.dp)
             }
@@ -380,7 +366,6 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     val clipboard = LocalClipboard.current
     var loaded by remember { mutableStateOf(id == null) }
     var name by remember { mutableStateOf(prefill?.name ?: "") }
@@ -404,20 +389,7 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
     }
     val texts = remember(name, id) { contactEditTexts(name, id == null) }
 
-    fun usePhoto(bitmap: Bitmap?) {
-        bitmap ?: return
-        scope.launch {
-            val made = withContext(Dispatchers.Default) { contactPhoto(bitmap) }
-            if (made != null) { photo = made; error = null } else error = "That photo couldn't be made small enough to keep."
-        }
-    }
-    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { usePhoto(it) }
-    // Fob holds the camera permission, so the system camera needs it granted too.
-    val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) takePhoto.launch(null) }
-    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        scope.launch { usePhoto(withContext(Dispatchers.IO) { decode(context, uri) }) }
-    }
+    val chooser = rememberPhotoChooser { made -> if (made != null) { photo = made; error = null } else error = "That photo couldn't be made small enough to keep." }
 
     fun save() {
         busy = true
@@ -466,18 +438,7 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
             }
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(
-                        Modifier.size(88.dp).clickable(role = Role.Button, indication = null, interactionSource = null) { choosing = true }
-                            .semantics(mergeDescendants = true) { contentDescription = if (photo != null) "Change photo" else "Add a photo" },
-                    ) {
-                        Avatar(name, remember(name) { contactInitial(name) }, photo, 88.dp)
-                        // The camera badge on the circle's corner.
-                        Box(
-                            Modifier.align(Alignment.BottomEnd).offset(2.dp, 2.dp).size(32.dp).clip(CircleShape).background(Fob.ink)
-                                .border(3.dp, Fob.paper, CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) { StrokeIcon(Icons.camera, tint = Fob.paper, size = 14.dp, width = 2.2f) }
-                    }
+                    PhotoButton(name, remember(name) { contactInitial(name) }, photo, 88.dp) { choosing = true }
                     Text(if (photo != null) "Tap to change" else "Add a photo", color = Fob.muted, fontSize = 13.sp)
                 }
                 LabelledInput("Name", name, { name = it }, "Who this is", fontSize = 17, capitalization = KeyboardCapitalization.Words)
@@ -519,26 +480,11 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
             }
         }
         if (choosing) {
-            BottomSheet("Contact photo", onDismiss = { choosing = false }) {
-                SheetHandle()
-                Text("Photo", style = display(20), modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp).semantics { heading() })
-                Card {
-                    SheetRow(Icons.camera, "Take a photo") {
-                        choosing = false
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) takePhoto.launch(null)
-                        else askCamera.launch(Manifest.permission.CAMERA)
-                    }
-                    SheetRow(Icons.picture, "Choose from your photos") {
-                        choosing = false
-                        pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }
-                    if (photo != null) SheetRow(Icons.trash, "Remove photo", tint = Fob.red) { choosing = false; photo = null }
-                }
-                Text(
-                    "Cropped to a circle and kept small, inside this wallet's file on this phone. Fob never sends it anywhere.",
-                    color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(horizontal = 6.dp),
-                )
-            }
+            PhotoSheet(
+                "Contact photo", photo != null, chooser,
+                "Cropped to a circle and kept small, inside this wallet's file on this phone. Fob never sends it anywhere.",
+                onRemove = { photo = null }, onDismiss = { choosing = false },
+            )
         }
         if (confirming && id != null) {
             BottomSheet(texts.deleteTitle, onDismiss = { confirming = false }, background = Fob.card) {
@@ -571,7 +517,7 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
 
 /** A labelled single-line field, as on Send. */
 @Composable
-private fun LabelledInput(
+internal fun LabelledInput(
     label: String, value: String, onChange: (String) -> Unit, placeholder: String, fontSize: Int = 16,
     capitalization: KeyboardCapitalization = KeyboardCapitalization.Sentences,
 ) {
@@ -594,18 +540,6 @@ private fun LabelledInput(
                 }
             },
         )
-    }
-}
-
-/** A row of the photo sheet: an icon and what it does. */
-@Composable
-private fun SheetRow(icon: String, text: String, tint: Color = Fob.ink, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        StrokeIcon(icon, tint = tint, size = 22.dp)
-        Text(text, color = tint, fontSize = 16.sp)
     }
 }
 
@@ -707,39 +641,4 @@ fun ContactScanScreen(model: WalletModel, nav: Nav, id: ULong) {
             if (nav.current == Screen.ContactScan(id)) nav.back()
         }
     }, onClose = { nav.back() })
-}
-
-/** A picked photo, decoded small enough to crop (and turned as the photo says, from Android 9). */
-private fun decode(context: Context, uri: Uri): Bitmap? = runCatching {
-    if (Build.VERSION.SDK_INT >= 28) {
-        ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
-            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            decoder.setTargetSampleSize((minOf(info.size.width, info.size.height) / 384).coerceAtLeast(1))
-        }
-    } else {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-        val sample = Integer.highestOneBit((minOf(bounds.outWidth, bounds.outHeight) / 384).coerceAtLeast(1))
-        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
-    }
-}.getOrNull()
-
-/**
- * A contact's photo from [source]: cropped to a centred square, scaled to
- * 96 × 96 and encoded by Android's WebP encoder, the quality stepped down
- * (then the size, to 72 and 64) until Rust keeps it; null if it never does.
- */
-private fun contactPhoto(source: Bitmap): ByteArray? {
-    val side = minOf(source.width, source.height)
-    if (side <= 0) return null
-    val square = Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
-    val format = if (Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSY else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
-    for (size in PHOTO_SIZES) {
-        val scaled = Bitmap.createScaledBitmap(square, size, size, true)
-        for (quality in PHOTO_QUALITIES) {
-            val bytes = ByteArrayOutputStream().also { scaled.compress(format, quality, it) }.toByteArray()
-            if (contactPhotoFits(bytes)) return bytes
-        }
-    }
-    return null
 }

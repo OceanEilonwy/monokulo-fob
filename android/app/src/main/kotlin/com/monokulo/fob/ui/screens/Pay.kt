@@ -145,10 +145,13 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     // The request made by the last Share or Copy, and what it was made from.
     var made by remember { mutableStateOf<Pair<Asked, MadeRequest>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // "The code names you as “Henry” · change in Settings", while requests carry the profile's name.
+    var nameLine by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
         address = w.receiveAddress()
         index = w.receiveIndex()
+        nameLine = w.receiveNameLine()
     }
     LaunchedEffect(wallet, forId) {
         val w = wallet ?: return@LaunchedEffect
@@ -269,7 +272,17 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                     onSwitch = { scope.launch { val toFiat = !inFiat; amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
                 )
                 Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
-                // Step 9 adds "The code names you as “Henry” · change in Settings" here, with the profile's name.
+                // While requests carry your profile's name: tapping it opens Your profile, where the switch is.
+                nameLine?.let {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+                            .clickable(role = Role.Button, onClickLabel = "Change in Settings") { nav.go(Screen.Profile) }.padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        StrokeIcon(Icons.person, tint = Fob.muted, size = 16.dp)
+                        Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    }
+                }
             }
         }
         if (choosing) {
@@ -369,13 +382,7 @@ private fun AddressGroups(groups: List<AddressGroup>) {
 @Composable
 fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
-    val activity = LocalActivity.current
-    DisposableEffect(activity) {
-        val window = activity?.window
-        val before = window?.attributes?.screenBrightness
-        window?.attributes = window?.attributes?.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL }
-        onDispose { if (before != null) window.attributes = window.attributes.apply { screenBrightness = before } }
-    }
+    FullBrightness()
     Column(Modifier.fillMaxSize().background(Fob.qrLight).safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose, modifier = Modifier.semantics { contentDescription = "Close" }) { StrokeIcon(Icons.close, tint = Fob.qrDark, size = 20.dp) }
@@ -395,6 +402,18 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Un
             AddressPattern(address, 48.dp)
             Text("Screen brightness turned up while this is open", color = Fob.qrMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
+    }
+}
+
+/** The screen as bright as it goes while this is shown, as it was after. */
+@Composable
+fun FullBrightness() {
+    val activity = LocalActivity.current
+    DisposableEffect(activity) {
+        val window = activity?.window
+        val before = window?.attributes?.screenBrightness
+        window?.attributes = window?.attributes?.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL }
+        onDispose { if (before != null) window.attributes = window.attributes.apply { screenBrightness = before } }
     }
 }
 

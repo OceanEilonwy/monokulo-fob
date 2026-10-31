@@ -75,7 +75,7 @@ pub fn initial(name: &str) -> String {
 }
 
 /// The photo as hex in the wallet file's JSON, not a list of numbers.
-mod photo_hex {
+pub(crate) mod photo_hex {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
     pub fn serialize<S: Serializer>(photo: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
@@ -714,6 +714,7 @@ mod tests {
             split: None,
             contact: None,
             contact_id: None,
+            shared: None,
         }
     }
 

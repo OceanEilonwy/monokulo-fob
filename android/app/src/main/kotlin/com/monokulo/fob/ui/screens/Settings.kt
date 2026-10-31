@@ -1,6 +1,13 @@
 package com.monokulo.fob.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.style.TextOverflow
+import com.monokulo.fob.ui.Avatar
+import uniffi.fob.Profile
+import uniffi.fob.ProfileRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -109,7 +116,14 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     var choosing by remember { mutableStateOf<Pick?>(null) }
     var priceError by remember { mutableStateOf<String?>(null) }
     val prices by model.prices.collectAsState()
-    LaunchedEffect(wallet) { node = wallet?.node() ?: "" }
+    // Your profile's row, its words from Rust ("Set up your profile" before there's one).
+    var profile by remember { mutableStateOf<Profile?>(null) }
+    var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
+    LaunchedEffect(wallet) {
+        node = wallet?.node() ?: ""
+        profile = wallet?.profile()
+        profileRow = wallet?.profileRow()
+    }
     val canSpend = wallet?.canSpend() != false
     Page {
         TopBar("Settings", onBack = { nav.back() })
@@ -117,6 +131,21 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             Column {
                 SectionLabel("Wallet")
                 Card {
+                    profileRow?.let { row ->
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button) { nav.go(Screen.Profile) }.padding(horizontal = 20.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            val p = profile
+                            if (p != null) Avatar(p.name, p.initial, p.photo, 40.dp)
+                            else Box(Modifier.size(40.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.person, tint = Fob.muted, size = 20.dp) }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(row.title, fontSize = 16.sp)
+                                Text(row.line, fontSize = 13.sp, color = Fob.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                            StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+                        }
+                    }
                     SettingRow("Contacts", "Who you pay, kept on this phone", onClick = { nav.go(Screen.Contacts) })
                     if (canSpend) SettingRow("Back up seed phrase", "Show the words that restore this wallet", onClick = { nav.go(Screen.ShowSeed) })
                     SettingRow("Show wallet code", "Restore this wallet on another phone", onClick = { nav.go(Screen.ShowWalletCode) })

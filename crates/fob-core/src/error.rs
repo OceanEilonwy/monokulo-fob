@@ -34,6 +34,10 @@ pub enum FobError {
     /// A request can't be made or found, and why.
     #[error("{0}")]
     Request(String),
+    /// Your profile can't be saved or shared as it is, or a scanned one
+    /// can't be read, and why.
+    #[error("{0}")]
+    Profile(String),
     #[error("couldn't build the transaction: {0}")]
     Send(String),
     #[error("couldn't read or save the wallet: {0}")]

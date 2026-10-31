@@ -9,6 +9,8 @@
 //! - [`split`]: paying what's ready to spend back as pieces.
 //! - [`contacts`]: the people this wallet pays, in the wallet file.
 //! - [`requests`]: requests to be paid, each on an address of its own.
+//! - [`profile`]: your name and photo, shared as a code on a new address
+//!   each time.
 //! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
@@ -22,6 +24,7 @@ pub mod keys;
 pub mod network;
 pub mod pattern;
 pub mod price;
+pub mod profile;
 pub mod not_ready;
 pub mod node;
 pub mod qr;

@@ -117,6 +117,72 @@ pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>, name:
     if params.is_empty() { format!("monero:{address}") } else { format!("monero:{address}?{}", params.join("&")) }
 }
 
+/// A profile shared as a code: a payment code with a name and maybe a
+/// photo, and nothing to pay. Other wallets see an address with a name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileCode {
+    /// A new address of the sharer's, for this share alone.
+    pub address: String,
+    /// Cleaned and cut as a contact's name.
+    pub name: String,
+    /// A WebP of at most [`PHOTO_MAX`](crate::contacts::PHOTO_MAX) bytes.
+    pub photo: Option<Vec<u8>>,
+}
+
+/// A photo in a code: URL-safe base64 without padding, so it needs no
+/// percent-encoding (padding is read too).
+const PHOTO_BASE64: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+    &base64::alphabet::URL_SAFE,
+    base64::engine::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+);
+
+/// A profile's code: `monero:<address>?recipient_name=…&recipient_avatar=…`,
+/// the name cleaned as a contact's, the photo (a WebP Fob keeps) in
+/// URL-safe base64 without padding.
+pub fn profile_uri(address: &str, name: &str, photo: Option<&[u8]>) -> String {
+    use base64::Engine;
+    let mut uri = payment_uri(address, None, None, Some(name));
+    if let Some(photo) = photo {
+        uri.push_str(if uri.contains('?') { "&" } else { "?" });
+        uri.push_str("recipient_avatar=");
+        uri.push_str(&PHOTO_BASE64.encode(photo));
+    }
+    uri
+}
+
+/// A scanned profile code: an address with a name and maybe a photo, and
+/// nothing to pay (an amount, a note or a receipt make it a payment code).
+/// A photo that isn't a WebP Fob would keep refuses the whole code.
+pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
+    use base64::Engine;
+    use crate::contacts::{PHOTO_MAX, check_photo};
+    let not = |why: &str| Err(FobError::Profile(why.into()));
+    let payment = parse_payment(network, text)?;
+    if payment.amount.is_some() || payment.description.is_some() || payment.receipt.is_some() {
+        return not("That's a payment code, not a profile.");
+    }
+    let Some(name) = payment.recipient_name else { return not("That code has no name, so it isn't a profile.") };
+    let rest = split_scheme(text.trim(), &["monero"]).unwrap_or(text);
+    let (_, pairs) = split_query(rest);
+    let too_big = "The photo in that profile is too big for Fob.";
+    let photo = match get(&pairs, &["recipient_avatar"]).map(str::trim) {
+        None => None,
+        // Measured before it's decoded: base64 is 4 characters for 3 bytes.
+        Some(text) if text.trim_end_matches('=').len() > (PHOTO_MAX * 4).div_ceil(3) => return not(too_big),
+        Some(text) => {
+            let Ok(bytes) = PHOTO_BASE64.decode(text) else { return not("The photo in that profile is damaged.") };
+            if bytes.len() > PHOTO_MAX {
+                return not(too_big);
+            }
+            if check_photo(&bytes).is_err() {
+                return not("The photo in that profile isn't a WebP image.");
+            }
+            Some(bytes)
+        }
+    };
+    Ok(ProfileCode { address: payment.address, name, photo })
+}
+
 /// The most characters a note for the payer may have.
 pub const NOTE_MAX_CHARS: usize = 120;
 /// The most bytes a note may take in the code once percent-encoded: 120
@@ -478,5 +544,69 @@ mod tests {
         assert_eq!(classify(Network::Stagenet, &payment_uri(&keys.address(1), None, None, None)), CodeKind::Payment);
         assert_eq!(classify(Network::Stagenet, &keys.seed_words().unwrap().1), CodeKind::Wallet);
         assert_eq!(classify(Network::Stagenet, "https://example.com"), CodeKind::Unknown);
+    }
+
+    fn webp(len: usize) -> Vec<u8> {
+        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
+        bytes.extend((0..len.saturating_sub(16)).map(|i| (i * 37 % 251) as u8));
+        bytes
+    }
+
+    #[test]
+    fn a_profile_code_round_trips_and_other_wallets_see_a_named_address() {
+        let address = wallet().address(7);
+        let photo = webp(900);
+        let code = profile_uri(&address, " Henry\n", Some(&photo));
+        let avatar = code.split("recipient_avatar=").nth(1).unwrap();
+        assert!(code.starts_with(&format!("monero:{address}?recipient_name=Henry&recipient_avatar=")), "{code}");
+        assert!(avatar.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "URL-safe, no padding: {avatar}");
+        let read = parse_profile(Network::Stagenet, &code).unwrap();
+        assert_eq!(read, ProfileCode { address: address.clone(), name: "Henry".into(), photo: Some(photo.clone()) });
+        // Another wallet reads it as a payment code with a name.
+        let payment = parse_payment(Network::Stagenet, &code).unwrap();
+        assert_eq!((payment.address, payment.recipient_name.as_deref(), payment.amount), (address.clone(), Some("Henry"), None));
+        // Without a photo; padding is read too.
+        let bare = profile_uri(&address, "Henry", None);
+        assert_eq!(bare, format!("monero:{address}?recipient_name=Henry"));
+        assert_eq!(parse_profile(Network::Stagenet, &bare).unwrap().photo, None);
+        let padded = format!("{bare}&recipient_avatar={}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, webp(20)));
+        assert!(padded.ends_with('='));
+        assert_eq!(parse_profile(Network::Stagenet, &padded).unwrap().photo, Some(webp(20)));
+    }
+
+    #[test]
+    fn a_profile_with_a_bad_photo_or_something_to_pay_is_refused() {
+        use base64::Engine;
+        let address = wallet().address(7);
+        let bare = profile_uri(&address, "Henry", None);
+        let with = |photo: &str| format!("{bare}&recipient_avatar={photo}");
+        let refused = |text: &str| parse_profile(Network::Stagenet, text).unwrap_err().to_string();
+        assert_eq!(refused(&with("not*base64!")), "The photo in that profile is damaged.");
+        assert_eq!(refused(&with(&PHOTO_BASE64.encode(b"\x89PNG\r\n\x1a\n0000"))), "The photo in that profile isn't a WebP image.");
+        // One byte over, and far over (refused before decoding).
+        assert_eq!(refused(&with(&PHOTO_BASE64.encode(webp(crate::contacts::PHOTO_MAX + 1)))), "The photo in that profile is too big for Fob.");
+        assert_eq!(refused(&with(&"A".repeat(100_000))), "The photo in that profile is too big for Fob.");
+        assert!(parse_profile(Network::Stagenet, &with(&PHOTO_BASE64.encode(webp(crate::contacts::PHOTO_MAX)))).is_ok());
+        // No name, or something to pay: a payment code, not a profile.
+        assert_eq!(refused(&format!("monero:{address}")), "That code has no name, so it isn't a profile.");
+        assert_eq!(refused(&format!("{bare}&tx_amount=1")), "That's a payment code, not a profile.");
+        assert_eq!(refused(&format!("{bare}&tx_description=Pizza")), "That's a payment code, not a profile.");
+        assert!(parse_profile(Network::Mainnet, &bare).is_err(), "another network's");
+    }
+
+    #[test]
+    fn the_largest_profile_code_still_encodes_as_a_qr_code() {
+        // A 95-character subaddress, 40 emoji (12 bytes each encoded) and
+        // the largest photo: within version 40 at low error correction.
+        let address = wallet().address(1_000_000);
+        let code = profile_uri(&address, &"😀".repeat(crate::contacts::NAME_MAX), Some(&webp(crate::contacts::PHOTO_MAX)));
+        assert_eq!(code.len(), 7 + 95 + 16 + 480 + 18 + 2048);
+        assert!(code.len() <= 2953, "version 40 at L holds 2953 bytes");
+        let qr = crate::qr::encode(&code).unwrap();
+        assert!(qr.size <= 177);
+        assert_eq!(parse_profile(Network::Stagenet, &code).unwrap().name.chars().count(), crate::contacts::NAME_MAX);
+        // A usual one, a short name and a photo near the budget, is version 33 or below.
+        let usual = profile_uri(&address, "Henry", Some(&webp(1400)));
+        assert!(crate::qr::encode(&usual).unwrap().size <= 17 + 4 * 33);
     }
 }
