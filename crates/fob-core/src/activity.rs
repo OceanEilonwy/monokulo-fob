@@ -162,7 +162,7 @@ pub struct Detail {
     pub amount: String,
     /// "Today 08:40 · Coffee beans"
     pub when: String,
-    /// Prices are on: the two price boxes show.
+    /// Amounts also show in a currency: the two price boxes show.
     pub priced: bool,
     /// What it's worth now: "$83.03", or "Not available".
     pub worth_now: String,
@@ -213,9 +213,9 @@ fn pieces(amounts: &[u64]) -> Option<String> {
 }
 
 /// The words of a payment's own screen. `now` is the current price shown
-/// (none with prices off or none asked within the hour); `prices_on` says
+/// (none with XMR only or none asked within the hour); `priced` says
 /// whether prices show at all; `provider` names where they come from.
-pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_on: bool, provider: &str, clock: Clock) -> Detail {
+pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, priced: bool, provider: &str, clock: Clock) -> Detail {
     let out = activity.direction == Direction::Out;
     let worth = |price: u64, currency: &price::Currency| price::value(activity.amount, price, currency);
     let then = activity.price.as_ref().map(|r| (price::currency(&r.currency), r.price));
@@ -246,12 +246,12 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
         })
     };
     let note = activity.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default();
-    let shown = prices_on && (now.is_some() || then.is_some());
+    let shown = priced && (now.is_some() || then.is_some());
     let tx = &activity.tx;
     Detail {
         amount: format!("{}{}", if out { "−" } else { "+" }, amount::format(activity.amount)),
         when: format!("{}{note}", when(activity.time, clock)),
-        priced: prices_on,
+        priced,
         worth_now: now.map(|(c, p)| worth(p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
         rate_now: now.map(|(c, p)| price::rate(p, c)),
         then_label: if out { "When sent" } else { "When received" }.into(),
@@ -637,7 +637,7 @@ mod tests {
         fell.price.as_mut().unwrap().price = 170_000_000;
         let d = detail(&fell, Some((&usd, 166_060_000)), true, "Kraken", c);
         assert_eq!((d.change.as_deref(), d.up), (Some("Down $1.97 (2.3%) since then"), false));
-        // Main address, prices off.
+        // Main address, XMR only.
         received.subaddress = Some(0);
         received.note = None;
         let d = detail(&received, None, false, "Kraken", c);

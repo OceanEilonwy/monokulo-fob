@@ -52,7 +52,7 @@ pub struct Note {
     pub minor: Option<u64>,
 }
 
-/// A whole number of a currency: "$20", "20 GBP".
+/// A whole number of a currency: "$20", "20 CHF".
 fn whole(units: u64, currency: &Currency) -> String {
     match currency.symbol {
         Some(symbol) => format!("{symbol}{units}"),
@@ -452,8 +452,9 @@ mod tests {
         // (0.0667 would be $20.01).
         assert_eq!(amount::format(notes[2].atomic), "0.06667");
         assert_eq!(price::to_minor(notes[2].atomic, PRICE, &usd), 2_000);
-        let gbp = price::currency("GBP");
-        assert_eq!(super::notes(Some((&gbp, PRICE)))[0].label, "5 GBP");
+        let (gbp, chf) = (price::currency("GBP"), price::currency("CHF"));
+        assert_eq!(super::notes(Some((&gbp, PRICE)))[0].label, "£5");
+        assert_eq!(super::notes(Some((&chf, PRICE)))[0].label, "5 CHF");
         let xmr: Vec<_> = super::notes(None).iter().map(|n| (n.label.clone(), n.spoken.clone())).collect();
         assert_eq!(xmr[0], ("0.01".into(), "0.01 XMR".into()));
         assert_eq!(xmr.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["0.01", "0.05", "0.1", "0.25", "0.5", "1"]);

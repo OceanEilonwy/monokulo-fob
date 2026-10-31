@@ -23,6 +23,9 @@ import uniffi.fob.NotReady
 import uniffi.fob.PaidBefore
 import uniffi.fob.RequestDetail
 import uniffi.fob.PaymentDetail
+import uniffi.fob.CurrencyList
+import uniffi.fob.PriceCheck
+import uniffi.fob.PriceProvider
 import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
@@ -176,21 +179,32 @@ class WalletModel(private val app: Application) {
         scope.launch { runCatching { wallet.rememberReceiveNote(index, note) } }
     }
 
-    /** "Show prices"; off, Fob never asks for one. */
-    suspend fun setPricesOn(on: Boolean) = changePrices { it.setPricesOn(on) }
+    /** "Also show amounts in" a currency's [code], or XMR only (null). Returns Rust's words when the provider had to change for it. */
+    suspend fun setCurrency(code: String?): String? = changePrices { it.setCurrency(code) }
 
-    suspend fun setCurrency(code: String) = changePrices { it.setCurrency(code) }
+    /** Prices from [provider]; returns Rust's words when the transport had to change for it. */
+    suspend fun setPriceProvider(provider: PriceProvider): String? = changePrices { it.setPriceProvider(provider) }
 
     /** Throws what Rust refused (Tor, for now). */
     suspend fun setPriceTransport(transport: PriceTransport) = changePrices { it.setPriceTransport(transport) }
 
-    /** "Show amounts in": the currency first, or XMR. */
+    /** "Show first": the currency first, or XMR. */
     suspend fun setFiatFirst(fiatFirst: Boolean) = changePrices { it.setFiatFirst(fiatFirst) }
 
-    private suspend fun changePrices(change: suspend (FobWallet) -> Unit) {
-        val wallet = _wallet.value ?: return
-        change(wallet)
+    private suspend fun <T> changePrices(change: suspend (FobWallet) -> T): T? {
+        val wallet = _wallet.value ?: return null
+        val result = change(wallet)
         refresh()
+        return result
+    }
+
+    /** Every provider of the chosen currency asked for its price now; null with XMR only. */
+    suspend fun checkPrices(): List<PriceCheck>? = _wallet.value?.checkPrices()
+
+    /** The "Also show amounts in" list, with this phone's currency (its locale's) for Rust to place. */
+    suspend fun currencyList(query: String): CurrencyList? {
+        val phone = runCatching { java.util.Currency.getInstance(java.util.Locale.getDefault()).currencyCode }.getOrNull()
+        return _wallet.value?.currencyList(phone, query)
     }
 
     /** Pull to refresh: asks the node now (and the price), and returns once that round is over. */

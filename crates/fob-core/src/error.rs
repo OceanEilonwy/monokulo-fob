@@ -25,6 +25,9 @@ pub enum FobError {
     /// Prices couldn't be had, or a price setting isn't one Fob has.
     #[error("{0}")]
     Price(String),
+    /// A provider gave no price, and why in a word or two.
+    #[error("{}", .0.text())]
+    PriceFailed(crate::price::Failure),
     /// Split up's pieces can't be split, and why.
     #[error("{0}")]
     Split(String),
