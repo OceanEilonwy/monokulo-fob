@@ -333,7 +333,7 @@ pub struct SyncStatus {
     /// 0 to 1, from the restore height to the tip.
     pub progress: f32,
     /// The time left as the chip shows it: none until the speed settles,
-    /// and never up again unless the estimate rises a lot (see [`catch_up`]).
+    /// counting down, and never up (see [`catch_up`]).
     pub seconds_left: Option<u64>,
     /// Blocks scanned per second over the last few seconds, once settled.
     pub blocks_per_second: Option<f64>,
@@ -342,7 +342,11 @@ pub struct SyncStatus {
     pub link_mb_per_second: Option<f64>,
     /// When the last scanned block was mined.
     pub up_to: u64,
+    /// Why the last round failed, in words.
     pub error: Option<String>,
+    /// The failure is the phone's own (the wallet couldn't be saved), not
+    /// the node's.
+    pub error_local: bool,
     /// Instant updates from the node's ZMQ publisher.
     pub zmq: ZmqStatus,
     /// [`zmq`](Self::zmq) as Settings shows it: "node.example:18083 · listening".
@@ -404,6 +408,10 @@ struct Inner {
     keys: Keys,
     state: Mutex<State>,
     rpc: Mutex<Option<(node::Setting, Connection)>>,
+    /// The transport the connection above was made with, and its node: its
+    /// byte count and certificate, read by each sync report without
+    /// waiting on `rpc`, which a connection being made holds.
+    link: std::sync::Mutex<Option<(node::Setting, Transport)>>,
     /// Blocks being fetched ahead of the scanner.
     pipeline: Mutex<Option<Pipeline>>,
     prepared: Mutex<Pending<PreparedTx>>,
@@ -654,6 +662,7 @@ impl Wallet {
                 keys,
                 state: Mutex::new(state),
                 rpc: Mutex::new(None),
+                link: std::sync::Mutex::new(None),
                 pipeline: Mutex::new(None),
                 prepared: Mutex::new(Pending::default()),
                 next_id: AtomicU64::new(1),
@@ -901,18 +910,19 @@ impl Wallet {
         node::Setting { url: state.node.clone(), self_signed: state.node_self_signed }
     }
 
-    /// Settings' Node line: "Can't reach node · node.example:38081" while
-    /// syncing fails (as Home's chip), else the last check of it ("Working
-    /// · …"), else what syncing says, else just the address.
+    /// Settings' Node line: the last check of it ("Working · node.example:38081")
+    /// when it's newer than syncing's last failure, else "Can't reach node
+    /// · …" while syncing fails (as Home's chip), else what syncing says,
+    /// else just the address. A failure saving the wallet isn't the node's.
     pub async fn node_line(&self) -> String {
         let setting = self.node().await;
         let address = node::address(&setting.url);
         let checked = self.inner.node_verdict.lock().expect("node lock").clone();
         let status = self.status();
         let verdict = match checked {
-            // A failing sync is newer than any check: syncing retries every minute at most.
-            _ if status.error.is_some() => Some("Can't reach node"),
+            // A failed round drops the check before it: what's here is newer.
             Some((checked, verdict)) if checked == setting => Some(verdict),
+            _ if status.error.is_some() && !status.error_local => Some("Can't reach node"),
             _ if status.synced || status.tip > 0 => Some("Working"),
             _ => None,
         };
@@ -978,8 +988,20 @@ impl Wallet {
             self.restart_zmq().await;
         }
         *self.inner.rpc.lock().await = None;
+        *self.inner.link.lock().expect("link lock") = None;
         *self.inner.pipeline.lock().await = None;
         *self.inner.node_verdict.lock().expect("node lock") = None;
+        // The old node's failure isn't this one's: the chip and Node line
+        // stop saying it now, and the sync loop tries the new node at once
+        // rather than at the end of its backoff.
+        let status = self.set_status(|s| {
+            s.error = None;
+            s.error_local = false;
+        });
+        if let Some(listener) = self.inner.listener.lock().expect("listener lock").clone() {
+            listener.on_status(status);
+        }
+        self.inner.wake.notify_one();
         Ok(())
     }
 
@@ -1065,6 +1087,7 @@ impl Wallet {
         }
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let transport = Transport::new(&node.url, node.self_signed).map_err(err)?;
+        *self.inner.link.lock().expect("link lock") = Some((node.clone(), transport.clone()));
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
         let decoys = Decoys::new(daemon.clone(), transport.clone(), self.inner.path.with_extension("decoys"));
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
@@ -1599,24 +1622,31 @@ impl Wallet {
     }
 
     /// Tells `listener` where syncing is, measuring this catch-up's `pace`
-    /// as it goes (a failure starts it again).
-    async fn report(&self, listener: &dyn SyncListener, pace: &mut catch_up::Pace, error: Option<String>) {
+    /// as it goes (a failure starts it again, measuring nothing).
+    async fn report(&self, listener: &dyn SyncListener, pace: &mut catch_up::Pace, failed: Option<&FobError>) {
         self.refresh_status().await;
         let (next, tip) = {
             let status = self.status();
             (status.scanned, status.tip)
         };
-        let received = self.inner.rpc.lock().await.as_ref().map_or(0, |(_, (transport, ..))| transport.received());
-        if error.is_some() {
-            pace.reset();
+        let link = self.inner.link.lock().expect("link lock").clone();
+        let received = link.as_ref().map_or(0, |(_, transport)| transport.received());
+        let (seconds_left, speeds) = pace.report(Instant::now(), received, next, tip.saturating_sub(next), failed.is_some());
+        // As the Node checks would say it, the certificate included.
+        let error = failed.map(|e| match &link {
+            Some((setting, transport)) => node::sync_failure(e, transport.certificate(), setting.self_signed),
+            None => node::sync_failure(e, None, false),
+        });
+        if error.as_ref().is_some_and(|(_, local)| !local) {
+            // A failing sync is newer than the last check of the node.
+            *self.inner.node_verdict.lock().expect("node lock") = None;
         }
-        let seconds_left = pace.sample(Instant::now(), received, next, tip.saturating_sub(next));
-        let speeds = pace.speeds();
         let status = self.set_status(|s| {
             s.seconds_left = seconds_left;
             s.blocks_per_second = speeds.map(|s| s.blocks_per_second);
             s.link_mb_per_second = speeds.map(|s| s.bytes_per_second / 1e6);
-            s.error = error;
+            s.error_local = error.as_ref().is_some_and(|(_, local)| *local);
+            s.error = error.map(|(words, _)| words);
         });
         listener.on_status(status);
     }
@@ -1653,7 +1683,7 @@ impl Wallet {
                         }
                     }
                     Err(e) => {
-                        wallet.report(listener.as_ref(), &mut pace, Some(node::sync_words(&e))).await;
+                        wallet.report(listener.as_ref(), &mut pace, Some(&e)).await;
                         wallet.inner.rounds.send_modify(|n| *n += 1);
                         wallet.wait(backoff, listener.as_ref()).await;
                         backoff = (backoff * 2).min(Duration::from_secs(60));
@@ -4096,19 +4126,58 @@ mod tests {
         assert_eq!(report.rows[0].result, "self-signed, accepted");
         assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
         // Syncing failing since, the line says so, as Home's chip, over the
-        // check (and over having synced before); working again, the check's back.
-        reopened.set_status(|s| {
-            s.synced = true;
-            s.error = Some("Address not found".into());
-        });
+        // check (and over having synced before).
+        reopened.set_status(|s| s.synced = true);
+        let offline = FobError::Node(format!("{:?}", InterfaceError::InterfaceError("dns error: failed to lookup address".into())));
+        reopened.report(&Quiet, &mut catch_up::Pace::default(), Some(&offline)).await;
+        assert_eq!(reopened.status().error.as_deref(), Some("Address not found"));
         assert_eq!(reopened.node_line().await, format!("Can't reach node · 127.0.0.1:{port}"));
+        // A check after the failure is newer: it's what the line says.
+        reopened.check_node(&reopened.node().await, &|_| {}).await;
+        assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
         reopened.set_status(|s| s.error = None);
         assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
+        // Failing to save the wallet isn't the node's doing.
+        reopened.report(&Quiet, &mut catch_up::Pace::default(), Some(&FobError::Storage("disk full".into()))).await;
+        assert!(reopened.status().error_local);
+        assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
+        *reopened.inner.node_verdict.lock().unwrap() = None;
+        reopened.set_status(|s| s.synced = true);
+        assert_eq!(reopened.node_line().await, format!("Working · 127.0.0.1:{port}"));
         // The list leaves out the node in use, and an added one comes once.
         let added = node::Setting { url: "node.example:38081/".into(), self_signed: true };
         let others = reopened.other_nodes(&[added.clone(), added]).await;
         assert_eq!(others.len(), Network::Stagenet.default_nodes().len() + 1);
         assert_eq!(others.last(), Some(&node::Setting { url: "http://node.example:38081".into(), self_signed: true }));
+    }
+
+    /// Switching to a working node while syncing fails stops the chip and
+    /// Node line saying the old node's failure at once, and the sync loop
+    /// tries the new node then, not at the end of its backoff.
+    #[tokio::test]
+    async fn switching_node_clears_the_old_failure_and_tries_the_new_one_at_once() {
+        struct Heard(std::sync::Mutex<Vec<Option<String>>>);
+        impl SyncListener for Heard {
+            fn on_status(&self, status: SyncStatus) {
+                self.0.lock().unwrap().push(status.error);
+            }
+        }
+        let wallet = unreachable("switch-clears").await;
+        let heard = Arc::new(Heard(std::sync::Mutex::new(vec![])));
+        let mut rounds = wallet.inner.rounds.subscribe();
+        wallet.start_sync(heard.clone());
+        tokio::time::timeout(Duration::from_secs(5), rounds.changed()).await.unwrap().unwrap();
+        assert_eq!(wallet.status().error.as_deref(), Some("Refused to connect"));
+        assert_eq!(wallet.status().chip().text, "Can't reach node");
+        let port = crate::node::tests::canned_node(false).await;
+        rounds.mark_unchanged();
+        let before = heard.0.lock().unwrap().len();
+        wallet.set_node(&format!("127.0.0.1:{port}"), false).await.unwrap();
+        // Told at once (the woken loop may already be reporting the new node).
+        assert_eq!(heard.0.lock().unwrap().get(before), Some(&None));
+        // The loop's 2 s backoff is cut short: a round against the new node now.
+        tokio::time::timeout(Duration::from_millis(1500), rounds.changed()).await.expect("a round within the backoff").unwrap();
+        wallet.stop_sync();
     }
 
     /// The connection kept is for the node and its mark: one made while the

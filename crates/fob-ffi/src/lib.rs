@@ -634,7 +634,7 @@ pub struct SyncStatus {
     pub error: Option<String>,
     /// How Home's sync chip looks.
     pub chip_look: ChipLook,
-    /// "Starting", "6 min left", "Synced", "Can't reach node".
+    /// "Starting", "6 min left", "Synced", "Can't reach node", "Can't save".
     pub chip_text: String,
     /// What TalkBack reads for the chip: "Catching up, 34%, about 6 minutes left".
     pub chip_label: String,
@@ -672,17 +672,28 @@ pub enum ChipLook {
     Offline,
 }
 
+/// One of the sync card's rows.
+#[derive(uniffi::Record)]
+pub struct SyncRow {
+    /// "Blocks".
+    pub label: String,
+    /// "3,360 of 9,880 · 28/s".
+    pub value: String,
+    /// What TalkBack reads: "Blocks: 3,360 of 9,880, 28 a second".
+    pub spoken: String,
+}
+
 /// The card the sync chip opens.
 #[derive(uniffi::Record)]
 pub struct SyncDetails {
-    /// "Catching up", "Synced", "Can't reach node".
+    /// "Catching up", "Synced", "Can't reach node", "Can't save the wallet".
     pub title: String,
     /// "34%", while catching up.
     pub percent: Option<String>,
     /// The bar, while catching up.
     pub progress: Option<f32>,
     /// "Time left" · "about 4 min", "Blocks" · "3,360 of 9,880 · 28/s"…
-    pub rows: Vec<ReceiptLine>,
+    pub rows: Vec<SyncRow>,
     /// "You can still receive and send while Fob catches up."
     pub note: Option<String>,
     /// What went wrong, as the node or network said it.
@@ -695,7 +706,7 @@ impl From<fob_core::catch_up::Details> for SyncDetails {
             title: d.title,
             percent: d.percent,
             progress: d.progress,
-            rows: d.rows.into_iter().map(|(label, amount)| ReceiptLine { label, amount }).collect(),
+            rows: d.rows.into_iter().map(|r| SyncRow { label: r.label, value: r.value, spoken: r.spoken }).collect(),
             note: d.note,
             error: d.error,
         }

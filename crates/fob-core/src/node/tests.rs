@@ -240,16 +240,52 @@ fn transport_errors_are_told_apart() {
 /// transport's debug text.
 #[test]
 fn sync_failures_are_told_in_words() {
-    let offline = FobError::Node(r#"InterfaceError("error sending request: client error (Connect): dns error: failed to lookup address information: No address associated with hostname")"#.into());
-    assert_eq!(sync_words(&offline), "Address not found");
-    let refused = FobError::Node("InterfaceError(\"error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)\")".into());
-    assert_eq!(sync_words(&refused), "Refused to connect");
-    assert_eq!(sync_words(&FobError::Node("InterfaceError(\"operation timed out\")".into())), "Stopped answering");
-    assert_eq!(sync_words(&FobError::Node("InterfaceError(\"node answered 401 Unauthorized\")".into())), "Wants a login");
-    assert_eq!(sync_words(&FobError::Node("scanning block 12: InvalidScannableBlock(\"x\")".into())), "Sent blocks Fob can't read");
-    assert_eq!(sync_words(&FobError::Node("InvalidNode(\"bad\")".into())), "Sent blocks Fob can't read");
-    assert_eq!(sync_words(&FobError::Node("rejected".into())), "Couldn't connect");
-    assert_eq!(sync_words(&FobError::Storage("disk full".into())), "Couldn't read or save the wallet: disk full");
+    // Made as the sync loop makes them: the interface error's debug text.
+    let node = |e: InterfaceError| FobError::Node(format!("{e:?}"));
+    let words = |e: &FobError| sync_failure(e, None, false).0;
+    let offline = node(InterfaceError::InterfaceError("error sending request: client error (Connect): dns error: failed to lookup address information: No address associated with hostname".into()));
+    assert_eq!(words(&offline), "Address not found");
+    let refused = node(InterfaceError::InterfaceError("error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)".into()));
+    assert_eq!(words(&refused), "Refused to connect");
+    assert_eq!(words(&node(InterfaceError::InterfaceError("operation timed out".into()))), "Stopped answering");
+    assert_eq!(words(&node(InterfaceError::InterfaceError("node answered 401 Unauthorized".into()))), "Wants a login");
+    assert_eq!(words(&FobError::Node("scanning block 12: InvalidScannableBlock(\"x\")".into())), "Sent blocks Fob can't read");
+    // The node answered, but not as the protocol says: the fetcher's and
+    // monero-daemon-rpc's own words for it.
+    for invalid in ["the node sent blocks out of order", "node's response was too large", "expected 100 blocks, got 3"] {
+        assert_eq!(words(&node(InterfaceError::InvalidInterface(invalid.into()))), "Sent blocks Fob can't read", "{invalid}");
+    }
+    assert_eq!(words(&FobError::Node("rejected".into())), "Couldn't connect");
+    // An older file's onion node, refused before anything connects.
+    assert_eq!(words(&node(InterfaceError::InternalError(NO_ONION.into()))), "Needs Tor, not in Fob yet");
+    // The phone's own failure: its words, and not the node's fault.
+    assert_eq!(sync_failure(&FobError::Storage("disk full".into()), None, false), ("Couldn't read or save the wallet: disk full".into(), true));
+    assert!(!sync_failure(&offline, None, false).1);
+}
+
+/// A failed round over https says what the Node checks say of the
+/// certificate: refused as the node isn't marked, or never accepted.
+#[test]
+fn a_sync_refused_for_its_certificate_says_so() {
+    let tls = FobError::Node(format!("{:?}", InterfaceError::InterfaceError("error sending request: client error (Connect): invalid peer certificate: Expired".into())));
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::Expired)), false).0, "Certificate expired, not accepted");
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::SelfSigned)), false).0, "Certificate self-signed, not accepted");
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::BadSignature)), true).0, "Certificate signature doesn't match, not accepted");
+    // Accepted with the mark: the failure is something else.
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::SelfSigned)), true).0, "Couldn't connect");
+    assert_eq!(sync_failure(&tls, Some(Ok(())), false).0, "Couldn't connect");
+}
+
+/// Over a real handshake: a node whose certificate the wallet's node
+/// setting doesn't accept fails syncing in the Certificate's words.
+#[tokio::test]
+async fn syncing_against_a_refused_certificate_names_it() {
+    let port = canned_node(true).await;
+    let url = format!("https://127.0.0.1:{port}");
+    let transport = Transport::new(&url, false).unwrap();
+    let e = transport.post("get_info", b"{}".to_vec(), None).await.unwrap_err();
+    let failed = FobError::Node(format!("{e:?}"));
+    assert_eq!(sync_failure(&failed, transport.certificate(), false).0, "Certificate self-signed, not accepted");
 }
 
 #[test]
