@@ -201,3 +201,67 @@ Seen and left as they are:
 - In Arabic the bar and card mirror, but Rust's English words are laid out right to left ("h left 29").
 - A node added over https with the same host and port as a default http one shows as the same "host:port" twice in the list (decision 232 drops the scheme).
 - Home's "· 10 min old" appears with the next redraw (a status or price change), not on the minute.
+
+## Review fixes
+
+Seven reviews (R1-R7) of round 7, assembled as H1, M1-M12, L1-L24. Each
+logic fix has a Rust test shown to fail without it; Kotlin-only fixes
+need the device checks below.
+
+| Id | Fix | Commit |
+|---|---|---|
+| H1 | Phone lock decided by isDeviceSecure only; weak biometric + lock on Android 9-10; any other failure refuses (Backup and keys, reminder, Confirm) | 89b9c20 |
+| M1 | Leaving Fob cuts the stack at the first locked screen | 89b9c20 |
+| M2 | A copied secret spend/view key leaves the clipboard after 60 s or on leaving Fob, if still Fob's | 89b9c20 |
+| M3 | Kraken: bid/ask middle, refused over 0.5% (FX) / 2% (XMR) spread; JPY dropped to CoinGecko; FX days need 100 trades; carry 4 days at most | b767fe8 |
+| M4 | Price age on Confirm's total, Coins, Home's not-ready card, a payment's Now, Split up's footer | 1f356a9 |
+| M5 | Toast cog off on Confirm (sending or not) | 37791f6 |
+| M6 | Receive's code made again on a new price (price_at) | 1f356a9 |
+| M7 | A failed round measures nothing; the pace starts at the first report after the wait | 077380a |
+| M8 | InvalidInterface (from its real debug text) reads "Sent blocks Fob can't read" | 077380a |
+| M9 | Sync failure words use the connection's certificate and the onion refusal, as the Node checks | 077380a |
+| M10 | set_node clears the old failure, tells the listener, wakes the loop; a newer check wins the Node line | 077380a |
+| M11 | Node client follows no redirects | 7fd1939 |
+| M12 | Tests: handshake not signed by the cert's key refused (EC/RSA, TLS 1.3/1.2); hostile DER | 7fd1939 |
+| L1 | Opening a file never moves Tor to the web; lookups fail "doesn't answer over Tor" | b767fe8 |
+| L2 | Show first asks for nothing | b767fe8 |
+| L3 | A lookup coming back after a newer one is dropped | b767fe8 |
+| L4 | Toast swiped during Retry stays swiped | 37791f6 |
+| L5 | Money typed kept aside while there's no price, back when one comes | 37791f6 |
+| L6 | No price: opening or typing in the field asks (once a minute) | 1f356a9 |
+| L7 | Toast at the top while the keyboard is up, still a live region | 37791f6 |
+| L8 | Retry finding a day's price names the day | b767fe8 |
+| L9 | Money's value goes under its title when both don't fit | b293e7f |
+| L10 | Profile row: name over the suffix when they don't fit | b293e7f |
+| L11 | Price from's intro and XMR-only sentence from Rust | fdd9ffa |
+| L12 | Price from: polite live region with Rust's summary | fdd9ffa |
+| L13 | Time left never rises: 20 s estimate, held value counts down, a big rise drops it and counts afresh (decision 205 rewritten) | 077380a |
+| L14 | Saving the wallet failing is "Can't save the wallet", not the node | 077380a |
+| L15 | Sync card rows have Rust's spoken words | 077380a |
+| L16 | Reports read the byte count without the rpc lock | 077380a |
+| L17 | Sheet settle follows the animator duration scale (snaps at 0) | 3f4b742 |
+| L18 | Sheet sized in the layout pass | 3f4b742 |
+| L19 | Keys warning: "your phone's lock", dropped with no lock (Rust) | 89b9c20 |
+| L20 | Connection kept by node and mark | 7fd1939 |
+| L21 | Only an unknown issuer, CA-as-end-entity or v1 cert is self-signed; others "not valid", never accepted | 7fd1939 |
+| L22 | Bad handshake signature fails the Certificate row | 7fd1939 |
+| L23 | NodeReport.mark from Rust | 7fd1939 |
+| L24 | R1-R7 read again: all findings above; not fixed: R4's note that a transport swapped between two reports whose new count already passed the old one is taken as a delta (listed under "checked, no issues"; a one-report blip) | - |
+
+Device checks (emulator re-check not done: see below):
+- [ ] Confirm with a failing price → toast's cog greyed, does nothing; Back from Confirm still works
+- [ ] Receive $20 against a 20 h old price, price comes back → QR's XMR line and Share agree with the field
+- [ ] Settings → Backup and keys → Keys, toast cog → Price from, Home button, back → Keys gone, lock asked again; same via Recents
+- [ ] Copy secret spend key, wait 60 s → clipboard empty; copy, Home → clipboard empty; copy address → stays
+- [ ] Android 9/10 emulator with a PIN → Backup and keys asks for the lock
+- [ ] Catching up against a slow node → time left never goes up; a big slowdown shows "Catching up" / "Working it out" then a new countdown
+- [ ] Failing node, switch to a working one → chip and Node line stop being red at once
+- [ ] Settings at 200% font: Money row value under its title, profile row name over "· share as a code"
+- [ ] Type money on Receive with Kraken failing → toast at the top above the field, TalkBack reads it
+- [ ] Remove animations on → Send sheet snaps; Send open and Confirm → Back show no height flash
+- [ ] Price from with TalkBack → summary read when checks finish
+
+The emulator re-check couldn't run: Pixel_9_Pro_qa (emulator-5558) had
+gone offline and its process was gone, and /tmp (the tmpfs the emulator
+and adb use) was full with RenderThread core dumps, so it couldn't be
+started again without deleting files this pass didn't make.
