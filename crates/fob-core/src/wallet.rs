@@ -354,6 +354,11 @@ pub struct Prepared {
 
 struct PreparedTx {
     signable: SignableTransaction,
+    out: Outgoing,
+}
+
+/// What a payment records once sent, beside its transaction.
+struct Outgoing {
     to: String,
     amount: u64,
     inputs: Vec<usize>,
@@ -375,7 +380,7 @@ struct Inner {
     rpc: Mutex<Option<(String, Connection)>>,
     /// Blocks being fetched ahead of the scanner.
     pipeline: Mutex<Option<Pipeline>>,
-    prepared: Mutex<HashMap<u64, PreparedTx>>,
+    prepared: Mutex<Pending<PreparedTx>>,
     next_id: AtomicU64,
     status: std::sync::Mutex<SyncStatus>,
     syncing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -413,6 +418,41 @@ struct Inner {
     fresh_share: std::sync::Mutex<Option<u64>>,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
+}
+
+/// How long a prepared payment waits to be sent: one left behind (the
+/// confirm screen gone without a word) is forgotten after this.
+const PREPARED_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// Payments prepared for the confirm screen, by id, each forgotten
+/// [`PREPARED_FOR`] after it was made.
+struct Pending<T> {
+    items: HashMap<u64, (tokio::time::Instant, T)>,
+}
+
+impl<T> Default for Pending<T> {
+    fn default() -> Self {
+        Pending { items: HashMap::new() }
+    }
+}
+
+impl<T> Pending<T> {
+    fn prune(&mut self) {
+        let now = tokio::time::Instant::now();
+        self.items.retain(|_, (made, _)| now.duration_since(*made) < PREPARED_FOR);
+    }
+
+    fn insert(&mut self, id: u64, item: T) {
+        self.prune();
+        self.items.insert(id, (tokio::time::Instant::now(), item));
+    }
+
+    /// The one with `id`, taken out; `None` once it's sent, cancelled or
+    /// too old.
+    fn take(&mut self, id: u64) -> Option<T> {
+        self.prune();
+        self.items.remove(&id).map(|(_, item)| item)
+    }
 }
 
 /// A payment to this wallet still in the node's pool.
@@ -574,7 +614,7 @@ impl Wallet {
                 state: Mutex::new(state),
                 rpc: Mutex::new(None),
                 pipeline: Mutex::new(None),
-                prepared: Mutex::new(HashMap::new()),
+                prepared: Mutex::new(Pending::default()),
                 next_id: AtomicU64::new(1),
                 status: std::sync::Mutex::new(status),
                 syncing: std::sync::Mutex::new(None),
@@ -1653,15 +1693,17 @@ impl Wallet {
             id,
             PreparedTx {
                 signable,
-                to: to.to_owned(),
-                amount,
-                inputs: chosen.iter().map(|c| c.0).collect(),
-                input_total: total,
-                receipt: receipt.is_some().then_some(receipt_json).flatten(),
-                note: requests::clean_note(note.as_deref()),
-                recipient_name,
-                pieces,
-                back: if pieces.is_some() { payments.iter().map(|p| p.1).collect() } else { vec![] },
+                out: Outgoing {
+                    to: to.to_owned(),
+                    amount,
+                    inputs: chosen.iter().map(|c| c.0).collect(),
+                    input_total: total,
+                    receipt: receipt.is_some().then_some(receipt_json).flatten(),
+                    note: requests::clean_note(note.as_deref()),
+                    recipient_name,
+                    pieces,
+                    back: if pieces.is_some() { payments.iter().map(|p| p.1).collect() } else { vec![] },
+                },
             },
         );
         Ok(Prepared { id, to: to.to_owned(), amount, fee, receipt: receipt.as_ref().map(ReceiptView::from), split: vec![], pieces })
@@ -1750,43 +1792,65 @@ impl Wallet {
 
     /// Signs and broadcasts a prepared payment. Returns its transaction hash.
     pub async fn send(&self, id: u64) -> Result<String> {
-        let prepared = self.inner.prepared.lock().await.remove(&id).ok_or(FobError::NoSuchPayment)?;
+        let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::NoSuchPayment)?;
         let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
         let tx = prepared.signable.sign(&mut OsRng, spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
         let hash = hex::encode(tx.hash());
-        {
-            // Spent already by a payment sent in the meantime?
-            let state = self.inner.state.lock().await;
-            if prepared.inputs.iter().any(|&i| state.outputs.get(i).is_none_or(|o| o.spent_in.is_some())) {
-                return Err(FobError::NoSuchPayment);
+        let wallet = self.clone();
+        let publish = async move {
+            let rpc = wallet.rpc().await?;
+            rpc.publish_transaction(&tx).await.map_err(|e| FobError::Node(format!("{e:?}")))
+        };
+        self.publish_and_record(hash, fee, prepared.out, publish).await
+    }
+
+    /// Publishes a signed payment with `publish`, then records it (its
+    /// inputs spent, the payment kept), as one step that runs to the end on
+    /// its own once begun: dropping this call (the app leaving Confirm while
+    /// "Sending…") never leaves a payment the node may have unrecorded.
+    async fn publish_and_record(&self, hash: String, fee: u64, out: Outgoing, publish: impl Future<Output = Result<()>> + Send + 'static) -> Result<String> {
+        let wallet = self.clone();
+        let step = tokio::spawn(async move {
+            {
+                // Spent already by a payment sent in the meantime?
+                let state = wallet.inner.state.lock().await;
+                if out.inputs.iter().any(|&i| state.outputs.get(i).is_none_or(|o| o.spent_in.is_some())) {
+                    return Err(FobError::NoSuchPayment);
+                }
             }
-        }
-        let rpc = self.rpc().await?;
-        rpc.publish_transaction(&tx).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+            publish.await?;
+            wallet.record_sent(hash, fee, out).await
+        });
+        step.await.map_err(|e| FobError::Send(format!("{e}")))?
+    }
+
+    /// Keeps a payment just published: its inputs spent, and what only the
+    /// sender knows.
+    async fn record_sent(&self, hash: String, fee: u64, out: Outgoing) -> Result<String> {
         let mut state = self.inner.state.lock().await;
-        for &i in &prepared.inputs {
+        for &i in &out.inputs {
             if let Some(output) = state.outputs.get_mut(i) {
                 output.spent_in = Some(hash.clone());
             }
         }
         // A split's pieces come back to this wallet with the change.
-        let back = if prepared.pieces.is_some() { prepared.input_total } else { prepared.input_total.saturating_sub(prepared.amount) };
-        let change = prepared.input_total.saturating_sub(prepared.amount).saturating_sub(fee);
-        let outputs = prepared.back.iter().copied().chain((change > 0).then_some(change)).collect();
+        let back = if out.pieces.is_some() { out.input_total } else { out.input_total.saturating_sub(out.amount) };
+        let change = out.input_total.saturating_sub(out.amount).saturating_sub(fee);
+        let outputs = out.back.iter().copied().chain((change > 0).then_some(change)).collect();
         state.sent.push(Sent {
             tx: hash.clone(),
-            to: prepared.to,
-            amount: prepared.amount,
+            to: out.to,
+            amount: out.amount,
             fee,
             change: back.saturating_sub(fee),
             time: now(),
             height: None,
-            receipt: prepared.receipt,
-            note: prepared.note,
-            pieces: prepared.pieces,
+            receipt: out.receipt,
+            note: out.note,
+            pieces: out.pieces,
             back: outputs,
-            recipient_name: prepared.recipient_name,
+            recipient_name: out.recipient_name,
         });
         self.record_prices(&mut state);
         self.save_state(&state)?;
@@ -1795,7 +1859,7 @@ impl Wallet {
 
     /// Forgets a prepared payment that won't be sent.
     pub async fn cancel(&self, id: u64) {
-        self.inner.prepared.lock().await.remove(&id);
+        self.inner.prepared.lock().await.take(id);
     }
 
     /// Every payment and when it moved: sent, spent on the chain, received,
@@ -3425,6 +3489,72 @@ mod tests {
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&made.inner.keys), state: &*made.inner.state.lock().await }).unwrap();
         file["state"].as_object_mut().unwrap().remove("restored");
         assert!(!serde_json::from_value::<FileIn>(file).unwrap().state.restored);
+    }
+
+    fn outgoing(to: &str, inputs: Vec<usize>) -> Outgoing {
+        Outgoing {
+            to: to.into(),
+            amount: XMR / 10,
+            inputs,
+            input_total: XMR,
+            receipt: None,
+            note: Some("Lunch".into()),
+            recipient_name: Some("Sam".into()),
+            pieces: None,
+            back: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_payment_published_is_recorded_even_if_its_caller_goes_away() {
+        let path = dir("send-dropped");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        wallet.inner.state.lock().await.outputs.push(received("coin", 1, XMR));
+        let to = wallet.inner.keys.address(9);
+        // The node takes it only after Confirm has gone (Back pressed while "Sending…", say).
+        let (published, node) = tokio::sync::oneshot::channel::<()>();
+        let publish = async move {
+            node.await.ok();
+            Ok(())
+        };
+        let call = wallet.publish_and_record("hash".into(), 30, outgoing(&to, vec![0]), publish);
+        assert!(tokio::time::timeout(Duration::from_millis(20), call).await.is_err(), "still publishing when dropped");
+        published.send(()).unwrap();
+        for _ in 0..100 {
+            if !wallet.inner.state.lock().await.sent.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        let state = reopened.inner.state.lock().await;
+        let sent = state.sent.iter().find(|s| s.tx == "hash").expect("recorded, and saved");
+        assert_eq!((sent.note.as_deref(), sent.recipient_name.as_deref(), sent.to.as_str()), (Some("Lunch"), Some("Sam"), to.as_str()));
+        assert_eq!(state.outputs[0].spent_in.as_deref(), Some("hash"));
+        drop(state);
+        // Its inputs spent, another payment from them is refused before anything is published.
+        let never = async { panic!("not published") };
+        assert!(matches!(wallet.publish_and_record("again".into(), 30, outgoing(&to, vec![0]), never).await, Err(FobError::NoSuchPayment)));
+        // A node refusing it records nothing.
+        wallet.inner.state.lock().await.outputs.push(received("coin-2", 1, XMR));
+        let refused = async { Err(FobError::Node("rejected".into())) };
+        assert!(wallet.publish_and_record("refused".into(), 30, outgoing(&to, vec![1]), refused).await.is_err());
+        assert!(wallet.inner.state.lock().await.sent.iter().all(|s| s.tx != "refused"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prepared_payment_left_behind_is_forgotten() {
+        let mut pending = Pending::default();
+        pending.insert(1, "left behind");
+        tokio::time::advance(PREPARED_FOR - Duration::from_secs(60)).await;
+        pending.insert(2, "fresh");
+        assert_eq!(pending.take(2), Some("fresh"));
+        assert_eq!(pending.take(2), None, "sent or cancelled once");
+        pending.insert(3, "newer");
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(pending.take(1), None, "too old to send");
+        assert!(pending.items.len() == 1 && pending.items.contains_key(&3), "pruned as others come and go");
+        assert_eq!(pending.take(3), Some("newer"));
     }
 
     #[tokio::test]

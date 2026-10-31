@@ -59,12 +59,11 @@ import com.monokulo.fob.ui.screens.SplitScreen
 import com.monokulo.fob.ui.screens.WalletCodeScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
 import com.monokulo.fob.ui.screens.ZmqScreen
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CompletableDeferred
 import com.monokulo.fob.ui.screens.SendDraft
 import uniffi.fob.Activity
 import uniffi.fob.ContactDraft
 import uniffi.fob.Prepared
-import kotlin.coroutines.resume
 
 /** Where the app is. Each screen is a value; the back stack is a list of them. */
 sealed interface Screen {
@@ -150,22 +149,39 @@ class Nav(start: Screen) {
  */
 class NavHolder : ViewModel() {
     var nav: Nav? = null
+    /** The answer to a phone-lock prompt still up, kept likewise: it reaches the Confirm that comes back. */
+    var identity: CompletableDeferred<Boolean>? = null
 }
 
 class MainActivity : FragmentActivity() {
     private val model: WalletModel get() = (application as FobApp).model
     private val link = mutableStateOf<String?>(null)
+    private lateinit var holder: NavHolder
+    /** Made here, as androidx.biometric asks, so a prompt up while the activity is made again still answers. */
+    private lateinit var prompt: BiometricPrompt
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        holder = ViewModelProvider(this)[NavHolder::class.java]
+        prompt = BiometricPrompt(
+            this, ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    holder.identity?.complete(true)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    holder.identity?.complete(false)
+                }
+            },
+        )
         // A link is read once, not again when the activity is made again.
         if (savedInstanceState == null) link.value = intent?.dataString
         // For the catching-up notification; Fob works the same without it.
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
-        val holder = ViewModelProvider(this)[NavHolder::class.java]
         val nav = holder.nav ?: Nav(if (model.hasWallet()) Screen.Home else Screen.Welcome).also { holder.nav = it }
         setContent {
             val theme by model.theme.collectAsState()
@@ -202,26 +218,22 @@ class MainActivity : FragmentActivity() {
         super.onStop()
     }
 
-    /** Fingerprint, face or screen lock before money leaves; passes on a phone with none set up. */
+    /**
+     * Fingerprint, face or screen lock before money leaves; passes on a
+     * phone with none set up. A prompt already up (the activity made again
+     * under it) is waited for, not asked twice.
+     */
     suspend fun confirmIdentity(title: String): Boolean {
         val allowed = BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+        holder.identity?.takeIf { it.isActive }?.let { return it.await() }
         if (BiometricManager.from(this).canAuthenticate(allowed) != BiometricManager.BIOMETRIC_SUCCESS) return true
-        return suspendCancellableCoroutine { done ->
-            val prompt = BiometricPrompt(
-                this, ContextCompat.getMainExecutor(this),
-                object : BiometricPrompt.AuthenticationCallback() {
-                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                        if (done.isActive) done.resume(true)
-                    }
-
-                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                        if (done.isActive) done.resume(false)
-                    }
-                },
-            )
-            prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(title).setAllowedAuthenticators(allowed).build())
-        }
+        val asked = CompletableDeferred<Boolean>().also { holder.identity = it }
+        prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(title).setAllowedAuthenticators(allowed).build())
+        return asked.await()
     }
+
+    /** A phone-lock prompt is up, asked before the activity was made again. */
+    fun identityPending(): Boolean = holder.identity?.isActive == true
 
     /** Status and navigation bar icons dark on light paper, light on dark. */
     @Composable
@@ -260,7 +272,7 @@ class MainActivity : FragmentActivity() {
             is Screen.Receive -> ReceiveScreen(model, nav, screen)
             is Screen.Request -> RequestScreen(model, nav, screen.id)
             is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
-            is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
+            is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity, ::identityPending)
             is Screen.Paid -> PaidScreen(model, nav, screen.prepared, screen.tx)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)

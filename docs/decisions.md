@@ -1289,3 +1289,20 @@ Calls made while building the first version, with why. Newest last.
     its last paid one can still be handed out again; neither phone's file
     says how far the other went. A wallet restored before this build
     reads as one made here and skips nothing.
+172. **A payment once sending is never left unrecorded**: Rust publishes a
+    signed payment and records it (inputs spent, the payment and what only
+    the sender knows) in one task of its own, so dropping the call (the
+    app leaving Confirm, which cancels the coroutine and frees the Rust
+    future) can't stop it between the node taking it and the wallet file
+    keeping it. Android sends on the model's scope, and Back does nothing
+    on Confirm while it says "Sending…".
+173. **A prepared payment left behind is forgotten**: Confirm forgets its
+    prepared payment whenever it's left without sending (system Back, the
+    gesture, the top bar), not only by its top bar, unless the screen is
+    only being made again; and Rust forgets any prepared payment after 15
+    minutes, so one left behind (a recreated Send's, say) never piles up.
+    Sending one that's gone says it was already sent or has expired.
+174. **The phone-lock prompt survives the activity being made again**: the
+    prompt is made in `onCreate` with its answer kept in the activity's
+    ViewModel; a Confirm that comes back while it's up waits for that
+    answer and sends on it, rather than losing it to a dead coroutine.
