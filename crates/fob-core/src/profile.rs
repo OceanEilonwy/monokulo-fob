@@ -100,7 +100,7 @@ pub struct Book {
 /// A typed name for the profile, checked as a contact's: 1 to
 /// [`contacts::NAME_MAX`] characters once cleaned.
 pub fn check_name(text: &str) -> Result<String> {
-    let kept: String = text.chars().filter(contacts::shown).collect();
+    let kept = contacts::clean(text);
     match kept.trim().chars().count() {
         0 => Err(FobError::Profile("Your profile needs a name.".into())),
         n if n > contacts::NAME_MAX => Err(FobError::Profile(format!("A name can be up to {} characters.", contacts::NAME_MAX))),
@@ -363,7 +363,9 @@ pub struct Clash {
     /// "Update Sam", or "Open Sam" when nothing would change.
     pub update: String,
     pub keep: String,
-    pub add_new: String,
+    /// "Add as new contact", for a name only: an address that's a
+    /// contact's already is never given a second one.
+    pub add_new: Option<String>,
 }
 
 /// A scanned profile, every word ready to draw ("Another Fob scans the code").
@@ -402,7 +404,8 @@ fn changes(contact: &Contact, code: &uri::ProfileCode) -> (Vec<Change>, bool) {
 }
 
 /// What scanning `code` shows: the profile, and the contact it would change
-/// (the one with its address, else the oldest with its name, any case).
+/// (the one with its address, else the oldest whose name is its name or
+/// looks like it).
 pub fn scanned(book: &contacts::Book, code: uri::ProfileCode) -> Scanned {
     let clash = book
         .owner(&code.address)
@@ -412,10 +415,19 @@ pub fn scanned(book: &contacts::Book, code: uri::ProfileCode) -> Scanned {
             } else {
                 format!("{} was paid at this address.", c.name)
             };
-            (c, why)
+            (c, why, false)
         })
-        .or_else(|| book.named(&code.name).map(|c| (c, format!("You have a contact named {}.", c.name))))
-        .map(|(contact, why)| {
+        .or_else(|| {
+            book.named(&code.name).map(|c| {
+                let why = if c.name.to_lowercase() == code.name.to_lowercase() {
+                    format!("You have a contact named {}.", c.name)
+                } else {
+                    format!("You have a contact whose name looks like this one: {}.", c.name)
+                };
+                (c, why, true)
+            })
+        })
+        .map(|(contact, why, by_name)| {
             let (changes, photo_changes) = changes(contact, &code);
             let what: Vec<String> = changes.iter().map(|c| c.label.to_lowercase()).collect();
             let ask = match what.as_slice() {
@@ -426,7 +438,7 @@ pub fn scanned(book: &contacts::Book, code: uri::ProfileCode) -> Scanned {
             Clash {
                 update: if changes.is_empty() { format!("Open {}", contact.name) } else { format!("Update {}", contact.name) },
                 keep: "Keep as is".into(),
-                add_new: "Add as new contact".into(),
+                add_new: by_name.then(|| "Add as new contact".into()),
                 contact: contact.clone(),
                 why,
                 ask,
@@ -643,11 +655,20 @@ mod tests {
         );
         assert!(c.photo_changes);
         assert_eq!(c.ask, "Update Sam? Their name, photo and send address change to the profile's.");
-        assert_eq!((c.update.as_str(), c.keep.as_str(), c.add_new.as_str()), ("Update Sam", "Keep as is", "Add as new contact"));
+        assert_eq!((c.update.as_str(), c.keep.as_str(), c.add_new.as_deref()), ("Update Sam", "Keep as is", Some("Add as new contact")));
+        // A name made to look like Sam's: a zero-width space in it, a Cyrillic "Ѕ", full-width letters.
+        for lookalike in ["Sa\u{200b}m", "\u{405}am", "Ｓａｍ", "S\u{430}m"] {
+            let c = scanned(&book, code(lookalike, &henry_at, None)).clash.expect(lookalike);
+            assert_eq!(c.contact.id, sam.id, "{lookalike}");
+        }
+        let c = scanned(&book, code("\u{405}am", &henry_at, None)).clash.unwrap();
+        assert_eq!(c.why, "You have a contact whose name looks like this one: Sam.");
+        assert!(scanned(&book, code("Pam", &henry_at, None)).clash.is_none());
 
-        // The same address under another name: the address wins.
+        // The same address under another name: the address wins, and no second contact gets it.
         let c = scanned(&book, code("Samuel", &sam_at, None)).clash.unwrap();
         assert_eq!((c.why.as_str(), c.ask.as_str(), c.photo_changes), ("This address is Sam's send address.", "Update Sam? Their name changes to the profile's.", false));
+        assert_eq!(c.add_new, None);
         let c = scanned(&book, code("Sam", &other_at, None)).clash.unwrap();
         assert_eq!((c.why.as_str(), c.changes.len()), ("Sam was paid at this address.", 1));
         // Nothing to change.
@@ -658,7 +679,7 @@ mod tests {
         // Taken: name, photo and send address; the note and paid-at stay, and
         // a profile without a photo keeps theirs.
         let draft = updated(&sam, &code("Samuel", &other_at, Some(webp(60))));
-        let edited = book.edit(Network::Stagenet, sam.id, draft).unwrap();
+        let edited = book.edit(Network::Stagenet, sam.id, draft, &|_| false).unwrap();
         assert_eq!((edited.name.as_str(), edited.note.as_deref(), edited.photo.clone()), ("Samuel", Some("Lunch"), Some(webp(60))));
         assert_eq!((edited.send_address.as_deref(), edited.also_paid_at.len()), (Some(other_at.as_str()), 0), "moved out of paid at");
         assert_eq!(updated(&edited, &code("Sam", &sam_at, None)).photo, Some(webp(60)));

@@ -1212,3 +1212,37 @@ Calls made while building the first version, with why. Newest last.
 161. **Send's small fixes**: the sheet's handle is 48 dp to touch, its bar
     still small; in a landscape strip too short for words over the camera,
     what a scan found shows on the folded sheet instead.
+162. **Names and notes keep nothing that draws nothing, and lookalike names
+    are one name**: cleaning drops Unicode's default ignorables (zero-width
+    spaces and joiners, bidi marks including the Arabic letter mark, line
+    and paragraph separators, invisible operators, fillers, soft hyphens,
+    tags), keeping a joiner between two emoji and a variation selector or
+    tag after one, which make one emoji of several. Contacts are matched
+    by name on a skeleton: cleaned, NFKC (`unicode-normalization` 0.1.25,
+    a new dependency, small, its `tinyvec` already in the tree, released
+    well over two weeks ago),
+    lower case, without spaces, Cyrillic and Greek letters drawn like
+    Latin ones mapped to them (and 0, 1 and | to o, l, l). A scanned
+    profile named "Ѕam" with a Cyrillic Ѕ, or "Sa​m" with a zero-width
+    space, asks first, saying "You have a contact whose name looks like
+    this one: Sam." The map is small and hand-made (Unicode's full
+    confusables table would be a new dependency): it catches the
+    lookalikes of Latin names, not every one there is.
+163. **Rust checks a scanned profile before adding it**: Add contact on a
+    profile whose address is already a contact's is refused ("That
+    address is Sam's already: update Sam instead."), and the ask no longer
+    offers "Add as new contact" for it: two contacts never own one send
+    address from a profile. A profile whose name is (or looks like) a
+    contact's is added only once asked (Add as new contact), whatever the
+    screen captured when it scanned.
+164. **A send address replaced keeps its payments with the contact**:
+    changing or clearing a contact's send address (Change on the card,
+    Edit, or Update from a profile) moves the old one into "Also paid at"
+    when anything was paid to it, so its payments stay on the card and out
+    of "Paid, not saved". One never paid is just replaced.
+165. **A code's description is cleaned like a note**: control characters,
+    bidi marks and the rest of decision 162's invisibles out, trimmed, cut
+    to 120 characters, so a payment's note (shown on contacts' cards) is
+    never turned round on screen. A typed note going with a payment is
+    cleaned the same way. Change on a card that can't be saved says why
+    and stays on the scanner's sheet.

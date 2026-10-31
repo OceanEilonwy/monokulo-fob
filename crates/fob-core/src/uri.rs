@@ -89,7 +89,8 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
         amount,
         // Shown as typed by whoever made the code: cleaned and cut.
         recipient_name: get(&pairs, &["recipient_name"]).and_then(crate::contacts::clean_name),
-        description: get(&pairs, &["tx_description", "description"]).map(str::to_owned),
+        // Kept as the payment's note and shown on contacts' cards: cleaned and cut as a request's note.
+        description: get(&pairs, &["tx_description", "description"]).and_then(|d| crate::requests::clean_note(Some(d))),
         receipt,
     })
 }
@@ -419,6 +420,11 @@ mod tests {
         assert_eq!(name(&"x".repeat(60)).map(|n| n.chars().count()), Some(40));
         // A direction override can't turn the name around on screen.
         assert_eq!(name("%E2%80%AEevil").as_deref(), Some("evil"));
+        // Nor the description, kept as the payment's note: cleaned and cut the same way.
+        let description = |value: &str| parse_payment(Network::Stagenet, &format!("monero:{address}?tx_description={value}")).unwrap().description;
+        assert_eq!(description("%E2%80%AEpizza%0A%E2%80%8B").as_deref(), Some("pizza"));
+        assert_eq!(description(&"x".repeat(500)).map(|d| d.chars().count()), Some(NOTE_MAX_CHARS));
+        assert_eq!(description("%E2%80%8B"), None);
     }
 
     #[test]

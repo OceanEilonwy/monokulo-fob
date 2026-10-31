@@ -464,7 +464,7 @@ private fun SwappedView(model: WalletModel, nav: Nav, profile: Profile?, done: S
                     if (found.clash != null) asking = true
                     else scope.launch {
                         error = null
-                        runCatching { model.changeContacts { it.addContactFromProfile(done.text) } }
+                        runCatching { model.changeContacts { it.addContactFromProfile(done.text, false) } }
                             .onSuccess { nav.replace(Screen.Contact(it.id)) }.onFailure { error = it.reason() }
                     }
                 }, Modifier.weight(1f))
@@ -623,7 +623,8 @@ fun ProfileFound(
             }, height = 52.dp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlineButton(clash.keep, { asking = false }, Modifier.weight(1f), height = 52.dp)
-                OutlineButton(clash.addNew, { open { it.addContactFromProfile(text) } }, Modifier.weight(1f), height = 52.dp)
+                // Only for a name: a contact's address is never given to a second one (Rust).
+                clash.addNew?.let { OutlineButton(it, { open { w -> w.addContactFromProfile(text, true) } }, Modifier.weight(1f), height = 52.dp) }
             }
         } else {
             Avatar(found.name, found.initial, found.photo, 88.dp, describe = true)
@@ -636,7 +637,7 @@ fun ProfileFound(
             ErrorText(error)
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlineButton(found.pay, onPay, Modifier.weight(1f), height = 52.dp)
-                PrimaryButton(found.add, { if (clash != null) asking = true else open { it.addContactFromProfile(text) } }, Modifier.weight(1f), height = 52.dp)
+                PrimaryButton(found.add, { if (clash != null) asking = true else open { it.addContactFromProfile(text, false) } }, Modifier.weight(1f), height = 52.dp)
             }
         }
     }

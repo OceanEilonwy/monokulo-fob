@@ -27,6 +27,7 @@ qrcode = { version = "0.14", default-features = false }
 percent-encoding = "2"
 base64 = "0.22"
 sha3 = "0.10"
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
