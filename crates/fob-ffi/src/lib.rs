@@ -34,7 +34,7 @@ impl From<fob_core::FobError> for FobError {
         use fob_core::FobError as E;
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::WrongNetwork { .. } => FobError::Invalid { reason },
+            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } => FobError::Invalid { reason },
             E::Node(_) => FobError::Node { reason },
             E::NotEnoughFunds { .. } => FobError::NotEnoughFunds { reason },
             E::WrongKey => FobError::WrongKey { reason },
@@ -193,6 +193,29 @@ pub struct SyncStatus {
     /// When the last scanned block was mined, seconds since the epoch.
     pub up_to: u64,
     pub error: Option<String>,
+    pub zmq: ZmqStatus,
+    /// The subtitle for "Instant updates (ZMQ)": "host:18083 · listening", or "Off".
+    pub zmq_text: String,
+}
+
+/// Instant updates from the node's ZMQ publisher.
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum ZmqStatus {
+    Off,
+    Connecting,
+    Listening,
+    CantConnect { reason: String },
+}
+
+impl From<fob_core::ZmqStatus> for ZmqStatus {
+    fn from(z: fob_core::ZmqStatus) -> Self {
+        match z {
+            fob_core::ZmqStatus::Off => ZmqStatus::Off,
+            fob_core::ZmqStatus::Connecting => ZmqStatus::Connecting,
+            fob_core::ZmqStatus::Listening => ZmqStatus::Listening,
+            fob_core::ZmqStatus::CantConnect(reason) => ZmqStatus::CantConnect { reason },
+        }
+    }
 }
 
 impl From<fob_core::SyncStatus> for SyncStatus {
@@ -205,6 +228,8 @@ impl From<fob_core::SyncStatus> for SyncStatus {
             seconds_left: s.seconds_left,
             up_to: s.up_to,
             error: s.error,
+            zmq: s.zmq.into(),
+            zmq_text: s.zmq_text,
         }
     }
 }
@@ -381,6 +406,18 @@ impl FobWallet {
 
     pub async fn set_node(&self, url: String) -> Result<()> {
         Ok(self.inner.set_node(&url).await?)
+    }
+
+    /// The node's ZMQ publisher: the one set, else the usual port on the
+    /// node's host, to show and edit.
+    pub async fn zmq_endpoint(&self) -> String {
+        self.inner.zmq_endpoint().await
+    }
+
+    /// Turns instant updates on or off; `endpoint`, if given, replaces the
+    /// one set (it must be on the node's own host).
+    pub async fn set_zmq(&self, on: bool, endpoint: Option<String>) -> Result<()> {
+        Ok(self.inner.set_zmq(on, endpoint.as_deref()).await?)
     }
 
     pub async fn balance(&self) -> Balance {

@@ -44,6 +44,7 @@ import com.monokulo.fob.ui.screens.SendScreen
 import com.monokulo.fob.ui.screens.SettingsScreen
 import com.monokulo.fob.ui.screens.WalletCodeScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
+import com.monokulo.fob.ui.screens.ZmqScreen
 import kotlinx.coroutines.suspendCancellableCoroutine
 import uniffi.fob.Activity
 import uniffi.fob.Prepared
@@ -70,6 +71,7 @@ sealed interface Screen {
     data object ShowSeed : Screen
     data object ShowWalletCode : Screen
     data object Node : Screen
+    data object Zmq : Screen
 }
 
 class Nav(start: Screen) {
@@ -194,6 +196,7 @@ class MainActivity : FragmentActivity() {
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)
+            Screen.Zmq -> ZmqScreen(model, nav)
         }
     }
 }

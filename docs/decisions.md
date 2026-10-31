@@ -203,3 +203,33 @@ Calls made while building the first version, with why. Newest last.
     12 for 25 words), one column from a font scale of 1.6.
 41. **"0.5 XMR ready to spend"** shows under the balance only while some of
     it can't be spent yet (`Balance::ready_text`).
+42. **Instant updates over ZMQ (`zmq`, `zmtp`).** Monokulo's ZMTP 3.0
+    subscriber is copied into fob-core, not shared: Fob has no code ties to
+    Monokulo, and the files say where they came from. Kept: bounded frames
+    (64 MiB, read as they arrive, never allocated from a declared size), a
+    10 s handshake limit, a 10-minute idle limit with TCP keep-alive, a
+    broken protocol just ending the connection, and reconnecting after 1 s
+    doubling to a minute. Dropped: `ipc://` (a phone has no node on a Unix
+    socket) and the engine's status figures. The test publisher came too,
+    so tests run against a fake monerod in-process; the two proptest
+    properties run as loops over a seeded generator rather than adding
+    proptest as a dependency.
+43. **Off by default; the node's own host only.** The setting (on or off,
+    and the address, kept while off) lives with the node in the wallet
+    file. Rust checks the address: `tcp://host:port` (or `host:port`), no
+    user, path or query, and the host must be the node's. Fob offers
+    `tcp://<node host>:18083` (mainnet) or `:38083` (stagenet) and connects
+    nowhere until it's turned on. Changing to a node on another host turns
+    instant updates off rather than following somewhere not chosen.
+44. **What an announcement does.** `chain_main` wakes the sync loop at once
+    through the same wake `sync_now` uses; connecting does too, for blocks
+    missed meanwhile. `txpool_add` has the waiting loop look at the pool
+    (once caught up), 2 s after the announcement so a burst is one look,
+    and the wait carries on. Polling stays as the fallback: every 20 s as
+    before, every 2 minutes while the publisher is heard.
+45. **ZMQ status comes with the sync status**: Off, Connecting, Listening
+    or Can't connect with a few words of why, and Settings' subtitle as
+    Rust writes it ("host:18083 · listening"). A change is reported to the
+    app like any other sync step. On but not syncing reads "connecting":
+    it connects again when syncing starts. Turning the switch on with no
+    address Rust accepts opens the address screen instead.

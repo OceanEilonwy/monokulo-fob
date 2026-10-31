@@ -17,6 +17,9 @@ pub enum FobError {
     ViewOnly,
     #[error("not enough unlocked money: {available} available, {needed} needed")]
     NotEnoughFunds { available: String, needed: String },
+    /// An instant-updates (ZMQ) address that isn't right, and why.
+    #[error("{0}")]
+    BadEndpoint(String),
     #[error("the node didn't answer: {0}")]
     Node(String),
     #[error("couldn't build the transaction: {0}")]

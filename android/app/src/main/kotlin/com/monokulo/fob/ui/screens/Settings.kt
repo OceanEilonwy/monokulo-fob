@@ -60,6 +60,7 @@ import kotlinx.coroutines.launch
 import uniffi.fob.Activity
 import uniffi.fob.Network
 import uniffi.fob.NodeCheck
+import uniffi.fob.ZmqStatus
 import uniffi.fob.checkNodes
 import uniffi.fob.defaultNodes
 import uniffi.fob.qrCode
@@ -120,6 +121,8 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
     val theme by model.theme.collectAsState()
+    val status by model.status.collectAsState()
+    val scope = rememberCoroutineScope()
     var node by remember { mutableStateOf("") }
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
@@ -139,6 +142,12 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 SectionLabel("Syncing")
                 Card {
                     SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
+                    val zmqOn = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
+                    SettingRow(
+                        "Instant updates (ZMQ)", status?.zmqText ?: "Off", onClick = { nav.go(Screen.Zmq) },
+                        // Turning on with nothing Rust accepts opens the address to fix.
+                        checked = zmqOn, onChecked = { on -> scope.launch { runCatching { model.setZmq(on) }.onFailure { nav.go(Screen.Zmq) } } },
+                    )
                 }
             }
             Column {
@@ -220,7 +229,7 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
     Page(bottom = {
         ErrorText(error)
         PrimaryButton("Use this node", enabled = node.isNotBlank(), onClick = {
-            scope.launch { runCatching { wallet?.setNode(node) }.onSuccess { nav.back() }.onFailure { error = it.reason() } }
+            scope.launch { runCatching { model.setNode(node) }.onSuccess { nav.back() }.onFailure { error = it.reason() } }
         })
     }) {
         TopBar("Node", onBack = { nav.back() })
@@ -263,6 +272,42 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
                 }
             }
             Text("Fob asks the node for blocks and sends your payments through it. It never sends your keys.", color = Fob.muted, fontSize = 13.sp)
+        }
+    }
+}
+
+/** Instant updates: the node's ZMQ address, edited as the Node screen edits the node's. */
+@Composable
+fun ZmqScreen(model: WalletModel, nav: Nav) {
+    val wallet by model.wallet.collectAsState()
+    val status by model.status.collectAsState()
+    val scope = rememberCoroutineScope()
+    var endpoint by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(wallet) { endpoint = wallet?.zmqEndpoint() ?: "" }
+    val on = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
+    Page(bottom = {
+        ErrorText(error)
+        PrimaryButton("Use this address", enabled = endpoint.isNotBlank(), onClick = {
+            scope.launch { runCatching { model.setZmq(true, endpoint) }.onSuccess { nav.back() }.onFailure { error = it.reason() } }
+        })
+        if (on) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            TextButton("Turn off", { scope.launch { runCatching { model.setZmq(false) }.onSuccess { nav.back() }.onFailure { error = it.reason() } } }, color = Fob.ink)
+        }
+    }) {
+        TopBar("Instant updates", onBack = { nav.back() })
+        Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            status?.let { s ->
+                Card {
+                    InfoRow("Status", s.zmqText)
+                    (s.zmq as? ZmqStatus.CantConnect)?.let { Divider(); Text(it.reason, color = Fob.red, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) }
+                }
+            }
+            Field(endpoint, { endpoint = it }, "ZMQ address", hint = "Your node's --zmq-pub, on the node's own host: tcp://host:port")
+            Text(
+                "Your node tells Fob about new blocks and payments the moment it sees them. Fob still checks every two minutes in case one is missed. Only your node's host is ever contacted.",
+                color = Fob.muted, fontSize = 13.sp,
+            )
         }
     }
 }

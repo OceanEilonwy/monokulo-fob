@@ -123,6 +123,20 @@ class WalletModel(private val app: Application) {
         refresh()
     }
 
+    /** Talks to another node; on another host, instant updates go off. Throws what Rust refused. */
+    suspend fun setNode(url: String) {
+        val wallet = _wallet.value ?: return
+        wallet.setNode(url)
+        _status.value = wallet.status()
+    }
+
+    /** Instant updates (ZMQ) on or off; [endpoint], if given, replaces the one set. Throws what Rust refused. */
+    suspend fun setZmq(on: Boolean, endpoint: String? = null) {
+        val wallet = _wallet.value ?: return
+        wallet.setZmq(on, endpoint)
+        _status.value = wallet.status()
+    }
+
     /**
      * Fob came on screen or went off it. On screen it syncs; off screen it
      * keeps going only while catching up, which [SyncService] holds open.
