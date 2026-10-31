@@ -1565,7 +1565,7 @@ impl Wallet {
                 inputs: chosen.iter().map(|c| c.0).collect(),
                 input_total: total,
                 receipt: receipt.is_some().then_some(receipt_json).flatten(),
-                note: note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
+                note: requests::clean_note(note.as_deref()),
                 recipient_name,
                 pieces,
                 back: if pieces.is_some() { payments.iter().map(|p| p.1).collect() } else { vec![] },
@@ -2096,20 +2096,32 @@ impl Wallet {
         Ok(profile::scanned(&self.inner.state.lock().await.contacts, code))
     }
 
-    /// "Add contact" (or "Add as new contact") on a scanned profile: its
-    /// name, photo and address as the send address.
-    pub async fn add_contact_from_profile(&self, text: &str) -> Result<Contact> {
+    /// "Add contact" on a scanned profile, or "Add as new contact" once
+    /// asked (`as_new`): its name, photo and address as the send address.
+    /// Checked again here, whatever the screen showed: a profile whose
+    /// address is a contact's is never added beside it (Update is the way),
+    /// and one whose name is (or looks like) a contact's only once asked.
+    pub async fn add_contact_from_profile(&self, text: &str, as_new: bool) -> Result<Contact> {
         let code = uri::parse_profile(self.network(), text)?;
-        self.change_contacts(|book, network| book.add(network, profile::new_contact(&code), now())).await
+        self.change_contacts(|book, network, _| {
+            if let Some(owner) = book.owner(&code.address) {
+                return Err(FobError::Contact(format!("That address is {}'s already: update {} instead.", owner.name, owner.name)));
+            }
+            if let Some(named) = book.named(&code.name).filter(|_| !as_new) {
+                return Err(FobError::Contact(format!("You have a contact named {}: choose Update or Add as new contact.", named.name)));
+            }
+            book.add(network, profile::new_contact(&code), now())
+        })
+        .await
     }
 
     /// "Update Sam" on a scanned profile, once asked: the contact takes its
     /// name, photo and address as the send address.
     pub async fn update_contact_from_profile(&self, id: u64, text: &str) -> Result<Contact> {
         let code = uri::parse_profile(self.network(), text)?;
-        self.change_contacts(|book, network| {
+        self.change_contacts(|book, network, paid| {
             let contact = book.get(id).ok_or_else(|| FobError::Contact("That contact was deleted.".into()))?;
-            book.edit(network, id, profile::updated(contact, &code))
+            book.edit(network, id, profile::updated(contact, &code), paid)
         })
         .await
     }
@@ -2198,33 +2210,34 @@ impl Wallet {
     }
 
     /// Changes the contacts and saves them, or leaves them as they were when
-    /// `change` refuses.
-    async fn change_contacts<T>(&self, change: impl FnOnce(&mut contacts::Book, Network) -> Result<T>) -> Result<T> {
+    /// `change` refuses. `change` is told which addresses were paid.
+    async fn change_contacts<T>(&self, change: impl FnOnce(&mut contacts::Book, Network, &dyn Fn(&str) -> bool) -> Result<T>) -> Result<T> {
         let mut state = self.inner.state.lock().await;
         let mut book = state.contacts.clone();
-        let done = change(&mut book, self.network())?;
+        let paid: HashSet<&str> = state.sent.iter().filter(|s| s.pieces.is_none()).map(|s| s.to.as_str()).collect();
+        let done = change(&mut book, self.network(), &|a| paid.contains(a))?;
         state.contacts = book;
         self.save_state(&state)?;
         Ok(done)
     }
 
     pub async fn add_contact(&self, draft: contacts::Draft) -> Result<Contact> {
-        self.change_contacts(|book, network| book.add(network, draft, now())).await
+        self.change_contacts(|book, network, _| book.add(network, draft, now())).await
     }
 
     pub async fn edit_contact(&self, id: u64, draft: contacts::Draft) -> Result<Contact> {
-        self.change_contacts(|book, network| book.edit(network, id, draft)).await
+        self.change_contacts(|book, network, paid| book.edit(network, id, draft, paid)).await
     }
 
     /// A contact's send address, scanned or pasted (a payment code's
     /// address is taken).
     pub async fn set_contact_send_address(&self, id: u64, text: &str) -> Result<Contact> {
-        self.change_contacts(|book, network| book.set_send_address(network, id, text)).await
+        self.change_contacts(|book, network, paid| book.set_send_address(network, id, text, paid)).await
     }
 
     /// Keeps an address paid (from a code named for the contact) with it.
     pub async fn add_contact_paid_at(&self, id: u64, address: &str) -> Result<Contact> {
-        self.change_contacts(|book, network| book.add_paid_at(network, id, address)).await
+        self.change_contacts(|book, network, _| book.add_paid_at(network, id, address)).await
     }
 
     /// The payment to `address` a contact made from it would be named by:
@@ -2258,7 +2271,7 @@ impl Wallet {
 
     /// Deletes a contact; payments to its addresses stay.
     pub async fn delete_contact(&self, id: u64) -> Result<()> {
-        self.change_contacts(|book, _| {
+        self.change_contacts(|book, _, _| {
             book.delete(id);
             Ok(())
         })
@@ -3380,7 +3393,7 @@ mod tests {
         assert_eq!(henry.profile_shares(clock).await.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Touched phones with Sam"]);
         // Adding Sam goes the way a scanned profile does, asking when he clashes.
         let text = uri::profile_uri(&got.code.address, &got.code.name, got.code.photo.as_deref());
-        sam.add_contact_from_profile(&text).await.unwrap();
+        sam.add_contact_from_profile(&text, false).await.unwrap();
         let (_, again) = share_and_swap(&sam).await;
         let (_, ours) = share_and_swap(&henry).await;
         touch(&again, &ours);
@@ -3473,7 +3486,7 @@ mod tests {
         let code = uri::profile_uri(&other.address(4), "Henry", Some(&webp(200)));
         let scanned = wallet.scanned_profile(&code).await.unwrap();
         assert!(scanned.clash.is_none());
-        let henry = wallet.add_contact_from_profile(&code).await.unwrap();
+        let henry = wallet.add_contact_from_profile(&code, false).await.unwrap();
         assert_eq!((henry.name.as_str(), henry.send_address.clone(), henry.photo.clone()), ("Henry", Some(other.address(4)), Some(webp(200))));
         // Scanned again from a new share: the same name, a new address. Nothing changes until Update.
         let newer = uri::profile_uri(&other.address(9), "Henry", None);
@@ -3482,8 +3495,18 @@ mod tests {
         assert_eq!(wallet.contact(henry.id).await.unwrap().send_address, Some(other.address(4)));
         let updated = wallet.update_contact_from_profile(henry.id, &newer).await.unwrap();
         assert_eq!((updated.send_address, updated.photo), (Some(other.address(9)), Some(webp(200))));
-        // Add as new contact keeps both.
-        wallet.add_contact_from_profile(&newer).await.unwrap();
+        // Rust asks too, whatever the screen did: the same name only once asked; a contact's address never.
+        let elsewhere = uri::profile_uri(&other.address(11), "Henry", None);
+        assert!(wallet.add_contact_from_profile(&elsewhere, false).await.is_err());
+        let lookalike = uri::profile_uri(&other.address(12), "Hen\u{200b}ry", None);
+        assert!(wallet.add_contact_from_profile(&lookalike, false).await.is_err());
+        let refused = wallet.add_contact_from_profile(&newer, true).await.unwrap_err().to_string();
+        assert_eq!(refused, "That address is Henry's already: update Henry instead.");
+        let renamed = uri::profile_uri(&other.address(9), "Someone else", None);
+        assert!(wallet.add_contact_from_profile(&renamed, true).await.is_err(), "an address is never two contacts' send address");
+        assert_eq!(wallet.contacts("", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 1);
+        // Add as new contact, once asked about the name, keeps both.
+        wallet.add_contact_from_profile(&elsewhere, true).await.unwrap();
         assert_eq!(wallet.contacts("henry", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 2);
         assert!(wallet.scanned_profile(&format!("monero:{}", other.address(4))).await.is_err());
         assert!(wallet.update_contact_from_profile(99, &newer).await.is_err());

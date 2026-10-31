@@ -76,7 +76,7 @@ pub struct Draft {
 /// A note as a request keeps it: control characters and the marks that
 /// turn text round taken out, trimmed, cut to what a payment code holds.
 pub fn clean_note(note: Option<&str>) -> Option<String> {
-    let kept: String = note?.chars().filter(contacts::shown).collect();
+    let kept = contacts::clean(note?);
     let fitted = uri::fit_note(kept.trim()).0;
     let fitted = fitted.trim_end();
     (!fitted.is_empty()).then(|| fitted.to_owned())

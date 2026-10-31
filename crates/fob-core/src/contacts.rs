@@ -63,6 +63,18 @@ impl Contact {
         self.addresses().any(|a| a == address)
     }
 
+    /// Makes `address` the send address: out of paid at if it was there,
+    /// and the old one, when `paid`, into it (it was theirs when paid).
+    fn replace_send_address(&mut self, address: Option<String>, paid: &dyn Fn(&str) -> bool) {
+        if let Some(old) = self.send_address.take().filter(|old| Some(old) != address.as_ref() && paid(old) && !self.also_paid_at.contains(old)) {
+            self.also_paid_at.push(old);
+        }
+        if let Some(address) = &address {
+            self.also_paid_at.retain(|a| a != address);
+        }
+        self.send_address = address;
+    }
+
     /// The letter on their avatar without a photo: "S".
     pub fn initial(&self) -> String {
         initial(&self.name)
@@ -100,17 +112,110 @@ pub struct Draft {
     pub also_paid_at: Vec<String>,
 }
 
-/// Characters a name or note keeps: no control characters (a line break,
-/// a bell) and none of the marks that turn text round on screen.
-pub(crate) fn shown(c: &char) -> bool {
-    !c.is_control() && !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+/// Characters that draw nothing: zero-width spaces and joiners, the marks
+/// that turn text round, line and paragraph separators, invisible
+/// operators, fillers, variation selectors and tags (Unicode's default
+/// ignorables, with the Arabic letter mark).
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{34f}'
+            | '\u{61c}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{17b4}'
+            | '\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff0}'..='\u{fff8}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+    )
+}
+
+/// Pictographs and symbols an emoji sequence is built from (skin tones
+/// among them).
+fn emoji(c: char) -> bool {
+    matches!(c, '\u{1f000}'..='\u{1faff}' | '\u{2190}'..='\u{21ff}' | '\u{2300}'..='\u{23ff}' | '\u{2600}'..='\u{27bf}' | '\u{2b00}'..='\u{2bff}' | '\u{a9}' | '\u{ae}')
+}
+
+/// `text` as a name or note keeps it: no control characters (a line break,
+/// a bell) and nothing that draws nothing ([`invisible`]), so two names
+/// that look the same are the same. A joiner between two emoji, and a
+/// variation selector or tag after one, stay: they make one emoji of
+/// several (a family, a flag).
+pub(crate) fn clean(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut kept = String::with_capacity(text.len());
+    let mut last: Option<char> = None;
+    for (i, &c) in chars.iter().enumerate() {
+        let keep = match c {
+            c if c.is_control() => false,
+            '\u{200d}' => last.is_some_and(|l| emoji(l) || l == '\u{fe0f}') && chars.get(i + 1).is_some_and(|&n| emoji(n)),
+            '\u{fe00}'..='\u{fe0f}' | '\u{e0020}'..='\u{e007f}' => last.is_some_and(|l| emoji(l) || ('\u{e0020}'..='\u{e007f}').contains(&l)),
+            c => !invisible(c),
+        };
+        if keep {
+            kept.push(c);
+            last = Some(c);
+        }
+    }
+    kept
+}
+
+/// The Latin letter a letter of another script is drawn like (lower case),
+/// or a digit like a letter: the confusables a name could hide behind.
+fn latin(c: char) -> char {
+    match c {
+        'а' => 'a',
+        'в' | 'β' => 'b',
+        'с' | 'ϲ' => 'c',
+        'ԁ' => 'd',
+        'е' | 'ё' | 'ε' => 'e',
+        'ɡ' => 'g',
+        'н' | 'һ' | 'η' => 'h',
+        'і' | 'ї' | 'ι' | 'ı' => 'i',
+        'ј' | 'ϳ' => 'j',
+        'к' | 'κ' => 'k',
+        'ӏ' | '1' | '|' => 'l',
+        'м' | 'μ' => 'm',
+        'о' | 'ο' | '0' => 'o',
+        'р' | 'ρ' => 'p',
+        'ԛ' => 'q',
+        'ѕ' => 's',
+        'т' | 'τ' => 't',
+        'υ' => 'u',
+        'ѵ' | 'ν' => 'v',
+        'ԝ' => 'w',
+        'х' | 'χ' => 'x',
+        'у' | 'ү' => 'y',
+        'ζ' => 'z',
+        c => c,
+    }
+}
+
+/// A name as it looks, to tell whether two could be taken for one another:
+/// cleaned, in compatibility form (full-width letters, ligatures and the
+/// like as plain letters), lower case, letters of other scripts that look
+/// Latin as Latin, without spaces.
+pub(crate) fn skeleton(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    clean(name).nfkc().flat_map(char::to_lowercase).filter(|c| !c.is_whitespace()).map(latin).collect()
 }
 
 /// A name with control characters taken out and spaces trimmed, cut to
 /// [`NAME_MAX`] characters; `None` when nothing is left. For names that
 /// come from payment codes.
 pub fn clean_name(text: &str) -> Option<String> {
-    let kept: String = text.chars().filter(shown).collect();
+    let kept = clean(text);
     let cut: String = kept.trim().chars().take(NAME_MAX).collect();
     let cut = cut.trim_end();
     (!cut.is_empty()).then(|| cut.to_owned())
@@ -119,7 +224,7 @@ pub fn clean_name(text: &str) -> Option<String> {
 /// A typed name, checked: 1 to [`NAME_MAX`] characters once trimmed (control
 /// characters, a pasted line break, dropped).
 pub fn check_name(text: &str) -> Result<String> {
-    let kept: String = text.chars().filter(shown).collect();
+    let kept = clean(text);
     let name = kept.trim();
     match name.chars().count() {
         0 => Err(FobError::Contact("A contact needs a name.".into())),
@@ -130,7 +235,7 @@ pub fn check_name(text: &str) -> Result<String> {
 
 /// A typed note, checked: blank is none, at most [`NOTE_MAX`] characters.
 pub fn check_note(text: Option<&str>) -> Result<Option<String>> {
-    let kept: Option<String> = text.map(|t| t.chars().filter(shown).collect());
+    let kept: Option<String> = text.map(clean);
     let Some(note) = kept.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
     if note.chars().count() > NOTE_MAX {
         return Err(FobError::Contact(format!("A note can be up to {NOTE_MAX} characters.")));
@@ -268,10 +373,12 @@ impl Book {
         self.contacts.iter().find(|c| c.owns(address))
     }
 
-    /// The contact named `name`, ignoring case (the oldest if several).
+    /// The contact named `name`, or whose name looks like it ([`skeleton`]:
+    /// any case, an invisible character, a Cyrillic "Ѕ" for an "S"), the
+    /// oldest if several.
     pub fn named(&self, name: &str) -> Option<&Contact> {
-        let name = name.trim().to_lowercase();
-        self.contacts.iter().find(|c| c.name.to_lowercase() == name)
+        let name = skeleton(name);
+        self.contacts.iter().find(|c| skeleton(&c.name) == name)
     }
 
     /// Adds a contact; every field checked, the send address for `network`.
@@ -298,8 +405,9 @@ impl Book {
 
     /// Changes a contact's name, note, photo and send address (its paid-at
     /// addresses stay). A send address that was one of them moves out of
-    /// them.
-    pub fn edit(&mut self, network: Network, id: u64, draft: Draft) -> Result<Contact> {
+    /// them; the one it replaces, when it was `paid`, moves in, so what was
+    /// sent there stays theirs.
+    pub fn edit(&mut self, network: Network, id: u64, draft: Draft, paid: &dyn Fn(&str) -> bool) -> Result<Contact> {
         let name = check_name(&draft.name)?;
         let note = check_note(draft.note.as_deref())?;
         if let Some(photo) = &draft.photo {
@@ -310,19 +418,16 @@ impl Book {
         contact.name = name;
         contact.note = note;
         contact.photo = draft.photo;
-        if let Some(address) = &send_address {
-            contact.also_paid_at.retain(|a| a != address);
-        }
-        contact.send_address = send_address;
+        contact.replace_send_address(send_address, paid);
         Ok(contact.clone())
     }
 
-    /// Sets only the send address (Change on the contact's card).
-    pub fn set_send_address(&mut self, network: Network, id: u64, text: &str) -> Result<Contact> {
+    /// Sets only the send address (Change on the contact's card), keeping
+    /// the one it replaces as paid at when it was `paid`.
+    pub fn set_send_address(&mut self, network: Network, id: u64, text: &str, paid: &dyn Fn(&str) -> bool) -> Result<Contact> {
         let address = check_address(network, text)?;
         let contact = self.get_mut(id)?;
-        contact.also_paid_at.retain(|a| *a != address);
-        contact.send_address = Some(address);
+        contact.replace_send_address(Some(address), paid);
         Ok(contact.clone())
     }
 
@@ -711,7 +816,7 @@ pub const NAMED_FOOTNOTE: &str =
 /// for `note`: a name from a code only names them, so the address is one
 /// they were paid at; without one, it's their send address.
 pub fn new_contact(address: &str, name: Option<&str>, note: Option<&str>) -> Draft {
-    let note = note.map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().filter(shown).take(NOTE_MAX).collect::<String>());
+    let note = note.map(clean).map(|n| n.trim().chars().take(NOTE_MAX).collect::<String>().trim_end().to_owned()).filter(|n| !n.is_empty());
     match name.and_then(clean_name) {
         Some(name) => Draft { name, note, photo: None, send_address: None, also_paid_at: vec![address.to_owned()] },
         None => Draft { name: String::new(), note, photo: None, send_address: Some(address.to_owned()), also_paid_at: vec![] },
@@ -772,6 +877,10 @@ mod tests {
 
     fn draft(name: &str) -> Draft {
         Draft { name: name.into(), ..Draft::default() }
+    }
+
+    fn paid_out(to: &str, amount: u64, time: u64) -> Activity {
+        paid(to, amount, time)
     }
 
     fn paid(to: &str, amount: u64, time: u64) -> Activity {
@@ -877,6 +986,57 @@ mod tests {
     }
 
     #[test]
+    fn what_draws_nothing_is_taken_out_and_lookalike_names_are_one_name() {
+        // Zero-width and invisible characters, separators, the Arabic letter mark: gone, so "Sa​m" is "Sam".
+        for hidden in ['\u{200b}', '\u{200c}', '\u{2060}', '\u{feff}', '\u{61c}', '\u{2028}', '\u{2029}', '\u{180e}', '\u{ad}', '\u{e0041}'] {
+            assert_eq!(clean_name(&format!("Sa{hidden}m")).as_deref(), Some("Sam"), "U+{:04X}", hidden as u32);
+        }
+        assert_eq!(check_note(Some("Lunch\u{2028}(verified)")).unwrap().as_deref(), Some("Lunch(verified)"));
+        // A joiner inside an emoji, a variation selector and a flag's tags stay: they make one emoji of several.
+        let family = "👨\u{200d}👩\u{200d}👧";
+        assert_eq!(clean_name(&format!("Sam {family}")).as_deref(), Some(&*format!("Sam {family}")));
+        assert_eq!(clean_name("Sam ❤\u{fe0f}").as_deref(), Some("Sam ❤\u{fe0f}"));
+        let england = "🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+        assert_eq!(clean_name(england).as_deref(), Some(england));
+        // A joiner between letters does nothing visible: gone.
+        assert_eq!(clean_name("S\u{200d}am").as_deref(), Some("Sam"));
+        // Names that look alike: one skeleton.
+        let sam = skeleton("Sam");
+        for lookalike in ["sam", " SAM ", "Sa\u{200b}m", "\u{405}am", "S\u{430}m", "Ｓａｍ", "5am".replace('5', "\u{455}").as_str()] {
+            assert_eq!(skeleton(lookalike), sam, "{lookalike:?}");
+        }
+        assert_ne!(skeleton("Pam"), sam);
+        let mut book = Book::default();
+        let id = book.add(Network::Stagenet, draft("Sam"), NOW).unwrap().id;
+        assert_eq!(book.named("\u{405}am").map(|c| c.id), Some(id));
+    }
+
+    #[test]
+    fn a_changed_send_address_that_was_paid_stays_theirs() {
+        let mut book = Book::default();
+        let (old, new, newer, unpaid) = (address(1), address(2), address(3), address(4));
+        let sam = book.add(Network::Stagenet, Draft { send_address: Some(old.clone()), ..draft("Sam") }, NOW).unwrap();
+        let paid = |a: &str| a == old || a == newer;
+        // Changed on the card: the old one, paid twice, is kept as paid at, and both payments stay on the card.
+        let changed = book.set_send_address(Network::Stagenet, sam.id, &new, &paid).unwrap();
+        assert_eq!((changed.send_address.as_deref(), changed.also_paid_at.clone()), (Some(new.as_str()), vec![old.clone()]));
+        let rows = [paid_out(&old, 1, NOW - DAY), paid_out(&old, 2, NOW - 2 * DAY)];
+        let shown = card(&changed, &requests::Book::default(), &rows, clock());
+        assert_eq!((shown.paid.len(), shown.paid_title.as_str()), (2, "Paid to Sam"));
+        assert_eq!(shown.also_paid_at[0].line, "Not their send address · paid 2 times, last yesterday");
+        assert!(unsaved(&book, &rows, clock()).is_empty(), "not \"Paid, not saved\"");
+        // Never paid: just replaced. Cleared in an edit: kept the same way when paid.
+        book.set_send_address(Network::Stagenet, sam.id, &unpaid, &paid).unwrap();
+        let edited = book.set_send_address(Network::Stagenet, sam.id, &newer, &paid).unwrap();
+        assert_eq!(edited.also_paid_at, vec![old.clone()]);
+        let cleared = book.edit(Network::Stagenet, sam.id, Draft { send_address: None, ..draft("Sam") }, &paid).unwrap();
+        assert_eq!((cleared.send_address, cleared.also_paid_at), (None, vec![old.clone(), newer.clone()]));
+        // Set back to one it was paid at: out of paid at again.
+        let back = book.set_send_address(Network::Stagenet, sam.id, &old, &paid).unwrap();
+        assert_eq!((back.send_address.as_deref(), back.also_paid_at), (Some(old.as_str()), vec![newer]));
+    }
+
+    #[test]
     fn a_name_from_a_code_is_cleaned_and_cut() {
         assert_eq!(clean_name(" Sam\u{7}\n ").as_deref(), Some("Sam"));
         assert_eq!(clean_name("\u{1b}[31m").as_deref(), Some("[31m"));
@@ -912,13 +1072,13 @@ mod tests {
         // The same send address twice is allowed.
         let twin = book.add(Network::Stagenet, Draft { send_address: Some(sam_address.clone()), ..draft("Sam at work") }, NOW).unwrap();
         assert_eq!(twin.id, 2);
-        let edited = book.edit(Network::Stagenet, sam.id, Draft { photo: None, send_address: None, ..draft("Samuel") }).unwrap();
+        let edited = book.edit(Network::Stagenet, sam.id, Draft { photo: None, send_address: None, ..draft("Samuel") }, &|_| false).unwrap();
         assert_eq!((edited.name.as_str(), edited.note, edited.photo, edited.send_address), ("Samuel", None, None, None));
         assert!(book.delete(twin.id));
         assert!(!book.delete(twin.id));
         // Ids aren't used again.
         assert_eq!(book.add(Network::Stagenet, draft("Mum"), NOW).unwrap().id, 3);
-        assert!(book.edit(Network::Stagenet, twin.id, draft("Ghost")).is_err());
+        assert!(book.edit(Network::Stagenet, twin.id, draft("Ghost"), &|_| false).is_err());
     }
 
     #[test]
@@ -936,7 +1096,7 @@ mod tests {
         assert_eq!(book.add_paid_at(Network::Stagenet, sam.id, &code).unwrap().also_paid_at.len(), 1);
         assert_eq!(book.owner(&code).map(|c| c.id), Some(sam.id));
         // Scanned as the send address, it moves out of the others.
-        let changed = book.set_send_address(Network::Stagenet, sam.id, &code).unwrap();
+        let changed = book.set_send_address(Network::Stagenet, sam.id, &code, &|_| false).unwrap();
         assert_eq!((changed.send_address.as_deref(), changed.also_paid_at.len()), (Some(code.as_str()), 0));
         assert_eq!(book.named("sAM").map(|c| c.id), Some(sam.id));
         assert!(book.named("Sam2").is_none());
@@ -979,7 +1139,7 @@ mod tests {
         assert_eq!(names("m"), ["Mum", "Rent", "Sam"]);
         assert!(names("nobody").is_empty());
         let today = [paid(&sam_address, 1, NOW)];
-        book.edit(Network::Stagenet, 1, Draft { send_address: Some(sam_address.clone()), ..draft("Sam") }).unwrap();
+        book.edit(Network::Stagenet, 1, Draft { send_address: Some(sam_address.clone()), ..draft("Sam") }, &|_| false).unwrap();
         assert_eq!(list(&book, &today, "sam", clock())[0].line, "Paid today");
         assert_eq!(list(&book, &today, "sam", clock())[0].initial, "S");
     }

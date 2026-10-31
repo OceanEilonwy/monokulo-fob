@@ -1254,9 +1254,11 @@ impl FobWallet {
         Ok(self.inner.scanned_profile(&text).await?.into())
     }
 
-    /// "Add contact" or "Add as new contact" on a scanned profile.
-    pub async fn add_contact_from_profile(&self, text: String) -> Result<Contact> {
-        Ok(self.inner.add_contact_from_profile(&text).await?.into())
+    /// "Add contact" on a scanned profile, or "Add as new contact" once
+    /// asked (`as_new`). Throws when its address is a contact's, or its
+    /// name is (or looks like) one's and it wasn't asked.
+    pub async fn add_contact_from_profile(&self, text: String, as_new: bool) -> Result<Contact> {
+        Ok(self.inner.add_contact_from_profile(&text, as_new).await?.into())
     }
 
     /// "Update Sam" on a scanned profile, once asked.
@@ -1460,8 +1462,10 @@ pub struct ProfileClash {
     pub update: String,
     /// "Keep as is"
     pub keep: String,
-    /// "Add as new contact"
-    pub add_new: String,
+    /// "Add as new contact", for a name only; none when the address is
+    /// the contact's (never two contacts with one send address from a
+    /// profile).
+    pub add_new: Option<String>,
 }
 
 /// Another Fob's profile, scanned.

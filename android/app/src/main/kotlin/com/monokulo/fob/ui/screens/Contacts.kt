@@ -578,7 +578,7 @@ private fun FoundContent(f: FoundAddress, other: String, onOther: () -> Unit, on
  * why not. [current] is the address it would replace.
  */
 @Composable
-fun SendAddressScanner(network: Network, name: String?, current: String?, onUse: (String) -> Unit, onClose: () -> Unit) {
+fun SendAddressScanner(network: Network, name: String?, current: String?, onUse: (String) -> Unit, onClose: () -> Unit, error: String? = null) {
     val texts = remember(name) { sendAddressScan(name) }
     var found by remember { mutableStateOf<FoundAddress?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -621,6 +621,8 @@ fun SendAddressScanner(network: Network, name: String?, current: String?, onUse:
                     .semantics { contentDescription = "Found" },
             ) {
                 FoundContent(f, "Scan again", onOther = { found = null; lastRead = null }, onUse = { onUse(f.address) })
+                // Why keeping it didn't work: the sheet stays.
+                ErrorText(error)
             }
         }
     }
@@ -633,12 +635,16 @@ fun ContactScanScreen(model: WalletModel, nav: Nav, id: ULong) {
     val network by model.network.collectAsState()
     val scope = rememberCoroutineScope()
     var card by remember { mutableStateOf<ContactCard?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet) { if (wallet != null) card = model.contactCard(id) ?: run { nav.back(); null } }
     val contact = card?.contact ?: return Box(Modifier.fillMaxSize().background(Fob.camera))
     SendAddressScanner(network, contact.name, contact.sendAddress, onUse = { address ->
+        error = null
         scope.launch {
+            // Kept: back to the card. Refused (deleted meanwhile, or not saved): say so and stay.
             runCatching { model.changeContacts { it.setContactSendAddress(id, address) } }
-            if (nav.current == Screen.ContactScan(id)) nav.back()
+                .onSuccess { if (nav.current == Screen.ContactScan(id)) nav.back() }
+                .onFailure { error = it.reason() }
         }
-    }, onClose = { nav.back() })
+    }, onClose = { nav.back() }, error = error)
 }
