@@ -115,6 +115,16 @@ object Fob {
     val cameraCard = Color(0xFF3A3732)
     val cameraWarning = Color(0xFFFF8A3D)
 
+    /**
+     * The address pattern: dots in one of eight colours (Rust picks the
+     * index) on a white badge, the same in both themes so two phones match.
+     */
+    val patternBadge = Color(0xFFFFFFFF)
+    val patternColours = listOf(
+        Color(0xFFB34700), Color(0xFF1F7A45), Color(0xFF2F5AA8), Color(0xFF7A3FA0),
+        Color(0xFFA3324A), Color(0xFF1D6F7A), Color(0xFF5B5F17), Color(0xFF3D3A8C),
+    )
+
     /** QR codes stay dark on white in both themes, so every reader reads them. */
     val qrDark = Color(0xFF1A1917)
     val qrLight = Color(0xFFFFFFFF)

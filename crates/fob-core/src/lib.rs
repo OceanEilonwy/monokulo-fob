@@ -5,8 +5,8 @@
 //!   send payments.
 //! - [`uri`]: payment codes (with ORF receipts) and wallet codes.
 //! - [`zmq`]: instant updates from the node's ZMQ publisher, when turned on.
-//! - [`amount`], [`activity`], [`receipt`], [`qr`]: text and pictures ready
-//!   for the screen.
+//! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
+//!   [`pattern`]: text and pictures ready for the screen.
 
 pub mod activity;
 pub mod amount;
@@ -15,6 +15,7 @@ pub mod error;
 pub mod fetch;
 pub mod keys;
 pub mod network;
+pub mod pattern;
 pub mod not_ready;
 pub mod node;
 pub mod qr;

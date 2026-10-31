@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, amount, not_ready, qr, receipt, uri};
+use fob_core::{activity, amount, not_ready, pattern, qr, receipt, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -600,6 +600,24 @@ pub fn preview_wallet_code(network: Network, code: String) -> Result<WalletCodeP
 pub fn qr_code(text: String) -> Result<QrCode> {
     let m = qr::encode(&text)?;
     Ok(QrCode { size: m.size, dark: m.dark })
+}
+
+/// An address's pattern: dots on a 5 × 5 grid in one of eight colours.
+#[derive(uniffi::Record)]
+pub struct AddressPattern {
+    /// 15 bits: 5 rows of 3 columns, bit `3 × row + column`.
+    pub cells: u16,
+    /// 0–7, an index into the app's fixed palette.
+    pub colour: u8,
+    /// The 5 × 5 grid as drawn, row by row (mirrored): `true` for a dot.
+    pub dots: Vec<bool>,
+}
+
+/// The pattern for an address, to show beside it on Receive and when paying it.
+#[uniffi::export]
+pub fn address_pattern(address: String) -> AddressPattern {
+    let p = pattern::address_pattern(&address);
+    AddressPattern { cells: p.cells, colour: p.colour, dots: p.dots() }
 }
 
 /// Whether text someone is typing is an amount above zero.

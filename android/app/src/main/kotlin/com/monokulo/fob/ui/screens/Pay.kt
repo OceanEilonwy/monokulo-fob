@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
+import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
@@ -100,6 +101,12 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Address $index · a new one each time you ask", color = Fob.muted, fontSize = 13.sp)
                 address?.let { Mono(full(it), 14) }
+            }
+            address?.let {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    AddressPattern(it, 36.dp)
+                    Text("The payer's Fob shows this pattern too", color = Fob.muted, fontSize = 13.sp)
+                }
             }
             Field(amount, { amount = it }, "Amount in XMR (optional)", hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else null)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -243,6 +250,15 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, confirmIdent
                 InfoRow("Network fee", "${prepared.feeText} XMR")
                 Divider()
                 InfoRow("Total", "${prepared.totalText} XMR", bold = true)
+            }
+            Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    AddressPattern(prepared.to, 54.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Address pattern", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text("Check it matches the pattern on their screen. If it differs, don't send.", color = Fob.muted, fontSize = 14.sp)
+                    }
+                }
             }
             prepared.receipt?.let { Card { Text("Receipt · ${it.itemCount} items", fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp)); ReceiptLines(it) } }
         }
