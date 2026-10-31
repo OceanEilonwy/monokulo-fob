@@ -786,3 +786,33 @@ Calls made while building the first version, with why. Newest last.
     shows CONTACTS with "All" once there's any contact (a line asks for a
     send address when none has one), PAID BEFORE until then. Two theme
     roles came with the sheets: `scrim` and `onRed`.
+111. **The name in a payment code** (`recipient_name`, read by
+    `uri::parse_payment` with `contacts::clean_name`): percent-decoded,
+    trimmed, control characters and the marks that turn text round
+    (U+200E/F, U+202A–E, U+2066–9) taken out, cut to 40 characters; one
+    that's left empty is none. Typed names and notes lose the same
+    characters. It goes with the payment (`Sent::recipient_name`, none in
+    older files) only while the form is still the code's: changing the
+    address drops it with the receipt.
+112. **After paying, Paid offers to save who was paid**
+    (`contacts::offer`, `Wallet::save_offer`): nothing for a split or an
+    address that's already a contact's (send address or paid at). A code
+    whose name matches a contact's exactly, any case (the oldest of
+    several), gives an outline "Add to Sam" with Sam's avatar (the name
+    ellipsised), which keeps the address in Sam's `also_paid_at` and opens
+    Sam's card, and "A different Sam? New contact" under it. A name that's
+    nobody's gives "Save as a contact" (person-plus, 20 dp, stroke 2),
+    opening New contact with the name and the payment's note, the address
+    kept as one they were paid at and the send address empty. Without a
+    name, "Save as a contact" fills the note and makes the address the
+    send address. A named code adds "to a code named “Sam”" under the
+    status and, under the buttons, the board's whole footnote: "The name
+    comes from their code, not checked by Fob. The address is kept with the
+    contact as one they were paid at, not as their send address." (the
+    brief quoted its first sentence; the second says what the buttons do).
+113. **"Paid, not saved" saves by the same rule** (`Wallet::new_contact_for`):
+    an address ever paid with a named code opens New contact with that
+    name and the address as paid at; otherwise as its send address. New
+    contact says what happens to such an address under the send address
+    ("Paid at 84Bv9 … 2kLmQ … 99fQ2 from their code: kept with them, not as
+    their send address.", `contacts::paid_at_note`).

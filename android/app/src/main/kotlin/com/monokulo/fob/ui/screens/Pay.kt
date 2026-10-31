@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -82,6 +84,10 @@ import uniffi.fob.Prepared
 import uniffi.fob.QrCode
 import uniffi.fob.Receipt
 import uniffi.fob.ReceiveCode
+import uniffi.fob.SaveOffer
+import uniffi.fob.Contact
+import com.monokulo.fob.ui.Avatar
+import androidx.compose.ui.text.style.TextOverflow
 import uniffi.fob.AmountEntry
 import uniffi.fob.addressGroups
 import uniffi.fob.fitReceiveNote
@@ -321,8 +327,19 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String
     }
 }
 
+/**
+ * Paid: the tick and what went where, then (Round 4 › "Sent: a small Save
+ * contact button"; Round 5 › "Paid a code named Sam") what Rust offers:
+ * Add to the contact the code's name matches, or Save as a contact;
+ * nothing when the address is already a contact's.
+ */
 @Composable
-fun PaidScreen(nav: Nav, prepared: Prepared) {
+fun PaidScreen(model: WalletModel, nav: Nav, prepared: Prepared, tx: String) {
+    val wallet by model.wallet.collectAsState()
+    val activity by model.activity.collectAsState()
+    val scope = rememberCoroutineScope()
+    var offer by remember { mutableStateOf<SaveOffer?>(null) }
+    LaunchedEffect(wallet, activity) { offer = model.saveOffer(tx) }
     Page(bottom = { PrimaryButton("Done", { nav.reset(Screen.Home) }) }) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 72.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Box(Modifier.size(96.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, tint = Fob.onGreen, size = 52.dp, width = 2f) }
@@ -331,7 +348,13 @@ fun PaidScreen(nav: Nav, prepared: Prepared) {
                 Text(split?.title ?: "Paid", style = display(34))
                 Text(split?.done ?: prepared.receipt?.let { "${it.total} to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)
                 Text("Sent · confirming on the network", color = Fob.muted, fontSize = 14.sp)
+                offer?.named?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center) }
             }
+            offer?.let { o -> SaveOfferButtons(o, onAdd = { c ->
+                scope.launch {
+                    runCatching { model.changeContacts { it.addContactPaidAt(c.id, o.address) } }.onSuccess { nav.go(Screen.Contact(c.id)) }
+                }
+            }, onNew = { nav.go(Screen.ContactEdit(prefill = o.draft)) }) }
             prepared.receipt?.let {
                 Card(Modifier.padding(top = 12.dp), padding = PaddingValues(vertical = 12.dp)) {
                     Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -341,6 +364,32 @@ fun PaidScreen(nav: Nav, prepared: Prepared) {
                     ReceiptLines(it)
                 }
             }
+        }
+    }
+}
+
+/**
+ * After paying: "Add to Sam" with Sam's avatar and "A different Sam? New
+ * contact" when the code's name is a contact's; otherwise "Save as a
+ * contact". Under a named code's, Rust's word that the name wasn't checked.
+ */
+@Composable
+private fun SaveOfferButtons(offer: SaveOffer, onAdd: (Contact) -> Unit, onNew: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val match = offer.addTo
+        Row(
+            Modifier.height(52.dp).clip(RoundedCornerShape(26.dp)).border(1.dp, Fob.outline, RoundedCornerShape(26.dp))
+                .clickable(role = Role.Button) { if (match != null) onAdd(match) else onNew() }
+                .padding(start = if (match != null) 14.dp else 18.dp, end = 22.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (match != null) 10.dp else 8.dp),
+        ) {
+            if (match != null) Avatar(match.name, match.initial, match.photo, 30.dp)
+            else StrokeIcon(Icons.personPlus, tint = Fob.ink, size = 20.dp, width = 2f)
+            Text(offer.button, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
+        }
+        offer.other?.let { TextButton(it, onNew) }
+        offer.footnote?.let {
+            Text(it, color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 320.dp).padding(top = 4.dp))
         }
     }
 }

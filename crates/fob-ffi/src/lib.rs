@@ -881,8 +881,16 @@ impl FobWallet {
     /// current price) or XMR; `receipt_json` comes from the scanned
     /// `PaymentRequest`. `note` (typed on Send, or the payment code's
     /// description) is kept with the payment.
-    pub async fn prepare(&self, to: String, amount: String, in_fiat: bool, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
-        let p = self.inner.prepare_typed(&to, &amount, in_fiat, receipt_json, note).await?;
+    pub async fn prepare(
+        &self,
+        to: String,
+        amount: String,
+        in_fiat: bool,
+        receipt_json: Option<String>,
+        note: Option<String>,
+        recipient_name: Option<String>,
+    ) -> Result<Prepared> {
+        let p = self.inner.prepare_typed(&to, &amount, in_fiat, receipt_json, note, recipient_name).await?;
         Ok(prepared(&self.inner, p).await)
     }
 
@@ -1063,6 +1071,28 @@ impl FobWallet {
         Ok(self.inner.add_contact_paid_at(id, &address).await?.into())
     }
 
+    /// What the Paid screen offers for the payment `tx`: Add to Sam, or
+    /// Save as a contact; none for a split or an address that's already a
+    /// contact's.
+    pub async fn save_offer(&self, tx: String) -> Option<SaveOffer> {
+        let o = self.inner.save_offer(&tx).await?;
+        Some(SaveOffer {
+            address: o.address,
+            add_to: o.add_to.map(Into::into),
+            button: o.button,
+            other: o.other,
+            named: o.named,
+            footnote: o.footnote,
+            draft: o.draft.into(),
+        })
+    }
+
+    /// New contact for an address under "Paid, not saved", filled as the
+    /// Paid screen would have.
+    pub async fn new_contact_for(&self, address: String) -> ContactDraft {
+        self.inner.new_contact_for(&address).await.into()
+    }
+
     /// Deletes a contact; payments to its addresses stay in Activity.
     pub async fn delete_contact(&self, id: u64) -> Result<()> {
         Ok(self.inner.delete_contact(id).await?)
@@ -1173,6 +1203,41 @@ pub struct ContactDraft {
     pub send_address: Option<String>,
     /// For a new contact saved after paying a code named for them.
     pub also_paid_at: Vec<String>,
+}
+
+impl From<contacts::Draft> for ContactDraft {
+    fn from(d: contacts::Draft) -> Self {
+        ContactDraft { name: d.name, note: d.note, photo: d.photo, send_address: d.send_address, also_paid_at: d.also_paid_at }
+    }
+}
+
+/// What the Paid screen offers for a payment, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct SaveOffer {
+    /// The address paid.
+    pub address: String,
+    /// The contact the code's name matches: the button adds the address to
+    /// them.
+    pub add_to: Option<Contact>,
+    /// "Add to Sam", "Save as a contact"
+    pub button: String,
+    /// "A different Sam? New contact", beside Add to.
+    pub other: Option<String>,
+    /// "to a code named “Sam”"
+    pub named: Option<String>,
+    /// For a named code: "The name comes from their code, not checked by
+    /// Fob. …"
+    pub footnote: Option<String>,
+    /// New contact, filled.
+    pub draft: ContactDraft,
+}
+
+/// Under the send address on New contact, when it's saved with addresses
+/// from codes named for them: "Paid at 84Bv9 … 99fQ2 from their code: kept
+/// with them, not as their send address."
+#[uniffi::export]
+pub fn contact_paid_at_note(addresses: Vec<String>) -> Option<String> {
+    contacts::paid_at_note(&addresses)
 }
 
 impl From<ContactDraft> for contacts::Draft {

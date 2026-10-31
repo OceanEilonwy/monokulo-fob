@@ -215,7 +215,7 @@ class MainActivity : FragmentActivity() {
             Screen.Receive -> ReceiveScreen(model, nav)
             is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
             is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
-            is Screen.Paid -> PaidScreen(nav, screen.prepared)
+            is Screen.Paid -> PaidScreen(model, nav, screen.prepared, screen.tx)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
             Screen.Coins -> CoinsScreen(model, nav)
