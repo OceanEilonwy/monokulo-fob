@@ -1,6 +1,26 @@
 [package]
 name = "fob-ffi"
-version = "0.1.0"
-edition = "2024"
+description = "fob-core for Kotlin (and later Swift), through UniFFI. Types and calls only: no wallet logic."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "fob_ffi"
+
+# Generates the Kotlin bindings from the built library:
+# cargo run -p fob-ffi --features bindgen --bin uniffi-bindgen -- generate --library …
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
 
 [dependencies]
+fob-core = { path = "../fob-core" }
+thiserror = "2"
+uniffi = { version = "=0.32.2", features = ["tokio"] }

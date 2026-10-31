@@ -6,6 +6,8 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode
 use zeroize::Zeroizing;
 
 use crate::amount;
+
+pub use orf_codec::Receipt;
 use crate::error::{FobError, Result};
 use crate::network::Network;
 
@@ -131,6 +133,24 @@ pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
     }
 }
 
+/// What a scanned code is, so the app can send it to the right screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeKind {
+    Payment,
+    Wallet,
+    Unknown,
+}
+
+pub fn classify(network: Network, text: &str) -> CodeKind {
+    if parse_wallet_code(network, text).is_ok() {
+        CodeKind::Wallet
+    } else if parse_payment(network, text).is_ok() {
+        CodeKind::Payment
+    } else {
+        CodeKind::Unknown
+    }
+}
+
 /// A wallet code other wallets can restore from.
 pub fn wallet_code(address: &str, spend_hex: Option<&str>, view_hex: &str, height: u64) -> Zeroizing<String> {
     let mut code = format!("monero_wallet:{address}?");
@@ -238,5 +258,13 @@ mod tests {
         assert!(matches!(parse_wallet_code(Network::Stagenet, &words).unwrap(), WalletCode::Words { .. }));
         assert!(parse_wallet_code(Network::Stagenet, "monero_wallet:").is_err());
         assert!(parse_wallet_code(Network::Stagenet, "hello there").is_err());
+    }
+
+    #[test]
+    fn codes_are_told_apart() {
+        let keys = wallet();
+        assert_eq!(classify(Network::Stagenet, &payment_uri(&keys.address(1), None)), CodeKind::Payment);
+        assert_eq!(classify(Network::Stagenet, &keys.seed_words().unwrap().1), CodeKind::Wallet);
+        assert_eq!(classify(Network::Stagenet, "https://example.com"), CodeKind::Unknown);
     }
 }

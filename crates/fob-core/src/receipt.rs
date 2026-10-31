@@ -83,6 +83,11 @@ impl From<&Receipt> for ReceiptView {
     }
 }
 
+/// A receipt as ORF JSON, to keep with the payment it came with.
+pub fn to_json(receipt: &Receipt) -> Option<String> {
+    serde_json::to_string(receipt).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -238,6 +238,40 @@ pub fn restore_point(network: Network, text: &str) -> Result<u64> {
     Ok(network.restore_height_for(u64::try_from(days * 86_400).unwrap_or(0)))
 }
 
+/// What a wallet code holds, shown before restoring from it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodePreview {
+    pub address: String,
+    pub can_spend: bool,
+    /// Where scanning will start, if the code says.
+    pub restore_height: Option<u64>,
+}
+
+/// Reads a wallet code without restoring anything.
+pub fn preview_wallet_code(network: Network, code: &str) -> Result<CodePreview> {
+    match uri::parse_wallet_code(network, code)? {
+        WalletCode::Words { words, height } => {
+            let restored = Keys::from_words(network, &words)?;
+            Ok(CodePreview {
+                address: restored.keys.primary_address(),
+                can_spend: true,
+                restore_height: height.or(restored.birthday.map(|b| network.height_at(b))),
+            })
+        }
+        WalletCode::SpendKey { address, spend, view, height } => {
+            let keys = Keys::from_spend_key(network, &spend, view.as_deref().map(|v| v.as_str()))?;
+            if address.is_some_and(|a| a != keys.primary_address()) {
+                return Err(FobError::BadKey);
+            }
+            Ok(CodePreview { address: keys.primary_address(), can_spend: true, restore_height: height })
+        }
+        WalletCode::ViewOnly { address, view, height } => {
+            let keys = Keys::view_only(network, &address, &view)?;
+            Ok(CodePreview { address: keys.primary_address(), can_spend: false, restore_height: height })
+        }
+    }
+}
+
 impl Wallet {
     fn new(path: &Path, file_key: [u8; 32], keys: Keys, restore_height: Option<u64>) -> Result<Wallet> {
         let state = State {
@@ -907,6 +941,8 @@ mod tests {
     async fn a_wallet_code_restores_the_wallet_it_came_from() {
         let wallet = Wallet::create(&dir("code-a"), [1; 32], Network::Stagenet).unwrap();
         let code = wallet.wallet_code().await;
+        let preview = preview_wallet_code(Network::Stagenet, &code).unwrap();
+        assert_eq!((preview.address.as_str(), preview.can_spend), (wallet.primary_address().as_str(), true));
         let restored = Wallet::restore_code(&dir("code-b"), [1; 32], Network::Stagenet, &code, None).unwrap();
         assert_eq!(restored.primary_address(), wallet.primary_address());
         assert!(restored.can_spend());

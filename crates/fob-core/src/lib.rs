@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 pub use error::{FobError, Result};
 pub use keys::SeedKind;
 pub use network::Network;
-pub use wallet::{Activity, Balance, Direction, Prepared, SyncListener, SyncStatus, Wallet, restore_point};
+pub use wallet::{Activity, Balance, CodePreview, Direction, Prepared, SyncListener, SyncStatus, Wallet, preview_wallet_code, restore_point};
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
