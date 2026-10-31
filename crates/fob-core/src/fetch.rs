@@ -329,6 +329,8 @@ impl<T> Drop for Owned<T> {
 }
 
 type Chunk = Result<Vec<ScannableBlock>, InterfaceError>;
+/// One request's blocks, with the response's size in bytes.
+type Fetched = Result<(Vec<ScannableBlock>, usize), InterfaceError>;
 
 /// Blocks fetched ahead of the scanner, in order.
 ///
@@ -352,7 +354,7 @@ impl Pipeline {
     pub fn start(transport: Transport, adaptive: std::sync::Arc<Adaptive>, start: u64, end: u64) -> Pipeline {
         let (tx, rx) = tokio::sync::mpsc::channel(adaptive.tuning.queue.max(1));
         let task = tokio::spawn(async move {
-            let mut window: std::collections::VecDeque<Owned<Result<(Vec<ScannableBlock>, usize), InterfaceError>>> = Default::default();
+            let mut window: std::collections::VecDeque<Owned<Fetched>> = Default::default();
             let mut from = start;
             loop {
                 while window.len() < adaptive.parallel() && from <= end {
