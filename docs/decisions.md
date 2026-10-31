@@ -1315,3 +1315,19 @@ Calls made while building the first version, with why. Newest last.
     from one look at the wallet, so they always add up. The Coins board
     keeps the two-part bar: its template draws Home's bar, and the per-coin
     list it computes (`bar`) is never drawn.
+176. **A new wallet reminds until its words are written down**: the wallet
+    file keeps that a wallet made here hasn't had its seed phrase said to
+    be written down, so if Android ends Fob during the backup step (the
+    user off writing them down), Home shows Rust's "Back up your seed
+    phrase · Your 16 words aren't written down yet. Without them, this
+    wallet can't be restored." on the highlight colour above the rest,
+    opening the words with "I've written them down"; pressing it there or
+    in the first backup step ends the reminder. Restored wallets, and
+    files from before, never show it.
+177. **The photo ladder steps down as decision 109 had it first**: quality
+    80 to 20 at 96, 72 and 64 pixels; only when none fits, quality 10 and
+    0 at 64, then at 48, so a middling photo isn't taken blocky at 96 when
+    72 at quality 80 would do, and a busy one still fits (decision 149).
+178. **Settings' currency words come from Rust**: the Currency row's value
+    ("US dollar", or the code for one Fob has no name for) and each choice
+    ("US dollar · USD", or the code).
