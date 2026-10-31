@@ -133,6 +133,9 @@ object Fob {
     val cameraHint = Color(0xFFE2DCCF)
     val cameraCard = Color(0xFF3A3732)
     val cameraWarning = Color(0xFFFF8A3D)
+    /** Over the camera's picture: a light shade, deeper under the top bar, so what's drawn over it reads on a white page too. */
+    val cameraShade = Color(0x402B2925)
+    val cameraShadeTop = Color(0xB32B2925)
 
     /**
      * The address pattern: dots in one of eight colours (Rust picks the

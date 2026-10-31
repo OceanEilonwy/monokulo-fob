@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -363,7 +364,7 @@ fun RestoreFoundScreen(model: WalletModel, nav: Nav, code: String) {
 /**
  * The camera, once allowed; until then, a button to allow it, centred in
  * what [askPadding] leaves (clear of what's drawn over the camera). The
- * light as for [QrScanner].
+ * light as for [QrScanner]. The status bar's icons are light meanwhile.
  */
 @Composable
 fun CameraOrAsk(
@@ -376,6 +377,17 @@ fun CameraOrAsk(
     }
     val ask = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) { if (!granted) ask.launch(android.Manifest.permission.CAMERA) }
+    // Light status bar icons over the dark camera, whatever the theme; set
+    // again after a turn or a theme change, which set them afresh.
+    val window = androidx.activity.compose.LocalActivity.current?.window
+    val view = androidx.compose.ui.platform.LocalView.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    DisposableEffect(window, configuration) {
+        val bars = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, view) }
+        val was = bars?.isAppearanceLightStatusBars
+        bars?.isAppearanceLightStatusBars = false
+        onDispose { if (was != null) bars.isAppearanceLightStatusBars = was }
+    }
     if (granted) {
         QrScanner(onText, modifier, torch, onHasTorch)
     } else {
