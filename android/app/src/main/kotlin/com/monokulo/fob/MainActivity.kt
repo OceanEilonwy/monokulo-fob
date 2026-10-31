@@ -33,6 +33,8 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.monokulo.fob.ui.FobTheme
 import com.monokulo.fob.ui.LocalBottomSpace
 import com.monokulo.fob.ui.LocalFobColors
@@ -121,7 +123,7 @@ sealed interface Screen {
     /**
      * Backup and keys: Seed phrase, Wallet code and Keys, opened from
      * Settings once the phone's lock says it's you; its screens don't ask
-     * again.
+     * again while Fob stays on screen.
      */
     data object BackupKeys : Screen
     /** Every key in full, each with Copy; from Backup and keys. */
@@ -175,7 +177,12 @@ class NavHolder : ViewModel() {
     var nav: Nav? = null
     /** The answer to a phone-lock prompt still up, kept likewise: it reaches the Confirm that comes back. */
     var identity: CompletableDeferred<Boolean>? = null
+    /** Where a phone-lock prompt for Backup and keys leads once it says it's you. */
+    var lockedTarget: Screen? = null
 }
+
+/** Backup and keys and what it leads to: shown only after the phone's lock, left when Fob leaves the screen. */
+private val LOCKED = setOf(Screen.BackupKeys, Screen.Keys, Screen.ShowSeed, Screen.ShowWalletCode)
 
 class MainActivity : FragmentActivity() {
     private val model: WalletModel get() = (application as FobApp).model
@@ -207,6 +214,11 @@ class MainActivity : FragmentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
         val nav = holder.nav ?: Nav(if (model.hasWallet()) Screen.Home else Screen.Welcome).also { holder.nav = it }
+        // Made again while the phone's lock was asked for Backup and keys: its answer still leads there.
+        holder.lockedTarget?.let { target ->
+            holder.lockedTarget = null
+            if (identityPending()) openLocked(target)
+        }
         setContent {
             val theme by model.theme.collectAsState()
             FobTheme(theme) {
@@ -252,7 +264,28 @@ class MainActivity : FragmentActivity() {
     override fun onStop() {
         model.setVisible(false)
         model.onFarBehind = null
+        // Leaving Fob (home, another app, the screen off) closes Backup and
+        // keys, so coming back asks for the phone's lock again; turning the
+        // phone or a font change doesn't.
+        if (!isChangingConfigurations) holder.nav?.stack?.let { stack ->
+            while (stack.size > 1 && stack.last() in LOCKED) stack.removeAt(stack.lastIndex)
+        }
         super.onStop()
+    }
+
+    /**
+     * Opens [screen] (Backup and keys, or the seed phrase from Home's
+     * reminder) once the phone's lock says it's you; cancelling stays put,
+     * and a second tap while asking does nothing.
+     */
+    fun openLocked(screen: Screen) {
+        if (holder.lockedTarget != null) return
+        holder.lockedTarget = screen
+        lifecycleScope.launch {
+            val ok = confirmIdentity("Backup and keys")
+            holder.lockedTarget = null
+            if (ok) holder.nav?.go(screen)
+        }
     }
 
     /**
@@ -306,7 +339,7 @@ class MainActivity : FragmentActivity() {
             Screen.RestoreViewOnly -> RestoreViewOnlyScreen(model, nav)
             Screen.RestoreScan -> RestoreScanScreen(model, nav)
             is Screen.RestoreFound -> RestoreFoundScreen(model, nav, screen.code)
-            Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav) else WelcomeScreen(model, nav)
+            Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav, ::openLocked) else WelcomeScreen(model, nav)
             is Screen.Receive -> ReceiveScreen(model, nav, screen)
             is Screen.Request -> RequestScreen(model, nav, screen.id)
             is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
@@ -316,7 +349,7 @@ class MainActivity : FragmentActivity() {
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
             Screen.Coins -> CoinsScreen(model, nav)
             Screen.Split -> SplitScreen(model, nav)
-            Screen.Settings -> SettingsScreen(model, nav, ::confirmIdentity, ::identityPending)
+            Screen.Settings -> SettingsScreen(model, nav, ::openLocked)
             Screen.PriceFrom -> PriceFromScreen(model, nav)
             Screen.CurrencyList -> CurrencyListScreen(model, nav)
             Screen.BackupKeys -> BackupKeysScreen(model, nav)

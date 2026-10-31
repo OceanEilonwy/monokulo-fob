@@ -124,7 +124,7 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
 }
 
 @Composable
-fun SettingsScreen(model: WalletModel, nav: Nav, confirmIdentity: suspend (String) -> Boolean, identityPending: () -> Boolean) {
+fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
     val theme by model.theme.collectAsState()
@@ -140,25 +140,17 @@ fun SettingsScreen(model: WalletModel, nav: Nav, confirmIdentity: suspend (Strin
     var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
     // Backup and keys' line, from Rust: "Seed phrase, wallet code, keys".
     var backupLine by remember { mutableStateOf("") }
+    // Rust's Node line, again as syncing starts or stops failing.
+    LaunchedEffect(wallet, status?.error != null) { node = wallet?.nodeLine() ?: "" }
     LaunchedEffect(wallet) {
-        node = wallet?.nodeLine() ?: ""
         profile = wallet?.profile()
         profileRow = wallet?.profileRow()
         backupLine = wallet?.backupHub()?.settingsLine ?: ""
     }
     // Backup and keys opens only once the phone's lock says it's you;
-    // cancelling stays here. The screens it leads to don't ask again.
-    var asking by remember { mutableStateOf(false) }
-    fun openBackup() {
-        if (asking) return
-        asking = true
-        scope.launch {
-            if (confirmIdentity("Backup and keys")) nav.go(Screen.BackupKeys)
-            asking = false
-        }
-    }
-    // Made again while the phone's lock was asked for: its answer comes here.
-    LaunchedEffect(Unit) { if (identityPending()) openBackup() }
+    // cancelling stays here. The screens it leads to don't ask again while
+    // Fob stays on screen.
+    fun openBackup() = openLocked(Screen.BackupKeys)
     Page {
         TopBar("Settings", onBack = { nav.back() })
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
