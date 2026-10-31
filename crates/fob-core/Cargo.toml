@@ -34,6 +34,8 @@ sha3 = "0.10"
 unicode-normalization = "0.1.25"
 
 [dev-dependencies]
+# Reads codes back in tests: a payment code with its centre cleared must still decode.
+rqrr = { version = "0.11", default-features = false }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio = { version = "1", features = ["test-util"] }
 zeroize = "1"

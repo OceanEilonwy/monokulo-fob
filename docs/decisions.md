@@ -2092,3 +2092,44 @@ Calls made while building the first version, with why. Newest last.
     code and Touch phones, and Edit your profile's onboarding Skip row. Not
     edge buttons, left as they were: the search field's clear, the price
     toast's button, Backup's copy buttons and Home's sync chip.
+268. **Receive's code: the pattern in its middle, at high correction**
+    (round 8 › step 3, item 5). Payment codes (Receive's card, its full
+    screen code, and a request's "Show the code again") are made by
+    `qr::encode_payment` (FFI `payment_qr_code`); Rust picks the level and
+    the cleared square, Kotlin only draws:
+    - error correction **H** while the code stays at version 25 or below,
+      else **Q** up to version 30, else as any other code (M, or L past
+      version 20) with nothing cleared. Measured with a real 95-character
+      address: bare v10, with an amount v10, amount and short note v12, a
+      request with a name and note v14, a 120-letter note v17, Receive's
+      longest (integrated address, largest amount, 120 emoji note, 521
+      bytes) v25 at H, a request's longest (40 emoji name too, 886 bytes)
+      v29 at Q. Every payment code Fob makes gets the pattern. This replaces
+      M for payment codes (where the code module said "fewer, larger modules
+      read better"): the correction pays for the hole. The usual code goes
+      from about v7 at M to v10 at H, 57 modules, still about 3.6 dp a
+      module on the 220 dp card;
+    - the cleared square is the largest odd side at most a quarter of the
+      code's (v10: 13 of 57; v25: 29 of 117), exactly centred and aligned
+      to whole modules: under 7 % of the modules, about a tenth of the
+      codewords at most, against about 30 % (H) or 25 % (Q) recoverable.
+      Its outer ring is a one-module light margin; the pattern's 5 × 5 dots
+      fill the `centre − 2` modules inside, on the code's white (the card's
+      colour in both themes), without the round badge and ring it has
+      elsewhere. The square covers the middle alignment pattern of v7 and
+      up, as logos in codes do; decoders locate by the corner one;
+    - tested: `rqrr` reads every one of those codes rendered at 4 px a
+      module, both as drawn (the square light) and with every module in the
+      square the opposite of the code's own (the worst a pattern could
+      read as); with the square at 60 % of the side the same test fails, so
+      it tells. `rqrr` 0.11.0 (2026-09-02) is a dev-dependency only, with
+      `lru` 0.18.5 (2026-09-23), `g2p` 1.2.2 and `hashbrown` 0.17.1 under it;
+    - the separate pattern row under Receive's card and under the full
+      screen code is gone, so Receive is 56 dp shorter (36 dp row and its
+      20 dp gap). TalkBack reads the code as before ("Payment code"); the
+      dots inside it are part of the drawing, not a separate item;
+    - not changed: Share my profile's code (a dense v27-or-so code with a
+      photo, at L, where a hole would cost too much; it shows no pattern,
+      as before) and Backup's wallet code (`qr_code`, M, no
+      pattern; it isn't an address to pay). A request's own screen keeps
+      its small pattern beside the address row.

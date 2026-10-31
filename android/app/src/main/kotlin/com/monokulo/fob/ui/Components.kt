@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
@@ -459,9 +460,15 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
     }
 }
 
-/** A QR code from the Rust library's module grid, with a quiet zone of [quiet] modules: dark on white in both themes. */
+/**
+ * A QR code from the Rust library's module grid, with a quiet zone of
+ * [quiet] modules: dark on white in both themes. A payment code's light
+ * square in the middle (Rust's `centre`) holds [pattern]'s dots, inside its
+ * one-module margin; TalkBack reads only [description].
+ */
 @Composable
-fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
+fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2, pattern: String? = null) {
+    val dots = remember(pattern) { pattern?.let { addressPattern(it) } }
     Canvas(modifier.size(size).semantics { contentDescription = description }) {
         val n = code.size.toInt()
         // Each module a whole number of pixels, the code centred, so a dense code (a profile's) stays crisp
@@ -477,6 +484,11 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
                 drawRect(Fob.qrDark, topLeft = Offset(origin + x * cell, origin + y * cell), size = Size(cell + bleed, cell + bleed))
             }
         }
+        val inner = code.centre.toInt() - 2
+        if (dots != null && inner > 0) {
+            val middle = origin + n * cell / 2
+            patternDots(dots, Offset(middle, middle), inner * cell)
+        }
     }
 }
 
@@ -488,19 +500,23 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
 @Composable
 fun AddressPattern(address: String, size: Dp, modifier: Modifier = Modifier) {
     val pattern = remember(address) { addressPattern(address) }
-    val colour = Fob.patternColours[pattern.colour.toInt() % Fob.patternColours.size]
     val (badge, edge) = Fob.patternBadge to Fob.line
     Canvas(modifier.size(size).semantics { contentDescription = "Address pattern" }) {
         val side = this.size.width
         drawCircle(badge)
         drawCircle(edge, style = Stroke(1.dp.toPx()), radius = side / 2 - 0.5.dp.toPx())
-        val grid = side * 0.66f
-        val cell = grid / 5
-        val start = (side - grid) / 2
-        for (row in 0 until 5) for (column in 0 until 5) {
-            if (pattern.dots[row * 5 + column]) {
-                drawCircle(colour, radius = cell * 0.84f / 2, center = Offset(start + (column + 0.5f) * cell, start + (row + 0.5f) * cell))
-            }
+        patternDots(pattern, center, side * 0.66f)
+    }
+}
+
+/** A pattern's dots on a 5 × 5 grid [grid] wide around [centre], each dot 84% of its cell, in the pattern's colour. */
+private fun DrawScope.patternDots(pattern: uniffi.fob.AddressPattern, centre: Offset, grid: Float) {
+    val colour = Fob.patternColours[pattern.colour.toInt() % Fob.patternColours.size]
+    val cell = grid / 5
+    val start = Offset(centre.x - grid / 2, centre.y - grid / 2)
+    for (row in 0 until 5) for (column in 0 until 5) {
+        if (pattern.dots[row * 5 + column]) {
+            drawCircle(colour, radius = cell * 0.84f / 2, center = Offset(start.x + (column + 0.5f) * cell, start.y + (row + 0.5f) * cell))
         }
     }
 }

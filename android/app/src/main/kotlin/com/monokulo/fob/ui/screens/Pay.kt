@@ -100,7 +100,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.semantics.heading
 import uniffi.fob.addressGroups
 import uniffi.fob.fitReceiveNote
-import uniffi.fob.qrCode
+import uniffi.fob.paymentQrCode
 
 /**
  * Receive's form as typed, kept on the back stack while New contact (from
@@ -226,7 +226,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (screen.shareOnOpen && forContact != null && asked != null) { screen.shareOnOpen = false; share(forId) }
     }
 
-    val qr = code?.let { runCatching { qrCode(it.uri) }.getOrNull() }
+    val qr = code?.let { runCatching { paymentQrCode(it.uri) }.getOrNull() }
     val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } ?: emptyList() }
     val shownCode = code
     if (expanded && shownCode != null && qr != null && shownAddress != null) {
@@ -256,7 +256,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                             .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
                             .padding(20.dp),
                     ) {
-                        if (qr != null) QrImage(qr, 220.dp) else Spacer(Modifier.size(220.dp))
+                        if (qr != null) QrImage(qr, 220.dp, pattern = shownAddress) else Spacer(Modifier.size(220.dp))
                     }
                     Box(
                         Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
@@ -265,7 +265,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         contentAlignment = Alignment.Center,
                     ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
                 }
-                shownAddress?.let { AddressPattern(it, 36.dp) }
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         TextButton("New address", {
@@ -407,8 +406,7 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Un
                     code.detail?.let { Text(it, color = Fob.qrMuted, fontSize = 16.sp, textAlign = TextAlign.Center) }
                 }
             }
-            QrImage(qr, 320.dp, quiet = 4)
-            AddressPattern(address, 48.dp)
+            QrImage(qr, 320.dp, quiet = 4, pattern = address)
         }
     }
 }
