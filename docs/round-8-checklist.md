@@ -48,3 +48,16 @@ every step is in. Each item: what to do, what should happen.
 - [ ] Landscape with a cutout or the gesture bar at the side (Home, Node, Send's camera, Receive's full screen code) → every edge button stays inside the safe area, none under the cutout.
 - [ ] Light and dark → buttons keep their usual ink (white on the camera, dark on the white code screens); no new outlines or fills.
 - [ ] Dialog buttons (Switch network, Remove wallet, Theme) → still sit right, now at least 48 dp tall; dialogs look unchanged otherwise.
+
+## Step 3 · Receive's code
+
+- [ ] Receive, no amount, light mode → the address's dots sit in a white square in the code's middle; no pattern row under the card; another phone or app (Google Lens, a second wallet) scans it to the right address.
+- [ ] Same in dark mode → the card and the square stay white, the dots in their colour; it scans.
+- [ ] Type an amount → the code redraws, dots still centred; another app scans it with the amount.
+- [ ] Amount and a short note, then a 120-character note (and one in emoji) → the code gets denser but the dots stay centred and about the same size; each scans with the note.
+- [ ] Tap the code (or its corner button) → full screen code with the dots in its middle and no pattern under it; scans at arm's length in light and dark; Close returns.
+- [ ] Request › Show the code again (with a name and a note) → the full screen code has the dots in its middle; it scans.
+- [ ] New address → the dots change with the address.
+- [ ] TalkBack on Receive's card → reads "Payment code" and offers "Show larger"; the dots aren't a separate stop.
+- [ ] Share my profile → its code is unchanged (no square in the middle), still scans with the photo.
+- [ ] Backup and keys › Wallet code → unchanged, no square; still scans.

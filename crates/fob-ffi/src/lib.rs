@@ -922,6 +922,10 @@ pub struct QrCode {
     pub size: u32,
     /// Row by row, `true` for dark.
     pub dark: Vec<bool>,
+    /// Modules per side of the light square in the middle, 0 for none: the
+    /// address's pattern goes in the `centre - 2` inside its one-module
+    /// margin.
+    pub centre: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -2404,8 +2408,20 @@ pub fn preview_wallet_code(network: Network, code: String) -> Result<WalletCodeP
 
 #[uniffi::export]
 pub fn qr_code(text: String) -> Result<QrCode> {
-    let m = qr::encode(&text)?;
-    Ok(QrCode { size: m.size, dark: m.dark })
+    Ok(qr::encode(&text)?.into())
+}
+
+/// A payment code (Receive's, a request's), its middle cleared for the
+/// address's pattern.
+#[uniffi::export]
+pub fn payment_qr_code(text: String) -> Result<QrCode> {
+    Ok(qr::encode_payment(&text)?.into())
+}
+
+impl From<qr::QrMatrix> for QrCode {
+    fn from(m: qr::QrMatrix) -> Self {
+        QrCode { size: m.size, dark: m.dark, centre: m.centre }
+    }
 }
 
 /// An address's pattern: dots on a 5 × 5 grid in one of eight colours.
