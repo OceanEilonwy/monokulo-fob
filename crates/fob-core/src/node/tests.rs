@@ -300,23 +300,48 @@ fn addresses_are_written_one_way() {
 /// openssl makes them by default), valid until 2126, and its key.
 const CERT: &[u8] = include_bytes!("self-signed.crt.der");
 const KEY: &[u8] = include_bytes!("self-signed.key.der");
+/// A certificate as monerod makes its own: version 1, no subject or
+/// issuer, no extensions (which webpki won't read at all), and its key.
+const MONEROD_CERT: &[u8] = include_bytes!("monerod-v1.crt.der");
+const MONEROD_KEY: &[u8] = include_bytes!("monerod-v1.key.der");
+
+/// How [`canned_node`] answers: plain HTTP, or TLS with a certificate.
+#[derive(Clone, Copy)]
+pub(crate) enum Canned {
+    Http,
+    /// [`CERT`], over TLS 1.3 or (with `tls12`) 1.2 only.
+    Tls { monerod: bool, tls12: bool },
+}
 
 /// A stagenet node on 127.0.0.1 that answers get_info and the last block
 /// header, and sends blocks that aren't blocks; over TLS with [`CERT`]
 /// when `tls`. Gives its port.
 pub(crate) async fn canned_node(tls: bool) -> u16 {
+    canned(if tls { Canned::Tls { monerod: false, tls12: false } } else { Canned::Http }).await
+}
+
+/// [`canned_node`], answering as `how` says.
+pub(crate) async fn canned(how: Canned) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let acceptor = tls.then(|| {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ServerConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![CERT.to_vec().into()], rustls::pki_types::PrivatePkcs8KeyDer::from(KEY.to_vec()).into())
-            .unwrap();
-        tokio_rustls::TlsAcceptor::from(Arc::new(config))
-    });
+    let acceptor = match how {
+        Canned::Http => None,
+        Canned::Tls { monerod, tls12 } => {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let versions: &[&rustls::SupportedProtocolVersion] = if tls12 { &[&rustls::version::TLS12] } else { rustls::DEFAULT_VERSIONS };
+            let (cert, key) = if monerod { (MONEROD_CERT, MONEROD_KEY) } else { (CERT, KEY) };
+            // Served as it is: rustls's own check of a certificate against its
+            // key won't read a version 1 one either.
+            let key = provider.key_provider.load_private_key(rustls::pki_types::PrivatePkcs8KeyDer::from(key.to_vec()).into()).unwrap();
+            let certified = rustls::sign::CertifiedKey::new(vec![cert.to_vec().into()], key);
+            let config = rustls::ServerConfig::builder_with_provider(provider)
+                .with_protocol_versions(versions)
+                .unwrap()
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(certified)));
+            Some(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
+        }
+    };
     tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else { return };
@@ -412,6 +437,35 @@ async fn a_self_signed_certificate_passes_only_when_accepted() {
     // Switching to it checks the same way.
     assert_eq!(on_network(Network::Stagenet, &node(&url)).await, Err("self-signed, not accepted".into()));
     assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Ok(()));
+}
+
+/// monerod's own certificate (version 1, as `--rpc-ssl autodetect` makes
+/// it) is refused as self-signed, and works once accepted, over TLS 1.3
+/// and 1.2: the handshake's signature is checked against its key.
+#[tokio::test]
+async fn monerods_own_certificate_works_once_accepted() {
+    for tls12 in [false, true] {
+        let port = canned(Canned::Tls { monerod: true, tls12 }).await;
+        let url = format!("https://127.0.0.1:{port}");
+        let refused = check(Network::Stagenet, &node(&url), 0, now(), &|_| {}).await;
+        assert_eq!(rows(&refused)[0], ("Certificate", "self-signed, not accepted", Mark::Fail), "TLS 1.2: {tls12}");
+        let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
+        assert_eq!(rows(&accepted)[0], ("Certificate", "self-signed, accepted", Mark::Pass), "TLS 1.2: {tls12}");
+        assert_eq!(rows(&accepted)[2], ("Right network", "stagenet", Mark::Pass), "TLS 1.2: {tls12}");
+        assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Ok(()));
+    }
+}
+
+/// A certificate's key is read without webpki, from any version.
+#[test]
+fn a_certificates_key_is_read_from_any_version() {
+    let (_, algorithm, key) = crate::transport::public_key(MONEROD_CERT).unwrap();
+    // rsaEncryption, NULL.
+    assert_eq!(algorithm, [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
+    assert_eq!(key[0], 0x30, "an RSA key is a SEQUENCE");
+    assert!(crate::transport::public_key(CERT).is_some(), "version 3 too");
+    assert_eq!(crate::transport::public_key(&MONEROD_CERT[..40]), None, "cut short");
+    assert_eq!(crate::transport::public_key(b"not a certificate"), None);
 }
 
 #[tokio::test]
