@@ -131,7 +131,11 @@ pub struct Balance {
     pub fiat_age: Option<String>,
     /// The worth with its age, where it sits small: "$412.06 · 2 h old".
     pub fiat_line: Option<String>,
-    /// Show [`fiat_text`](Self::fiat_text) first, the XMR under it.
+    /// Tapping the balance swaps XMR and the default currency: one
+    /// besides XMR, with its worth to show. With XMR, never.
+    pub can_swap: bool,
+    /// Show [`fiat_text`](Self::fiat_text) first, the XMR at the line's
+    /// end; only while it can swap.
     pub fiat_first: bool,
     /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70", with the
     /// price's age once old ("… · 2 h old").
@@ -246,28 +250,28 @@ impl From<keys::KeyGroup> for KeyGroup {
     }
 }
 
-/// One row of the "Also show amounts in" list.
+/// One row of the "Default currency" list.
 #[derive(uniffi::Record)]
 pub struct CurrencyRow {
-    /// The code to choose ("AUD"), or none for XMR only.
+    /// The code to choose ("AUD"), or none for XMR.
     pub code: Option<String>,
     /// In the circle: "A$", "CHF", "ɱ".
     pub sign: String,
-    /// "Australian dollar", "XMR only".
+    /// "Australian dollar", "Monero (XMR)".
     pub name: String,
     /// "AUD · Kraken, CoinGecko", "Fob never looks up a price".
     pub line: String,
     pub chosen: bool,
 }
 
-/// A titled part of the list: "NONE", "THIS PHONE’S", "ALL 45".
+/// A titled part of the list: "MONERO", "THIS PHONE’S", "ALL 45".
 #[derive(uniffi::Record)]
 pub struct CurrencyGroup {
     pub title: String,
     pub rows: Vec<CurrencyRow>,
 }
 
-/// The "Also show amounts in" list.
+/// The "Default currency" list.
 #[derive(uniffi::Record)]
 pub struct CurrencyList {
     pub groups: Vec<CurrencyGroup>,
@@ -385,20 +389,18 @@ pub struct PriceSourceChoice {
 /// Settings' money and price rows.
 #[derive(uniffi::Record)]
 pub struct PriceSettings {
-    /// "Also show amounts in": "USD", or none for XMR only.
+    /// "Default currency": "USD", or none for XMR.
     pub currency: Option<String>,
-    /// That row's value: "US dollar", "XMR only".
+    /// That row's value, short enough never to wrap: "AUD · A$", "CHF", "XMR".
     pub currency_text: String,
-    /// Under its title: "Uses today's XMR price", "Fob never looks up a price".
-    pub currency_line: String,
+    /// What TalkBack says for it: "Australian dollar", "Monero (XMR)".
+    pub currency_name: String,
     /// Price from's intro: "Prices in " **"Australian dollars"** ", checked
-    /// as this page opens. …", or with XMR only one sentence, unbolded.
+    /// as this page opens. …", or with XMR one sentence, unbolded.
     pub intro_before: String,
     pub intro_bold: Option<String>,
     pub intro_after: String,
     pub provider: PriceProvider,
-    /// "Show first" the currency, not XMR.
-    pub fiat_first: bool,
     /// Price from's row: "Kraken · over the internet", or while lookups
     /// fail the toast's line ("Kraken didn't answer · using the 14:02
     /// price").
@@ -1158,6 +1160,7 @@ impl FobWallet {
     pub async fn balance(&self, now: u64) -> Balance {
         let b = self.inner.balance().await;
         let worth = self.inner.worth_aged(b.total, now).await;
+        let order = self.inner.balance_order(now).await;
         Balance {
             total: b.total,
             unlocked: b.unlocked,
@@ -1169,7 +1172,8 @@ impl FobWallet {
             }),
             fiat_age: worth.as_ref().and_then(|(_, old)| old.clone()),
             fiat_text: worth.map(|(w, _)| w),
-            fiat_first: self.inner.price_settings().await.fiat_first,
+            can_swap: order.can_swap,
+            fiat_first: order.fiat_first,
             ready_line: self.inner.ready_line(now).await,
         }
     }
@@ -1247,14 +1251,13 @@ impl FobWallet {
         let (source_text, failing) = self.inner.price_from_line(activity::Clock { now, utc_offset, hours_24 }).await;
         let intro = price::price_from_intro(&s);
         PriceSettings {
-            currency_text: price::shown_in_text(&s),
-            currency_line: price::shown_in_line(&s).into(),
+            currency_text: price::default_currency_text(&s),
+            currency_name: price::default_currency_name(&s),
             intro_before: intro.before,
             intro_bold: intro.bold,
             intro_after: intro.after,
             currency: s.currency.clone(),
             provider: s.provider.into(),
-            fiat_first: s.fiat_first,
             failing: failing && s.code().is_some(),
             source_text,
             sources,
@@ -1277,14 +1280,14 @@ impl FobWallet {
         }
     }
 
-    /// The "Also show amounts in" list, the chosen one ticked: `phone` is
+    /// The "Default currency" list, the chosen one ticked: `phone` is
     /// the phone's own currency code (its locale's), `query` what's typed
     /// in the search.
     pub async fn currency_list(&self, phone: Option<String>, query: String) -> CurrencyList {
         self.inner.currency_list(phone.as_deref(), &query).await.into()
     }
 
-    /// "Also show amounts in" `code` (a row's), or XMR only (none), when Fob
+    /// "Default currency" `code` (a row's), or XMR (none), when Fob
     /// never asks for a price. Returns words to show when the provider had
     /// to change for it: "Kraken doesn't price New Zealand dollars, so Fob
     /// now asks CoinGecko".
@@ -1299,7 +1302,7 @@ impl FobWallet {
     }
 
     /// Price from, as it opens: every provider that prices the chosen
-    /// currency asked at once (8 s each at most); none with XMR only.
+    /// currency asked at once (8 s each at most); none with XMR.
     pub async fn check_prices(&self) -> Option<PriceChecks> {
         let checks = self.inner.check_prices().await?;
         let summary = price::checks_summary(&checks);
@@ -1327,7 +1330,7 @@ impl FobWallet {
         Ok(self.inner.set_price_transport(transport.into()).await?)
     }
 
-    /// "Show amounts in" the currency first (true) or XMR.
+    /// Tapping Home's balance: the default currency first (true) or XMR; refused with XMR.
     pub async fn set_fiat_first(&self, fiat_first: bool) -> Result<()> {
         Ok(self.inner.set_fiat_first(fiat_first).await?)
     }
@@ -2318,7 +2321,7 @@ pub struct PaymentDetail {
     pub amount_text: String,
     /// "Today 08:40 · Coffee beans"
     pub when: String,
-    /// Amounts also show in a currency: show the two boxes.
+    /// A default currency besides XMR: show the two boxes.
     pub priced: bool,
     /// "$83.03" or "Not available"
     pub worth_now: String,

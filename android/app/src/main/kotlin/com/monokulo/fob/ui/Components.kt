@@ -20,11 +20,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
@@ -387,31 +384,6 @@ fun SettingRow(
                 colors = SwitchDefaults.colors(checkedTrackColor = Fob.ink, checkedThumbColor = Fob.paper, uncheckedTrackColor = Fob.sunken, uncheckedBorderColor = Fob.outline, uncheckedThumbColor = Fob.outline),
             )
             onClick != null -> StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
-        }
-    }
-}
-
-/**
- * A choice of a few, side by side on a sunken track: the chosen one filled
- * orange with dark text, the others clear with muted text. The same control
- * wherever XMR and a currency are chosen between.
- */
-@Composable
-fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, height: Dp = 36.dp) {
-    Row(
-        modifier.height(height).clip(RoundedCornerShape(height / 2)).background(Fob.sunken).padding(3.dp).selectableGroup(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        options.forEachIndexed { i, label ->
-            val chosen = i == selected
-            Box(
-                Modifier.fillMaxHeight().clip(RoundedCornerShape(height / 2)).background(if (chosen) Fob.orange else Color.Transparent)
-                    .selectable(chosen, role = Role.RadioButton) { if (!chosen) onSelect(i) }
-                    .padding(horizontal = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(label, color = if (chosen) Fob.onOrange else Fob.muted, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            }
         }
     }
 }

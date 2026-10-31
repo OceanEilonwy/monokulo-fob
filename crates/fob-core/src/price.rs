@@ -4,8 +4,9 @@
 //! Three choices, made in Settings and kept in the wallet file
 //! ([`Settings`]):
 //!
-//! - the **currency** amounts are also shown in, one of the 45 baked into
-//!   [`currencies`], or none: XMR only, and Fob never asks for a price.
+//! - the **default currency** amounts are also shown in, one of the 45
+//!   baked into [`currencies`], or none: XMR, and Fob never asks for a
+//!   price.
 //! - the **provider** ([`Provider`]): whose prices, from which API.
 //!   Kraken's public REST API ([`kraken`]) prices 6 of them, CoinGecko's
 //!   keyless one ([`coingecko`]) all 45. Which provider prices which
@@ -292,14 +293,16 @@ impl Source for Provider {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "Stored")]
 pub struct Settings {
-    /// "Also show amounts in": an ISO 4217 code from [`currencies`] that
-    /// `provider` prices, or `None` for XMR only, when no request is ever
-    /// made.
+    /// "Default currency": an ISO 4217 code from [`currencies`] that
+    /// `provider` prices, or `None` for XMR, when no request is ever made.
+    /// Kept as `currency` in the file, as before the rename.
     pub currency: Option<String>,
     pub provider: Provider,
     /// One `provider` answers over.
     pub transport: Transport,
-    /// "Show first" the currency: Home's balance leads with it.
+    /// Home's balance leads with the currency: tapping the balance swaps
+    /// it (once a Settings row, "Show first"). Kept with XMR, ignored there
+    /// ([`balance_order`]), so choosing a currency again brings it back.
     pub fiat_first: bool,
 }
 
@@ -384,7 +387,7 @@ impl Settings {
         false
     }
 
-    /// "Also show amounts in" `code`, or XMR only (`None`). Moves to a
+    /// "Default currency" `code`, or XMR (`None`). Moves to a
     /// provider that prices it when this one doesn't, and says so: "Kraken
     /// doesn't price New Zealand dollars, so Fob now asks CoinGecko".
     pub fn choose_currency(&mut self, code: Option<&str>) -> Result<Option<String>> {
@@ -557,23 +560,51 @@ impl Currency {
         if self.name.is_empty() { self.code.clone() } else { self.name.to_owned() }
     }
 
+    /// Short, as Settings' row has it: "AUD · A$", or the code alone
+    /// without a symbol or with one that is the code ("CHF").
+    pub fn short(&self) -> String {
+        match self.symbol {
+            Some(symbol) if symbol != self.code => format!("{} · {symbol}", self.code),
+            _ => self.code.clone(),
+        }
+    }
+
     /// Its sign in a list: the symbol, or the code.
     pub fn sign(&self) -> String {
         self.symbol.map(str::to_owned).unwrap_or_else(|| self.code.clone())
     }
 }
 
-/// Settings' "Also show amounts in" value: "Australian dollar", or "XMR only".
-pub fn shown_in_text(settings: &Settings) -> String {
-    settings.code().map(|c| currency(c).text()).unwrap_or_else(|| XMR_ONLY.into())
+/// Settings' "Default currency" value, short enough never to wrap: the
+/// code and symbol ("AUD · A$"), the code alone without a symbol or with
+/// one that is the code ("CHF"), or "XMR". Never the full name: that's
+/// for TalkBack ([`default_currency_name`]) and the list.
+pub fn default_currency_text(settings: &Settings) -> String {
+    settings.code().map(|c| currency(c).short()).unwrap_or_else(|| "XMR".into())
 }
 
-const XMR_ONLY: &str = "XMR only";
+/// The Default currency row for TalkBack: "Australian dollar", "Monero (XMR)".
+pub fn default_currency_name(settings: &Settings) -> String {
+    settings.code().map(|c| currency(c).text()).unwrap_or_else(|| MONERO.into())
+}
 
-/// Under "Also show amounts in": "Uses today's XMR price", or with XMR
-/// only "Fob never looks up a price".
-pub fn shown_in_line(settings: &Settings) -> &'static str {
-    if settings.code().is_some() { "Uses today's XMR price" } else { NEVER_LOOKS }
+/// The currency list's XMR row.
+const MONERO: &str = "Monero (XMR)";
+
+/// Home's balance: whether tapping it swaps XMR and the default currency,
+/// and which leads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BalanceOrder {
+    /// A default currency besides XMR with its worth to show (`priced`):
+    /// the balance swaps. With XMR, never anywhere.
+    pub can_swap: bool,
+    /// The currency leads ([`Settings::fiat_first`]); only while it can swap.
+    pub fiat_first: bool,
+}
+
+pub fn balance_order(settings: &Settings, priced: bool) -> BalanceOrder {
+    let can_swap = settings.code().is_some() && priced;
+    BalanceOrder { can_swap, fiat_first: can_swap && settings.fiat_first }
 }
 
 const NEVER_LOOKS: &str = "Fob never looks up a price";
@@ -596,7 +627,7 @@ pub fn price_from_intro(settings: &Settings) -> PriceFromIntro {
             bold: Some(if c.plural.is_empty() { c.code.clone() } else { c.plural.to_owned() }),
             after: ", checked as this page opens. Tap a provider to pick it.".into(),
         },
-        None => PriceFromIntro { before: format!("With XMR only, {}.", NEVER_LOOKS), bold: None, after: String::new() },
+        None => PriceFromIntro { before: format!("With XMR as the default currency, {}.", NEVER_LOOKS), bold: None, after: String::new() },
     }
 }
 
@@ -645,28 +676,28 @@ pub fn transport_rows(settings: &Settings) -> Vec<TransportRow> {
         .collect()
 }
 
-/// One row of the "Also show amounts in" list.
+/// One row of the "Default currency" list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrencyRow {
-    /// The code to choose, or `None` for XMR only.
+    /// The code to choose, or `None` for XMR.
     pub code: Option<String>,
     /// In the circle: "A$", "CHF", "ɱ".
     pub sign: String,
-    /// "Australian dollar", "XMR only".
+    /// "Australian dollar", "Monero (XMR)".
     pub name: String,
     /// "AUD · Kraken, CoinGecko", "Fob never looks up a price".
     pub line: String,
     pub chosen: bool,
 }
 
-/// A titled part of the list: "NONE", "THIS PHONE’S", "ALL 45".
+/// A titled part of the list: "MONERO", "THIS PHONE’S", "ALL 45".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrencyGroup {
     pub title: String,
     pub rows: Vec<CurrencyRow>,
 }
 
-/// The "Also show amounts in" list.
+/// The "Default currency" list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrencyList {
     pub groups: Vec<CurrencyGroup>,
@@ -686,24 +717,24 @@ fn currency_row(info: &currencies::Info, chosen: Option<&str>) -> CurrencyRow {
     }
 }
 
-/// The "Also show amounts in" list: XMR only, the phone's own currency
+/// The "Default currency" list: Monero (XMR), the phone's own currency
 /// (`phone`, its ISO 4217 code, when Fob has it), then all 45 A–Z by name;
 /// `query` keeps only what it matches by name, code or symbol (whatever
 /// the case or accents), and leaves out the phone's row, already among the
-/// rest. `chosen` is the current code, `None` for XMR only.
+/// rest. `chosen` is the current code, `None` for XMR.
 pub fn currency_list(chosen: Option<&str>, phone: Option<&str>, query: &str) -> CurrencyList {
     let searching = !query.trim().is_empty();
     let mut groups = vec![];
     let xmr = currencies::fold(query.trim());
-    if !searching || ["xmr only", amount::SIGN, "monero"].iter().any(|t| currencies::fold(t).contains(&xmr)) {
+    if !searching || [MONERO, amount::SIGN].iter().any(|t| currencies::fold(t).contains(&xmr)) {
         let row = CurrencyRow {
             code: None,
             sign: amount::SIGN.into(),
-            name: XMR_ONLY.into(),
+            name: MONERO.into(),
             line: NEVER_LOOKS.into(),
             chosen: chosen.is_none(),
         };
-        groups.push(CurrencyGroup { title: "NONE".into(), rows: vec![row] });
+        groups.push(CurrencyGroup { title: "MONERO".into(), rows: vec![row] });
     }
     if !searching && let Some(info) = phone.and_then(|p| currencies::find(&p.trim().to_ascii_uppercase())) {
         groups.push(CurrencyGroup { title: "THIS PHONE’S".into(), rows: vec![currency_row(info, chosen)] });
@@ -1151,8 +1182,46 @@ mod tests {
         assert_eq!(usd().text(), "US dollar");
         assert_eq!(currency("XYZ").text(), "XYZ");
         assert_eq!((currency("CHF").sign(), currency("AUD").sign()), ("CHF".to_owned(), "A$".to_owned()));
-        assert_eq!(shown_in_text(&Settings::default()), "US dollar");
-        assert_eq!(shown_in_text(&Settings { currency: None, ..Settings::default() }), "XMR only");
+    }
+
+    #[test]
+    fn the_default_currency_row_is_short_and_talkback_hears_its_name() {
+        let with = |code: Option<&str>| Settings { currency: code.map(str::to_owned), ..Settings::default() };
+        // A symbol: code and symbol.
+        assert_eq!(default_currency_text(&with(Some("AUD"))), "AUD · A$");
+        assert_eq!(default_currency_text(&with(Some("USD"))), "USD · $");
+        assert_eq!(default_currency_text(&with(Some("EUR"))), "EUR · €");
+        // No symbol: the code alone.
+        assert_eq!(default_currency_text(&with(Some("CHF"))), "CHF");
+        // XMR.
+        assert_eq!(default_currency_text(&with(None)), "XMR");
+        // Never the full name, which TalkBack hears instead.
+        assert_eq!(default_currency_name(&with(Some("AUD"))), "Australian dollar");
+        assert_eq!(default_currency_name(&with(None)), "Monero (XMR)");
+        // Every one of the 45 fits: at most "AAA · ABCD".
+        assert!(currencies::CODES.iter().all(|c| default_currency_text(&with(Some(c))).chars().count() <= 10));
+    }
+
+    #[test]
+    fn a_symbol_that_is_the_code_shows_once() {
+        // None in the table is (the table's own test), but a written code
+        // never shows twice.
+        assert_eq!(Currency { symbol: Some("CHF"), ..currency("CHF") }.short(), "CHF");
+        assert_eq!(currency("XYZ").short(), "XYZ");
+    }
+
+    #[test]
+    fn the_balance_swaps_only_with_a_currency_and_its_worth() {
+        let xmr = Settings { currency: None, fiat_first: true, ..Settings::default() };
+        // XMR: no swap, XMR first, whatever the file says.
+        assert_eq!(balance_order(&xmr, false), BalanceOrder { can_swap: false, fiat_first: false });
+        assert_eq!(balance_order(&xmr, true), BalanceOrder { can_swap: false, fiat_first: false });
+        // A currency with its worth: swaps, in the order kept.
+        let aud = Settings { currency: Some("AUD".into()), fiat_first: true, ..Settings::default() };
+        assert_eq!(balance_order(&aud, true), BalanceOrder { can_swap: true, fiat_first: true });
+        assert_eq!(balance_order(&Settings { fiat_first: false, ..aud.clone() }, true), BalanceOrder { can_swap: true, fiat_first: false });
+        // No price yet: nothing to swap to.
+        assert_eq!(balance_order(&aud, false), BalanceOrder { can_swap: false, fiat_first: false });
     }
 
     #[test]
@@ -1395,9 +1464,6 @@ mod tests {
         s.choose_provider(Provider::CoinGecko).unwrap();
         let tor = &transport_rows(&s)[1];
         assert_eq!((tor.line.as_str(), tor.available), ("Hides this phone's IP address · not built into Fob yet", false));
-        assert_eq!(shown_in_line(&s), "Uses today's XMR price");
-        s.choose_currency(None).unwrap();
-        assert_eq!(shown_in_line(&s), "Fob never looks up a price");
     }
 
     #[test]
@@ -1455,12 +1521,12 @@ mod tests {
     }
 
     #[test]
-    fn the_currency_list_puts_xmr_only_and_the_phone_s_first() {
+    fn the_currency_list_puts_monero_and_the_phone_s_first() {
         let list = currency_list(Some("AUD"), Some("aud"), "");
         let titles: Vec<&str> = list.groups.iter().map(|g| g.title.as_str()).collect();
-        assert_eq!(titles, ["NONE", "THIS PHONE’S", "ALL 45"]);
+        assert_eq!(titles, ["MONERO", "THIS PHONE’S", "ALL 45"]);
         let xmr = &list.groups[0].rows[0];
-        assert_eq!((xmr.code.as_deref(), xmr.sign.as_str(), xmr.name.as_str(), xmr.line.as_str(), xmr.chosen), (None, "ɱ", "XMR only", "Fob never looks up a price", false));
+        assert_eq!((xmr.code.as_deref(), xmr.sign.as_str(), xmr.name.as_str(), xmr.line.as_str(), xmr.chosen), (None, "ɱ", "Monero (XMR)", "Fob never looks up a price", false));
         let phone = &list.groups[1].rows[0];
         assert_eq!((phone.sign.as_str(), phone.name.as_str(), phone.line.as_str(), phone.chosen), ("A$", "Australian dollar", "AUD · Kraken, CoinGecko", true));
         let all = &list.groups[2].rows;
@@ -1470,7 +1536,7 @@ mod tests {
         assert_eq!(all.iter().filter(|r| r.chosen).count(), 1);
         // A phone currency Fob doesn't have, or none: no such row.
         assert_eq!(currency_list(None, Some("XOF"), "").groups.len(), 2);
-        assert!(currency_list(None, None, "").groups[0].rows[0].chosen, "XMR only chosen");
+        assert!(currency_list(None, None, "").groups[0].rows[0].chosen, "XMR chosen");
         // Searching: matches only, no phone row.
         let found = currency_list(Some("AUD"), Some("AUD"), "dollar");
         assert_eq!(found.groups.len(), 1);
@@ -1478,7 +1544,9 @@ mod tests {
         assert!(found.groups[0].rows.iter().all(|r| r.name.contains("dollar")));
         let zloty = currency_list(None, None, "ZLOTY");
         assert_eq!(zloty.groups[0].rows.iter().map(|r| r.code.as_deref()).collect::<Vec<_>>(), [Some("PLN")]);
-        assert_eq!(currency_list(None, None, "xmr").groups[0].title, "NONE");
+        assert_eq!(currency_list(None, None, "xmr").groups[0].title, "MONERO");
+        assert_eq!(currency_list(None, None, "monero").groups[0].rows[0].code, None);
+        assert_eq!(currency_list(None, None, "ɱ").groups[0].title, "MONERO");
         let none = currency_list(None, None, " qqq ");
         assert_eq!((none.groups.len(), none.empty.as_deref()), (0, Some("No currency matches “qqq”")));
     }
@@ -1559,7 +1627,7 @@ mod tests {
         let intro = price_from_intro(&s);
         assert_eq!((intro.before.as_str(), intro.bold.as_deref(), intro.after.as_str()), ("Prices in ", Some("Australian dollars"), ", checked as this page opens. Tap a provider to pick it."));
         s.currency = None;
-        assert_eq!(price_from_intro(&s), PriceFromIntro { before: "With XMR only, Fob never looks up a price.".into(), bold: None, after: String::new() });
+        assert_eq!(price_from_intro(&s), PriceFromIntro { before: "With XMR as the default currency, Fob never looks up a price.".into(), bold: None, after: String::new() });
     }
 
     #[tokio::test(start_paused = true)]

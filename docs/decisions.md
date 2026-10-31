@@ -2171,3 +2171,45 @@ Calls made while building the first version, with why. Newest last.
     dialog 1.10 → 1.38 and 1.11 → 1.36), so the block now reads as a
     block. The disabled Split up: muted on sunken 6.10:1 light, 6.29:1
     dark.
+271. **Default currency, a short value** (round 8 › step 5, items 9 and
+    10). Settings' "Also show amounts in" is now "Default currency"
+    (sentence case), and its list screen's title too. The line under the
+    title ("Uses today's XMR price" / "Fob never looks up a price") is
+    gone, so the row is one line; Rust's `price::default_currency_text`
+    gives the value: code and symbol ("AUD · A$", "USD · $"), the code
+    alone without a symbol ("CHF") or with a symbol equal to the code,
+    "XMR" for XMR. Never the full name on the row; TalkBack hears it
+    instead (`default_currency_name`: "Australian dollar", "Monero
+    (XMR)"). The longest of the 45 values is 10 characters, tested. The
+    value is one line, ellipsized, and at a big font still drops under
+    the title (`TitleAndValue`) rather than squeezing it. Price from stays
+    the row under it with a currency.
+272. **The list's XMR row is "Monero (XMR)"** in a group titled "MONERO"
+    (was "XMR only" under "NONE", which read oddly once the setting is a
+    default currency). Its line stays "Fob never looks up a price". A
+    search for "xmr", "monero" or "ɱ" finds it. Price from's intro with
+    XMR now says "With XMR as the default currency, Fob never looks up a
+    price."
+273. **Show first goes; the swap stays remembered.** The Settings row
+    and its "Tap the balance to swap any time" are gone, and with them
+    the `Segmented` control (only that row used it) and
+    `PriceSettings.fiat_first`/`currency_line`. The wallet file keeps
+    `prices.fiat_first` under the same name, so a wallet saved with Show
+    first on its currency still leads with it (tested from a file, and a
+    file without the field opens XMR first). Home's balance tap still
+    toggles it. Kept while XMR is chosen, so picking a currency again
+    brings the order back; Rust refuses the toggle with XMR.
+274. **Rust decides the swap: `Balance.can_swap`.** `price::balance_order`
+    (via `Wallet::balance_order`) is true only with a default currency
+    besides XMR and its worth to show (a price within the day), and
+    `Balance.fiat_first` is false whenever it can't swap. Home's balance
+    is only clickable (and only announces "Swap XMR and AUD") when
+    `canSwap`; with XMR it is plain text, not a disabled button. The
+    amount fields' chip (Send, Receive, Pay) was already Rust's
+    `can_switch`, false with XMR (`FieldPrice::None`), so it shows on no
+    screen. There is no other ⇅ control in the app.
+275. **Amount fields don't follow Home's order.** The fields keep
+    starting in the default currency whenever there is a price, as
+    before; a chip tap switches that field only. `fiat_first` stays
+    Home's balance order alone, so the swap is "remembered as before"
+    without one field's tap reordering the balance.

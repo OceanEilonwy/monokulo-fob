@@ -321,7 +321,7 @@ class WalletModel(private val app: Application) {
         scope.launch { runCatching { wallet.rememberReceiveNote(index, note) } }
     }
 
-    /** "Also show amounts in" a currency's [code], or XMR only (null); Rust's words show as a notice when the provider had to change for it. */
+    /** "Default currency" a currency's [code], or XMR (null); Rust's words show as a notice when the provider had to change for it. */
     suspend fun setCurrency(code: String?) = say(changePrices { it.setCurrency(code) })
 
     /** Prices from [provider]; Rust's words show as a notice when the transport had to change for it. */
@@ -330,7 +330,7 @@ class WalletModel(private val app: Application) {
     /** Throws what Rust refused (Tor, for now). */
     suspend fun setPriceTransport(transport: PriceTransport) = changePrices { it.setPriceTransport(transport) }
 
-    /** "Show first": the currency first, or XMR. */
+    /** Tapping Home's balance: the default currency first, or XMR. Rust refuses it with XMR. */
     suspend fun setFiatFirst(fiatFirst: Boolean) = changePrices { it.setFiatFirst(fiatFirst) }
 
     private suspend fun <T> changePrices(change: suspend (FobWallet) -> T): T? {
@@ -340,10 +340,10 @@ class WalletModel(private val app: Application) {
         return result
     }
 
-    /** Every provider of the chosen currency asked for its price now; null with XMR only. */
+    /** Every provider of the chosen currency asked for its price now; null with XMR. */
     suspend fun checkPrices(): PriceChecks? = _wallet.value?.checkPrices()
 
-    /** The "Also show amounts in" list, with this phone's currency (its locale's) for Rust to place. */
+    /** The "Default currency" list, with this phone's currency (its locale's) for Rust to place. */
     suspend fun currencyList(query: String): CurrencyList? {
         val phone = runCatching { java.util.Currency.getInstance(java.util.Locale.getDefault()).currencyCode }.getOrNull()
         return _wallet.value?.currencyList(phone, query)

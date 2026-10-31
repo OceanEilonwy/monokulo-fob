@@ -77,3 +77,18 @@ every step is in. Each item: what to do, what should happen.
 - [ ] Contacts › add a contact, paste an address that replaces one → the "replaces" warning in the same block, Use it and the other button below.
 - [ ] Restore › Scan a wallet code → the warning card on the camera keeps its dark card and light words, same layout as the others.
 - [ ] 200 % font → every warning wraps inside its block, the triangle stays at the top left, nothing clipped.
+
+## Step 5 · Default currency
+
+- [ ] 360 dp phone (or emulator at 360 dp), default font, light then dark → Settings › Money shows "Default currency" with "USD · $" (or the chosen one) and a chevron on one line; no line under the title; no "Show first" row; Price from under it.
+- [ ] Choose AUD, EUR, JPY, CHF, NZD in turn → the value reads "AUD · A$", "EUR · €", "JPY · ¥", "CHF", "NZD · NZ$"; never a full name, never wrapped.
+- [ ] Choose Monero (XMR) → the value reads "XMR"; Price from disappears.
+- [ ] 200 % font → the value drops under "Default currency" at the end rather than squeezing the title; nothing clipped.
+- [ ] TalkBack on the row → "Default currency, Australian dollar, button" (with XMR: "Monero (XMR)").
+- [ ] Open the list → title "Default currency"; the first group "MONERO" with "Monero (XMR)" and "Fob never looks up a price"; other rows keep their full names; search "monero", "xmr", "ɱ", "franc", "A$" each find what they should; "qqq" says no currency matches.
+- [ ] Pick NZD while Price from is Kraken → the notice "Kraken doesn't price New Zealand dollars, so Fob now asks CoinGecko".
+- [ ] XMR as default currency → Home's balance shows XMR only and tapping it does nothing (no ripple; TalkBack reads no button); Send, Receive's request amount and Pay's amount show no swap chip.
+- [ ] A currency with a price → tapping Home's balance swaps XMR and the currency; leave and reopen Fob → the order is kept; Send, Receive and Pay's chip swaps between XMR and that currency.
+- [ ] A currency but no price yet (airplane mode on a new wallet) → no swap on Home, no chip on the fields, the field line says there's no price.
+- [ ] Swap Home to the currency first, choose XMR, then choose the currency again → the currency leads again once its price is in.
+- [ ] Install over round 7 with a wallet saved with Show first = the currency → it opens, Home leads with the currency; one saved with Show first = XMR leads with XMR.
