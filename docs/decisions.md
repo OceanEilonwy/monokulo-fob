@@ -1909,3 +1909,17 @@ Calls made while building the first version, with why. Newest last.
     checks are in, a polite live region says Rust's summary ("Kraken
     A$845.10, CoinGecko not answering"), as "Asking each provider…" was
     said when they started.
+253. **The toast with the keyboard up, the cog on Confirm, a swipe while
+    retrying, money kept** (review R2; decision 240 is replaced): while the
+    keyboard is up the toast sits at the top of the screen, under the
+    status bar, clear of the keyboard and of the field being typed in
+    (which the keyboard keeps just above itself), and is still a polite
+    live region, so the failure typing causes is seen and heard while it
+    applies. The cog is off (greyed, not clickable) on Confirm, whose
+    leaving cancels the prepared payment, sending or not. Swiping the toast
+    away while "Trying again…" also swipes the failure that Retry comes
+    to. Money typed on Send or Receive when the price goes (Price from
+    picked another provider that hasn't answered yet, or a price passing a
+    day) is kept aside, never read as XMR, the field empty in XMR; it comes
+    back as typed when a price does (and Back from the cog keeps it in the
+    draft).
