@@ -1,7 +1,8 @@
 //! How catching up looks: the chip in Home's top bar and the details card
 //! under it. Speeds come from a short window of what the sync loop saw
 //! (blocks scanned, bytes the fetcher took from the node), and the time
-//! left from them, settled and rounded so it reads calmly.
+//! left from a longer one, counting down with the clock, never up, and
+//! rounded so it reads calmly.
 
 use std::{collections::VecDeque, time::Duration, time::Instant};
 
@@ -13,14 +14,20 @@ use crate::{
 
 /// Speeds are measured over about this much of the latest samples.
 const SPAN: Duration = Duration::from_secs(5);
+/// The time left is estimated over about this much: block sizes vary a
+/// lot along the chain, and a 5 s window's estimate wobbles with them.
+const SMOOTH: Duration = Duration::from_secs(20);
 /// No speed, so no time left, until this much has been measured.
 const SETTLE: Duration = Duration::from_secs(3);
 /// A first time left under this isn't shown: a catch-up that's nearly over
 /// shows only Starting, then Synced.
 const FIRST_SHOWN: u64 = 10;
-/// The time left goes up only when a new estimate is at least half as much
-/// again and this many seconds more.
+/// The time left shown is dropped when the estimate rises past it by half
+/// as much again and this many seconds more (a node that slows a lot)...
 const RISE: u64 = 30;
+/// ...and a new one counts down from the estimate once this much has been
+/// measured since.
+const RESETTLE: Duration = Duration::from_secs(10);
 
 /// One look at the sync loop: when, and its running totals.
 #[derive(Clone, Copy, Debug)]
@@ -39,7 +46,10 @@ pub struct Pace {
     /// The transport's count and the scanned height at the last sample, to
     /// add only what came since (a new transport counts from 0 again).
     last: Option<(u64, u64)>,
-    shown: Option<u64>,
+    /// The time left as set, and when: it counts down with the clock from there.
+    shown: Option<(u64, Instant)>,
+    /// When the time left was dropped for a big rise (or a stall).
+    dropped: Option<Instant>,
 }
 
 /// Speeds once settled.
@@ -67,20 +77,27 @@ impl Pace {
         let total = self.samples.back().map_or(Sample { at, bytes: 0, blocks: 0 }, |s| Sample { at, bytes: s.bytes + bytes, blocks: s.blocks + blocks });
         self.started.get_or_insert(at);
         self.samples.push_back(total);
-        // Keep one sample from before the window, as its base.
-        while self.samples.len() > 2 && self.samples[1].at + SPAN <= at {
+        // Keep one sample from before the longer window, as its base.
+        while self.samples.len() > 2 && self.samples[1].at + SMOOTH <= at {
             self.samples.pop_front();
         }
-        self.shown = self.next_shown(left);
-        self.shown
+        self.next_shown(at, left);
+        self.held(at)
     }
 
     /// Speeds over the window, once [`SETTLE`] has been measured.
     pub fn speeds(&self) -> Option<Speeds> {
-        let (first, last) = (self.samples.front()?, self.samples.back()?);
+        self.over(SPAN)
+    }
+
+    /// Speeds from the newest sample back to the last one at least `span`
+    /// older (or the oldest kept), once [`SETTLE`] has been measured.
+    fn over(&self, span: Duration) -> Option<Speeds> {
+        let last = self.samples.back()?;
         if last.at.duration_since(self.started?) < SETTLE {
             return None;
         }
+        let first = self.samples.iter().rev().find(|s| s.at + span <= last.at).unwrap_or(self.samples.front()?);
         let seconds = last.at.duration_since(first.at).as_secs_f64();
         (seconds > 0.0).then(|| Speeds {
             blocks_per_second: (last.blocks - first.blocks) as f64 / seconds,
@@ -88,25 +105,58 @@ impl Pace {
         })
     }
 
-    /// The time left as shown, in seconds: none until the speed settles, and
-    /// then never up again unless the estimate rises a lot.
-    fn next_shown(&self, left: u64) -> Option<u64> {
+    /// The time left shown at `at`: what was set, less the time since, and
+    /// never under a second while there's something left.
+    fn held(&self, at: Instant) -> Option<u64> {
+        self.shown.map(|(seconds, set)| seconds.saturating_sub(at.saturating_duration_since(set).as_secs()).max(1))
+    }
+
+    /// Moves the time left on for `left` blocks at `at`: none until the
+    /// speed settles; then it counts down with the clock, taking a lower
+    /// estimate at once and holding through a higher one. It is never
+    /// raised: an estimate half as much again and [`RISE`] more drops it
+    /// ("Working it out"), and a fresh one counts down once [`RESETTLE`]
+    /// more has been measured. A stall over the whole window drops it too.
+    fn next_shown(&mut self, at: Instant, left: u64) {
         if left == 0 {
-            return None;
+            self.shown = None;
+            return;
         }
-        let speeds = self.speeds()?;
-        if speeds.blocks_per_second <= 0.0 {
-            // Stalled: keep what was shown rather than guess.
-            return self.shown;
+        let Some(speeds) = self.over(SMOOTH) else {
+            self.shown = None;
+            return;
+        };
+        let estimate = (speeds.blocks_per_second > 0.0).then(|| (left as f64 / speeds.blocks_per_second).ceil() as u64);
+        match (self.held(at), estimate) {
+            (_, None) => {
+                self.shown = None;
+                self.dropped = Some(at);
+            }
+            (Some(held), Some(estimate)) if estimate <= held => self.shown = Some((estimate, at)),
+            (Some(held), Some(estimate)) if estimate >= held + held / 2 && estimate >= held + RISE => {
+                self.shown = None;
+                self.dropped = Some(at);
+            }
+            (Some(_), Some(_)) => {}
+            (None, Some(_)) if self.dropped.is_some_and(|d| at.duration_since(d) < RESETTLE) => {}
+            (None, Some(estimate)) if estimate < FIRST_SHOWN => {}
+            (None, Some(estimate)) => {
+                self.shown = Some((estimate, at));
+                self.dropped = None;
+            }
         }
-        let estimate = (left as f64 / speeds.blocks_per_second).ceil() as u64;
-        match self.shown {
-            None if estimate < FIRST_SHOWN => None,
-            None => Some(estimate),
-            Some(shown) if estimate <= shown => Some(estimate),
-            Some(shown) if estimate >= shown + shown / 2 && estimate >= shown + RISE => Some(estimate),
-            Some(shown) => Some(shown),
+    }
+
+    /// Notes a report: on a failure nothing is sampled and the measuring
+    /// starts again, so the first sample after the wait is the base and no
+    /// speed spans the time spent waiting. Gives the time left and speeds.
+    pub fn report(&mut self, at: Instant, received: u64, scanned: u64, left: u64, failed: bool) -> (Option<u64>, Option<Speeds>) {
+        if failed {
+            self.reset();
+            return (None, None);
         }
+        let seconds_left = self.sample(at, received, scanned, left);
+        (seconds_left, self.speeds())
     }
 }
 
@@ -151,19 +201,37 @@ pub fn long_time(seconds: u64) -> String {
     }
 }
 
+/// "28", or "0.8" for slow going.
+fn blocks_a_second(blocks: f64) -> String {
+    if blocks >= 9.95 { grouped(blocks.round() as u64) } else { format!("{blocks:.1}") }
+}
+
 /// "28/s", or "0.8/s" for slow going.
 fn per_second(blocks: f64) -> String {
-    if blocks >= 9.95 { format!("{}/s", grouped(blocks.round() as u64)) } else { format!("{blocks:.1}/s") }
+    format!("{}/s", blocks_a_second(blocks))
+}
+
+/// The amount and its unit: ("1.8", "MB"), ("12", "MB"), or ("640", "kB")
+/// under a megabyte (decimal units).
+fn link_amount(bytes_per_second: f64) -> (String, &'static str) {
+    let mb = bytes_per_second / 1e6;
+    match () {
+        _ if mb >= 9.95 => (format!("{}", mb.round()), "MB"),
+        _ if mb >= 0.995 => (format!("{mb:.1}"), "MB"),
+        _ => (format!("{}", (bytes_per_second / 1e3).round()), "kB"),
+    }
 }
 
 /// "1.8 MB/s", "12 MB/s", or "640 kB/s" under a megabyte (decimal units).
 pub fn link_speed(bytes_per_second: f64) -> String {
-    let mb = bytes_per_second / 1e6;
-    match () {
-        _ if mb >= 9.95 => format!("{} MB/s", mb.round()),
-        _ if mb >= 0.995 => format!("{mb:.1} MB/s"),
-        _ => format!("{} kB/s", (bytes_per_second / 1e3).round()),
-    }
+    let (amount, unit) = link_amount(bytes_per_second);
+    format!("{amount} {unit}/s")
+}
+
+/// The same for TalkBack: "1.8 megabytes a second".
+fn link_speed_spoken(bytes_per_second: f64) -> String {
+    let (amount, unit) = link_amount(bytes_per_second);
+    format!("{amount} {} a second", if unit == "MB" { "megabytes" } else { "kilobytes" })
 }
 
 /// How the chip looks.
@@ -181,10 +249,16 @@ pub enum Look {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chip {
     pub look: Look,
-    /// "Starting", "6 min left", "Synced", "Can't reach node".
+    /// "Starting", "6 min left", "Synced", "Can't reach node", "Can't save".
     pub text: String,
     /// What TalkBack reads: "Catching up, 34%, about 6 minutes left".
     pub label: String,
+}
+
+/// The card's title (and the chip's label) for a failure: the node's, or
+/// the phone's own.
+fn failed_title(status: &SyncStatus) -> &'static str {
+    if status.error_local { "Can't save the wallet" } else { "Can't reach node" }
 }
 
 /// Percent done, never 100 before the end: "34%".
@@ -196,8 +270,8 @@ fn percent(status: &SyncStatus) -> String {
 impl SyncStatus {
     pub fn chip(&self) -> Chip {
         if self.error.is_some() {
-            let text = "Can't reach node".to_owned();
-            return Chip { look: Look::Offline, label: text.clone(), text };
+            let text = if self.error_local { "Can't save" } else { "Can't reach node" };
+            return Chip { look: Look::Offline, text: text.into(), label: failed_title(self).into() };
         }
         if self.synced {
             return Chip { look: Look::Synced, text: "Synced".into(), label: "Synced".into() };
@@ -209,23 +283,36 @@ impl SyncStatus {
                 text: format!("{} left", short_time(s)),
                 label: format!("Catching up, {percent}, about {} left", long_time(s)),
             },
+            // Measured, but the time left dropped for a slowdown: no number.
+            None if self.blocks_per_second.is_some() => Chip { look: Look::Ring, text: "Catching up".into(), label: format!("Catching up, {percent}") },
             None => Chip { look: Look::Ring, text: "Starting".into(), label: format!("Catching up, {percent}") },
         }
     }
 }
 
+/// One of the card's rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    /// "Blocks".
+    pub label: String,
+    /// "3,360 of 9,880 · 28/s".
+    pub value: String,
+    /// What TalkBack reads: "Blocks: 3,360 of 9,880, 28 a second".
+    pub spoken: String,
+}
+
 /// The card the chip opens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Details {
-    /// "Catching up", "Synced", "Can't reach node".
+    /// "Catching up", "Synced", "Can't reach node", "Can't save the wallet".
     pub title: String,
     /// "34%" beside the title while catching up.
     pub percent: Option<String>,
     /// The bar, while catching up.
     pub progress: Option<f32>,
-    /// ("Time left", "about 4 min"), ("Payments up to", "29 Oct, 14:20"),
-    /// ("Blocks", "3,360 of 9,880 · 28/s"), ("Link speed", "1.8 MB/s").
-    pub rows: Vec<(String, String)>,
+    /// Time left "about 4 min", Payments up to "29 Oct, 14:20", Blocks
+    /// "3,360 of 9,880 · 28/s", Link speed "1.8 MB/s".
+    pub rows: Vec<Row>,
     /// "You can still receive and send while Fob catches up."
     pub note: Option<String>,
     /// What went wrong, as the node or the network said it.
@@ -248,29 +335,39 @@ fn date_time(time: u64, clock: Clock) -> String {
 pub fn details(status: &SyncStatus, can_spend: bool, clock: Clock) -> Details {
     let speeds = status.blocks_per_second.zip(status.link_mb_per_second);
     let catching_up = !status.synced && status.tip > 0;
-    let row = |k: &str, v: String| (k.to_owned(), v);
+    let row = |label: &str, value: String, spoken: String| Row { label: label.to_owned(), spoken: format!("{label}: {spoken}"), value };
     let mut rows = vec![];
     if catching_up && status.error.is_none() {
-        let left = status.seconds_left.map_or_else(|| "Working it out".to_owned(), |s| format!("about {}", short_time(s)));
-        rows.push(row("Time left", left));
+        let (left, spoken) = match status.seconds_left {
+            Some(s) => (format!("about {}", short_time(s)), format!("about {}", long_time(s))),
+            None => ("Working it out".to_owned(), "working it out".to_owned()),
+        };
+        rows.push(row("Time left", left, spoken));
     }
     if status.up_to > 0 {
-        rows.push(row("Payments up to", date_time(status.up_to, clock)));
+        let when = date_time(status.up_to, clock);
+        rows.push(row("Payments up to", when.clone(), when));
     }
     if catching_up {
-        let mut blocks = format!("{} of {}", grouped(status.scanned.saturating_sub(status.start)), grouped(status.tip.saturating_sub(status.start)));
-        if let Some((per, _)) = speeds.filter(|_| status.error.is_none()) {
-            blocks = format!("{blocks} · {}", per_second(per));
-        }
-        rows.push(row("Blocks", blocks));
+        let blocks = format!("{} of {}", grouped(status.scanned.saturating_sub(status.start)), grouped(status.tip.saturating_sub(status.start)));
+        let (value, spoken) = match speeds.filter(|_| status.error.is_none()) {
+            Some((per, _)) => (format!("{blocks} · {}", per_second(per)), format!("{blocks}, {} a second", blocks_a_second(per))),
+            None => (blocks.clone(), blocks),
+        };
+        rows.push(row("Blocks", value, spoken));
         if status.error.is_none() {
-            rows.push(row("Link speed", speeds.map_or_else(|| "Measuring".to_owned(), |(_, mb)| link_speed(mb * 1e6))));
+            let (value, spoken) = match speeds {
+                Some((_, mb)) => (link_speed(mb * 1e6), link_speed_spoken(mb * 1e6)),
+                None => ("Measuring".to_owned(), "measuring".to_owned()),
+            };
+            rows.push(row("Link speed", value, spoken));
         }
     } else if status.tip > 0 {
-        rows.push(row("Latest block", grouped(status.tip - 1)));
+        let latest = grouped(status.tip - 1);
+        rows.push(row("Latest block", latest.clone(), latest));
     }
     let title = match () {
-        _ if status.error.is_some() => "Can't reach node",
+        _ if status.error.is_some() => failed_title(status),
         _ if status.synced => "Synced",
         _ => "Catching up",
     };
@@ -348,31 +445,105 @@ mod tests {
         assert!((s.blocks_per_second - 20.0).abs() < 1e-9);
     }
 
+    /// Every time left shown, sampling every half second at the speeds
+    /// `bps(t)` blocks a second, from `t0 + from` to `t0 + to`.
+    fn trace(pace: &mut Pace, t0: Instant, (from, to): (f64, f64), bps: impl Fn(f64) -> f64, start: u64, tip: u64) -> (Vec<Option<u64>>, u64) {
+        let (mut scanned, mut done, mut shown) = (start, start as f64, vec![]);
+        let mut t = from;
+        while t <= to + 1e-9 {
+            shown.push(pace.sample(t0 + secs(t), scanned * 50_000, scanned, tip.saturating_sub(scanned)));
+            done += bps(t) * 0.5;
+            scanned = done as u64;
+            t += 0.5;
+        }
+        (shown, scanned)
+    }
+
+    /// No number shown is ever larger than the one shown just before it.
+    fn never_up(shown: &[Option<u64>]) {
+        for pair in shown.windows(2) {
+            if let [Some(a), Some(b)] = pair {
+                assert!(b <= a, "{a} then {b} in {shown:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_time_left_counts_down_and_never_up_for_a_wobble() {
         let t0 = Instant::now();
         let mut pace = Pace::default();
         // 10,000 blocks at 20/s: about 500 s.
-        let (shown, at) = run(&mut pace, t0, (0.0, 4.0), (20.0, 1e6), (0, 0), 10_000);
-        let first = shown.unwrap();
+        let (shown, at) = trace(&mut pace, t0, (0.0, 4.0), |_| 20.0, 0, 10_000);
+        let first = shown.last().unwrap().unwrap();
         assert!((480..=500).contains(&first), "{first}");
-        // A bit slower (16/s, an estimate about a quarter higher): held.
-        let (shown, at) = run(&mut pace, t0, (4.5, 12.0), (16.0, 1e6), at, 10_000);
-        assert_eq!(shown, Some(first));
-        // Back to 20/s: it counts down again from there.
-        let (shown, _) = run(&mut pace, t0, (12.5, 40.0), (20.0, 1e6), at, 10_000);
-        assert!(shown.unwrap() < first);
+        // A bit slower (16/s, an estimate about a quarter higher): held,
+        // and the held time goes on counting down with the clock.
+        let (slower, at) = trace(&mut pace, t0, (4.5, 12.0), |_| 16.0, at, 10_000);
+        never_up(&[shown.clone(), slower.clone()].concat());
+        let held = slower.last().unwrap().unwrap();
+        assert!((first - 9..=first - 7).contains(&held), "{held} 8 s after {first}");
+        // Back to 20/s: it counts down from there.
+        let (back, _) = trace(&mut pace, t0, (12.5, 40.0), |_| 20.0, at, 10_000);
+        never_up(&[slower, back.clone()].concat());
+        assert!(back.iter().all(Option::is_some), "never dropped for a wobble");
+        assert!(back.last().unwrap().unwrap() < held);
     }
 
+    /// Block sizes vary along the chain: the speed over a few seconds wobbles
+    /// by a fifth either way. The estimate, over a longer window, doesn't
+    /// rise past the shown time enough to drop it, and the time counts down.
     #[test]
-    fn the_time_left_goes_up_when_the_estimate_rises_a_lot() {
+    fn ordinary_noise_neither_drops_nor_freezes_the_time_left() {
         let t0 = Instant::now();
         let mut pace = Pace::default();
-        let (shown, at) = run(&mut pace, t0, (0.0, 4.0), (40.0, 1e6), (0, 0), 10_000);
-        let first = shown.unwrap();
-        // A quarter of the speed: four times as long, shown once the window sees it.
-        let (shown, _) = run(&mut pace, t0, (4.5, 12.0), (10.0, 1e6), at, 10_000);
-        assert!(shown.unwrap() > first * 3, "{shown:?} after {first}");
+        let noisy = |t: f64| if (t * 2.0) as u64 % 6 < 3 { 24.0 } else { 16.0 };
+        let (shown, _) = trace(&mut pace, t0, (0.0, 120.0), noisy, 0, 10_000);
+        never_up(&shown);
+        let shown: Vec<u64> = shown.into_iter().skip_while(Option::is_none).map(|s| s.expect("never dropped")).collect();
+        // About 500 s at first, about 380 s two minutes on.
+        assert!((440..=560).contains(&shown[0]), "{}", shown[0]);
+        assert!((340..=420).contains(shown.last().unwrap()), "{}", shown.last().unwrap());
+    }
+
+    /// A node that slows a lot: the number isn't raised, it's dropped
+    /// ("Working it out"), and a fresh countdown starts once settled.
+    #[test]
+    fn a_big_rise_drops_the_time_left_and_counts_afresh() {
+        let t0 = Instant::now();
+        let mut pace = Pace::default();
+        let (fast, at) = trace(&mut pace, t0, (0.0, 20.0), |_| 40.0, 0, 10_000);
+        let first = fast.last().unwrap().unwrap();
+        // A quarter of the speed: about four times as long.
+        let (slow, _) = trace(&mut pace, t0, (20.5, 80.0), |_| 10.0, at, 10_000);
+        never_up(&[fast, slow.clone()].concat());
+        let dropped = slow.iter().position(Option::is_none).expect("dropped");
+        let fresh = slow[dropped..].iter().position(Option::is_some).expect("counts again") + dropped;
+        assert!(fresh - dropped >= 20, "settles {} s before counting again", (fresh - dropped) / 2);
+        assert!(slow[fresh].unwrap() > first * 2, "{:?} after {first}", slow[fresh]);
+        never_up(&slow[fresh..]);
+        assert!(slow[fresh..].iter().all(Option::is_some));
+    }
+
+    /// After a failure the measuring starts again from the first report
+    /// after the wait: no speed spans the wait, so the first time left
+    /// isn't hours for a minute's backoff.
+    #[test]
+    fn a_failure_starts_the_measuring_again_after_the_wait() {
+        let t0 = Instant::now();
+        let mut pace = Pace::default();
+        let (_, (received, scanned)) = run(&mut pace, t0, (0.0, 10.0), (50.0, 1e6), (0, 0), 20_000);
+        assert_eq!(pace.report(t0 + secs(10.5), received, scanned, 20_000 - scanned, true), (None, None));
+        // A minute's backoff, then 100 blocks a step again.
+        let mut at = (received, scanned);
+        for i in 0..6 {
+            let t = 70.5 + i as f64 * 0.5;
+            assert_eq!(pace.report(t0 + secs(t), at.0, at.1, 20_000 - at.1, false), (None, None), "{t} s: still settling");
+            at = (at.0 + 500_000, at.1 + 25);
+        }
+        let (left, speeds) = pace.report(t0 + secs(73.5), at.0, at.1, 20_000 - at.1, false);
+        let speeds = speeds.expect("settled 3 s after recovery");
+        assert!((speeds.blocks_per_second - 50.0).abs() < 1e-9, "{speeds:?}");
+        assert!(left.unwrap() < 400, "{left:?}");
     }
 
     #[test]
@@ -392,13 +563,15 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_keeps_what_was_shown() {
+    fn a_stall_drops_the_time_left_rather_than_count_to_nothing() {
         let t0 = Instant::now();
         let mut pace = Pace::default();
-        let (shown, at) = run(&mut pace, t0, (0.0, 4.0), (20.0, 1e6), (0, 0), 10_000);
-        // Nothing at all for the whole window: no guess.
-        let (received, scanned) = (at.0 - 500_000, at.1 - 10);
-        assert_eq!(pace.sample(t0 + secs(20.0), received, scanned, 10_000 - scanned), shown);
+        let (shown, at) = trace(&mut pace, t0, (0.0, 10.0), |_| 20.0, 0, 10_000);
+        assert!(shown.last().unwrap().is_some());
+        // Nothing at all from then on: no number, and no guess.
+        let (stalled, _) = trace(&mut pace, t0, (10.5, 40.0), |_| 0.0, at, 10_000);
+        never_up(&[shown, stalled.clone()].concat());
+        assert_eq!(*stalled.last().unwrap(), None);
     }
 
     #[test]
@@ -467,6 +640,9 @@ mod tests {
         assert_eq!((chip.text.as_str(), chip.label.as_str()), ("6 min left", "Catching up, 34%, about 6 minutes left"));
         s.seconds_left = Some(17);
         assert_eq!(s.chip().text, "20 s left");
+        // The time left dropped for a slowdown, the speed still known.
+        (s.seconds_left, s.blocks_per_second) = (None, Some(4.0));
+        assert_eq!((s.chip().text.as_str(), s.chip().label.as_str()), ("Catching up", "Catching up, 34%"));
         s.synced = true;
         assert_eq!((s.chip().look, s.chip().text.as_str()), (Look::Synced, "Synced"));
         s.error = Some("connection refused".into());
@@ -484,11 +660,20 @@ mod tests {
         let s = SyncStatus { blocks_per_second: Some(28.0), link_mb_per_second: Some(1.8), ..catching_up() };
         let d = details(&s, true, clock());
         assert_eq!((d.title.as_str(), d.percent.as_deref()), ("Catching up", Some("34%")));
-        let rows: Vec<(&str, &str)> = d.rows.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let rows: Vec<(&str, &str)> = d.rows.iter().map(|r| (r.label.as_str(), r.value.as_str())).collect();
         assert_eq!(
             rows,
             [("Time left", "about 4 min"), ("Payments up to", "24 Oct, 07:33"), ("Blocks", "3,360 of 9,880 · 28/s"), ("Link speed", "1.8 MB/s")]
         );
+        // TalkBack hears words, not "28 slash s" or "M B slash s".
+        let spoken: Vec<&str> = d.rows.iter().map(|r| r.spoken.as_str()).collect();
+        assert_eq!(
+            spoken,
+            ["Time left: about 4 minutes", "Payments up to: 24 Oct, 07:33", "Blocks: 3,360 of 9,880, 28 a second", "Link speed: 1.8 megabytes a second"]
+        );
+        let slow = SyncStatus { blocks_per_second: Some(0.84), link_mb_per_second: Some(0.64), ..catching_up() };
+        let spoken: Vec<String> = details(&slow, true, clock()).rows.into_iter().map(|r| r.spoken).collect();
+        assert_eq!(spoken[2..], ["Blocks: 3,360 of 9,880, 0.8 a second", "Link speed: 640 kilobytes a second"]);
         assert_eq!(d.note.as_deref(), Some("You can still receive and send while Fob catches up."));
         assert_eq!(details(&s, false, clock()).note.as_deref(), Some("You can still receive while Fob catches up."));
     }
@@ -498,8 +683,9 @@ mod tests {
         let mut s = catching_up();
         s.seconds_left = None;
         let d = details(&s, true, clock());
-        let rows: Vec<&str> = d.rows.iter().map(|(_, v)| v.as_str()).collect();
+        let rows: Vec<&str> = d.rows.iter().map(|r| r.value.as_str()).collect();
         assert_eq!(rows, ["Working it out", "24 Oct, 07:33", "3,360 of 9,880", "Measuring"]);
+        assert_eq!(d.rows[0].spoken, "Time left: working it out");
     }
 
     #[test]
@@ -508,13 +694,22 @@ mod tests {
         (s.synced, s.scanned, s.progress, s.seconds_left, s.up_to) = (true, s.tip, 1.0, None, NOW - 90);
         let d = details(&s, true, clock());
         assert_eq!((d.title.as_str(), d.percent, d.progress, d.note), ("Synced", None, None, None));
-        assert_eq!(d.rows, [("Payments up to".to_owned(), "Today, 07:31".to_owned()), ("Latest block".to_owned(), "1,009,879".to_owned())]);
+        let rows: Vec<(&str, &str, &str)> = d.rows.iter().map(|r| (r.label.as_str(), r.value.as_str(), r.spoken.as_str())).collect();
+        assert_eq!(rows, [("Payments up to", "Today, 07:31", "Payments up to: Today, 07:31"), ("Latest block", "1,009,879", "Latest block: 1,009,879")]);
 
         let mut s = catching_up();
         s.error = Some("node: connection refused".into());
         let d = details(&s, true, clock());
         assert_eq!(d.title, "Can't reach node");
-        assert_eq!(d.rows.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["Payments up to", "Blocks"]);
+        assert_eq!(d.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["Payments up to", "Blocks"]);
         assert_eq!((d.note.as_deref(), d.error.as_deref()), (Some("Fob keeps trying on its own."), Some("node: connection refused")));
+
+        // The phone's own failure doesn't blame the node.
+        s.error = Some("Couldn't read or save the wallet: disk full".into());
+        s.error_local = true;
+        let d = details(&s, true, clock());
+        assert_eq!((d.title.as_str(), d.note.as_deref()), ("Can't save the wallet", Some("Fob keeps trying on its own.")));
+        let chip = s.chip();
+        assert_eq!((chip.look, chip.text.as_str(), chip.label.as_str()), (Look::Offline, "Can't save", "Can't save the wallet"));
     }
 }

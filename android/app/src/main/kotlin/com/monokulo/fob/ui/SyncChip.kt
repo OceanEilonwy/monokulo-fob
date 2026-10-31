@@ -185,8 +185,9 @@ private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
         if (d.rows.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 d.rows.forEach { row ->
-                    LabelAndValue(Modifier.semantics(mergeDescendants = true) {}, label = { Text(row.label, fontSize = 14.sp, color = Fob.muted) }) {
-                        Text(row.amount, fontSize = 14.sp, textAlign = TextAlign.End)
+                    // TalkBack hears Rust's words, not "28 slash s".
+                    LabelAndValue(Modifier.clearAndSetSemantics { contentDescription = row.spoken }, label = { Text(row.label, fontSize = 14.sp, color = Fob.muted) }) {
+                        Text(row.value, fontSize = 14.sp, textAlign = TextAlign.End)
                     }
                 }
             }

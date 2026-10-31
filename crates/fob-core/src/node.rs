@@ -277,19 +277,30 @@ impl Report {
     }
 }
 
-/// The sync card's words for a failed sync step: what the node checks
-/// would say ("Address not found", "Refused to connect"), not the
-/// transport's own error text.
-pub(crate) fn sync_words(e: &FobError) -> String {
-    match e {
-        FobError::Node(text) => match Failure::from_text(text) {
-            // Syncing's limits are its own (15 s to connect, 30 s quiet).
-            Failure::TimedOut => "Stopped answering".into(),
-            Failure::Other if text.contains("scanning") || text.contains("InvalidNode") => capitalized(&Failure::Unreadable.words(ANSWER)),
-            failure => capitalized(&failure.words(ANSWER)),
-        },
-        e => capitalized(&e.to_string()),
-    }
+/// The sync card's words for a failed sync step, and whether the failure
+/// is the phone's own rather than the node's: what the node checks would
+/// say ("Address not found", "Refused to connect", "Certificate expired,
+/// not accepted"), from the error and the certificate the connection's
+/// last handshake saw, not the transport's own error text.
+pub(crate) fn sync_failure(e: &FobError, certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> (String, bool) {
+    let FobError::Node(text) = e else {
+        // Saving the wallet, say: nothing to do with the node.
+        return (capitalized(&e.to_string()), matches!(e, FobError::Storage(_)));
+    };
+    // Sync errors are the interface error's debug text: its variant first.
+    let failure = match Failure::refused(certificate, self_signed) {
+        Some(refused) => refused,
+        None if text.contains(NO_ONION) => Failure::Onion,
+        None if text.starts_with("InvalidInterface(") || text.starts_with("scanning") => Failure::Unreadable,
+        None => Failure::from_text(text),
+    };
+    let words = match failure {
+        // Syncing's limits are its own (15 s to connect, 30 s quiet).
+        Failure::TimedOut => "Stopped answering".into(),
+        Failure::Certificate(_) => format!("Certificate {}", failure.words(ANSWER)),
+        failure => capitalized(&failure.words(ANSWER)),
+    };
+    (words, false)
 }
 
 /// "Didn't answer in 5 s" from "didn't answer in 5 s".

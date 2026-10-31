@@ -1544,10 +1544,17 @@ Calls made while building the first version, with why. Newest last.
     under one; blocks "28/s", "0.8/s" under ten.
 205. **Time left** (decision 1): none until the speed has settled, and the
     first one shown must be at least 10 s, so a catch-up that ends within
-    about 13 s shows only Starting, then Synced. After that it only goes
-    down, unless a new estimate is at least half as much again and 30 s
-    more than what's shown (a node that slows a lot); a window with no
-    blocks at all keeps what's shown. Rounded for reading: under a minute
+    about 13 s shows only Starting, then Synced. After that it never goes
+    up (plan decision 1, restored after review R4: this entry first let
+    it rise when a node slowed a lot). The estimate is taken over the
+    last 20 s (the shown speeds over 5 s), so the wobble of block sizes
+    along the chain doesn't move it; the shown time counts down with the
+    clock, takes a lower estimate at once, and holds through a higher
+    one. When the estimate rises past it by half as much again and 30 s
+    more, or blocks stop for the whole window, the number is dropped
+    (chip "Catching up", card "Working it out"), and a fresh countdown starts
+    once 10 s more has been measured; a smaller number is never replaced
+    by a larger one. Rounded for reading: under a minute
     up to the next 10 s ("20 s"), then the nearest minute ("6 min"), the
     nearest 5 minutes under 10 hours ("1 h 10 min"), then whole hours.
 206. **The chip's words** come from Rust: "Starting", "6 min left",
@@ -1839,3 +1846,21 @@ Calls made while building the first version, with why. Newest last.
     connection kept is keyed by the node and its mark together, so a mark
     taken off mid-connection never leaves a relaxed one in use. The
     Working card's mark comes from Rust (`Report::mark`).
+246. **Sync failures said truly** (review R4): a failed round measures
+    nothing (the pace starts again at the first report after the wait), so
+    no speed or time left spans a backoff. The words come from the error's
+    kind and the connection's own certificate as the Node checks read
+    them: the node answering against the protocol (`InvalidInterface`) is
+    "Sent blocks Fob can't read", an older file's onion node "Needs Tor,
+    not in Fob yet", a refused certificate "Certificate expired, not
+    accepted". A failure saving the wallet isn't the node's: the chip says
+    "Can't save", the card "Can't save the wallet", and Settings' Node
+    line doesn't blame the node. Switching node clears the old node's
+    failure at once (chip and line) and wakes the sync loop. Settings' Node
+    line shows a check made after the last failed round over "Can't reach
+    node" (a failed round drops the check before it). The card's rows each
+    have Rust's spoken words for TalkBack ("28 a second", "1.8 megabytes a
+    second", "about 4 minutes"). Sync reports read the link's byte count
+    from a transport kept beside the connection, never waiting on a slow
+    connect. After the time left is dropped for a slowdown the chip reads
+    "Catching up" (the speed is known), not "Starting".
