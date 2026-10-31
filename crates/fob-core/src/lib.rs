@@ -8,6 +8,7 @@
 //! - [`price`]: what XMR is worth, now and when each payment moved.
 //! - [`split`]: paying what's ready to spend back as pieces.
 //! - [`contacts`]: the people this wallet pays, in the wallet file.
+//! - [`requests`]: requests to be paid, each on an address of its own.
 //! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
@@ -25,6 +26,7 @@ pub mod not_ready;
 pub mod node;
 pub mod qr;
 pub mod receipt;
+pub mod requests;
 pub mod split;
 pub mod transport;
 mod store;

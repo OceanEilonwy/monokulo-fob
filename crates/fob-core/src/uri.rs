@@ -99,12 +99,16 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
 /// `%2B`, which every reader decodes the same.
 const VALUE: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
 
-/// A payment code for receiving: an address and, optionally, an amount and
-/// a note for the payer (`tx_description`).
-pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>) -> String {
+/// A payment code for receiving: an address and, optionally, an amount, the
+/// name of who's asking (`recipient_name`, cleaned and cut as a contact's
+/// name) and a note for the payer (`tx_description`).
+pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>, name: Option<&str>) -> String {
     let mut params = vec![];
     if let Some(a) = amount.filter(|a| *a > 0) {
         params.push(format!("tx_amount={}", amount::format(a)));
+    }
+    if let Some(name) = name.and_then(crate::contacts::clean_name) {
+        params.push(format!("recipient_name={}", utf8_percent_encode(&name, VALUE)));
     }
     if let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) {
         // Cut here too, whatever the app let through: the code must encode.
@@ -156,7 +160,7 @@ pub fn receive(address: &str, amount: Option<&str>, note: Option<&str>) -> Resul
     let amount = amount.map(str::trim).filter(|a| !a.is_empty()).map(amount::parse).transpose()?.filter(|a| *a > 0);
     let note = note.map(str::trim).filter(|n| !n.is_empty()).map(|n| fit_note(n).0);
     Ok(Receive {
-        uri: payment_uri(address, amount, note.as_deref()),
+        uri: payment_uri(address, amount, note.as_deref(), None),
         headline: amount.map(|a| format!("{} XMR", amount::format(a))),
         detail: note,
     })
@@ -330,18 +334,30 @@ mod tests {
     #[test]
     fn receive_codes_round_trip() {
         let address = wallet().address(2);
-        let uri = payment_uri(&address, Some(500_000_000_000), None);
+        let uri = payment_uri(&address, Some(500_000_000_000), None, None);
         assert_eq!(uri, format!("monero:{address}?tx_amount=0.5"));
         assert_eq!(parse_payment(Network::Stagenet, &uri).unwrap().amount, Some(500_000_000_000));
-        assert_eq!(payment_uri(&address, None, None), format!("monero:{address}"));
-        assert_eq!(payment_uri(&address, Some(0), Some("  ")), format!("monero:{address}"));
+        assert_eq!(payment_uri(&address, None, None, None), format!("monero:{address}"));
+        assert_eq!(payment_uri(&address, Some(0), Some("  "), None), format!("monero:{address}"));
+    }
+
+    #[test]
+    fn a_name_goes_in_as_recipient_name_cleaned_and_comes_back() {
+        let address = wallet().address(2);
+        let named = payment_uri(&address, None, None, Some(" Corner Café\n"));
+        assert_eq!(named, format!("monero:{address}?recipient_name=Corner%20Caf%C3%A9"));
+        assert_eq!(parse_payment(Network::Stagenet, &named).unwrap().recipient_name.as_deref(), Some("Corner Café"));
+        // Cut to a contact's name; one that cleans to nothing is left out.
+        let long = payment_uri(&address, None, None, Some(&"x".repeat(60)));
+        assert_eq!(parse_payment(Network::Stagenet, &long).unwrap().recipient_name.map(|n| n.len()), Some(crate::contacts::NAME_MAX));
+        assert_eq!(payment_uri(&address, None, None, Some("\u{202e} ")), format!("monero:{address}"));
     }
 
     #[test]
     fn a_note_goes_in_as_tx_description_and_comes_back_whole() {
         let address = wallet().address(3);
         let note = "Two coffees + a croissant, 50% off & café ☕ #12/b?=~";
-        let uri = payment_uri(&address, Some(142_100_000_000), Some(note));
+        let uri = payment_uri(&address, Some(142_100_000_000), Some(note), None);
         assert_eq!(
             uri,
             format!(
@@ -350,7 +366,7 @@ mod tests {
         );
         let read = parse_payment(Network::Stagenet, &uri).unwrap();
         assert_eq!((read.amount, read.description.as_deref()), (Some(142_100_000_000), Some(note)));
-        let only_note = payment_uri(&address, None, Some(" Rent "));
+        let only_note = payment_uri(&address, None, Some(" Rent "), None);
         assert_eq!(only_note, format!("monero:{address}?tx_description=Rent"));
         assert_eq!(parse_payment(Network::Stagenet, &only_note).unwrap().description.as_deref(), Some("Rent"));
     }
@@ -399,7 +415,7 @@ mod tests {
             assert!(qr.size <= 17 + 4 * 18, "version {} for {}", (qr.size - 17) / 4, code.uri.len());
         }
         // And whatever reaches `payment_uri` directly is cut too.
-        assert!(payment_uri(&integrated, None, Some(&"x".repeat(500))).len() < 300);
+        assert!(payment_uri(&integrated, None, Some(&"x".repeat(500)), None).len() < 300);
     }
 
     #[test]
@@ -459,7 +475,7 @@ mod tests {
     #[test]
     fn codes_are_told_apart() {
         let keys = wallet();
-        assert_eq!(classify(Network::Stagenet, &payment_uri(&keys.address(1), None, None)), CodeKind::Payment);
+        assert_eq!(classify(Network::Stagenet, &payment_uri(&keys.address(1), None, None, None)), CodeKind::Payment);
         assert_eq!(classify(Network::Stagenet, &keys.seed_words().unwrap().1), CodeKind::Wallet);
         assert_eq!(classify(Network::Stagenet, "https://example.com"), CodeKind::Unknown);
     }

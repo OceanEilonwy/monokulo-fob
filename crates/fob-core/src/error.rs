@@ -31,6 +31,9 @@ pub enum FobError {
     /// A contact can't be saved as it is, and why.
     #[error("{0}")]
     Contact(String),
+    /// A request can't be made or found, and why.
+    #[error("{0}")]
+    Request(String),
     #[error("couldn't build the transaction: {0}")]
     Send(String),
     #[error("couldn't read or save the wallet: {0}")]

@@ -38,7 +38,7 @@ impl From<fob_core::FobError> for FobError {
         use fob_core::FobError as E;
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) => {
+            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) => {
                 FobError::Invalid { reason }
             }
             E::Node(_) => FobError::Node { reason },
@@ -220,19 +220,28 @@ fn activity(a: fob_core::Activity) -> Activity {
     }
 }
 
-/// One row of Home's Activity, ready to draw.
+/// One row of Home's Activity, ready to draw: a payment or a request.
 #[derive(uniffi::Record)]
 pub struct ActivityRow {
-    /// The payment, for its own screen.
-    pub activity: Activity,
-    /// The shop, who was paid, or "Received".
+    /// The payment, for its own screen; none for a request.
+    pub activity: Option<Activity>,
+    /// The request, for its own screen; none for a payment.
+    pub request: Option<u64>,
+    /// The shop, who was paid, "From Sam", "Received", "Request to Sam".
     pub title: String,
-    /// "Receipt, 3 items · 09:12", "Not ready · 3 of 10 · 08:40".
+    /// "Receipt, 3 items · 09:12", "Pizza · not ready · 3 of 10 · 08:40".
     pub line: String,
-    /// With its sign: "+0.5", "−0.1421".
+    /// With its sign: "+0.5", "−0.1421"; a request's ask: "$80.00" (blank
+    /// for any amount).
     pub amount_text: String,
-    /// The receipt's total: "$13.50".
+    /// The receipt's total: "$13.50"; "asked" under a request's.
     pub fiat_text: Option<String>,
+}
+
+impl From<activity::Row> for ActivityRow {
+    fn from(r: activity::Row) -> Self {
+        ActivityRow { activity: r.activity.map(activity), request: r.request, title: r.title, line: r.line, amount_text: r.amount, fiat_text: r.fiat }
+    }
 }
 
 /// A day of Activity under its label: "TODAY", "YESTERDAY", "27 OCT".
@@ -766,21 +775,16 @@ impl FobWallet {
         }
     }
 
-    /// Every payment, grouped by the phone's day, newest first. `now` is
-    /// seconds since the epoch, `utc_offset` the phone's offset in seconds,
-    /// `hours_24` its clock setting.
+    /// Every payment and request, grouped by the phone's day, newest first.
+    /// `now` is seconds since the epoch, `utc_offset` the phone's offset in
+    /// seconds, `hours_24` its clock setting.
     pub async fn activity_days(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ActivityDay> {
         let clock = activity::Clock { now, utc_offset, hours_24 };
-        activity::by_day(self.inner.activity().await, clock)
+        self.inner
+            .activity_days(clock)
+            .await
             .into_iter()
-            .map(|day| ActivityDay {
-                label: day.label,
-                rows: day
-                    .rows
-                    .into_iter()
-                    .map(|r| ActivityRow { activity: activity(r.activity), title: r.title, line: r.line, amount_text: r.amount, fiat_text: r.fiat })
-                    .collect(),
-            })
+            .map(|day| ActivityDay { label: day.label, rows: day.rows.into_iter().map(Into::into).collect() })
             .collect()
     }
 
@@ -1038,6 +1042,13 @@ impl FobWallet {
             send_label: c.send_label,
             send_short: c.send_short,
             send_button: c.send_button,
+            requests_title: c.requests_title,
+            requests_note: c.requests_note,
+            requests: c
+                .requests
+                .into_iter()
+                .map(|r| ContactRequest { id: r.id, address: r.address, note: r.note, line: r.line, state: r.state, received: r.received, asked: r.asked })
+                .collect(),
             also_paid_at: c.also_paid_at.into_iter().map(|a| ContactPaidAt { address: a.address, short: a.short, line: a.line }).collect(),
             also_note: c.also_note,
             paid_title: c.paid_title,
@@ -1096,6 +1107,61 @@ impl FobWallet {
     /// Deletes a contact; payments to its addresses stay in Activity.
     pub async fn delete_contact(&self, id: u64) -> Result<()> {
         Ok(self.inner.delete_contact(id).await?)
+    }
+
+    /// Makes a request, when Share or Copy is pressed on Receive: a new
+    /// address, for `contact` (or no one), asking `amount` (in money when
+    /// `in_fiat`) with `note`. Throws when the amount isn't one, or the
+    /// contact was deleted.
+    pub async fn make_request(&self, contact: Option<u64>, amount: Option<String>, in_fiat: bool, note: Option<String>) -> Result<MadeRequest> {
+        let (r, code) = self.inner.make_request(contact, amount.as_deref(), in_fiat, note.as_deref()).await?;
+        Ok(MadeRequest {
+            id: r.id,
+            address: r.address,
+            index: r.subaddress,
+            contact: r.contact,
+            code: ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail },
+        })
+    }
+
+    /// A request's code as it was made, for "Show the code again"; none
+    /// once it's deleted.
+    pub async fn request_code(&self, id: u64) -> Option<ReceiveCode> {
+        self.inner.request_code(id).await.map(|c| ReceiveCode { uri: c.uri, headline: c.headline, detail: c.detail })
+    }
+
+    /// A request's own screen, or none once it's deleted; the clock as for
+    /// `activity_days`.
+    pub async fn request(&self, id: u64, now: u64, utc_offset: i32, hours_24: bool) -> Option<RequestDetail> {
+        let d = self.inner.request(id, activity::Clock { now, utc_offset, hours_24 }).await?;
+        Some(RequestDetail {
+            id: d.request.id,
+            address: d.request.address,
+            headline: d.headline,
+            asked_line: d.asked_line,
+            when: d.when,
+            received_label: d.received_label,
+            received: d.received,
+            received_any: d.received_any,
+            address_label: d.address_label,
+            address_short: d.address_short,
+            payments: d.payments.into_iter().map(Into::into).collect(),
+            payments_empty: d.payments_empty,
+            delete_title: d.delete_title,
+            delete_body: d.delete_body,
+        })
+    }
+
+    /// Deletes a request: it leaves Activity and its contact's card; its
+    /// address still receives, what comes later shown without a name.
+    pub async fn delete_request(&self, id: u64) -> Result<()> {
+        Ok(self.inner.delete_request(id).await?)
+    }
+
+    /// Share's sheet ("Who is this for?"): every contact by name, each
+    /// with its requests in a line ("2 requests paid, 1 waiting").
+    pub async fn request_contacts(&self) -> Vec<ContactRow> {
+        self.inner.request_contacts().await.into_iter().map(Into::into).collect()
     }
 
     /// Signs and broadcasts; returns the transaction hash.
@@ -1274,17 +1340,75 @@ pub struct ContactPaidAt {
     pub line: String,
 }
 
-/// A payment to a contact, on their card.
+/// A payment to a contact, or from them, on their card.
 #[derive(uniffi::Record)]
 pub struct ContactPayment {
     pub activity: Activity,
-    /// Its note, the shop, or "Sent".
+    /// Its note, the shop, or "Sent"; "From Sam".
     pub title: String,
-    /// "Today", "27 Oct"
+    /// "Today", "27 Oct"; "Concert tickets · Today".
     pub when: String,
-    /// "−0.1204"
+    /// "−0.1204", "+0.5"
     pub amount_text: String,
     pub fiat_text: Option<String>,
+}
+
+/// One of a contact's requests, on their card.
+#[derive(uniffi::Record)]
+pub struct ContactRequest {
+    pub id: u64,
+    /// Its address, for the pattern.
+    pub address: String,
+    /// "Concert tickets", or "Request".
+    pub note: String,
+    /// "Address 9 · today 08:30"
+    pub line: String,
+    /// "Received $83.03" (green), or "Waiting".
+    pub state: String,
+    pub received: bool,
+    /// "asked $80.00"
+    pub asked: Option<String>,
+}
+
+/// A request just made on Receive: its new address and code.
+#[derive(uniffi::Record)]
+pub struct MadeRequest {
+    pub id: u64,
+    pub address: String,
+    /// Its address's index: "Address 9".
+    pub index: u32,
+    pub contact: Option<u64>,
+    pub code: ReceiveCode,
+}
+
+/// A request's own screen (Round 5 › "A request: no edits, can be
+/// deleted"), every word from Rust.
+#[derive(uniffi::Record)]
+pub struct RequestDetail {
+    pub id: u64,
+    pub address: String,
+    /// "$80.00", "0.5 XMR", "Any amount"
+    pub headline: String,
+    /// "asked of Sam · Concert tickets"
+    pub asked_line: String,
+    /// "Today 08:30 · 0.4817 XMR at the time"
+    pub when: String,
+    /// "Received"
+    pub received_label: String,
+    /// "$83.03 · 0.5 XMR", or "Waiting".
+    pub received: String,
+    pub received_any: bool,
+    /// "Address 9"
+    pub address_label: String,
+    /// "84Kp7 … Q2mXa … t9VbL"
+    pub address_short: String,
+    /// "Payments to it", newest first.
+    pub payments: Vec<ActivityRow>,
+    /// "Nothing paid to it yet."
+    pub payments_empty: Option<String>,
+    /// "Delete this request?"
+    pub delete_title: String,
+    pub delete_body: String,
 }
 
 /// A contact's card, every word from Rust.
@@ -1297,10 +1421,16 @@ pub struct ContactCard {
     pub send_short: Option<String>,
     /// "Change", "Add"
     pub send_button: String,
+    /// "Requests · Sam pays you"
+    pub requests_title: String,
+    /// "3 addresses"
+    pub requests_note: String,
+    /// Their requests, newest first; the section shows only with one.
+    pub requests: Vec<ContactRequest>,
     pub also_paid_at: Vec<ContactPaidAt>,
     /// "codes named Sam"
     pub also_note: String,
-    /// "Paid to Sam"
+    /// "Paid to Sam", "Payments with Sam"
     pub paid_title: String,
     pub paid: Vec<ContactPayment>,
     /// "Nothing paid to Sam yet."

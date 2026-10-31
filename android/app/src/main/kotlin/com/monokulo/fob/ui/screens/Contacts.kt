@@ -258,9 +258,10 @@ private fun SectionHead(title: String, aside: String? = null) {
 
 /**
  * A contact's card (Round 5 › "Sam: send address, requests, also paid
- * at"): who they are, Send (to their send address) and Request, the send
- * address with Change, the addresses of codes named for them that were
- * paid, and every payment to them. Edit in the top bar.
+ * at"): who they are, Send (to their send address) and Request (Receive
+ * with them chosen), the send address with Change, the requests they pay,
+ * the addresses of codes named for them that were paid, and every payment
+ * to and from them. Edit in the top bar.
  */
 @Composable
 fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
@@ -289,8 +290,8 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                 PrimaryButton("Send", {
                     nav.go(contact.sendAddress?.let { Screen.Send(draft = SendDraft(to = it)) } ?: Screen.Send())
                 }, Modifier.weight(1f), height = 52.dp, leading = Icons.up)
-                // Step 8 makes this a request for this contact (Round 5 › "Request for Sam"); for now, Receive as it is.
-                OutlineButton("Request", { nav.go(Screen.Receive) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
+                // Receive with them chosen; the request is made only on Share or Copy.
+                OutlineButton("Request", { nav.go(Screen.Receive(contact = id)) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
             }
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.card).padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
@@ -303,7 +304,28 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                 }
                 Chip(c.sendButton, { nav.go(Screen.ContactScan(id)) })
             }
-            // Step 8 puts the requests this contact pays here ("Requests · Sam pays you").
+            if (c.requests.isNotEmpty()) {
+                Section("Requests") {
+                    SectionHead(c.requestsTitle, c.requestsNote)
+                    c.requests.forEach { r ->
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button) { nav.go(Screen.Request(r.id)) }
+                                .semantics(mergeDescendants = true) {}.padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AddressPattern(r.address, 30.dp)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Text(r.note, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(r.line, color = Fob.muted, fontSize = 12.sp)
+                            }
+                            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Text(r.state, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = if (r.received) Fob.green else Fob.muted)
+                                r.asked?.let { Text(it, color = Fob.muted, fontSize = 12.sp) }
+                            }
+                        }
+                    }
+                }
+            }
             if (c.alsoPaidAt.isNotEmpty()) {
                 Section("Also paid at") {
                     SectionHead("Also paid at", c.alsoNote)
@@ -336,7 +358,8 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                             Text(p.`when`, color = Fob.muted, fontSize = 12.sp)
                         }
                         Column(horizontalAlignment = Alignment.End) {
-                            Text(p.amountText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                            // From them, to a request: green, as in Activity.
+                            Text(p.amountText, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (p.activity.outgoing) Fob.ink else Fob.green)
                             p.fiatText?.let { Text(it, color = Fob.muted, fontSize = 12.sp) }
                         }
                     }
@@ -353,7 +376,7 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
  * in the top bar; Delete contact asks first.
  */
 @Composable
-fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: ContactDraft?) {
+fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: ContactDraft?, forRequest: Boolean = false) {
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
     val scope = rememberCoroutineScope()
@@ -402,8 +425,16 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
         scope.launch {
             val draft = ContactDraft(name, note.ifBlank { null }, photo, address.ifBlank { null }, alsoPaidAt)
             runCatching { model.changeContacts { w -> if (id == null) w.addContact(draft) else w.editContact(id, draft) } }
-                // A new contact opens its card; an edited one goes back to it.
-                .onSuccess { c -> nav.back(); if (id == null) nav.go(Screen.Contact(c.id)) }
+                // A new contact opens its card (or, made from Share's sheet, goes back to Receive for them and
+                // shares); an edited one goes back to it.
+                .onSuccess { c ->
+                    nav.back()
+                    val receive = nav.current as? Screen.Receive
+                    when {
+                        forRequest && receive != null -> nav.replace(receive.copy(contact = c.id).also { it.shareOnOpen = true })
+                        id == null -> nav.go(Screen.Contact(c.id))
+                    }
+                }
                 .onFailure { error = it.reason() }
             busy = false
         }
