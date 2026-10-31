@@ -88,6 +88,13 @@ pub struct Sum {
     pub fiat: Option<String>,
 }
 
+impl Sum {
+    /// For TalkBack, the line as one: "Ready to spend, 1.8592 XMR, $308.70".
+    pub fn description(&self) -> String {
+        [Some(self.label.clone()), Some(format!("{} XMR", self.amount)), self.fiat.clone()].into_iter().flatten().collect::<Vec<_>>().join(", ")
+    }
+}
+
 /// All the money not ready yet, beside what is, ready to draw.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NotReady {
@@ -215,6 +222,9 @@ pub struct Coins {
     pub not_ready: u64,
     /// The not-ready part's weighted progress, as on Home.
     pub progress: f32,
+    /// The bar for TalkBack: "1.8592 XMR ready, 0.6221 XMR not yet, 37%
+    /// of the way".
+    pub bar_description: String,
     /// "Ready · 5 coins"
     pub ready_title: String,
     /// "1.8592 · $308.70", "1.8592" without a price.
@@ -260,11 +270,21 @@ pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unl
             coins_text(count)
         )
     };
+    let bar_description = match not_ready_total {
+        0 => format!("{} XMR ready", amount::format_short(ready_total)),
+        _ => format!(
+            "{} XMR ready, {} XMR not yet, {}% of the way",
+            amount::format_short(ready_total),
+            amount::format_short(not_ready_total),
+            (progress * 100.0).round() as u32
+        ),
+    };
     Coins {
         intro,
         ready: ready_total,
         not_ready: not_ready_total,
         progress,
+        bar_description,
         ready_title: format!("Ready · {}", coins_text(ready_coins.len())),
         ready_sum: [Some(amount::format_short(ready_total)), worth(ready_total)].into_iter().flatten().collect::<Vec<_>>().join(" · "),
         ready_coins,
@@ -328,6 +348,19 @@ mod tests {
         assert_eq!(rows, [("0.02", "Change · 84Bv … 9fQ2", "08:49", "9 of 10"), ("0.5", "Received · 08:40", "09:01", "3 of 10")]);
         assert_eq!(coins.not_ready_coins[1].fiat.as_deref(), Some("$83.03"));
         assert_eq!((coins.ready, coins.not_ready), (1_725 * XMR / 1000, 52 * XMR / 100));
+        // The bar for TalkBack says what it shows, not a bare percentage.
+        assert_eq!(coins.bar_description, "1.725 XMR ready, 0.52 XMR not yet, 32% of the way");
+        let all_ready = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, None, clock());
+        assert_eq!(all_ready.bar_description, "1 XMR ready");
+    }
+
+    #[test]
+    fn each_sum_reads_as_one_line() {
+        let n = summarise(vec![piece(XMR / 2, 5, Source::Received, NOW)], 2 * XMR, NOW, clock()).unwrap();
+        let read: Vec<String> = n.sums.iter().map(Sum::description).collect();
+        assert_eq!(read, ["Ready to spend, 2 XMR", "Not ready · 1 coin, 0.5 XMR", "All of it, 2.5 XMR"]);
+        let priced = Sum { fiat: Some("$308.70".into()), ..n.sums[0].clone() };
+        assert_eq!(priced.description(), "Ready to spend, 2 XMR, $308.70");
     }
 
     #[test]

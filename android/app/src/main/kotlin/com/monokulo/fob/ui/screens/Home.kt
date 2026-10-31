@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -52,6 +53,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -237,23 +239,20 @@ private fun ReadyCard(n: NotReady) {
         }
         AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    val dots = listOf(Fob.ink, Fob.green)
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        n.sums.forEachIndexed { i, sum ->
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                dots.getOrNull(i)?.let { Box(Modifier.size(10.dp).clip(CircleShape).background(it)) }
-                                Text(sum.label, fontSize = 14.sp, fontWeight = if (i == n.sums.lastIndex) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                        }
-                    }
-                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        n.sums.forEachIndexed { i, sum -> Text(sum.amountText, fontSize = 14.sp, fontWeight = if (i == n.sums.lastIndex) FontWeight.SemiBold else FontWeight.Normal) }
-                    }
-                    if (n.sums.any { it.fiatText != null }) {
-                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            n.sums.forEach { Text(it.fiatText ?: "", color = Fob.muted, fontSize = 14.sp) }
-                        }
+                val dots = listOf(Fob.ink, Fob.green)
+                val priced = n.sums.any { it.fiatText != null }
+                // One line per sum, read as one by TalkBack ("Ready to spend, 1.8592 XMR, $308.70"); the money in a
+                // column wide enough for it, so the amounts line up.
+                n.sums.forEachIndexed { i, sum ->
+                    val weight = if (i == n.sums.lastIndex) FontWeight.SemiBold else FontWeight.Normal
+                    Row(
+                        Modifier.fillMaxWidth().clearAndSetSemantics { contentDescription = sum.description },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        dots.getOrNull(i)?.let { Box(Modifier.size(10.dp).clip(CircleShape).background(it)) }
+                        Text(sum.label, fontSize = 14.sp, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text(sum.amountText, fontSize = 14.sp, fontWeight = weight)
+                        if (priced) Text(sum.fiatText ?: "", color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 80.dp).padding(start = 8.dp))
                     }
                 }
                 Text(n.allReadyLine, color = Fob.muted, fontSize = 13.sp)
@@ -279,12 +278,19 @@ private fun CoinsChip(onClick: () -> Unit) {
 /**
  * The thin bar under the balance: what's ready in ink, what isn't on the
  * track beside it, each as wide as its share, the not-ready part filled
- * green as far as its confirmations go (weighted by amount).
+ * green as far as its confirmations go (weighted by amount). TalkBack reads
+ * Rust's [description] of it, or nothing where the words around it say the
+ * same.
  */
 @Composable
-fun CoinBar(ready: ULong, notReady: ULong, progress: Float) {
+fun CoinBar(ready: ULong, notReady: ULong, progress: Float, description: String? = null) {
     Row(
-        Modifier.fillMaxWidth().height(6.dp).semantics { progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f) },
+        Modifier.fillMaxWidth().height(6.dp).clearAndSetSemantics {
+            if (description != null) {
+                contentDescription = description
+                progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f)
+            }
+        },
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         if (ready > 0u) Box(Modifier.weight(ready.toFloat()).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Fob.ink))

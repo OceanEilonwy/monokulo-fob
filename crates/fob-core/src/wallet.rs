@@ -989,13 +989,11 @@ impl Wallet {
     /// The money not ready yet as Home shows it, beside what's ready to
     /// spend, or `None` when all of it is.
     pub async fn not_ready(&self, clock: Clock) -> Option<NotReady> {
-        let ready = self.balance().await.unlocked;
-        let (_, pieces, last_block_time) = self.coin_pieces().await;
+        // Both halves from one look at the wallet, so they always add up.
+        let (ready, pieces, last_block_time) = self.coin_pieces().await;
+        let ready = ready.iter().map(|p| p.amount).sum();
         let mut summary = not_ready::summarise(pieces, ready, last_block_time, clock)?;
         if let Some((currency, p)) = self.price_now().await {
-            for piece in &mut summary.pieces {
-                piece.fiat = Some(price::value(piece.atomic, p, &currency));
-            }
             for sum in &mut summary.sums {
                 sum.fiat = Some(price::value(sum.atomic, p, &currency));
             }

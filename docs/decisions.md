@@ -1306,3 +1306,12 @@ Calls made while building the first version, with why. Newest last.
     prompt is made in `onCreate` with its answer kept in the activity's
     ViewModel; a Confirm that comes back while it's up waits for that
     answer and sends on it, rather than losing it to a dead coroutine.
+175. **Coins and Home read well with TalkBack**: Coins' bar reads Rust's
+    "1.8592 XMR ready, 0.6221 XMR not yet, 37% of the way", not a bare
+    percentage; Home's bar stays silent (its card says the same). Home's
+    opened card is one line per sum, each read as one ("Ready to spend,
+    1.8592 XMR, $308.70"), the money right-aligned in a column 80 dp wide
+    so the amounts still line up. Home's sums and its not-ready line come
+    from one look at the wallet, so they always add up. The Coins board
+    keeps the two-part bar: its template draws Home's bar, and the per-coin
+    list it computes (`bar`) is never drawn.
