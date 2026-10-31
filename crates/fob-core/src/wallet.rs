@@ -3386,7 +3386,9 @@ mod tests {
     #[tokio::test]
     async fn failed_lookups_show_once_per_run_in_the_background_and_always_for_the_user() {
         let wallet = Wallet::create(&dir("price-alerts"), [1; 32], Network::Stagenet).unwrap();
-        let t = now();
+        // Yesterday's noon, UTC: the steps below never cross midnight, so
+        // the kept price is "the hh:mm price", not "yesterday's".
+        let t = now() / DAY * DAY - DAY / 2;
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
         let working = FakePrices::new(166_100_000, vec![]);
