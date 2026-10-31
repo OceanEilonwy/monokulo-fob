@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.contentDescription
@@ -306,8 +307,9 @@ private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () 
             Text("Also show amounts in", fontSize = 16.sp)
             Text(p.currencyLine, fontSize = 13.sp, color = Fob.muted)
         }
-        // A long name ("New Taiwan dollar") wraps rather than squeezing the title.
-        Text(p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.8f, fill = false))
+        // At the row's end by the chevron, as Theme's; a long name ("New
+        // Taiwan dollar") wraps rather than squeezing the title.
+        Text(p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 152.dp))
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }
     val code = p.currency ?: return
