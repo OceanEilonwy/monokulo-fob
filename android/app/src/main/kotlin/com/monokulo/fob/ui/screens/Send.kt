@@ -42,6 +42,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -200,6 +201,15 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     }
     // Rust's word on what the field holds now; none while it's behind (the chip just tapped), so Review waits.
     val current = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }
+
+    // The price toast's cog opens Price from over this: Back finds the form as filled, pulled up.
+    DisposableEffect(nav) {
+        val keep = {
+            if (open || to.isNotBlank() || amount.isNotBlank()) nav.replace(Screen.Send(draft = SendDraft(to, amount, inFiat, note, filledFrom, lastRead)))
+        }
+        nav.keepForm = keep
+        onDispose { if (nav.keepForm === keep) nav.keepForm = null }
+    }
 
     val toValid = remember(to, network) { to.isNotBlank() && runCatching { parsePayment(network, to) }.getOrNull()?.address == to.trim() }
 

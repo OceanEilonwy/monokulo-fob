@@ -166,6 +166,12 @@ class Nav(start: Screen) {
     fun replace(screen: Screen) { stack[stack.lastIndex] = screen }
     /** Starts over at `screen`, forgetting the way here. */
     fun reset(screen: Screen) { stack.clear(); stack.add(screen) }
+    /**
+     * Set by a screen with a form (Send, Receive): puts it on the stack as
+     * filled, before something over every screen (the price toast's cog)
+     * opens another on top, so Back finds it as it was.
+     */
+    var keepForm: (() -> Unit)? = null
 }
 
 /**
@@ -239,7 +245,12 @@ class MainActivity : FragmentActivity() {
                         val notice by model.notice.collectAsState()
                         PriceToastHost(
                             toast, onRetry = model::retryPrices, onDismiss = model::dismissPriceToast,
-                            onSettings = { if (nav.current != Screen.PriceFrom) nav.go(Screen.PriceFrom) },
+                            onSettings = {
+                                if (nav.current != Screen.PriceFrom) {
+                                    nav.keepForm?.invoke()
+                                    nav.go(Screen.PriceFrom)
+                                }
+                            },
                             notice = notice, onNoticeDismiss = model::dismissNotice,
                         )
                     }
