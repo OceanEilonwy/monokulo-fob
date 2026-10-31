@@ -13,6 +13,8 @@ import com.monokulo.fob.ui.ThemeChoice
 import uniffi.fob.ActivityDay
 import uniffi.fob.Balance
 import uniffi.fob.Coins
+import uniffi.fob.ContactCard
+import uniffi.fob.ContactRow
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
 import uniffi.fob.NotReady
@@ -289,6 +291,44 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return emptyList()
         val (seconds, offset, hours24) = clock()
         return wallet.paidBefore(seconds, offset, hours24)
+    }
+
+    /** Contacts by name, those whose name or note has [search] in it; empty without a wallet. */
+    suspend fun contacts(search: String = ""): List<ContactRow> {
+        val wallet = _wallet.value ?: return emptyList()
+        val (seconds, offset, hours24) = clock()
+        return wallet.contacts(search, seconds, offset, hours24)
+    }
+
+    /** The contacts Send's sheet offers: with a send address, the most recently paid first. */
+    suspend fun contactsOnSend(): List<ContactRow> {
+        val wallet = _wallet.value ?: return emptyList()
+        val (seconds, offset, hours24) = clock()
+        return wallet.contactsOnSend(seconds, offset, hours24)
+    }
+
+    /** Addresses paid that are no contact's, for "Paid, not saved". */
+    suspend fun paidNotSaved(): List<PaidBefore> {
+        val wallet = _wallet.value ?: return emptyList()
+        val (seconds, offset, hours24) = clock()
+        return wallet.paidNotSaved(seconds, offset, hours24)
+    }
+
+    /** A contact's card, every word from Rust; null once it's deleted. */
+    suspend fun contactCard(id: ULong): ContactCard? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.contactCard(id, seconds, offset, hours24)
+    }
+
+    /**
+     * Changes the contacts (throwing what Rust refused), then refreshes:
+     * Activity names payments to them.
+     */
+    suspend fun <T> changeContacts(change: suspend (FobWallet) -> T): T {
+        val result = change(requireNotNull(_wallet.value))
+        refresh()
+        return result
     }
 
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */

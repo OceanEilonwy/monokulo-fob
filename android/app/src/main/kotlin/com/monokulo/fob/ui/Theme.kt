@@ -41,8 +41,12 @@ class FobColors(
     val addressMark: Color,
     val onAddressMark: Color,
     val red: Color,
+    /** What sits on [red] filled: Delete's words. */
+    val onRed: Color,
     /** The empty part of the sync ring. */
     val track: Color,
+    /** Over the screen behind a sheet that asks something. */
+    val scrim: Color,
 )
 
 /** The Monokulo family's colours, as in the Fob designs. */
@@ -64,7 +68,9 @@ val LightColors = FobColors(
     addressMark = Color(0xFFFBE3CC),
     onAddressMark = Color(0xFF7A2F00),
     red = Color(0xFFB3261E),
+    onRed = Color(0xFFFFFFFF),
     track = Color(0xFFD8D1C3),
+    scrim = Color(0x731A1917),
 )
 
 /** The same roles at night: warm greys, no black, the same orange. */
@@ -86,7 +92,9 @@ val DarkColors = FobColors(
     addressMark = Color(0xFF4A2A12),
     onAddressMark = Color(0xFFFFC9A0),
     red = Color(0xFFF2B8B5),
+    onRed = Color(0xFF601410),
     track = Color(0xFF3A3731),
+    scrim = Color(0x99080706),
 )
 
 val LocalFobColors = staticCompositionLocalOf { LightColors }
@@ -113,6 +121,8 @@ object Fob {
     val onAddressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onAddressMark
     val red: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.red
     val track: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.track
+    val onRed: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onRed
+    val scrim: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.scrim
 
     val orange = Color(0xFFFF6600)
     val onOrange = Color(0xFF111111)

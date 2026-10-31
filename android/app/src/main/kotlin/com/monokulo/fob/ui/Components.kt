@@ -63,6 +63,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -98,6 +104,15 @@ object Icons {
     const val warning = "M12 3l9.5 17h-19L12 3Z M12 10v4.5 M12 17.5v.5"
     const val check = "M5 12.5l4.5 4.5L19 7.5"
     const val expand = "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"
+    const val plus = "M12 5v14M5 12h14"
+    const val search = "M10.5 4a6.5 6.5 0 1 0 0.01 0Z M15.5 15.5L20 20"
+    /** A camera: Take a photo, and the badge on a contact's photo. */
+    const val camera = "M4 8h3l2-3h6l2 3h3v11H4Z M12 10.5a3 3 0 1 0 0.01 0Z"
+    /** A picture: Choose from your photos. */
+    const val picture = "M4 5h16v14H4Z M4 16l5-5 4 4 2-2 5 5 M15.5 8.5a1.5 1.5 0 1 0 0.01 0Z"
+    const val trash = "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"
+    /** A person with a plus: Save as a contact. */
+    const val personPlus = "M6.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M3.5 19.5c0.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5 M19 8v6 M16 11h6"
     /** Two coins, one behind the other (drawn at stroke 1.8). */
     const val coins = "M2.5 13a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z M6.5 13a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z M13.2 4.3A6.5 6.5 0 1 1 17.6 16.4"
     /** One coin splitting into three (drawn at stroke 1.8). */
@@ -194,10 +209,13 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
 }
 
 @Composable
-fun OutlineButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, height: Dp = 56.dp, leading: String? = null, tint: Color = Fob.ink) {
+fun OutlineButton(
+    text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, height: Dp = 56.dp, leading: String? = null,
+    tint: Color = Fob.ink, edge: Color = Fob.outline,
+) {
     Row(
         modifier.height(height).clip(RoundedCornerShape(height / 2))
-            .border(1.dp, if (enabled) Fob.outline else Fob.line, RoundedCornerShape(height / 2))
+            .border(1.dp, if (enabled) edge else Fob.line, RoundedCornerShape(height / 2))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.Center,
@@ -517,4 +535,33 @@ fun NoScreenshots() {
         window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         onDispose { window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
     }
+}
+
+/**
+ * A sheet over the screen, on a scrim: tapping the scrim or Back calls
+ * [onDismiss]. Its paper reaches the bottom edge; what's on it stays above
+ * the gesture bar and clear of the sides. [title] names it for TalkBack.
+ */
+@Composable
+fun BottomSheet(title: String, onDismiss: () -> Unit, background: Color = Fob.paper, content: @Composable ColumnScope.() -> Unit) {
+    androidx.activity.compose.BackHandler(onBack = onDismiss)
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(Fob.scrim).clickable(onClickLabel = "Close", onClick = onDismiss, indication = null, interactionSource = null))
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(background)
+                // Taps on the sheet stay on it.
+                .clickable(onClick = {}, indication = null, interactionSource = null)
+                .semantics { paneTitle = title }
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content,
+        )
+    }
+}
+
+/** A sheet's handle, as on Send's. */
+@Composable
+fun SheetHandle() {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
 }

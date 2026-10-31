@@ -86,6 +86,8 @@ import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.AmountField
+import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
@@ -95,6 +97,7 @@ import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.launch
 import uniffi.fob.AmountEntry
 import uniffi.fob.CodeKind
+import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentRequest
 import uniffi.fob.classifyCode
@@ -157,7 +160,14 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     // The camera reads a code many times a second: each one is taken once.
     var lastRead by remember { mutableStateOf(draft?.read) }
     var paid by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
-    LaunchedEffect(wallet, balance) { paid = model.paidBefore() }
+    // Contacts with a send address once there are any contacts; until then, who was paid before.
+    var contacts by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
+    var hasContacts by remember { mutableStateOf(false) }
+    LaunchedEffect(wallet, balance) {
+        hasContacts = model.contacts().isNotEmpty()
+        contacts = model.contactsOnSend()
+        paid = if (hasContacts) emptyList() else model.paidBefore()
+    }
 
     // The amount in money (Rust converts it to XMR) while there's a price, as on Receive.
     var entry by remember { mutableStateOf<AmountEntry?>(null) }
@@ -346,8 +356,22 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                     PasteRow(::paste)
                     if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
                     ErrorText(error)
-                    // Step 6 puts contacts here: the section becomes CONTACTS, with "All" opening the Contacts screen.
-                    if (paid.isNotEmpty()) {
+                    // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
+                    if (hasContacts) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "CONTACTS", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
+                                    modifier = Modifier.weight(1f).semantics { heading() },
+                                )
+                                TextButton("All", { nav.go(Screen.Contacts) })
+                            }
+                            if (contacts.isEmpty()) {
+                                Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
+                            }
+                            contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; request = null; notice = null; open = true } }
+                        }
+                    } else if (paid.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
                                 "PAID BEFORE", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
@@ -365,7 +389,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
 
 /** The viewfinder's corners, [size] across, in the camera's light colour; [width] on the 280 grid. */
 @Composable
-private fun Viewfinder(size: Dp, width: Float) {
+fun Viewfinder(size: Dp, width: Float) {
     val corners = remember { PathParser().parsePathString(CORNERS).toPath() }
     val colour = Fob.onCamera
     Canvas(Modifier.size(size).clearAndSetSemantics {}) {
@@ -459,6 +483,23 @@ private fun PasteRow(onPaste: () -> Unit) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("Paste an address", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Text("Read from the clipboard only when you tap", color = Fob.muted, fontSize = 13.sp)
+        }
+        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
+    }
+}
+
+/** A contact on the sheet: their avatar, name and last payment; tapping fills To with their send address. */
+@Composable
+private fun ContactSendRow(c: ContactRow, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) {}.padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Avatar(c.name, c.initial, c.photo, 30.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(c.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(c.line, color = Fob.muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }

@@ -117,6 +117,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             Column {
                 SectionLabel("Wallet")
                 Card {
+                    SettingRow("Contacts", "Who you pay, kept on this phone", onClick = { nav.go(Screen.Contacts) })
                     if (canSpend) SettingRow("Back up seed phrase", "Show the words that restore this wallet", onClick = { nav.go(Screen.ShowSeed) })
                     SettingRow("Show wallet code", "Restore this wallet on another phone", onClick = { nav.go(Screen.ShowWalletCode) })
                 }
