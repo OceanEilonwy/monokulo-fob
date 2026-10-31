@@ -2140,7 +2140,7 @@ impl Wallet {
         let mut settings = state.prices.clone();
         let said = change(&mut settings)?;
         if settings != state.prices {
-            // Show first only changes how amounts are drawn: nothing to ask.
+            // Which leads on Home only changes how amounts are drawn: nothing to ask.
             let asks = (settings.code(), settings.provider, settings.transport) != (state.prices.code(), state.prices.provider, state.prices.transport);
             state.prices = settings;
             self.record_prices(&mut state);
@@ -2154,7 +2154,7 @@ impl Wallet {
         Ok(said)
     }
 
-    /// "Also show amounts in" `code`, one of the 45, or XMR only (`None`),
+    /// "Default currency" `code`, one of the 45, or XMR (`None`),
     /// when Fob never asks for a price. Moves to a provider that prices it
     /// when the chosen one doesn't, and returns the words saying so.
     pub async fn set_currency(&self, code: Option<&str>) -> Result<Option<String>> {
@@ -2183,19 +2183,32 @@ impl Wallet {
         Some(price::check(providers, &currency, settings.transport, settings.provider.name(), price::CHECK_TIMEOUT).await)
     }
 
-    /// The "Also show amounts in" list, the chosen one ticked: `phone` is
+    /// The "Default currency" list, the chosen one ticked: `phone` is
     /// the phone's own currency code, `query` what's typed in the search.
     pub async fn currency_list(&self, phone: Option<&str>, query: &str) -> price::CurrencyList {
         price::currency_list(self.price_settings().await.code(), phone, query)
     }
 
-    /// "Show amounts in": the currency first, or XMR.
+    /// Tapping Home's balance: the default currency first, or XMR. Refused
+    /// with XMR as the default currency, where nothing swaps.
     pub async fn set_fiat_first(&self, fiat_first: bool) -> Result<()> {
         self.change_prices(|s| {
+            if s.code().is_none() {
+                return Err(FobError::Price("With XMR as the default currency there's nothing to swap".into()));
+            }
             s.fiat_first = fiat_first;
             Ok(())
         })
         .await
+    }
+
+    /// Home's balance at `now` (seconds since the epoch): whether tapping
+    /// it swaps XMR and the default currency (one besides XMR, with a
+    /// price from within the day), and which leads.
+    pub async fn balance_order(&self, now: u64) -> price::BalanceOrder {
+        let state = self.inner.state.lock().await;
+        let priced = state.price_cache.shown(&state.prices, now).is_some();
+        price::balance_order(&state.prices, priced)
     }
 
     /// The current price shown now, when amounts are also shown in a
@@ -3461,10 +3474,10 @@ mod tests {
         assert_eq!(old.price_toast(clock_now()).await.unwrap().line, "Kraken doesn't answer over Tor · no USD price yet");
     }
 
-    /// Show first only changes how amounts are drawn: no lookup, and a run
-    /// of failures goes on.
+    /// Swapping Home's balance only changes how amounts are drawn: no
+    /// lookup, and a run of failures goes on.
     #[tokio::test]
-    async fn flipping_show_first_asks_for_nothing() {
+    async fn swapping_the_balance_asks_for_nothing() {
         let wallet = Wallet::create(&dir("price-show-first"), [1; 32], Network::Stagenet).unwrap();
         let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
         wallet.refresh_prices_from(&failing, Asked::Background, now()).await.unwrap_err();
@@ -3897,6 +3910,38 @@ mod tests {
         drop(old);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(old.price_settings().await.code(), Some("EUR"));
+    }
+
+    /// A wallet saved with "Show first" on its currency (before the row
+    /// went) keeps that order; with XMR as the default currency nothing
+    /// swaps, and the order waits for a currency again.
+    #[tokio::test]
+    async fn an_old_file_s_currency_first_stays_and_xmr_never_swaps() {
+        let path = dir("price-order-file");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        // Without fiat_first at all: XMR first.
+        file["state"]["prices"] = serde_json::json!({"currency": "EUR", "provider": "kraken", "transport": "web"});
+        store::save(&path, &[1; 32], &file).unwrap();
+        assert!(!Wallet::open(&path, [1; 32]).unwrap().price_settings().await.fiat_first);
+        file["state"]["prices"] = serde_json::json!({"currency": "EUR", "provider": "kraken", "transport": "web", "fiat_first": true});
+        store::save(&path, &[1; 32], &file).unwrap();
+        let old = Wallet::open(&path, [1; 32]).unwrap();
+        let t = now();
+        let order = |can_swap, fiat_first| price::BalanceOrder { can_swap, fiat_first };
+        assert_eq!(old.balance_order(t).await, order(false, false), "no price yet: nothing to swap to");
+        old.refresh_prices_from(&FakePrices::new(166_000_000, vec![]), Asked::Background, t).await.unwrap();
+        assert_eq!(old.balance_order(t).await, order(true, true));
+        old.set_fiat_first(false).await.unwrap();
+        assert_eq!(old.balance_order(t).await, order(true, false));
+        old.set_fiat_first(true).await.unwrap();
+        // XMR: no swap, and tapping is refused.
+        old.set_currency(None).await.unwrap();
+        assert_eq!(old.balance_order(t).await, order(false, false));
+        assert!(matches!(old.set_fiat_first(false).await, Err(FobError::Price(_))));
+        // A currency again: its order as it was.
+        old.set_currency(Some("EUR")).await.unwrap();
+        assert!(Wallet::open(&path, [1; 32]).unwrap().price_settings().await.fiat_first);
     }
 
     #[tokio::test]

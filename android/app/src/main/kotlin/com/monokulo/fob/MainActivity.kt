@@ -122,7 +122,7 @@ sealed interface Screen {
     data object Settings : Screen
     /** Price from: each provider, checked as it opens; from Settings or the price toast's cog. */
     data object PriceFrom : Screen
-    /** "Also show amounts in": every currency, with a search. */
+    /** "Default currency": every currency, with a search. */
     data object CurrencyList : Screen
     /**
      * Backup and keys: Seed phrase, Wallet code and Keys, opened from

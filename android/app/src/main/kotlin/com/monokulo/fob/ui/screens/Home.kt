@@ -128,17 +128,23 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails) { nav.go(Screen.Node) }
         }
 
-        // The balance on one line: what "Show amounts in" puts first large on
-        // the left, the other at the line's end. Tapping swaps them.
+        // The balance on one line: what goes first large on the left, the
+        // other at the line's end. Tapping swaps them, only when Rust says
+        // it can (a default currency besides XMR, with its worth).
         val b = balance
         val fiat = b?.fiatText
+        val canSwap = b?.canSwap == true
         val fiatFirst = fiat != null && b.fiatFirst
         if (!synced) Text("Balance so far", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(start = 20.dp, top = 12.dp))
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = if (synced) 16.dp else 0.dp, bottom = 12.dp).clip(RoundedCornerShape(12.dp))
-                .clickable(enabled = fiat != null, role = Role.Button, onClickLabel = "Swap XMR and ${prices?.currency ?: "money"}") {
-                    scope.launch { runCatching { model.setFiatFirst(b?.fiatFirst != true) } }
-                }
+                .then(
+                    if (canSwap) {
+                        Modifier.clickable(role = Role.Button, onClickLabel = "Swap XMR and ${prices?.currency ?: "the default currency"}") {
+                            scope.launch { runCatching { model.setFiatFirst(!b.fiatFirst) } }
+                        }
+                    } else Modifier,
+                )
                 .semantics(mergeDescendants = true) {}
                 .padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),

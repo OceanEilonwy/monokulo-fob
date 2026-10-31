@@ -64,7 +64,6 @@ import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.QrImage
 import com.monokulo.fob.ui.SectionLabel
-import com.monokulo.fob.ui.Segmented
 import com.monokulo.fob.ui.SettingRow
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TextButton
@@ -180,7 +179,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             prices?.let { p ->
                 Column {
                     SectionLabel("Money")
-                    Card { MoneyRows(p, onCurrency = { nav.go(Screen.CurrencyList) }, onPriceFrom = { nav.go(Screen.PriceFrom) }, onTryAgain = model::retryPrices) { first -> scope.launch { runCatching { model.setFiatFirst(first) } } } }
+                    Card { MoneyRows(p, onCurrency = { nav.go(Screen.CurrencyList) }, onPriceFrom = { nav.go(Screen.PriceFrom) }, onTryAgain = model::retryPrices) }
                 }
             }
             Column {
@@ -305,11 +304,10 @@ private fun NameAndSuffix(name: String, suffix: String) {
 }
 
 /**
- * A Money card row (the currency, Show first): the title (and its line)
- * at the start, the value at the end, at most 152 dp and wrapping a long name; when sitting
- * beside the value would wrap the title onto more lines than it takes
- * alone (a big font: "Also / show / amounts / in"), the value goes under
- * it instead, still at the end.
+ * The Default currency row's title at the start and its value at the end,
+ * at most 152 dp; when sitting beside the value would wrap the title onto
+ * more lines than it takes alone (a big font: "Default / currency"), the
+ * value goes under it instead, still at the end.
  */
 @Composable
 private fun TitleAndValue(modifier: Modifier, gap: Dp = 12.dp, title: @Composable () -> Unit, value: @Composable () -> Unit) {
@@ -362,49 +360,33 @@ internal fun LeadRow(icon: String, title: String, line: String, minHeight: Dp = 
 }
 
 /**
- * The Money card (board PricesWording): "Also show amounts in" with its
- * value; with a currency, Show first and Price from, red with Try again
- * while lookups fail. With XMR only, just the first row.
+ * The Money card (board PricesWording): "Default currency" with Rust's
+ * short value ("AUD · A$", "CHF", "XMR"), TalkBack hearing the full name;
+ * with a currency, Price from, red with Try again while lookups fail. With
+ * XMR, just the first row.
  */
 @Composable
-private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () -> Unit, onTryAgain: () -> Unit, onFiatFirst: (Boolean) -> Unit) {
+private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () -> Unit, onTryAgain: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button, onClick = onCurrency)
             .semantics(mergeDescendants = true) {}.padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // The value at the row's end by the chevron, as Theme's; a long name
-        // ("New Taiwan dollar") wraps, and goes under the title rather than
-        // squeezing it.
+        // The value at the row's end by the chevron, as Theme's; at a big
+        // font it goes under the title rather than squeezing it.
         TitleAndValue(
             Modifier.weight(1f),
-            title = {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Also show amounts in", fontSize = 16.sp)
-                    Text(p.currencyLine, fontSize = 13.sp, color = Fob.muted)
-                }
+            title = { Text("Default currency", fontSize = 16.sp) },
+            value = {
+                Text(
+                    p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { contentDescription = p.currencyName },
+                )
             },
-            value = { Text(p.currencyText, fontSize = 15.sp, color = Fob.muted, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         )
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }
-    val code = p.currency ?: return
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        // The switch goes under its title too at a big font.
-        TitleAndValue(
-            Modifier.weight(1f),
-            title = {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Show first", fontSize = 16.sp)
-                    Text("Tap the balance to swap any time", fontSize = 13.sp, color = Fob.muted)
-                }
-            },
-            value = { Segmented(listOf("XMR", code), if (p.fiatFirst) 1 else 0, { i -> onFiatFirst(i == 1) }, Modifier.semantics { contentDescription = "Show first" }, height = 48.dp) },
-        )
-    }
+    if (p.currency == null) return
     Row(
         Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button, onClick = onPriceFrom)
             .padding(start = 20.dp, end = if (p.failing) 8.dp else 16.dp, top = 8.dp, bottom = 8.dp),
@@ -427,8 +409,8 @@ private fun MoneyRows(p: PriceSettings, onCurrency: () -> Unit, onPriceFrom: () 
 }
 
 /**
- * "Also show amounts in" (board CurrencyPicker): a search, then Rust's
- * groups (XMR only, this phone's currency, all of them A–Z). Choosing one
+ * "Default currency" (board CurrencyPicker): a search, then Rust's
+ * groups (Monero, this phone's currency, all of them A–Z). Choosing one
  * goes back; when the provider had to change for it, Rust's words show as
  * a notice.
  */
@@ -449,7 +431,7 @@ fun CurrencyListScreen(model: WalletModel, nav: Nav) {
         }
     }
     Page(scroll = false) {
-        TopBar("Also show amounts in", onBack = { nav.back() })
+        TopBar("Default currency", onBack = { nav.back() })
         SearchField(
             query, { query = it }, "Search: name, code or symbol", "Search currencies",
             Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp), height = 52.dp, onSearch = { keyboard?.hide() },

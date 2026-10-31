@@ -172,7 +172,7 @@ pub struct Detail {
     pub amount: String,
     /// "Today 08:40 · Coffee beans"
     pub when: String,
-    /// Amounts also show in a currency: the two price boxes show.
+    /// A default currency besides XMR: the two price boxes show.
     pub priced: bool,
     /// What it's worth now: "$83.03", or "Not available".
     pub worth_now: String,
