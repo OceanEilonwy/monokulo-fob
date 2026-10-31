@@ -16,8 +16,11 @@
 //!
 //! - `00 A4 04 00 08 <AID> 00`: select; the card answers its version.
 //! - `80 E0 <index> [Lc <chunk>] 00`: the reader's chunk `index` (none once
-//!   its frame is all sent); the card answers its own chunk `index` (none
-//!   once its frame is). Indexes run from 0 with no gaps.
+//!   its frame is all sent); the card answers with its own next chunk (none
+//!   once its frame is). Indexes run from 0 with no gaps. The card holds
+//!   back its last chunk, answering none, until the reader's frame is whole,
+//!   matches its checksum and is a profile, so a reader that isn't a Fob
+//!   never gets all of the card's profile.
 //! - `80 E2 00 00`: done; the reader has the card's code and has sent its
 //!   own whole. The card checks it has the reader's and says so.
 //!
@@ -61,6 +64,8 @@ const OK: [u8; 2] = [0x90, 0x00];
 /// selects Fob gets while the screen isn't in front.
 pub const NOT_AVAILABLE: [u8; 2] = [0x6A, 0x82];
 const WRONG_DATA: [u8; 2] = [0x6A, 0x80];
+/// Whole and matching its checksum, but not a profile Fob takes.
+const NOT_PROFILE: [u8; 2] = [0x69, 0x84];
 const WRONG_VERSION: [u8; 2] = [0x6A, 0x81];
 const WRONG_INDEX: [u8; 2] = [0x6A, 0x86];
 const WRONG_STATE: [u8; 2] = [0x69, 0x85];
@@ -240,8 +245,13 @@ pub struct Card {
     network: Network,
     ours: Vec<u8>,
     theirs: Assembly,
+    /// Theirs, once whole and read as a profile.
+    checked: Option<ProfileCode>,
     selected: bool,
+    /// The next command's index.
     next: usize,
+    /// How many chunks of ours went into answers this exchange.
+    given: usize,
     /// Every chunk of ours went into an answer.
     gave: bool,
     got: Option<ProfileCode>,
@@ -249,14 +259,16 @@ pub struct Card {
 
 impl Card {
     pub fn new(network: Network, frame: Vec<u8>) -> Card {
-        Card { network, ours: frame, theirs: Assembly::default(), selected: false, next: 0, gave: false, got: None }
+        Card { network, ours: frame, theirs: Assembly::default(), checked: None, selected: false, next: 0, given: 0, gave: false, got: None }
     }
 
     /// The link went (the phones moved apart): start over at the next select.
     pub fn reset(&mut self) {
         self.theirs = Assembly::default();
+        self.checked = None;
         self.selected = false;
         self.next = 0;
+        self.given = 0;
     }
 
     /// Midway through an exchange.
@@ -304,26 +316,43 @@ impl Card {
                 }
                 // Theirs ended before it said it would.
                 let pushed = if c.data.is_empty() { if self.theirs.complete() { Ok(()) } else { Err(Problem::Garbled) } } else { self.theirs.push(c.data) };
-                // Checked once whole, so a garbled one is refused before done.
-                if let Err(problem) = pushed.and_then(|_| if self.theirs.complete() { self.theirs.code().map(|_| ()) } else { Ok(()) }) {
-                    return self.refuse(if problem == Problem::Version { WRONG_VERSION } else { WRONG_DATA });
+                // Read once whole, so a garbled one, or one that isn't a profile, is refused before done.
+                let checked = pushed.and_then(|_| match (&self.checked, self.theirs.complete()) {
+                    (None, true) => self.theirs.profile(self.network).map(Some),
+                    _ => Ok(None),
+                });
+                match checked {
+                    Ok(Some(profile)) => self.checked = Some(profile),
+                    Ok(None) => {}
+                    Err(problem) => {
+                        return self.refuse(match problem {
+                            Problem::Version => WRONG_VERSION,
+                            Problem::NotProfile(_) => NOT_PROFILE,
+                            _ => WRONG_DATA,
+                        });
+                    }
                 }
-                let reply = chunk(&self.ours, self.next).to_vec();
+                // Our last chunk waits for theirs, whole and a profile.
+                let last = all_sent(&self.ours, self.given + 1);
+                let reply = if last && self.checked.is_none() { Vec::new() } else { chunk(&self.ours, self.given).to_vec() };
+                if !reply.is_empty() {
+                    self.given += 1;
+                }
                 self.next += 1;
-                self.gave |= all_sent(&self.ours, self.next);
+                self.gave |= all_sent(&self.ours, self.given);
                 answer(&reply, OK)
             }
             INS_DONE => {
-                if !self.theirs.complete() || !all_sent(&self.ours, self.next) {
+                if !all_sent(&self.ours, self.given) {
                     return self.refuse(WRONG_STATE);
                 }
-                match self.theirs.profile(self.network) {
-                    Ok(profile) => {
+                match self.checked.take() {
+                    Some(profile) => {
                         self.got = Some(profile);
                         self.selected = false;
                         answer(&[], OK)
                     }
-                    Err(_) => self.refuse(WRONG_DATA),
+                    None => self.refuse(WRONG_STATE),
                 }
             }
             _ => self.refuse(WRONG_INS),
@@ -423,9 +452,20 @@ impl Reader {
             },
             Phase::Swapping => {
                 if status != OK {
-                    return self.fail(if status == WRONG_VERSION { Problem::Version } else { Problem::Garbled });
+                    return self.fail(match status {
+                        WRONG_VERSION => Problem::Version,
+                        NOT_PROFILE => Problem::Refused,
+                        _ => Problem::Garbled,
+                    });
                 }
-                let pushed = if data.is_empty() { if self.theirs.complete() { Ok(()) } else { Err(Problem::Garbled) } } else { self.theirs.push(data) };
+                // Nothing back: theirs is all here, or the card holds its last chunk until ours is whole (and some
+                // of ours is still to go).
+                let waiting = !all_sent(&self.ours, self.next + 1);
+                let pushed = match data {
+                    [] if self.theirs.complete() || waiting => Ok(()),
+                    [] => Err(Problem::Garbled),
+                    data => self.theirs.push(data),
+                };
                 if let Err(problem) = pushed {
                     return self.fail(problem);
                 }
@@ -502,11 +542,13 @@ impl Session {
         &self.address
     }
 
-    /// The card's answer to a command; once the swap is over, or after it
-    /// has theirs, a select is answered "not available".
+    /// The card's answer to a command; "not available" once the swap is
+    /// over, or once the reader side has (or is finishing with) another
+    /// phone's profile: a swap takes one phone's.
     pub fn card_answer(&self, apdu: &[u8]) -> Vec<u8> {
         let mut state = self.state();
-        if state.ended || state.reader.got.is_some() {
+        if state.ended || state.reader.got.is_some() || state.reader.pending.is_some() {
+            state.card.reset();
             return answer(&[], NOT_AVAILABLE);
         }
         state.last = Some(Instant::now());
@@ -529,7 +571,8 @@ impl Session {
 
     pub fn reader_next(&self, response: &[u8]) -> Step {
         let mut state = self.state();
-        if state.ended {
+        // Over, or the card side took a profile meanwhile: this exchange takes nothing.
+        if state.ended || state.card.got.is_some() {
             state.reader.lost();
             return Step::Failed(Problem::Away);
         }
@@ -554,14 +597,31 @@ impl Session {
         state.reader.got.clone().or_else(|| state.card.got.clone())
     }
 
-    /// Ends it: nothing more is answered or read. Returns theirs, if it
-    /// came, and whether ours went out whole.
-    pub fn end(&self) -> (Option<ProfileCode>, bool) {
-        let got = self.got();
+    /// Ends it: nothing more is answered or read from the moment what came
+    /// is taken.
+    pub fn end(&self) -> Ended {
         let mut state = self.state();
         state.ended = true;
-        (got, state.card.gave || state.reader.gave)
+        Ended {
+            got: state.reader.got.clone().or_else(|| state.card.got.clone()),
+            gave: state.card.gave || state.reader.gave,
+            // The reader's came with the card's word that it has ours; the card's didn't.
+            sure: state.reader.got.is_some(),
+        }
     }
+}
+
+/// How a swap ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ended {
+    /// Their profile, if it came.
+    pub got: Option<ProfileCode>,
+    /// Ours went out whole.
+    pub gave: bool,
+    /// The other phone said it took ours: this phone read theirs. As the
+    /// card, its last answer may not have reached the other phone, which
+    /// then kept nothing.
+    pub sure: bool,
 }
 
 #[cfg(test)]
@@ -780,15 +840,93 @@ mod tests {
         // Done: neither answers nor reads again.
         assert_eq!(ours.card_answer(&select()), NOT_AVAILABLE.to_vec());
         assert_eq!(theirs.reader_start(), None);
-        assert_eq!(ours.end(), (Some(uri::parse_profile(Network::Stagenet, &b).unwrap()), true));
+        // Ours read theirs, so theirs said it took ours.
+        assert_eq!(ours.end(), Ended { got: Some(uri::parse_profile(Network::Stagenet, &b).unwrap()), gave: true, sure: true });
+        assert_eq!(theirs.end(), Ended { got: Some(uri::parse_profile(Network::Stagenet, &a).unwrap()), gave: true, sure: false });
         assert_eq!(ours.reader_start(), None);
         // A session nobody touched: nothing came, nothing went.
         let idle = Session::new(Network::Stagenet, &a, 4, henry.address(4)).unwrap();
         assert_eq!(idle.card_answer(&exchange(0, b"x"))[..], WRONG_STATE[..]);
         idle.card_lost();
-        assert_eq!(idle.end(), (None, false));
+        assert_eq!(idle.end(), Ended { got: None, gave: false, sure: false });
         assert_eq!(idle.card_answer(&select()), NOT_AVAILABLE.to_vec(), "ended");
         assert_eq!((idle.subaddress(), idle.address()), (4, henry.address(4).as_str()));
+    }
+
+    #[test]
+    fn a_reader_that_isn_t_a_fob_never_gets_all_of_the_card_s_profile() {
+        let henry = Keys::generate(Network::Stagenet).keys;
+        for ours in [largest(&henry), uri::profile_uri(&henry.address(1), "Henry", None)] {
+            let mut card = Card::new(Network::Stagenet, frame(&ours).unwrap());
+            let whole = frame(&ours).unwrap();
+            // A plain NFC reader: a frame claiming 3000 bytes, then junk, as long as the card answers.
+            let mut sent = vec![VERSION, 0x0B, 0xB8, 1, 2, 3, 4];
+            sent.resize(CHUNK, 0x55);
+            let mut got = vec![];
+            assert_eq!(card.answer(&select()), vec![VERSION, 0x90, 0x00]);
+            for index in 0..13 {
+                let data = if index == 0 { sent.clone() } else { vec![0x55; if index == 12 { HEADER + CODE_MAX - 12 * CHUNK } else { CHUNK }] };
+                let response = card.answer(&exchange(index, &data));
+                let (body, status) = response.split_at(response.len() - 2);
+                got.extend_from_slice(body);
+                if status != OK {
+                    break;
+                }
+            }
+            assert!(got.len() < whole.len(), "held back its last chunk: {} of {}", got.len(), whole.len());
+            assert_eq!(&got[..], &whole[..got.len()]);
+            assert!(!card.gave(), "nothing to say it went out");
+            assert_eq!(card.answer(&done())[..], WRONG_STATE[..]);
+            assert!(card.got().is_none());
+        }
+        // A whole frame that isn't a profile (no name): refused at once, the last chunk kept.
+        let mut card = Card::new(Network::Stagenet, frame(&largest(&henry)).unwrap());
+        let bare = frame(&format!("monero:{}", henry.address(2))).unwrap();
+        card.answer(&select());
+        let response = card.answer(&exchange(0, &bare));
+        assert_eq!(response[response.len() - 2..], NOT_PROFILE);
+        assert!(!card.gave());
+    }
+
+    #[test]
+    fn a_swap_takes_one_phone_s_profile_whichever_side_reads() {
+        let keys: Vec<Keys> = (0..3).map(|_| Keys::generate(Network::Stagenet).keys).collect();
+        let code = |i: usize, name: &str| uri::profile_uri(&keys[i].address(1), name, None);
+        let ours = Session::new(Network::Stagenet, &code(0, "Henry"), 1, keys[0].address(1)).unwrap();
+        let sam = Session::new(Network::Stagenet, &code(1, "Sam"), 1, keys[1].address(1)).unwrap();
+        let jo = Session::new(Network::Stagenet, &code(2, "Jo"), 1, keys[2].address(1)).unwrap();
+        // Ours reads Sam's up to done; meanwhile Jo's reader reaches ours: not available.
+        let mut apdu = ours.reader_start().unwrap();
+        let done = loop {
+            match ours.reader_next(&sam.card_answer(&apdu)) {
+                Step::Send(next) if next[1] == INS_DONE => break next,
+                Step::Send(next) => apdu = next,
+                step => panic!("{step:?}"),
+            }
+        };
+        let mut jo_apdu = jo.reader_start().unwrap();
+        assert!(matches!(jo.reader_next(&ours.card_answer(&jo_apdu)), Step::Failed(Problem::Away)));
+        assert!(matches!(ours.reader_next(&sam.card_answer(&done)), Step::Done(ref p) if p.name == "Sam"));
+        // The other way round: Jo's reader takes ours as the card first; an exchange ours was in the middle of
+        // as the reader then takes nothing.
+        let ours = Session::new(Network::Stagenet, &code(0, "Henry"), 1, keys[0].address(1)).unwrap();
+        let jo = Session::new(Network::Stagenet, &code(2, "Jo"), 1, keys[2].address(1)).unwrap();
+        let sam = Session::new(Network::Stagenet, &code(1, "Sam"), 1, keys[1].address(1)).unwrap();
+        let apdu = ours.reader_start().unwrap();
+        let first = sam.card_answer(&apdu);
+        jo_apdu = jo.reader_start().unwrap();
+        loop {
+            match jo.reader_next(&ours.card_answer(&jo_apdu)) {
+                Step::Send(next) => jo_apdu = next,
+                Step::Done(_) => break,
+                step => panic!("{step:?}"),
+            }
+        }
+        assert!(matches!(ours.reader_next(&first), Step::Failed(_)));
+        assert_eq!(ours.reader_start(), None);
+        let ended = ours.end();
+        assert_eq!((ended.got.map(|p| p.name), ended.sure), (Some("Jo".into()), false));
+        assert!(sam.got().is_none());
     }
 
     #[test]

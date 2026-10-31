@@ -125,7 +125,7 @@ sealed interface Screen {
      */
     data class ProfileEdit(val step: String? = null) : Screen
     /** A share's code, full screen: just made by Share my profile, or again. */
-    data class ProfileShare(val id: ULong) : Screen
+    data class ProfileShare(val id: ULong, val fresh: Boolean = false) : Screen
     data object ShowSeed : Screen
     data object ShowWalletCode : Screen
     data object Node : Screen
@@ -274,7 +274,7 @@ class MainActivity : FragmentActivity() {
             Screen.ProfileScan -> ProfileScanScreen(model, nav)
             Screen.Profile -> ProfileScreen(model, nav)
             is Screen.ProfileEdit -> ProfileEditScreen(model, nav, screen.step)
-            is Screen.ProfileShare -> ProfileShareScreen(model, nav, screen.id)
+            is Screen.ProfileShare -> ProfileShareScreen(model, nav, screen.id, screen.fresh)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)

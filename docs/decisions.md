@@ -1147,3 +1147,32 @@ Calls made while building the first version, with why. Newest last.
     stays). Android's Avatar reads the bounds again before decoding,
     decodes off the main thread scaled to its size on screen, caches what
     it decoded, and shows the initial for anything it can't.
+151. **Only the share just made swaps by touching phones**: Rust keeps the
+    share the last Share my profile made, and starts a swap only on it,
+    only while it's still "Code shown" and until its swap ends (the
+    screen closing ends it). A share opened again from Your shares or
+    Activity, an older share, or one whose link was copied or shared is
+    refused, and its screen shows the code without the touch strip; Copy
+    link or Share ends a swap already running on it. So a second person
+    never gets an address someone already has. A screen made again by a
+    font or language change ends its swap too, and shows the code alone
+    after.
+152. **The card holds back its last chunk**: it answers with its own next
+    chunk, not the one at the command's index, and gives nothing in place
+    of its last until the reader's frame is whole, matches its checksum
+    and reads as a profile for this network (a frame that doesn't is
+    refused at once, "not a profile" told apart from garbled). A reader
+    that isn't a Fob gets at most all but the last chunk, and nothing is
+    recorded as gone out. The reader takes an empty answer as "waiting"
+    while some of its own frame is still to go. Both sides of a phone are
+    the same build, so the frame's version stays 1.
+153. **The card side doesn't claim the other phone got ours**: the reader
+    knows (the card said so); the card can't, since its last answer may
+    not have arrived. Swapped on the card's phone says "You got Sam's
+    profile and sent yours. If Sam's phone doesn't say Swapped, touch
+    again." A further acknowledgement round would only move the same
+    doubt to the other phone.
+154. **One swap, one other phone**: once the reader side is finishing with
+    a profile, the card answers "not available"; once the card side has
+    one, an exchange the reader was in takes nothing. Ending a swap reads
+    what came and stops it under one lock.

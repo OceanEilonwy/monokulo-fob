@@ -306,9 +306,16 @@ pub fn shared_text(created: u64, clock: Clock) -> String {
 pub const VIA: &str = "Via your profile";
 
 /// What Swapped says once phones have touched: "Swapped with Sam" and
-/// "Sam got your profile, and you got Sam's."
-pub fn swapped_words(name: &str) -> (String, String) {
-    (format!("Swapped with {name}"), format!("{name} got your profile, and you got {name}'s."))
+/// "Sam got your profile, and you got Sam's." when Sam's phone said it took
+/// ours (`sure`); otherwise only what this phone knows, since its last
+/// answer may not have reached Sam's.
+pub fn swapped_words(name: &str, sure: bool) -> (String, String) {
+    let line = if sure {
+        format!("{name} got your profile, and you got {name}'s.")
+    } else {
+        format!("You got {name}'s profile and sent yours. If {name}'s phone doesn't say Swapped, touch again.")
+    };
+    (format!("Swapped with {name}"), line)
 }
 
 /// Settings' row: "Your profile" with "Henry · name and photo, share as a
@@ -589,7 +596,8 @@ mod tests {
         assert_eq!(book.touched(shown.id, Some("Jo".into())).unwrap().kind, ShareKind::TouchedPhones { name: Some("Jo".into()) });
         assert!(book.touched(shown.id, None).is_none(), "the name stays");
         assert!(book.touched(99, None).is_none());
-        assert_eq!(swapped_words("Sam"), ("Swapped with Sam".into(), "Sam got your profile, and you got Sam's.".into()));
+        assert_eq!(swapped_words("Sam", true), ("Swapped with Sam".into(), "Sam got your profile, and you got Sam's.".into()));
+        assert_eq!(swapped_words("Sam", false).1, "You got Sam's profile and sent yours. If Sam's phone doesn't say Swapped, touch again.");
     }
 
     #[test]
