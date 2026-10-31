@@ -108,6 +108,7 @@ pub fn reason(failure: Failure, provider: &str) -> String {
         Failure::Busy => format!("{provider} is busy"),
         Failure::BadAnswer => format!("{provider} answered without a price"),
         Failure::TorNotYet => "Tor isn't built yet".into(),
+        Failure::NotOverTor => format!("{provider} doesn't answer over Tor"),
     }
 }
 
@@ -176,14 +177,21 @@ pub fn old(at: u64, now: u64) -> Option<String> {
     }
 }
 
-/// Retry's toast when it worked: "USD price updated", "1 XMR = $166.10".
-pub fn updated(cache: &Cache, settings: &Settings, now: u64) -> (String, String) {
-    match settings.code() {
-        Some(code) => {
-            let line = cache.shown(settings, now).map(|c| rate(c.price, &currency(&c.currency))).unwrap_or_default();
+/// Retry's toast when it worked: "USD price updated", "1 XMR = $166.10";
+/// for a run that was about one day's price (`day`), that day's: "29
+/// Oct's USD price found", "1 XMR = $160.12".
+pub fn updated(cache: &Cache, settings: &Settings, day: Option<i64>, clock: Clock) -> (String, String) {
+    let Some(code) = settings.code() else { return ("Prices are off".into(), String::new()) };
+    match day {
+        Some(day) => {
+            let (today, _) = activity::local(clock.now, clock);
+            let found = cache.history(settings).and_then(|h| h.days.iter().find(|d| d.0 == day)).map(|d| rate(d.1, &currency(code)));
+            (format!("{}'s {code} price found", activity::date(day, today)), found.unwrap_or_default())
+        }
+        None => {
+            let line = cache.shown(settings, clock.now).map(|c| rate(c.price, &currency(&c.currency))).unwrap_or_default();
             (format!("{code} price updated"), line)
         }
-        None => ("Prices are off".into(), String::new()),
     }
 }
 

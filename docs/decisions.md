@@ -1864,3 +1864,24 @@ Calls made while building the first version, with why. Newest last.
     from a transport kept beside the connection, never waiting on a slow
     connect. After the time left is dropped for a slowdown the chip reads
     "Catching up" (the speed is known), not "Starting".
+247. **Kraken's prices are its quotes' middle, and the yen is CoinGecko's**
+    (review R1): the price now is the middle of the best bid and ask, never
+    the last trade, refused ("Answered without a price") when the spread
+    is over 0.5% of it on an exchange market or 2% on an XMR one. Kraken's
+    USD/JPY trades about a dozen times a day across a 2% spread (its last
+    trade on 2026-10-31 was 1.45% off CoinGecko's yen), so Kraken no longer
+    lists the yen: 6 currencies, and a file with Kraken and yen opens with
+    CoinGecko. GBP, AUD, CAD and CHF sat at 0.006-0.02% spreads with
+    thousands of trades a day on 2026-11-01. An exchange market's day
+    counts in the history with 100 trades or more, and a rate is carried
+    forward 4 days at most (a weekend and a holiday).
+248. **Price lookups say what they are** (review R1, R2): opening a wallet
+    file never moves its transport (moving off Tor would show the phone's
+    address unannounced); a provider kept over a transport it doesn't
+    answer over isn't asked at all and the toast says "Kraken doesn't
+    answer over Tor" until one is picked. Flipping Show first asks for
+    nothing and keeps a run of failures; only a changed currency, provider
+    or transport asks. A lookup that comes back after a newer one has
+    (Retry over a background lookup hanging on its timeout) changes
+    nothing, price or toast. Retry that finds a day's price names the day:
+    "29 Oct's USD price found", that day's rate.
