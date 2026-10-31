@@ -182,6 +182,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 20.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Activity", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 if (!synced && activity.isNotEmpty()) Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(end = 12.dp))
+                CoinsChip { nav.go(Screen.Coins) }
             }
             if (activity.isEmpty()) {
                 Text(
@@ -256,6 +257,20 @@ private fun ReadyCard(n: NotReady) {
                 }
                 Text(n.allReadyLine, color = Fob.muted, fontSize = 13.sp)
             }
+        }
+    }
+}
+
+/** Activity's way to the Coins screen: a sunken pill, 48dp tall to touch. */
+@Composable
+private fun CoinsChip(onClick: () -> Unit) {
+    Box(Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).clickable(role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
+        Row(
+            Modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(Fob.sunken).padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            StrokeIcon(Icons.coins, size = 18.dp, width = 1.8f)
+            Text("Coins", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }

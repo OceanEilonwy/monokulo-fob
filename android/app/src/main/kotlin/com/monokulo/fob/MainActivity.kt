@@ -28,6 +28,7 @@ import androidx.fragment.app.FragmentActivity
 import com.monokulo.fob.ui.FobTheme
 import com.monokulo.fob.ui.LocalFobColors
 import com.monokulo.fob.ui.screens.BackupScreen
+import com.monokulo.fob.ui.screens.CoinsScreen
 import com.monokulo.fob.ui.screens.ConfirmScreen
 import com.monokulo.fob.ui.screens.HomeScreen
 import com.monokulo.fob.ui.screens.NodeScreen
@@ -72,6 +73,8 @@ sealed interface Screen {
     data class Receipt(val activity: Activity) : Screen
     /** A payment without a receipt. */
     data class Payment(val activity: Activity) : Screen
+    /** Every coin, ready or not, with Split up at the bottom. */
+    data object Coins : Screen
     /** Split up: what's ready to spend paid back to this wallet as pieces. */
     data object Split : Screen
     data object Settings : Screen
@@ -200,6 +203,7 @@ class MainActivity : FragmentActivity() {
             is Screen.Paid -> PaidScreen(nav, screen.prepared)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
+            Screen.Coins -> CoinsScreen(model, nav)
             Screen.Split -> SplitScreen(model, nav)
             Screen.Settings -> SettingsScreen(model, nav)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
