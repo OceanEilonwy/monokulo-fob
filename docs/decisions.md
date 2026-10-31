@@ -2067,3 +2067,28 @@ Calls made while building the first version, with why. Newest last.
     "… stays here" sentences, and Wallet code's "Scan it in Fob, the
     Monero GUI or Cake Wallet.". Show first's "Tap the balance to swap any
     time" is left for step 5, which removes Show first.
+267. **Edge buttons: one size and inset** (round 8 › step 2, item 2). The
+    numbers live in `EdgeButton` in ui/Components.kt and every edge button
+    uses them through `EdgeIconButton` and `TopBar`:
+    - an icon-only button is a 56 dp touch circle with a 26 dp icon (was
+      Material's 48 dp `IconButton` or a 48 dp circle, with 20–22 dp
+      icons);
+    - its row sits 16 dp in from the screen's edge, so the outermost
+      button's centre is 44 dp from the edge (was 28 dp in top bars, Pay's
+      and Share my profile's full screen codes and Touch phones; 32 dp on
+      Home and the scanners). Back on the left mirrors it;
+    - Home's photo is 40 dp inside its 56 dp button (was 32 in 48), the
+      Settings cog the same 56/26 as every icon action;
+    - text actions ("Edit", "Clear", "Skip", "Save" and every
+      `TextButton`) are at least 48 dp tall (were about 44) and end at the
+      same 16 dp inset;
+    - a top bar's title keeps to one line and ellipsizes, so a long title
+      or a 200 % font never squeezes the buttons below their 56 dp. The
+      bar grows past 64 dp only if the title's line needs it.
+    Covered: every `TopBar` (Back, Close, Node's refresh, Contacts' scan and
+    add, the Edit/Clear/Save text actions, Restore's scan screen), Home's
+    photo and cog, Send's scanner Close and torch, Contacts' address
+    scanner, Scan a profile, Receive's full screen code, Share my profile's
+    code and Touch phones, and Edit your profile's onboarding Skip row. Not
+    edge buttons, left as they were: the search field's clear, the price
+    toast's button, Backup's copy buttons and Home's sync chip.

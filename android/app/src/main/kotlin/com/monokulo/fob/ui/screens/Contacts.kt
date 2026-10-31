@@ -27,7 +27,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
@@ -66,6 +65,8 @@ import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.Avatar
 import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.EdgeButton
+import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
@@ -119,12 +120,8 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
     Page {
         TopBar("Contacts", onBack = { nav.back() }) {
             // Another Fob's profile: add them in one scan.
-            IconButton(onClick = { nav.go(Screen.ProfileScan) }, modifier = Modifier.semantics { contentDescription = "Scan a profile" }) {
-                StrokeIcon(Icons.scan, size = 22.dp)
-            }
-            IconButton(onClick = { nav.go(Screen.ContactEdit()) }, modifier = Modifier.semantics { contentDescription = "Add a contact" }) {
-                StrokeIcon(Icons.plus, size = 22.dp)
-            }
+            EdgeIconButton(Icons.scan, "Scan a profile", { nav.go(Screen.ProfileScan) })
+            EdgeIconButton(Icons.plus, "Add a contact", { nav.go(Screen.ContactEdit()) })
         }
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (any) SearchField(search, { search = it }, "Search names and notes", "Search contacts")
@@ -405,7 +402,7 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
         Page {
             TopBar(texts.title, onBack = { nav.back() }, closeIcon = true) {
                 Box(
-                    Modifier.padding(end = 4.dp).minimumInteractiveComponentSize().height(44.dp).clip(RoundedCornerShape(22.dp))
+                    Modifier.minimumInteractiveComponentSize().height(44.dp).clip(RoundedCornerShape(22.dp))
                         .background(if (loaded && !busy) Fob.ink else Fob.sunken).clickable(enabled = loaded && !busy, role = Role.Button) { save() }
                         .padding(horizontal = 16.dp),
                     contentAlignment = Alignment.Center,
@@ -566,11 +563,8 @@ fun SendAddressScanner(network: Network, name: String?, current: String?, onUse:
             }
         })
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(
-                    Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClose).semantics { contentDescription = "Close" },
-                    contentAlignment = Alignment.Center,
-                ) { StrokeIcon(Icons.close, tint = Fob.onCamera, size = 20.dp) }
+            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                EdgeIconButton(Icons.close, "Close", onClose, tint = Fob.onCamera)
                 Text(texts.title, color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
             }
             if (found == null) {

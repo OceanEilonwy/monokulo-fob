@@ -28,7 +28,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -64,6 +63,8 @@ import com.monokulo.fob.ui.AmountField
 import com.monokulo.fob.ui.BarIcons
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
+import com.monokulo.fob.ui.EdgeButton
+import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
@@ -392,8 +393,8 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Un
     // White in both themes: the bars' icons dark on it.
     BarIcons(darkIcons = true)
     Column(Modifier.fillMaxSize().background(Fob.qrLight).safeDrawingPadding()) {
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onClose, modifier = Modifier.semantics { contentDescription = "Close" }) { StrokeIcon(Icons.close, tint = Fob.qrDark, size = 20.dp) }
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically) {
+            EdgeIconButton(Icons.close, "Close", onClose, tint = Fob.qrDark)
         }
         Column(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),

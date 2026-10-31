@@ -95,6 +95,8 @@ import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.AmountField
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.EdgeButton
+import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.bottomSpace
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.ErrorText
@@ -413,21 +415,18 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         // Close, the title and the torch, below the status bar and clear of a cutout.
         Row(
             Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-                .height(64.dp).padding(horizontal = 8.dp),
+                .heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Box(
-                Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button) { nav.back() }.semantics { contentDescription = "Close" },
-                contentAlignment = Alignment.Center,
-            ) { StrokeIcon(Icons.close, tint = Fob.onCamera, size = 20.dp) }
-            Text("Send", color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).semantics { heading() })
+            EdgeIconButton(Icons.close, "Close", { nav.back() }, tint = Fob.onCamera)
+            Text("Send", color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
             if (hasTorch) {
                 Box(
-                    Modifier.size(48.dp).clip(CircleShape).background(if (torch) Fob.cameraCard else Color.Transparent)
+                    Modifier.size(EdgeButton.target).clip(CircleShape).background(if (torch) Fob.cameraCard else Color.Transparent)
                         .toggleable(torch, role = Role.Switch) { torch = it }
                         .semantics { contentDescription = "Torch"; stateDescription = if (torch) "On" else "Off" },
                     contentAlignment = Alignment.Center,
-                ) { StrokeIcon(TORCH, tint = if (torch) Fob.cameraWarning else Fob.onCamera, size = 20.dp) }
+                ) { StrokeIcon(TORCH, tint = if (torch) Fob.cameraWarning else Fob.onCamera, size = EdgeButton.icon) }
             }
         }
 

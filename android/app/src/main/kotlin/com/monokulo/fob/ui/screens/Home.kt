@@ -25,7 +25,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.TextAutoSize
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -68,6 +67,8 @@ import com.monokulo.fob.WalletModel
 import com.monokulo.fob.You
 import com.monokulo.fob.ui.Avatar
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.EdgeButton
+import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.FobMark
 import com.monokulo.fob.ui.IconBadge
@@ -306,9 +307,9 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
             if (stagenet) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.layoutId("badge").clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
             Box(Modifier.layoutId("chip")) { chip() }
             YouButton(you, onYou, Modifier.layoutId("you"))
-            IconButton(onClick = onSettings, modifier = Modifier.layoutId("cog").semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear, width = 1.8f) }
+            EdgeIconButton(Icons.gear, "Settings", onSettings, Modifier.layoutId("cog"), width = 1.8f)
         },
-        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp).heightIn(min = 64.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = EdgeButton.inset).heightIn(min = 64.dp),
     ) { parts, c ->
         fun part(id: String) = parts.firstOrNull { it.layoutId == id }
         val loose = c.copy(minWidth = 0, minHeight = 0)
@@ -340,7 +341,7 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
 }
 
 /**
- * Your photo (or initial) at 32dp in a 48dp button, or a person outline in
+ * Your photo (or initial) at 40dp in a 56dp edge button, or a person outline in
  * a sunken circle while there's no profile name yet; TalkBack reads Rust's
  * words for Settings' row, "Your profile" or "Add a shareable Fob contact".
  */
@@ -348,16 +349,16 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
 private fun YouButton(you: You?, onClick: () -> Unit, modifier: Modifier) {
     val profile = you?.profile
     Box(
-        modifier.size(48.dp).clip(CircleShape)
+        modifier.size(EdgeButton.target).clip(CircleShape)
             .clickable(enabled = you != null, role = Role.Button, onClick = onClick)
             .semantics { you?.let { contentDescription = it.row.title } },
         contentAlignment = Alignment.Center,
     ) {
         when {
             you == null -> {}
-            profile != null && you.row.name != null -> Avatar(profile.name, profile.initial, profile.photo, 32.dp)
-            else -> Box(Modifier.size(32.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) {
-                StrokeIcon(Icons.person, tint = Fob.muted, size = 18.dp, width = 1.8f)
+            profile != null && you.row.name != null -> Avatar(profile.name, profile.initial, profile.photo, EdgeButton.avatar)
+            else -> Box(Modifier.size(EdgeButton.avatar).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) {
+                StrokeIcon(Icons.person, tint = Fob.muted, size = 22.dp, width = 1.8f)
             }
         }
     }

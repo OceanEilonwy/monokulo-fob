@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,6 +56,8 @@ import com.monokulo.fob.Nav
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.EdgeButton
+import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.LabelAndValue
 import com.monokulo.fob.ui.Fob
@@ -177,14 +178,8 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
 private fun RefreshButton(checking: Boolean, onClick: () -> Unit) {
     val turning = rememberInfiniteTransition(label = "refresh")
     val angle by turning.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart), label = "angle")
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.semantics {
-            contentDescription = "Check again"
-            if (checking) stateDescription = "Checking"
-        },
-    ) {
-        Box(Modifier.rotate(if (checking) angle else 0f)) { StrokeIcon(Icons.refresh, size = 22.dp) }
+    EdgeIconButton("Check again", onClick, Modifier.semantics { if (checking) stateDescription = "Checking" }) {
+        Box(Modifier.rotate(if (checking) angle else 0f)) { StrokeIcon(Icons.refresh, size = EdgeButton.icon) }
     }
 }
 
