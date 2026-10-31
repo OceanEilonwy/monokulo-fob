@@ -39,7 +39,7 @@ impl From<fob_core::FobError> for FobError {
             E::NotEnoughFunds { .. } => FobError::NotEnoughFunds { reason },
             E::WrongKey => FobError::WrongKey { reason },
             E::ViewOnly => FobError::ViewOnly { reason },
-            E::Send(_) | E::Storage(_) | E::NoSuchPayment => FobError::Other { reason },
+            E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::Price(_) => FobError::Other { reason },
         }
     }
 }
