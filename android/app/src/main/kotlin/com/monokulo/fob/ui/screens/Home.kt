@@ -92,6 +92,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
     val activity by model.activity.collectAsState()
     val status by model.status.collectAsState()
     val notReady by model.notReady.collectAsState()
+    val prices by model.prices.collectAsState()
     val network by model.network.collectAsState()
     val synced = status?.synced == true
     val error = status?.error
@@ -130,9 +131,26 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
 
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(if (synced) "Balance" else "Balance so far", color = Fob.muted, fontSize = 14.sp)
-            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(balance?.totalText ?: "—", style = display(56))
-                Text("XMR", fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Fob.muted, modifier = Modifier.padding(bottom = 10.dp))
+            // Tapping swaps which comes first, kept as Settings' "Show amounts in".
+            val b = balance
+            val fiat = b?.fiatText
+            Column(
+                Modifier.clip(RoundedCornerShape(12.dp))
+                    .clickable(enabled = fiat != null, role = Role.Button, onClickLabel = "Swap XMR and ${prices?.currency ?: "money"}") {
+                        scope.launch { runCatching { model.setFiatFirst(b?.fiatFirst != true) } }
+                    },
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (fiat != null && b.fiatFirst) {
+                    Text(fiat, style = display(56))
+                    Text("${b.totalText} XMR", color = Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                } else {
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(b?.totalText ?: "—", style = display(56))
+                        Text("XMR", fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Fob.muted, modifier = Modifier.padding(bottom = 10.dp))
+                    }
+                    fiat?.let { Text(it, color = Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.Medium) }
+                }
             }
             balance?.readyText?.let { Text(it, color = Fob.muted, fontSize = 15.sp) }
             notReady?.let { NotReadyCard(it) }
@@ -222,8 +240,7 @@ private fun PieceRow(p: NotReadyPiece) {
     ) {
         ConfirmationRing(p.confirmations, p.needed, p.progress)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            // Step 4 adds the amount's fiat value beside it.
-            Text("${p.amountText} XMR", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text("${p.amountText} XMR" + (p.fiatText?.let { " · $it" } ?: ""), fontSize = 15.sp, fontWeight = FontWeight.Medium)
             Text(p.source, color = Fob.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(1.dp)) {

@@ -4,7 +4,11 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, amount, not_ready, pattern, qr, receipt, uri};
+use fob_core::{
+    activity, amount, not_ready, pattern,
+    price::{self, Source as _},
+    qr, receipt, uri,
+};
 
 uniffi::setup_scaffolding!();
 
@@ -124,6 +128,74 @@ pub struct Balance {
     pub unlocked_text: String,
     /// "0.5 XMR ready to spend", only while some money can't be spent yet.
     pub ready_text: Option<String>,
+    /// What the balance is worth now, "$412.06"; only with prices on and a
+    /// current price.
+    pub fiat_text: Option<String>,
+    /// Show [`fiat_text`](Self::fiat_text) first, the XMR under it.
+    pub fiat_first: bool,
+}
+
+/// A currency to choose.
+#[derive(uniffi::Record)]
+pub struct CurrencyChoice {
+    /// "USD"
+    pub code: String,
+    /// "US dollar"
+    pub name: String,
+}
+
+/// How price requests travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PriceTransport {
+    Web,
+    Tor,
+}
+
+impl From<PriceTransport> for price::Transport {
+    fn from(t: PriceTransport) -> Self {
+        match t {
+            PriceTransport::Web => price::Transport::Web,
+            PriceTransport::Tor => price::Transport::Tor,
+        }
+    }
+}
+
+impl From<price::Transport> for PriceTransport {
+    fn from(t: price::Transport) -> Self {
+        match t {
+            price::Transport::Web => PriceTransport::Web,
+            price::Transport::Tor => PriceTransport::Tor,
+        }
+    }
+}
+
+/// A place prices can come from, to choose.
+#[derive(uniffi::Record)]
+pub struct PriceSourceChoice {
+    pub transport: PriceTransport,
+    /// "Kraken · over Tor"
+    pub text: String,
+    /// "Not available yet" for one Fob can't use.
+    pub note: Option<String>,
+    pub available: bool,
+    pub chosen: bool,
+}
+
+/// Settings' "Display" and "Prices" cards.
+#[derive(uniffi::Record)]
+pub struct PriceSettings {
+    /// "Show prices".
+    pub on: bool,
+    /// "USD"
+    pub currency: String,
+    pub currencies: Vec<CurrencyChoice>,
+    /// "Show amounts in" the currency, not XMR.
+    pub fiat_first: bool,
+    /// "Kraken · over the internet"
+    pub source_text: String,
+    pub sources: Vec<PriceSourceChoice>,
+    /// Why the last request failed, until one works.
+    pub error: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -186,6 +258,8 @@ pub struct ActivityDay {
 pub struct NotReadyPiece {
     /// "0.653"
     pub amount_text: String,
+    /// Worth now, with prices on: "$108.44".
+    pub fiat_text: Option<String>,
     pub confirmations: u64,
     /// 10, or 60 for a mined reward.
     pub needed: u64,
@@ -226,6 +300,7 @@ impl From<not_ready::NotReady> for NotReady {
                 .into_iter()
                 .map(|p| NotReadyPiece {
                     amount_text: p.amount,
+                    fiat_text: p.fiat,
                     confirmations: p.confirmations,
                     needed: p.needed,
                     progress: p.progress,
@@ -483,6 +558,8 @@ impl FobWallet {
             total_text: xmr(b.total),
             unlocked_text: xmr(b.unlocked),
             ready_text: b.ready_text(),
+            fiat_text: self.inner.worth_now(b.total).await,
+            fiat_first: self.inner.price_settings().await.fiat_first,
         }
     }
 
@@ -523,10 +600,71 @@ impl FobWallet {
         self.inner.stop_sync();
     }
 
-    /// Asks the node for new blocks and its pool now (pull to refresh);
-    /// returns when that round is over, or after 20 s.
+    /// Pull to refresh: asks the node for new blocks and its pool now, and
+    /// the price if a minute has passed; returns when that round is over,
+    /// or after 20 s.
     pub async fn sync_now(&self) {
-        self.inner.sync_now().await;
+        self.inner.pull().await;
+    }
+
+    /// Asks for prices while Fob is on screen (every 5 minutes, and at once
+    /// when a price setting changes), until `stop_prices`. The observer
+    /// hears of each new price.
+    pub fn start_prices(&self, observer: Arc<dyn SyncObserver>) {
+        self.inner.start_prices(Arc::new(Observer(observer)));
+    }
+
+    pub fn stop_prices(&self) {
+        self.inner.stop_prices();
+    }
+
+    /// Settings' "Display" and "Prices" cards.
+    pub async fn price_settings(&self) -> PriceSettings {
+        let s = self.inner.price_settings().await;
+        let sources = [price::Transport::Web, price::Transport::Tor]
+            .into_iter()
+            .map(|t| PriceSourceChoice {
+                transport: t.into(),
+                text: price::Settings { transport: t, ..s.clone() }.source_text(),
+                note: (!t.available()).then(|| "Not available yet".to_owned()),
+                available: t.available(),
+                chosen: t == s.transport,
+            })
+            .collect();
+        PriceSettings {
+            on: s.on,
+            currencies: s
+                .provider
+                .currencies()
+                .iter()
+                .map(|code| CurrencyChoice { code: (*code).to_owned(), name: price::currency(code).name.to_owned() })
+                .collect(),
+            currency: s.currency.clone(),
+            fiat_first: s.fiat_first,
+            source_text: s.source_text(),
+            sources,
+            error: if s.on { self.inner.price_error() } else { None },
+        }
+    }
+
+    /// "Show prices". Off, Fob never asks for one.
+    pub async fn set_prices_on(&self, on: bool) -> Result<()> {
+        Ok(self.inner.set_prices_on(on).await?)
+    }
+
+    /// Prices in `code`, one of `price_settings().currencies`.
+    pub async fn set_currency(&self, code: String) -> Result<()> {
+        Ok(self.inner.set_currency(&code).await?)
+    }
+
+    /// How price requests travel; one not available is refused.
+    pub async fn set_price_transport(&self, transport: PriceTransport) -> Result<()> {
+        Ok(self.inner.set_price_transport(transport.into()).await?)
+    }
+
+    /// "Show amounts in" the currency first (true) or XMR.
+    pub async fn set_fiat_first(&self, fiat_first: bool) -> Result<()> {
+        Ok(self.inner.set_fiat_first(fiat_first).await?)
     }
 
     /// Builds a payment for the confirm screen. `amount` is text as typed;

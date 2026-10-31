@@ -47,6 +47,7 @@ import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.QrImage
 import com.monokulo.fob.ui.SectionLabel
+import com.monokulo.fob.ui.Segmented
 import com.monokulo.fob.ui.SettingRow
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TextButton
@@ -120,6 +121,9 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     var node by remember { mutableStateOf("") }
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
+    var choosing by remember { mutableStateOf<Pick?>(null) }
+    var priceError by remember { mutableStateOf<String?>(null) }
+    val prices by model.prices.collectAsState()
     LaunchedEffect(wallet) { node = wallet?.node() ?: "" }
     val canSpend = wallet?.canSpend() != false
     Page {
@@ -154,11 +158,31 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 }
             }
             Column {
-                SectionLabel("Theme")
+                SectionLabel("Display")
                 Card {
                     ThemeChoice.entries.forEachIndexed { i, choice ->
                         if (i > 0) Divider()
                         Choice(choice.label, choice == theme) { model.setTheme(choice) }
+                    }
+                    prices?.let { p ->
+                        Divider()
+                        val name = p.currencies.firstOrNull { it.code == p.currency }?.name
+                        SettingRow("Currency", listOfNotNull(name, p.currency).joinToString(" · "), onClick = { choosing = Pick.CURRENCY })
+                        Divider()
+                        Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Show amounts in", fontSize = 16.sp, modifier = Modifier.weight(1f))
+                            Segmented(listOf("XMR", p.currency), if (p.fiatFirst) 1 else 0, { i -> scope.launch { model.setFiatFirst(i == 1) } })
+                        }
+                    }
+                }
+            }
+            prices?.let { p ->
+                Column {
+                    SectionLabel("Prices")
+                    Card {
+                        SettingRow("Show prices", "Off: Fob never asks for a price", checked = p.on, onChecked = { on -> scope.launch { model.setPricesOn(on) } })
+                        Divider()
+                        SettingRow("Price source", listOfNotNull(p.sourceText, p.error).joinToString(" · "), onClick = { choosing = Pick.SOURCE })
                     }
                 }
             }
@@ -186,6 +210,32 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
             dismissButton = { TextButton("Cancel", { switching = false }, color = Fob.ink) },
         )
     }
+    val p = prices
+    if (choosing != null && p != null) {
+        AlertDialog(
+            onDismissRequest = { choosing = null; priceError = null },
+            title = { Text(if (choosing == Pick.CURRENCY) "Currency" else "Price source") },
+            text = {
+                Column {
+                    if (choosing == Pick.CURRENCY) {
+                        p.currencies.forEach { c ->
+                            Choice(listOfNotNull(c.name.ifEmpty { null }, c.code).joinToString(" · "), c.code == p.currency) {
+                                scope.launch { runCatching { model.setCurrency(c.code) }.onSuccess { choosing = null }.onFailure { priceError = it.reason() } }
+                            }
+                        }
+                    } else {
+                        p.sources.forEach { s ->
+                            Choice(s.text, s.chosen, subtitle = s.note, enabled = s.available) {
+                                scope.launch { runCatching { model.setPriceTransport(s.transport) }.onSuccess { choosing = null }.onFailure { priceError = it.reason() } }
+                            }
+                        }
+                    }
+                    ErrorText(priceError)
+                }
+            },
+            confirmButton = { TextButton("Done", { choosing = null; priceError = null }, color = Fob.ink) },
+        )
+    }
     if (forgetting) {
         AlertDialog(
             onDismissRequest = { forgetting = false },
@@ -197,14 +247,20 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     }
 }
 
-/** One of a few choices: its name, and a tick when it's the one chosen. */
+/** Which list Settings has open in a dialog. */
+private enum class Pick { CURRENCY, SOURCE }
+
+/** One of a few choices: its name, and a tick when it's the one chosen; one not [enabled] is muted with why under it. */
 @Composable
-private fun Choice(title: String, chosen: Boolean, onClick: () -> Unit) {
+private fun Choice(title: String, chosen: Boolean, subtitle: String? = null, enabled: Boolean = true, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(chosen, role = Role.RadioButton, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(chosen, enabled = enabled, role = Role.RadioButton, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontSize = 16.sp, color = if (enabled) Fob.ink else Fob.muted)
+            if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = Fob.muted)
+        }
         if (chosen) StrokeIcon(Icons.check, size = 20.dp)
     }
 }

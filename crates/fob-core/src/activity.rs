@@ -3,7 +3,7 @@
 //! amount, so the apps only draw.
 
 use crate::{
-    amount,
+    amount, price,
     wallet::{Activity, Direction, UNLOCK},
 };
 
@@ -29,7 +29,8 @@ pub struct Row {
     pub line: String,
     /// With its sign: "+0.5", "−0.1421".
     pub amount: String,
-    /// The receipt's total, when it came with one: "$13.50".
+    /// The receipt's total, when it came with one: "$13.50"; otherwise what
+    /// it was worth when it moved, when that's known: "$83.03".
     pub fiat: Option<String>,
 }
 
@@ -133,7 +134,12 @@ fn row(activity: Activity, time: i64, clock: Clock) -> Row {
         title,
         line,
         amount: format!("{}{}", if out { "−" } else { "+" }, amount::format_short(activity.amount)),
-        fiat: activity.receipt.as_ref().map(|r| r.total.clone()),
+        // A receipt's own total; otherwise what it was worth when it moved.
+        fiat: match (&activity.receipt, &activity.price) {
+            (Some(r), _) => Some(r.total.clone()),
+            (None, Some(p)) => Some(price::value(activity.amount, p.price, &price::currency(&p.currency))),
+            (None, None) => None,
+        },
         activity,
     }
 }
@@ -267,6 +273,20 @@ mod tests {
                 ("Kiosk Café", "Confirming · 4 of 10 · receipt, 1 item · 07:00", "−0.000000000001", Some("$13.50")),
             ]
         );
+    }
+
+    #[test]
+    fn a_row_shows_what_it_was_worth_or_its_receipt_s_total() {
+        let record = |price| crate::price::Record { currency: "USD".into(), price, provider: "Kraken".into(), at: NOW, daily: false };
+        let mut priced = activity(Direction::In, 500_000_000_000, NOW - HOUR, 20);
+        priced.price = Some(record(166_060_000));
+        let mut paid = activity(Direction::Out, 142_100_000_000, NOW - 2 * HOUR, 20);
+        paid.receipt = Some(receipt(3));
+        paid.price = Some(record(95_000_000));
+        let unpriced = activity(Direction::In, 1, NOW - 3 * HOUR, 20);
+        let rows = by_day(vec![priced, paid, unpriced], clock(0)).remove(0).rows;
+        let fiat: Vec<_> = rows.iter().map(|r| r.fiat.as_deref()).collect();
+        assert_eq!(fiat, [Some("$83.03"), Some("$13.50"), None]);
     }
 
     #[test]
