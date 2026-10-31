@@ -1,11 +1,13 @@
 package com.monokulo.fob
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
@@ -75,13 +77,17 @@ class Nav(start: Screen) {
 }
 
 class MainActivity : FragmentActivity() {
-    private val model: WalletModel by viewModels()
+    private val model: WalletModel get() = (application as FobApp).model
     private val link = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         link.value = intent?.dataString
+        // For the catching-up notification; Fob works the same without it.
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
         val nav = Nav(if (model.hasWallet()) Screen.Home else Screen.Welcome)
         setContent {
             FobTheme {
@@ -104,11 +110,15 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
-        model.startSync()
+        // Started while Fob is on screen (Android doesn't allow it from the
+        // background) when it's far behind; it stops itself once caught up.
+        model.onFarBehind = { SyncService.start(this) }
+        model.setVisible(true)
     }
 
     override fun onStop() {
-        model.stopSync()
+        model.setVisible(false)
+        model.onFarBehind = null
         super.onStop()
     }
 

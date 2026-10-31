@@ -1,9 +1,9 @@
 package com.monokulo.fob
 
 import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -21,8 +21,12 @@ import java.io.File
  * What the screens show, kept up to date from the Rust wallet. Everything
  * about the wallet happens in Rust; this only holds the latest answers and
  * passes calls through.
+ *
+ * One per process, owned by [FobApp]: the screens and [SyncService] share
+ * it, so the wallet file is only ever open once.
  */
-class WalletModel(app: Application) : AndroidViewModel(app) {
+class WalletModel(private val app: Application) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = app.getSharedPreferences("fob", 0)
     private val vault = Vault(app)
 
@@ -47,10 +51,19 @@ class WalletModel(app: Application) : AndroidViewModel(app) {
 
     private var syncing = false
 
+    /** Whether Fob is on screen. Off screen, syncing stops once caught up. */
+    var visible = false
+        private set
+
     private val observer = object : SyncObserver {
         override fun onStatus(status: SyncStatus) {
-            _status.value = status
-            viewModelScope.launch { refresh() }
+            scope.launch {
+                _status.value = status
+                refresh()
+                if (status.synced && !visible) stopSync()
+                // Far behind while on screen: hold the process open to finish.
+                if (!status.synced && visible && status.tip > status.scanned + FAR_BEHIND) onFarBehind?.invoke()
+            }
         }
     }
 
@@ -58,14 +71,14 @@ class WalletModel(app: Application) : AndroidViewModel(app) {
         open()
     }
 
-    private fun path(network: Network) = File(getApplication<Application>().filesDir, "wallet-${network.name.lowercase()}.fob").absolutePath
+    private fun path(network: Network) = File(app.filesDir, "wallet-${network.name.lowercase()}.fob").absolutePath
 
     fun hasWallet(network: Network = _network.value) = File(path(network)).exists()
 
     private fun open() {
         val network = _network.value
         if (!hasWallet(network)) return
-        viewModelScope.launch {
+        scope.launch {
             runCatching { withContext(Dispatchers.IO) { FobWallet.open(path(network), vault.fileKey()) } }
                 .onSuccess { use(it) }
                 .onFailure { _openError.value = it.message }
@@ -86,8 +99,23 @@ class WalletModel(app: Application) : AndroidViewModel(app) {
         _activity.value = wallet.activity()
     }
 
-    /** Syncs while the app is on screen. */
+    /**
+     * Fob came on screen or went off it. On screen it syncs; off screen it
+     * keeps going only while catching up, which [SyncService] holds open.
+     */
+    fun setVisible(visible: Boolean) {
+        this.visible = visible
+        if (visible) startSync() else if (_status.value?.synced != false) stopSync()
+    }
+
+    /** Told when Fob falls more than a day behind while on screen. */
+    var onFarBehind: (() -> Unit)? = null
+
+    /** Behind the chain: worth keeping the process alive to catch up. */
+    val catchingUp get() = _wallet.value != null && _status.value?.synced != true
+
     fun startSync() {
+        if (syncing) return
         syncing = true
         _wallet.value?.startSync(observer)
     }
@@ -147,7 +175,9 @@ class WalletModel(app: Application) : AndroidViewModel(app) {
         return hash
     }
 
-    override fun onCleared() {
-        _wallet.value?.let { it.stopSync(); it.close() }
+
+    private companion object {
+        /** About a day of blocks. */
+        const val FAR_BEHIND = 720u
     }
 }

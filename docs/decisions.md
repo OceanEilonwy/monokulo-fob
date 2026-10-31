@@ -95,8 +95,7 @@ Calls made while building the first version, with why. Newest last.
     one scanned, with the pool's transactions as its own), because
     monero-oxide only scans blocks. Their amounts show as on their way, in
     memory only; the real block scans them again with true output indexes.
-16. **Background sync**: the wallet syncs while the app is on screen. A
-    foreground service with a progress notification comes next.
+16. **Background sync**: see item 35.
 17. **Google Wallet**: not built. Each pass is a JWT signed with a Google
     Wallet issuer's key, which can't ship in the app, so it needs an issuer
     account and a small signing service. Settings says so.
@@ -104,8 +103,7 @@ Calls made while building the first version, with why. Newest last.
     which tells it when you use your wallet.
 19. **Subaddresses**: account 0 only, 50 watched past the last one handed out.
 20. **ABIs**: arm64-v8a (phones) and x86_64 (emulator) only.
-21. **Pipelining across sync steps**: each step waits for its slowest
-    request. Keeping requests in flight between steps would add 20–30 %.
+21. **Pipelining across sync steps**: done, item 30.
 22. **Tested on stagenet, 2026-10-31**: a faucet payment received by
     fob-core; 0.03 XMR sent from fob-core to the app's wallet (tx `41e7a708…`)
     and seen by the app in the pool before it was mined; 0.01 XMR with an ORF
@@ -123,3 +121,36 @@ Calls made while building the first version, with why. Newest last.
     `androidx.biometric` 1.1.0 (2021).
 29. **Balances and lists show four decimals, cut not rounded**; what's about
     to be paid (confirm screen, payment codes) shows every digit.
+
+## Faster still (branch `speed`)
+
+30. **A pipeline across sync steps (`fetch::Pipeline`).** A task keeps
+    `get_blocks.bin` requests in flight in order and hands finished chunks
+    through a short queue, so fetching goes on while the wallet scans and
+    saves. A step scans whatever has arrived, up to 1,000 blocks. Replaces
+    item 8's fixed rounds.
+31. **Adaptive chunks and parallelism (`fetch::Adaptive`, `fetch::Tuning`).**
+    Chunks aim at 2 MB of response from the bytes per block seen (20 blocks
+    first, so a slow node with full mainnet blocks answers quickly; 10-500
+    after). Requests in flight start at 3, add one after twice that many good
+    answers, up to 8, and drop for good below a level the node refused. A
+    node of your own climbs to 8; public ones settle where they stop
+    resetting. Results: a week of stagenet 10-22 s (was 36 s on the same
+    node); a day of mainnet 21 s on sethforprivacy, 47 s on monerodevs.
+32. **Stale keep-alive connections are retried in the transport**, for every
+    request, and idle pooled connections are dropped after 8 s: monerod
+    closes them, and reusing one failed the request.
+33. **The output distribution comes compressed** (`compress`, per-block
+    counts as varints, summed on top of `base`): about one byte a block
+    instead of eight. Checked equal to monero-oxide's uncompressed answer.
+34. **Node speed test**: fob-core checks a node (reachable, its network,
+    synced, latency, blocks a second through the real fetcher); the Node
+    screen tests the current and public nodes and marks the fastest.
+    Setting a node on the other network is refused.
+35. **Background sync (`SyncService`)**: a `dataSync` foreground service
+    started while Fob is on screen and more than about a day behind (Android
+    doesn't allow starting one from the background). It shows progress and
+    stops itself once caught up; off screen, syncing then stops. The wallet
+    now lives in one app-wide `WalletModel` that the service shares, so the
+    file is never open twice. Tested: a month of stagenet restored, Home
+    pressed at 10 s, caught up in the background by 20 s, service gone.
