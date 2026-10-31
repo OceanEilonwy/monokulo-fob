@@ -580,7 +580,8 @@ fun BarIcons(darkIcons: Boolean, statusOnly: Boolean = false) {
 /**
  * A sheet over the screen, on a scrim: tapping the scrim or Back calls
  * [onDismiss]. Its paper reaches the bottom edge; what's on it stays above
- * the gesture bar and clear of the sides. [title] names it for TalkBack.
+ * the gesture bar and clear of the sides, and a tall one stops short of
+ * the status bar. [title] names it for TalkBack.
  */
 @Composable
 fun BottomSheet(title: String, onDismiss: () -> Unit, background: Color = Fob.paper, content: @Composable ColumnScope.() -> Unit) {
@@ -588,7 +589,8 @@ fun BottomSheet(title: String, onDismiss: () -> Unit, background: Color = Fob.pa
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().background(Fob.scrim).clickable(onClickLabel = "Close", onClick = onDismiss, indication = null, interactionSource = null))
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(background)
+            Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).padding(top = 24.dp)
+                .fillMaxWidth().clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(background)
                 // Taps on the sheet stay on it.
                 .clickable(onClick = {}, indication = null, interactionSource = null)
                 .semantics { paneTitle = title }
