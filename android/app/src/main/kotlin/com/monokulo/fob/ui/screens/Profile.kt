@@ -162,28 +162,18 @@ fun ProfileEditScreen(model: WalletModel, nav: Nav, step: String?) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (step != null) Text("Make it yours", style = display(30), modifier = Modifier.semantics { heading() })
                     Text(
-                        "A name and photo let other Fob users save you in one scan. They go in your payment codes, nowhere else.",
+                        "A name and photo let other Fob users save you in one scan.",
                         color = Fob.muted, fontSize = 16.sp, lineHeight = 23.sp,
                     )
                 }
                 Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
                     PhotoButton(name, remember(name) { contactInitial(name) }, photo, 128.dp) { choosing = true }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    LabelledInput("Your name", name, { name = it }, "A name, any name", fontSize = 17, capitalization = KeyboardCapitalization.Words)
-                    Text(
-                        "Anything you like; it doesn't have to be your real name. Change it any time in Settings.",
-                        color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(start = 4.dp),
-                    )
-                }
+                LabelledInput("Your name", name, { name = it }, "A name, any name", fontSize = 17, capitalization = KeyboardCapitalization.Words)
             }
         }
         if (choosing) {
-            PhotoSheet(
-                "Your photo", photo != null, chooser,
-                "Cropped to a circle and kept small, in this wallet's file. It leaves the phone only in your profile's code, when you share it.",
-                onRemove = { photo = null }, onDismiss = { choosing = false },
-            )
+            PhotoSheet("Your photo", photo != null, chooser, onRemove = { photo = null }, onDismiss = { choosing = false })
         }
     }
 }
@@ -228,7 +218,7 @@ fun ProfileScreen(model: WalletModel, nav: Nav) {
             ErrorText(error)
             Card {
                 SettingRow(
-                    "Name in payment requests", "Requests carry your name; only this profile code carries the photo",
+                    "Name in payment requests",
                     checked = p.nameInRequests,
                     onChecked = { on -> scope.launch { runCatching { wallet?.setNameInRequests(on) }.onSuccess { profile = wallet?.profile() } } },
                 )
@@ -236,7 +226,6 @@ fun ProfileScreen(model: WalletModel, nav: Nav) {
             Card {
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 2.dp)) {
                     Text("Your shares", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).semantics { heading() })
-                    Text("each its own address", color = Fob.muted, fontSize = 14.sp)
                 }
                 if (shares.isEmpty()) {
                     Text(
@@ -534,10 +523,6 @@ private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileSha
                         else runCatching { context.startActivity(Intent(android.provider.Settings.ACTION_NFC_SETTINGS)) }
                     }
                 }
-                Text(
-                    "A new address for this share, never used again.", color = Fob.qrMuted, fontSize = 13.sp, lineHeight = 19.sp,
-                    textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp),
-                )
             }
         }
         Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

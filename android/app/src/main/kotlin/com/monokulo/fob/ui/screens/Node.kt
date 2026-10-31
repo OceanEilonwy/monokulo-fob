@@ -218,7 +218,12 @@ private fun CheckRows(rows: List<NodeCheckRow>, minHeight: Dp, lines: Boolean) {
                     }
                 },
             ) {
-                Text(row.result, fontSize = 13.sp, color = if (row.mark == CheckMark.FAIL) Fob.red else Fob.muted, textAlign = TextAlign.End)
+                val colour = if (row.mark == CheckMark.FAIL) Fob.red else Fob.muted
+                // Sends blocks to Fob's link speed goes on its own line under the blocks per second.
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(row.result, fontSize = 13.sp, color = colour, textAlign = TextAlign.End)
+                    row.second?.let { Text(it, fontSize = 13.sp, color = colour, textAlign = TextAlign.End) }
+                }
             }
         }
     }

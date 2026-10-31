@@ -97,7 +97,7 @@ fun rememberPhotoChooser(onPhoto: (ByteArray?) -> Unit): PhotoChooser {
  * [footnote] under them.
  */
 @Composable
-fun PhotoSheet(title: String, hasPhoto: Boolean, chooser: PhotoChooser, footnote: String, onRemove: () -> Unit, onDismiss: () -> Unit) {
+fun PhotoSheet(title: String, hasPhoto: Boolean, chooser: PhotoChooser, onRemove: () -> Unit, onDismiss: () -> Unit) {
     BottomSheet(title, onDismiss = onDismiss) {
         SheetHandle()
         Text("Photo", style = display(20), modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp).semantics { heading() })
@@ -106,7 +106,6 @@ fun PhotoSheet(title: String, hasPhoto: Boolean, chooser: PhotoChooser, footnote
             SheetRow(Icons.picture, "Choose from your photos") { onDismiss(); chooser.choose() }
             if (hasPhoto) SheetRow(Icons.trash, "Remove photo", tint = Fob.red) { onDismiss(); onRemove() }
         }
-        Text(footnote, color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(horizontal = 6.dp))
     }
 }
 

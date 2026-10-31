@@ -127,7 +127,6 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
                 if (d.priced) PriceBoxes(d)
                 PaymentDetails(d)
             }
-            Text("Open Receipt Format, from the shop's payment code. Kept on this phone with the payment.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
             detail?.footer?.let { Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp)) }
         }
     }
@@ -169,7 +168,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 SectionLabel("Wallet")
                 Card {
                     profileRow?.let { row -> ProfileSettingRow(row, profile) { nav.go(Screen.Profile) } }
-                    LeadRow(Icons.people, "Contacts", "Who you pay, kept on this phone") { nav.go(Screen.Contacts) }
+                    LeadRow(Icons.people, "Contacts", "Who you pay") { nav.go(Screen.Contacts) }
                     LeadRow(Icons.key, "Backup and keys", backupLine) { openBackup() }
                 }
             }
@@ -199,7 +198,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 SectionLabel("Network")
                 Card {
                     SettingRow(
-                        "Use mainnet", if (network == Network.MAINNET) "Real money. Each network has its own wallet." else "Off: stagenet, with test coins",
+                        "Use mainnet", if (network == Network.MAINNET) "Real money" else "Off: stagenet, with test coins",
                         checked = network == Network.MAINNET, onChecked = { switching = true },
                     )
                 }
@@ -207,7 +206,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             Column {
                 SectionLabel("Receipts")
                 Card {
-                    SettingRow("Kept with each payment", "Receipts from payment codes that carry one, on this phone only.")
+                    SettingRow("Kept with each payment", "Receipts from payment codes that carry one")
                     SettingRow("Google Wallet", "Not yet: adding receipts needs Fob's pass issuer, which isn't set up.")
                 }
             }
@@ -657,10 +656,6 @@ fun ZmqScreen(model: WalletModel, nav: Nav) {
                 }
             }
             Field(endpoint, { endpoint = it }, "ZMQ address", hint = "Your node's --zmq-pub, on the node's own host: tcp://host:port")
-            Text(
-                "Your node tells Fob about new blocks and payments the moment it sees them. Fob still checks every two minutes in case one is missed. Only your node's host is ever contacted.",
-                color = Fob.muted, fontSize = 13.sp,
-            )
         }
     }
 }

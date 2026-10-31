@@ -339,12 +339,6 @@ pub fn settings_row(profile: Option<&Profile>) -> SettingsRow {
     }
 }
 
-/// Under Receive's note, while requests carry the name: "The code names you
-/// as “Henry” · change in Settings".
-pub fn receive_line(book: &Book) -> Option<String> {
-    book.name_in_requests().map(|n| format!("The code names you as “{n}” · change in Settings"))
-}
-
 /// A change a scanned profile would make to a contact: what it is now and
 /// what it would be.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -626,11 +620,10 @@ mod tests {
     }
 
     #[test]
-    fn settings_and_receive_say_whose_name_goes_out() {
+    fn settings_says_whose_profile_it_is() {
         let mut book = Book::default();
         let row = settings_row(book.profile());
         assert_eq!((row.title.as_str(), row.name, row.suffix), ("Add a shareable Fob contact", None, None), "no second line");
-        assert_eq!(receive_line(&book), None);
         book.set("Henry", None).unwrap();
         let row = settings_row(book.profile());
         assert_eq!((row.title.as_str(), row.name.as_deref(), row.suffix.as_deref()), ("Your profile", Some("Henry"), Some(" · share as a code")));
@@ -640,9 +633,6 @@ mod tests {
         // An old file's blank name, with a photo or not, isn't a contact.
         let blank = Profile { name: " ".into(), photo: None, name_in_requests: true };
         assert_eq!(settings_row(Some(&blank)).title, "Add a shareable Fob contact");
-        assert_eq!(receive_line(&book).as_deref(), Some("The code names you as “Henrietta Montgomery-Fairweather” · change in Settings"));
-        book.set_name_in_requests(false).unwrap();
-        assert_eq!(receive_line(&book), None);
     }
 
     fn code(name: &str, address: &str, photo: Option<Vec<u8>>) -> uri::ProfileCode {

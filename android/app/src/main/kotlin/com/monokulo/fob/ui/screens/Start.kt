@@ -181,7 +181,6 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
             )
             if (seed != null) {
                 Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed.words) }
-                if (seed.kind == "polyseed") Text("A 16-word Polyseed: it also remembers when the wallet was made, so restoring is quick.", color = Fob.muted, fontSize = 13.sp)
             }
         }
     }
@@ -298,7 +297,6 @@ fun RestoreViewOnlyScreen(model: WalletModel, nav: Nav) {
     Restoring(model, nav, "Watch this wallet", address.isNotBlank() && key.isNotBlank(), { restoreViewOnly(address.trim(), key.trim(), start.ifBlank { null }) }) {
         TopBar("View-only wallet", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Fob will see payments to this wallet but can't spend them.", color = Fob.muted, fontSize = 16.sp)
             Field(address, { address = it }, "Primary address", mono = true, lines = 3)
             Field(key, { key = it }, "Private view key", mono = true, lines = 2)
             Field(start, { start = it }, "Start from (optional)", hint = START_HINT)
@@ -367,7 +365,6 @@ fun RestoreFoundScreen(model: WalletModel, nav: Nav, code: String) {
                 InfoRow("Starts from", p.restoreTime?.let { DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it.toLong() * 1000)) } ?: "Not in the code")
             }
             if (p.restoreHeight == null) Field(start, { start = it }, "Start from", hint = START_HINT)
-            Text("Fob keeps the keys encrypted on this phone, behind the Android Keystore.", color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp)
         }
     }
 }

@@ -208,7 +208,7 @@ impl Keys {
         }
         secret.push(row("Secret view key", KeyBadge::SeesPayments, Some("Lets a watch-only wallet see what arrives."), self.view_key_hex()));
         let public = vec![
-            row("Main address", KeyBadge::Public, Some("Your first address; Fob gives out new ones each time."), Zeroizing::new(self.primary_address())),
+            row("Main address", KeyBadge::Public, None, Zeroizing::new(self.primary_address())),
             height,
             row("Public view key", KeyBadge::Public, None, Zeroizing::new(self.public_view_key_hex())),
             row("Public spend key", KeyBadge::Public, None, Zeroizing::new(self.public_spend_key_hex())),
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(view.line.as_deref(), Some("Lets a watch-only wallet see what arrives."));
         let main = &page[1].keys[0];
         assert_eq!((main.badge, main.badge_text.as_str()), (KeyBadge::Public, "Public"));
-        assert_eq!(main.line.as_deref(), Some("Your first address; Fob gives out new ones each time."));
+        assert_eq!(main.line, None);
         assert_eq!(main.copy, "Copy the main address");
         assert_eq!(page[1].keys[1].line.as_deref(), Some("Where a restore starts looking."));
         assert_eq!(page[1].keys[2].line, None);

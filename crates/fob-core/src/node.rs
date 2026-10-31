@@ -137,6 +137,9 @@ pub struct Row {
     pub step: Step,
     /// "84 ms", "stagenet", "block 1,792,004 · 1 min ago", "2 days behind".
     pub result: String,
+    /// A line of its own under the result, never beside it: Sends blocks
+    /// to Fob's link speed, "1.8 MB/s", under "31 blocks/s".
+    pub second: Option<String>,
     pub mark: Mark,
 }
 
@@ -145,11 +148,13 @@ impl Row {
         self.step.title()
     }
 
-    /// For TalkBack: "Up to date: 2 days behind", "Answers: not checked".
+    /// For TalkBack: "Up to date: 2 days behind", "Answers: not checked",
+    /// "Sends blocks to Fob: 31 blocks/s, 1.8 MB/s".
     pub fn label(&self) -> String {
-        match self.mark {
-            Mark::Skipped => format!("{}: not checked", self.title()),
-            _ => format!("{}: {}", self.title(), self.result),
+        match (self.mark, &self.second) {
+            (Mark::Skipped, _) => format!("{}: not checked", self.title()),
+            (_, Some(second)) => format!("{}: {}, {second}", self.title(), self.result),
+            (_, None) => format!("{}: {}", self.title(), self.result),
         }
     }
 }
@@ -187,7 +192,7 @@ impl Report {
         let rows = steps
             .into_iter()
             .filter(|s| https || *s != Step::Certificate)
-            .map(|step| Row { step, result: "checking…".into(), mark: Mark::Checking })
+            .map(|step| Row { step, result: "checking…".into(), second: None, mark: Mark::Checking })
             .collect();
         Report {
             address: address(&url),
@@ -254,9 +259,15 @@ impl Report {
     }
 
     fn set(&mut self, step: Step, mark: Mark, result: impl Into<String>) {
+        self.set_lines(step, mark, result.into(), None);
+    }
+
+    /// A result with a `second` line under it.
+    fn set_lines(&mut self, step: Step, mark: Mark, result: String, second: Option<String>) {
         if let Some(row) = self.rows.iter_mut().find(|r| r.step == step) {
             row.mark = mark;
-            row.result = result.into();
+            row.result = result;
+            row.second = second;
         }
     }
 
@@ -498,12 +509,13 @@ fn up_to_date(info: &Info, (last_height, timestamp): (u64, u64), known_tip: u64,
     }
 }
 
-/// "31 blocks/s · 1.8 MB/s", or "0.8 blocks/s · 40 kB/s" for slow going.
-fn speed(blocks: u64, bytes: u64, elapsed: Duration) -> String {
+/// "31 blocks/s" and "1.8 MB/s", or "0.8 blocks/s" and "40 kB/s" for slow
+/// going: two lines, so a phone never wraps one inside its value.
+fn speed(blocks: u64, bytes: u64, elapsed: Duration) -> (String, String) {
     let secs = elapsed.as_secs_f64().max(0.001);
     let per_second = blocks as f64 / secs;
     let blocks = if per_second >= 9.95 { grouped(per_second.round() as u64) } else { format!("{per_second:.1}") };
-    format!("{blocks} blocks/s · {}", link_speed(bytes as f64 / secs))
+    (format!("{blocks} blocks/s"), link_speed(bytes as f64 / secs))
 }
 
 /// Runs the checks on `probe`, telling `progress` after each one.
@@ -547,17 +559,18 @@ pub(crate) async fn run<P: Probe>(probe: &P, mut report: Report, known_tip: u64,
     let end = info.height.saturating_sub(2).max(1);
     let start = end.saturating_sub(SAMPLE - 1).max(1);
     let started = Instant::now();
-    let (mark, words) = match tokio::time::timeout(BLOCKS, probe.blocks(start, end)).await {
-        Ok(Ok((0, _))) => (Mark::Fail, "sent no blocks".into()),
+    let (mark, words, link) = match tokio::time::timeout(BLOCKS, probe.blocks(start, end)).await {
+        Ok(Ok((0, _))) => (Mark::Fail, "sent no blocks".into(), None),
         Ok(Ok((blocks, bytes))) => {
             let elapsed = started.elapsed();
             report.blocks_per_second = Some(blocks as f64 / elapsed.as_secs_f64().max(0.001));
-            (Mark::Pass, speed(blocks, bytes, elapsed))
+            let (blocks, link) = speed(blocks, bytes, elapsed);
+            (Mark::Pass, blocks, Some(link))
         }
-        Ok(Err(failure)) => (Mark::Fail, failure.words(BLOCKS)),
-        Err(_) => (Mark::Fail, format!("no blocks in {} s", BLOCKS.as_secs())),
+        Ok(Err(failure)) => (Mark::Fail, failure.words(BLOCKS), None),
+        Err(_) => (Mark::Fail, format!("no blocks in {} s", BLOCKS.as_secs()), None),
     };
-    report.set(Step::Blocks, mark, words);
+    report.set_lines(Step::Blocks, mark, words, link);
     report
 }
 

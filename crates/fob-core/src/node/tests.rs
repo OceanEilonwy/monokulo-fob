@@ -78,9 +78,13 @@ async fn a_good_node_passes_every_check() {
             ("Answers", "0 ms", Mark::Pass),
             ("Right network", "stagenet", Mark::Pass),
             ("Up to date", "block 1,792,004 · 1 min ago", Mark::Pass),
-            ("Sends blocks to Fob", "31 blocks/s · 1.8 MB/s", Mark::Pass),
+            ("Sends blocks to Fob", "31 blocks/s", Mark::Pass),
         ]
     );
+    // The link speed on a line of its own, never beside the blocks; only there.
+    let seconds: Vec<_> = report.rows.iter().map(|r| r.second.as_deref()).collect();
+    assert_eq!(seconds, [None, None, None, Some("1.8 MB/s")]);
+    assert_eq!(report.rows[3].label(), "Sends blocks to Fob: 31 blocks/s, 1.8 MB/s");
     assert_eq!((report.verdict(), report.usable(), report.address.as_str()), ("Working", Usable::Use, "node.example:38081"));
     assert_eq!(report.mark(), Mark::Pass);
     assert_eq!(Report::pending(Network::Stagenet, &node("x:1")).mark(), Mark::Checking);
@@ -138,7 +142,8 @@ async fn a_lagging_node_can_be_used_anyway() {
     // Two days of blocks short of what it's catching up to.
     let lagging = Fake { info: Some(Ok(Info { nettype: "stagenet".into(), height: HEIGHT, target_height: HEIGHT + 1440 })), ..good() };
     let report = checked(&lagging, "node.example:38081").await;
-    assert_eq!(rows(&report)[2..], [("Up to date", "2 days behind", Mark::Fail), ("Sends blocks to Fob", "31 blocks/s · 1.8 MB/s", Mark::Pass)]);
+    assert_eq!(rows(&report)[2..], [("Up to date", "2 days behind", Mark::Fail), ("Sends blocks to Fob", "31 blocks/s", Mark::Pass)]);
+    assert_eq!(report.rows[3].second.as_deref(), Some("1.8 MB/s"));
     assert_eq!((report.verdict(), report.usable(), report.mark()), ("Not up to date", Usable::UseAnyway, Mark::Fail));
     assert_eq!(report.line(false), "0 ms · 2 days behind");
     // Behind what this wallet has already seen, though it thinks it's synced.
@@ -161,6 +166,7 @@ async fn a_lagging_node_can_be_used_anyway() {
 async fn a_node_that_sends_no_blocks_cant_be_used() {
     let slow = checked(&Fake { blocks: None, ..good() }, "x:1").await;
     assert_eq!(rows(&slow)[3], ("Sends blocks to Fob", "no blocks in 10 s", Mark::Fail));
+    assert_eq!((slow.rows[3].second.as_deref(), slow.rows[3].label().as_str()), (None, "Sends blocks to Fob: no blocks in 10 s"));
     assert_eq!((slow.verdict(), slow.usable()), ("Doesn't send blocks", Usable::No));
     assert_eq!(slow.line(false), "0 ms · no blocks in 10 s");
     let garbled = checked(&Fake { blocks: Some(Err(Failure::Unreadable)), ..good() }, "x:1").await;
@@ -172,7 +178,7 @@ async fn a_node_that_sends_no_blocks_cant_be_used() {
     let report = checked(&both, "x:1").await;
     assert_eq!((report.verdict(), report.usable()), ("Not up to date", Usable::No));
     let slow = checked(&Fake { blocks: Some(Ok((5, 40_000))), ..good() }, "x:1").await;
-    assert_eq!(rows(&slow)[3].1, "5.0 blocks/s · 40 kB/s");
+    assert_eq!((rows(&slow)[3].1, slow.rows[3].second.as_deref()), ("5.0 blocks/s", Some("40 kB/s")));
 }
 
 #[tokio::test(start_paused = true)]
