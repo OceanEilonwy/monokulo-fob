@@ -1128,3 +1128,9 @@ Calls made while building the first version, with why. Newest last.
     stack in a ViewModel (`NavHolder`), and a `monero:` link that opened
     Fob isn't read a second time then. After Android ends the process, Fob
     opens at Home, as before.
+149. **A busy photo still fits**: a picked photo full of fine detail
+    didn't fit 1.5 KB at 64 pixels and quality 20 with Android's encoder
+    (found on the emulator, where the same picture fits easily with
+    desktop libwebp), so the ladder of decision 109 goes on to quality 10
+    and 0 and a 48-pixel side before refusing. Each step is a 96-pixel or
+    smaller encode, so the extra ones cost nothing noticeable.

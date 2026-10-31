@@ -47,8 +47,8 @@ import uniffi.fob.contactPhotoFits
 import java.io.ByteArrayOutputStream
 
 /** A photo's sides tried in turn, and the WebP qualities at each, until Rust keeps it (decision 4 of the plan). */
-private val PHOTO_SIZES = listOf(96, 72, 64)
-private val PHOTO_QUALITIES = listOf(80, 70, 60, 50, 40, 30, 20)
+private val PHOTO_SIZES = listOf(96, 72, 64, 48)
+private val PHOTO_QUALITIES = listOf(80, 70, 60, 50, 40, 30, 20, 10, 0)
 
 /** Take a photo or choose one; what comes back is already small enough for Rust. */
 class PhotoChooser(val take: () -> Unit, val choose: () -> Unit)
@@ -152,7 +152,7 @@ private fun decode(context: Context, uri: Uri): Bitmap? = runCatching {
 /**
  * A photo from [source]: cropped to a centred square, scaled to 96 × 96 and
  * encoded by Android's WebP encoder, the quality stepped down (then the
- * size, to 72 and 64) until Rust keeps it; null if it never does.
+ * size, to 72, 64 and 48) until Rust keeps it; null if it never does.
  */
 private fun smallPhoto(source: Bitmap): ByteArray? {
     val side = minOf(source.width, source.height)
