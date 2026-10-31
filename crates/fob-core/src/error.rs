@@ -25,6 +25,9 @@ pub enum FobError {
     /// Prices couldn't be had, or a price setting isn't one Fob has.
     #[error("{0}")]
     Price(String),
+    /// Split up's pieces can't be split, and why.
+    #[error("{0}")]
+    Split(String),
     #[error("couldn't build the transaction: {0}")]
     Send(String),
     #[error("couldn't read or save the wallet: {0}")]

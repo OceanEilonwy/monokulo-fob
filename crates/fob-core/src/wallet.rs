@@ -38,7 +38,7 @@ use crate::{
     not_ready::{self, NotReady, Piece, Source},
     price::{self, Source as _},
     receipt::ReceiptView,
-    store,
+    split, store,
     uri::{self, WalletCode},
     zmq::{self, ZmqStatus},
 };
@@ -123,6 +123,11 @@ struct Sent {
     /// The payment code's description (`tx_description`), if it had one.
     #[serde(default)]
     note: Option<String>,
+    /// How many pieces, for a split: money paid back to this wallet's
+    /// split address. `amount` is then the pieces' total, and `change`
+    /// everything that comes back, pieces and change.
+    #[serde(default)]
+    pieces: Option<u32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -163,6 +168,10 @@ struct State {
     /// what payments to that address are for.
     #[serde(default)]
     notes: HashMap<u32, String>,
+    /// The address splits pay their pieces to, by index: taken from the
+    /// next unused one the first time, never handed out on Receive.
+    #[serde(default)]
+    split_index: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -229,6 +238,9 @@ pub struct Activity {
     /// What it was for: the note in the payment code (Fob's own for its
     /// address, or the payee's description when paying).
     pub note: Option<String>,
+    /// A split, with its number of pieces: money paid back to this wallet,
+    /// so `amount` is only the fee, what left.
+    pub split: Option<u32>,
 }
 
 /// Receive's payment code and the words around it.
@@ -278,6 +290,11 @@ pub struct Prepared {
     pub amount: u64,
     pub fee: u64,
     pub receipt: Option<ReceiptView>,
+    /// A split's pieces as the confirm screen lists them, largest first:
+    /// ("$20 × 4", "0.2667 XMR"). Empty for a payment.
+    pub split: Vec<(String, String)>,
+    /// How many pieces, for a split.
+    pub pieces: Option<u32>,
 }
 
 struct PreparedTx {
@@ -288,6 +305,8 @@ struct PreparedTx {
     input_total: u64,
     receipt: Option<String>,
     note: Option<String>,
+    /// How many pieces, for a split.
+    pieces: Option<u32>,
 }
 
 struct Inner {
@@ -327,6 +346,9 @@ struct Inner {
     prices_wake: tokio::sync::Notify,
     /// Why the last price request failed, until one works.
     price_error: std::sync::Mutex<Option<String>>,
+    /// The node's fee per unit of weight and its rounding mask, as last
+    /// asked: Split up's fee "about" before a payment is built.
+    fee_rate: std::sync::Mutex<Option<(u64, u64)>>,
 }
 
 /// What the ZMQ subscriber hears, passed to the sync loop and the app.
@@ -433,6 +455,7 @@ impl Wallet {
             price_cache: price::Cache::default(),
             price_records: HashMap::new(),
             notes: HashMap::new(),
+            split_index: None,
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -473,6 +496,7 @@ impl Wallet {
                 prices_task: std::sync::Mutex::new(None),
                 prices_wake: tokio::sync::Notify::new(),
                 price_error: std::sync::Mutex::new(None),
+                fee_rate: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -558,8 +582,12 @@ impl Wallet {
     /// The address to give out now: the last one handed out, or a first one.
     pub async fn receive_address(&self) -> Result<String> {
         let mut state = self.inner.state.lock().await;
-        if state.receive_index == 0 {
-            state.receive_index = 1;
+        // Never the address splits pay to.
+        if state.receive_index == 0 || Some(state.receive_index) == state.split_index {
+            state.receive_index += 1;
+            if Some(state.receive_index) == state.split_index {
+                state.receive_index += 1;
+            }
             self.save_state(&state)?;
         }
         Ok(self.inner.keys.address(state.receive_index))
@@ -569,6 +597,10 @@ impl Wallet {
     pub async fn new_receive_address(&self) -> Result<String> {
         let mut state = self.inner.state.lock().await;
         state.receive_index += 1;
+        // Never the address splits pay to.
+        if Some(state.receive_index) == state.split_index {
+            state.receive_index += 1;
+        }
         self.save_state(&state)?;
         Ok(self.inner.keys.address(state.receive_index))
     }
@@ -732,6 +764,7 @@ impl Wallet {
         // A payment's name, as Activity titles it.
         let name = |sent: &Sent| match sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok()) {
             Some(receipt) => ReceiptView::from(&receipt).merchant,
+            None if sent.pieces.is_some() => split::TITLE.into(),
             None => short_address(&sent.to),
         };
         let mut pieces = vec![];
@@ -780,7 +813,8 @@ impl Wallet {
             rows.push(Activity {
                 tx: sent.tx.clone(),
                 direction: Direction::Out,
-                amount: sent.amount,
+                // A split's pieces are still this wallet's: only the fee left.
+                amount: if sent.pieces.is_some() { sent.fee } else { sent.amount },
                 fee: Some(sent.fee),
                 to: Some(sent.to.clone()),
                 height: sent.height,
@@ -793,6 +827,7 @@ impl Wallet {
                 subaddress: None,
                 pieces: vec![],
                 note: None,
+                split: None,
             });
         }
         // Spends found on the chain that this wallet didn't send (a restored
@@ -819,6 +854,7 @@ impl Wallet {
                 subaddress: None,
                 pieces: vec![],
                 note: None,
+                split: None,
             });
         }
         let mut incoming: HashMap<&str, Activity> = HashMap::new();
@@ -839,6 +875,7 @@ impl Wallet {
                 subaddress: None,
                 pieces: vec![],
                 note: None,
+                split: None,
             });
             row.amount += output.amount;
         }
@@ -861,6 +898,7 @@ impl Wallet {
                     subaddress: None,
                     pieces: vec![],
                     note: None,
+                    split: None,
                 });
             }
         }
@@ -878,7 +916,9 @@ impl Wallet {
                 }
                 Direction::Out => {
                     row.pieces = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(row.tx.as_str())).map(|o| o.amount).collect();
-                    row.note = state.sent.iter().find(|s| s.tx == row.tx).and_then(|s| s.note.clone());
+                    let sent = state.sent.iter().find(|s| s.tx == row.tx);
+                    row.note = sent.and_then(|s| s.note.clone());
+                    row.split = sent.and_then(|s| s.pieces);
                 }
             }
         }
@@ -1025,7 +1065,10 @@ impl Wallet {
                 }
                 self.inner.pool.lock().expect("pool lock").remove(&tx);
                 let subaddress = output.subaddress().map(|s| s.address()).unwrap_or(0);
-                state.receive_index = state.receive_index.max(subaddress);
+                // Money to the split address doesn't move Receive on to it.
+                if Some(subaddress) != state.split_index {
+                    state.receive_index = state.receive_index.max(subaddress);
+                }
                 let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
                 // An output arriving in a transaction already seen spending (our
                 // own change) is still ours to spend later.
@@ -1301,9 +1344,41 @@ impl Wallet {
         if amount == 0 {
             return Err(FobError::BadAmount);
         }
+        self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, None).await
+    }
+
+    /// Asks the node its fee rate, keeping it for Split up's estimate.
+    async fn fee_rate(&self, rpc: &Daemon) -> Result<FeeRate> {
+        let fee_rate = rpc.fee_rate(FeePriority::Normal, MAX_FEE_PER_WEIGHT).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        // The mask has no getter; it's the second half of the serialization.
+        let bytes = fee_rate.serialize();
+        let mask = bytes.get(8..16).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes).unwrap_or(1);
+        *self.inner.fee_rate.lock().expect("fee lock") = Some((fee_rate.per_weight(), mask));
+        Ok(fee_rate)
+    }
+
+    /// Asks the node its fee rate now, so Split up's fee estimate is the
+    /// node's, not Monero's usual. Quietly keeps the last one on failure.
+    pub async fn refresh_fee_rate(&self) {
+        if let Ok((_, rpc, _, _)) = self.connection().await {
+            let _ = self.fee_rate(&rpc).await;
+        }
+    }
+
+    /// Builds a transaction paying `payments`, choosing the money to spend
+    /// and the fee. `to` is who the confirm screen says is paid.
+    async fn prepare_payments(
+        &self,
+        to: &str,
+        payments: Vec<(MoneroAddress, u64)>,
+        receipt_json: Option<String>,
+        note: Option<String>,
+        pieces: Option<u32>,
+    ) -> Result<Prepared> {
+        let amount: u64 = payments.iter().map(|p| p.1).sum();
         let (_, rpc, decoys, _) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
-        let fee_rate = rpc.fee_rate(FeePriority::Normal, MAX_FEE_PER_WEIGHT).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        let fee_rate = self.fee_rate(&rpc).await?;
         let latest = rpc.latest_block_number().await.map_err(node_err)?;
 
         let (mut candidates, available) = {
@@ -1332,7 +1407,8 @@ impl Wallet {
 
         // Start with the inputs that cover the amount and a generous fee guess,
         // then add one at a time while the real fee needs more.
-        let guess = |inputs: usize| fee_rate.calculate_fee_from_weight(1_600 + 900 * inputs as u64) as u64;
+        let outputs = payments.len() + 1;
+        let guess = |inputs: usize| fee_rate.calculate_fee_from_weight((1_600 + 900 * inputs as u64).max(split::weight(inputs, outputs))) as u64;
         let mut chosen = vec![];
         let mut total = 0;
         while total < amount + guess(chosen.len().max(1)) && !candidates.is_empty() {
@@ -1352,7 +1428,7 @@ impl Wallet {
                 RctType::ClsagBulletproofPlus,
                 outgoing_view,
                 with_decoys.clone(),
-                vec![(destination, amount)],
+                payments.clone(),
                 change.clone(),
                 vec![],
                 fee_rate,
@@ -1377,15 +1453,97 @@ impl Wallet {
             id,
             PreparedTx {
                 signable,
-                to: to.trim().to_owned(),
+                to: to.to_owned(),
                 amount,
                 inputs: chosen.iter().map(|c| c.0).collect(),
                 input_total: total,
                 receipt: receipt.is_some().then_some(receipt_json).flatten(),
                 note: note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
+                pieces,
             },
         );
-        Ok(Prepared { id, to: to.trim().to_owned(), amount, fee, receipt: receipt.as_ref().map(ReceiptView::from) })
+        Ok(Prepared { id, to: to.to_owned(), amount, fee, receipt: receipt.as_ref().map(ReceiptView::from), split: vec![], pieces })
+    }
+
+    /// The notes Split up offers, in money at the current price when there
+    /// is one, else in XMR; and the money the split can use.
+    async fn split_setup(&self) -> (Option<(price::Currency, u64)>, Vec<split::Note>, split::Budget) {
+        let money = self.price_now().await;
+        let notes = split::notes(money.as_ref().map(|(c, p)| (c, *p)));
+        let state = self.inner.state.lock().await;
+        let outputs = state.outputs.iter().filter(|o| o.spent_in.is_none() && confirmations(&state, o.height) >= o.needed()).map(|o| o.amount).collect();
+        (money, notes, split::Budget { outputs, fee_rate: *self.inner.fee_rate.lock().expect("fee lock") })
+    }
+
+    /// What Split up opens with, learned from the payments of the last 30
+    /// days, or an even mix.
+    pub async fn split_suggestion(&self) -> split::Suggestion {
+        let (money, notes, budget) = self.split_setup().await;
+        let since = now().saturating_sub(split::LOOKBACK);
+        let payments: Vec<u64> = self
+            .activity()
+            .await
+            .into_iter()
+            .filter(|a| a.direction == Direction::Out && a.split.is_none() && a.time >= since && a.amount > 0)
+            .map(|a| a.amount)
+            .collect();
+        split::suggest(&notes, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)))
+    }
+
+    /// Split up's screen for `counts` of each note.
+    pub async fn split_view(&self, counts: &[u32]) -> split::View {
+        let (money, notes, budget) = self.split_setup().await;
+        split::view(&notes, counts, &budget, money.as_ref().map(|(c, p)| (c, *p)))
+    }
+
+    /// One more piece of note `index`, or why not (the 15-piece cap, or not
+    /// enough ready to spend with the fee).
+    pub async fn split_add(&self, counts: &[u32], index: usize) -> Result<Vec<u32>> {
+        let (_, notes, budget) = self.split_setup().await;
+        split::add(&notes, counts, index, &budget).map_err(FobError::Split)
+    }
+
+    /// One fewer piece of note `index`.
+    pub async fn split_remove(&self, counts: &[u32], index: usize) -> Vec<u32> {
+        let (_, notes, _) = self.split_setup().await;
+        split::remove(&notes, counts, index)
+    }
+
+    /// The address splits pay to: one of this wallet's subaddresses, the
+    /// next unused one the first time, kept from then on and skipped by
+    /// Receive.
+    async fn split_address(&self) -> Result<String> {
+        let mut state = self.inner.state.lock().await;
+        let index = match state.split_index {
+            Some(index) => index,
+            None => {
+                let index = state.receive_index + 1;
+                state.split_index = Some(index);
+                self.save_state(&state)?;
+                index
+            }
+        };
+        Ok(self.inner.keys.address(index))
+    }
+
+    /// Builds a split: `counts` of each note paid to this wallet's split
+    /// address, the rest back as change, for the confirm screen.
+    pub async fn prepare_split(&self, counts: &[u32]) -> Result<Prepared> {
+        self.inner.keys.spend()?;
+        let (_, notes, budget) = self.split_setup().await;
+        let amounts = split::amounts(&notes, counts);
+        if amounts.is_empty() {
+            return Err(FobError::Split("Add a piece to split".into()));
+        }
+        split::check(&notes, counts, &budget).map_err(FobError::Split)?;
+        let address = self.split_address().await?;
+        let network = self.network();
+        let destination = MoneroAddress::from_str(network.monero(), &address).map_err(|_| FobError::BadAddress(network.name()))?;
+        let n = amounts.len() as u32;
+        let payments = amounts.into_iter().map(|a| (destination, a)).collect();
+        let mut prepared = self.prepare_payments(&address, payments, None, None, Some(n)).await?;
+        prepared.split = split::lines(&notes, counts);
+        Ok(prepared)
     }
 
     /// Signs and broadcasts a prepared payment. Returns its transaction hash.
@@ -1410,16 +1568,19 @@ impl Wallet {
                 output.spent_in = Some(hash.clone());
             }
         }
+        // A split's pieces come back to this wallet with the change.
+        let back = if prepared.pieces.is_some() { prepared.input_total } else { prepared.input_total.saturating_sub(prepared.amount) };
         state.sent.push(Sent {
             tx: hash.clone(),
             to: prepared.to,
             amount: prepared.amount,
             fee,
-            change: prepared.input_total.saturating_sub(prepared.amount).saturating_sub(fee),
+            change: back.saturating_sub(fee),
             time: now(),
             height: None,
             receipt: prepared.receipt,
             note: prepared.note,
+            pieces: prepared.pieces,
         });
         self.record_prices(&mut state);
         self.save_state(&state)?;
@@ -1772,6 +1933,7 @@ mod tests {
             height,
             receipt: None,
             note: None,
+            pieces: None,
         };
         {
             let mut state = wallet.inner.state.lock().await;
@@ -2045,7 +2207,7 @@ mod tests {
         {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t - 120, XMR / 2));
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None });
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None });
             assert!(wallet.record_prices(&mut state));
             wallet.save_state(&state).unwrap();
         }
@@ -2168,7 +2330,7 @@ mod tests {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t, XMR / 2));
             state.outputs.push(Owned { key: "in-2".into(), output: "2".into(), ..received("in", t, XMR / 4) });
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()) });
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None });
         }
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let shown = wallet.payment("in", clock).await.unwrap();
@@ -2179,6 +2341,73 @@ mod tests {
         // A blank note forgets it.
         wallet.remember_receive_note(1, "").await.unwrap();
         assert_eq!(wallet.payment("in", clock).await.unwrap().party.as_deref(), Some("Address 1"));
+    }
+
+    #[tokio::test]
+    async fn split_up_learns_from_payments_and_pays_its_own_address() {
+        let wallet = Wallet::create(&dir("split"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let sent = |tx: &str, amount: u64, time: u64, pieces: Option<u32>| Sent {
+            tx: tx.into(),
+            to: "86Ux".into(),
+            amount,
+            fee: 1,
+            change: 0,
+            time,
+            height: Some(20),
+            receipt: None,
+            note: None,
+            pieces,
+        };
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.tip = 100;
+            state.outputs.push(received("in", t, 2 * XMR));
+            // Not ready yet: not the split's to use.
+            state.outputs.push(Owned { height: 95, key: "late".into(), ..received("late", t, 5 * XMR) });
+            for i in 0..4 {
+                state.sent.push(sent(&format!("coffee-{i}"), XMR / 10, t - 86_400 * i, None));
+            }
+            // Older than 30 days, and a split: neither teaches it.
+            state.sent.push(sent("old", XMR, t - 40 * 86_400, None));
+            state.sent.push(sent("split", XMR, t, Some(12)));
+        }
+        // No price: notes in XMR.
+        let suggestion = wallet.split_suggestion().await;
+        assert_eq!(suggestion.text, "Picked from your last 30 days: most payments were about 0.1 XMR.");
+        assert_eq!(suggestion.counts, [0, 0, 15, 0, 0, 0]);
+        let view = wallet.split_view(&suggestion.counts).await;
+        assert_eq!((view.summary.as_deref(), view.button.as_str()), (Some("15 pieces · 1.5 XMR"), "Split into 15 pieces"));
+        assert!(view.footer.starts_with("Network fee about 0.0001"), "{}", view.footer);
+        let refused = wallet.split_add(&suggestion.counts, 0).await.unwrap_err();
+        assert_eq!(refused.to_string(), "15 pieces is the most one split can make");
+        // Only the 2 XMR ready counts: a 1 XMR piece fits once, not twice.
+        let one = wallet.split_add(&[], 5).await.unwrap();
+        assert!(matches!(wallet.split_add(&one, 5).await, Err(FobError::Split(_))));
+        assert_eq!(wallet.split_remove(&one, 5).await, [0; 6]);
+
+        // The split's address: the next unused, kept, and never given out on Receive.
+        assert_eq!(wallet.receive_index().await, 0);
+        let split_address = wallet.split_address().await.unwrap();
+        assert_eq!(split_address, wallet.inner.keys.address(1));
+        assert_eq!(wallet.split_address().await.unwrap(), split_address);
+        assert_eq!(wallet.receive_address().await.unwrap(), wallet.inner.keys.address(2));
+        assert_eq!(wallet.new_receive_address().await.unwrap(), wallet.inner.keys.address(3));
+        assert_eq!(Wallet::open(&wallet.inner.path, [1; 32]).unwrap().split_address().await.unwrap(), split_address);
+
+        // Sent and not yet mined: all of it comes back, and reads as a split.
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.sent.retain(|s| s.tx != "split");
+            state.sent.push(Sent { change: 2 * XMR - 1, height: None, ..sent("split", 15 * XMR / 10, t, Some(15)) });
+        }
+        assert_eq!(wallet.balance().await.total, 2 * XMR + 5 * XMR + 2 * XMR - 1);
+        let clock = Clock { now: t, utc_offset: 0, hours_24: true };
+        let pieces = wallet.not_ready(clock).await.unwrap().pieces;
+        assert!(pieces.iter().any(|p| p.source == "Change · Split up"));
+        let row = activity::by_day(wallet.activity().await, clock).into_iter().flat_map(|d| d.rows).find(|r| r.activity.tx == "split").unwrap();
+        assert_eq!((row.title.as_str(), row.amount.as_str()), ("Split up", "−0.000000000001"));
+        assert!(row.line.starts_with("Sending · 15 pieces · "), "{}", row.line);
     }
 
     #[tokio::test]

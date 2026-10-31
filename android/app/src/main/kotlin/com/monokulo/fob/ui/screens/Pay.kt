@@ -377,10 +377,11 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    val title = prepared.receipt?.merchant?.let { "Pay $it" } ?: "Send"
+    val split = prepared.split
+    val title = split?.title ?: prepared.receipt?.merchant?.let { "Pay $it" } ?: "Send"
     Page(bottom = {
         ErrorText(error)
-        SwipeToSend(if (busy) "Sending…" else "Swipe to send ${prepared.amountText} XMR", enabled = !busy) {
+        SwipeToSend(if (busy) "Sending…" else split?.swipe ?: "Swipe to send ${prepared.amountText} XMR", enabled = !busy) {
             busy = true
             error = null
             scope.launch {
@@ -406,13 +407,17 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String
                 note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
             Card {
-                InfoRow("To", short(prepared.to, 2), mono = true)
+                if (split != null) InfoRow("To", split.to) else InfoRow("To", short(prepared.to, 2), mono = true)
                 Divider()
                 InfoRow("Network fee", "${prepared.feeText} XMR" + (prepared.feeFiat?.let { " · $it" } ?: ""))
                 Divider()
                 InfoRow("Total", "${prepared.totalText} XMR" + (prepared.totalFiat?.let { " · $it" } ?: ""), bold = true)
             }
-            Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+            // A split's pieces; its address is this wallet's own, with no pattern to compare.
+            if (split != null) Card {
+                Text(split.piecesText, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
+                split.pieces.forEach { InfoRow(it.label, it.amountText) }
+            } else Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     AddressPattern(prepared.to, 54.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -432,8 +437,9 @@ fun PaidScreen(nav: Nav, prepared: Prepared) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 72.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Box(Modifier.size(96.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, tint = Fob.onGreen, size = 52.dp, width = 2f) }
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Paid", style = display(34))
-                Text(prepared.receipt?.let { "${it.total} to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)
+                val split = prepared.split
+                Text(split?.title ?: "Paid", style = display(34))
+                Text(split?.done ?: prepared.receipt?.let { "${it.total} to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)
                 Text("Sent · confirming on the network", color = Fob.muted, fontSize = 14.sp)
             }
             prepared.receipt?.let {

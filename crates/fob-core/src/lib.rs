@@ -6,6 +6,7 @@
 //! - [`uri`]: payment codes (with ORF receipts) and wallet codes.
 //! - [`zmq`]: instant updates from the node's ZMQ publisher, when turned on.
 //! - [`price`]: what XMR is worth, now and when each payment moved.
+//! - [`split`]: paying what's ready to spend back as pieces.
 //! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
@@ -22,6 +23,7 @@ pub mod not_ready;
 pub mod node;
 pub mod qr;
 pub mod receipt;
+pub mod split;
 pub mod transport;
 mod store;
 pub mod uri;

@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 use fob_core::{
     activity, amount, not_ready, pattern,
     price::{self, Source as _},
-    qr, receipt, uri,
+    qr, receipt, split, uri,
 };
 
 uniffi::setup_scaffolding!();
@@ -38,7 +38,9 @@ impl From<fob_core::FobError> for FobError {
         use fob_core::FobError as E;
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } => FobError::Invalid { reason },
+            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) => {
+                FobError::Invalid { reason }
+            }
             E::Node(_) => FobError::Node { reason },
             E::NotEnoughFunds { .. } => FobError::NotEnoughFunds { reason },
             E::WrongKey => FobError::WrongKey { reason },
@@ -378,6 +380,109 @@ pub struct Prepared {
     pub fee_fiat: Option<String>,
     pub total_fiat: Option<String>,
     pub receipt: Option<Receipt>,
+    /// Set for a split: what the confirm and done screens say instead.
+    pub split: Option<SplitSummary>,
+}
+
+/// A split on the confirm screen, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct SplitSummary {
+    /// "Split up"
+    pub title: String,
+    /// "This wallet"
+    pub to: String,
+    /// Largest first.
+    pub pieces: Vec<SplitLine>,
+    /// "12 pieces"
+    pub pieces_text: String,
+    /// "Swipe to split into 12 pieces"
+    pub swipe: String,
+    /// "12 pieces on their way back to this wallet"
+    pub done: String,
+}
+
+/// One kind of piece in a split: "$20 × 4", "0.2667 XMR".
+#[derive(uniffi::Record)]
+pub struct SplitLine {
+    pub label: String,
+    pub amount_text: String,
+}
+
+/// What Split up opens with.
+#[derive(uniffi::Record)]
+pub struct SplitSuggestion {
+    /// Pieces of each note, in the order of `SplitView::tiles`.
+    pub counts: Vec<u32>,
+    /// "Picked from your last 30 days: most payments were $5–$25."
+    pub text: String,
+}
+
+/// A note on Split up's grid.
+#[derive(uniffi::Record)]
+pub struct SplitTile {
+    /// "$20", "0.25"
+    pub label: String,
+    pub count: u32,
+    /// "× 4", or "tap to add"
+    pub count_text: String,
+    /// "Add a $20 piece, 4 so far"
+    pub add_label: String,
+    /// "Remove a $20 piece"
+    pub remove_label: String,
+}
+
+/// A block of Split up's bar.
+#[derive(uniffi::Record)]
+pub struct SplitBlock {
+    /// Share of the width, 0 to 1.
+    pub width: f32,
+    /// Share of the tallest's height, by the square root of its value.
+    pub height: f32,
+    /// What's left as one piece, drawn lighter.
+    pub left_over: bool,
+}
+
+/// The Split up screen, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct SplitView {
+    pub title: String,
+    pub intro: String,
+    pub tiles: Vec<SplitTile>,
+    /// What the screen shows, as Rust read it: keep these.
+    pub counts: Vec<u32>,
+    pub pieces: u32,
+    pub bar: Vec<SplitBlock>,
+    /// "11 pieces · $220"
+    pub summary: Option<String>,
+    /// "+ $88.70 left as one piece"
+    pub left_over: Option<String>,
+    /// "Split into 11 pieces", or "Add a piece to split".
+    pub button: String,
+    pub ready: bool,
+    /// "Network fee about $0.03 · pieces are set in XMR at today's price"
+    pub footer: String,
+}
+
+impl From<split::View> for SplitView {
+    fn from(v: split::View) -> Self {
+        SplitView {
+            title: v.title,
+            intro: v.intro,
+            tiles: v
+                .tiles
+                .into_iter()
+                .map(|t| SplitTile { label: t.label, count: t.count, count_text: t.count_text, add_label: t.add_label, remove_label: t.remove_label })
+                .collect(),
+            counts: v.counts,
+            pieces: v.pieces,
+            bar: v.bar.into_iter().map(|b| SplitBlock { width: b.width, height: b.height, left_over: b.left_over }).collect(),
+            summary: v.summary,
+            left_over: v.left_over,
+            button: v.button,
+            ready: v.ready,
+            footer: v.footer,
+        }
+    }
 }
 
 #[derive(uniffi::Record)]
@@ -438,6 +543,31 @@ fn height(network: Network, restore_point: Option<String>) -> Result<Option<u64>
         .map(|t| fob_core::restore_point(network.into(), &t))
         .transpose()
         .map_err(Into::into)
+}
+
+/// A prepared payment or split for the confirm screen, with what it's
+/// worth now.
+async fn prepared(wallet: &fob_core::Wallet, p: fob_core::Prepared) -> Prepared {
+    let split = p.pieces.map(|n| SplitSummary {
+        title: split::TITLE.into(),
+        to: split::TO.into(),
+        pieces: p.split.iter().map(|(label, amount)| SplitLine { label: label.clone(), amount_text: amount.clone() }).collect(),
+        pieces_text: split::pieces_text(n),
+        swipe: split::swipe_text(n),
+        done: split::done_text(n),
+    });
+    Prepared {
+        id: p.id,
+        to: p.to,
+        amount_text: exact(p.amount),
+        fee_text: amount::format(p.fee),
+        total_text: amount::format(p.amount + p.fee),
+        amount_fiat: wallet.worth_now(p.amount).await,
+        fee_fiat: wallet.worth_now(p.fee).await,
+        total_fiat: wallet.worth_now(p.amount + p.fee).await,
+        receipt: p.receipt.map(Into::into),
+        split,
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -664,17 +794,42 @@ impl FobWallet {
     pub async fn prepare(&self, to: String, amount: String, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
         let atomic = amount::parse(&amount)?;
         let p = self.inner.prepare(&to, atomic, receipt_json, note).await?;
-        Ok(Prepared {
-            id: p.id,
-            to: p.to,
-            amount_text: exact(p.amount),
-            fee_text: amount::format(p.fee),
-            total_text: amount::format(p.amount + p.fee),
-            amount_fiat: self.inner.worth_now(p.amount).await,
-            fee_fiat: self.inner.worth_now(p.fee).await,
-            total_fiat: self.inner.worth_now(p.amount + p.fee).await,
-            receipt: p.receipt.map(Into::into),
-        })
+        Ok(prepared(&self.inner, p).await)
+    }
+
+    /// What Split up opens with: pieces learned from the last 30 days'
+    /// payments, or an even mix, and the words saying which.
+    pub async fn split_suggestion(&self) -> SplitSuggestion {
+        let s = self.inner.split_suggestion().await;
+        SplitSuggestion { counts: s.counts, text: s.text }
+    }
+
+    /// Split up's screen for `counts` pieces of each note.
+    pub async fn split_view(&self, counts: Vec<u32>) -> SplitView {
+        self.inner.split_view(&counts).await.into()
+    }
+
+    /// One more piece of note `index`; throws why not (15 pieces at most,
+    /// or not enough ready to spend with the fee).
+    pub async fn split_add(&self, counts: Vec<u32>, index: u32) -> Result<Vec<u32>> {
+        Ok(self.inner.split_add(&counts, index as usize).await?)
+    }
+
+    /// One fewer piece of note `index`.
+    pub async fn split_remove(&self, counts: Vec<u32>, index: u32) -> Vec<u32> {
+        self.inner.split_remove(&counts, index as usize).await
+    }
+
+    /// Asks the node its fee rate, so Split up's fee estimate is the node's.
+    pub async fn refresh_fee_rate(&self) {
+        self.inner.refresh_fee_rate().await;
+    }
+
+    /// Builds the split for the confirm screen: `counts` pieces of each
+    /// note paid back to this wallet, the rest as change.
+    pub async fn prepare_split(&self, counts: Vec<u32>) -> Result<Prepared> {
+        let p = self.inner.prepare_split(&counts).await?;
+        Ok(prepared(&self.inner, p).await)
     }
 
     /// Keeps the note typed on Receive for the address at `index`, so
