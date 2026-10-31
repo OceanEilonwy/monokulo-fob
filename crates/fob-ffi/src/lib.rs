@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, amount, qr, receipt, uri};
+use fob_core::{activity, amount, not_ready, qr, receipt, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -119,11 +119,9 @@ impl From<receipt::ReceiptView> for Receipt {
 pub struct Balance {
     pub total: u64,
     pub unlocked: u64,
-    pub confirming: u64,
     /// "2.4813"
     pub total_text: String,
     pub unlocked_text: String,
-    pub confirming_text: String,
     /// "0.5 XMR ready to spend", only while some money can't be spent yet.
     pub ready_text: Option<String>,
 }
@@ -141,8 +139,8 @@ pub struct Activity {
     pub confirmations: u64,
     /// Sent but not yet in a block.
     pub pending: bool,
-    /// Ten confirmations: final, and spendable when it came in.
-    pub settled: bool,
+    /// For its own screen: "Sending", "Not ready · 3 of 10", "Confirmed · 24".
+    pub status_text: String,
     pub receipt: Option<Receipt>,
 }
 
@@ -152,7 +150,7 @@ fn activity(a: fob_core::Activity) -> Activity {
         amount_text: xmr(a.amount),
         fee_text: a.fee.map(amount::format),
         pending: a.height.is_none(),
-        settled: a.confirmations >= 10,
+        status_text: activity::status(&a),
         tx: a.tx,
         to: a.to,
         time: a.time,
@@ -181,6 +179,63 @@ pub struct ActivityRow {
 pub struct ActivityDay {
     pub label: String,
     pub rows: Vec<ActivityRow>,
+}
+
+/// One piece of money not ready yet: an output short of its confirmations.
+#[derive(uniffi::Record)]
+pub struct NotReadyPiece {
+    /// "0.653"
+    pub amount_text: String,
+    pub confirmations: u64,
+    /// 10, or 60 for a mined reward.
+    pub needed: u64,
+    /// `confirmations / needed`, for its ring.
+    pub progress: f32,
+    /// "Received · 08:40", "Change · Corner Café".
+    pub source: String,
+    /// "09:02"
+    pub ready: String,
+    /// "in 14 min"
+    pub eta: String,
+}
+
+/// The money not ready yet, for Home's card.
+#[derive(uniffi::Record)]
+pub struct NotReady {
+    /// "0.653 XMR not ready yet"
+    pub title: String,
+    /// "3 pieces · all ready about 09:02"
+    pub line: String,
+    /// Weighted by amount, 0 to 1.
+    pub progress: f32,
+    /// "42%"
+    pub percent: String,
+    /// Soonest ready first.
+    pub pieces: Vec<NotReadyPiece>,
+}
+
+impl From<not_ready::NotReady> for NotReady {
+    fn from(n: not_ready::NotReady) -> Self {
+        NotReady {
+            title: n.title,
+            line: n.line,
+            progress: n.progress,
+            percent: n.percent,
+            pieces: n
+                .pieces
+                .into_iter()
+                .map(|p| NotReadyPiece {
+                    amount_text: p.amount,
+                    confirmations: p.confirmations,
+                    needed: p.needed,
+                    progress: p.progress,
+                    source: p.source,
+                    ready: p.ready,
+                    eta: p.eta,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(uniffi::Record)]
@@ -425,10 +480,8 @@ impl FobWallet {
         Balance {
             total: b.total,
             unlocked: b.unlocked,
-            confirming: b.confirming,
             total_text: xmr(b.total),
             unlocked_text: xmr(b.unlocked),
-            confirming_text: xmr(b.confirming),
             ready_text: b.ready_text(),
         }
     }
@@ -449,6 +502,12 @@ impl FobWallet {
                     .collect(),
             })
             .collect()
+    }
+
+    /// The money not ready to spend yet, piece by piece, with about when
+    /// it will be; `None` when all of it is. The clock as for `activity_days`.
+    pub async fn not_ready(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<NotReady> {
+        self.inner.not_ready(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
     }
 
     pub fn status(&self) -> SyncStatus {

@@ -233,3 +233,48 @@ Calls made while building the first version, with why. Newest last.
     app like any other sync step. On but not syncing reads "connecting":
     it connects again when syncing starts. Turning the switch on with no
     address Rust accepts opens the address screen instead.
+
+## Third round: money not ready, the address pattern, Receive
+
+46. **Money not ready yet is shown per output, not per payment
+    (`not_ready`).** A piece is an unspent output short of its
+    confirmations (10, or 60 for a mined reward), the change of a payment
+    not yet mined (0 confirmations), or a payment to this wallet still in
+    the pool (0 confirmations; the pool is kept per transaction, so one
+    piece per transaction there). These are exactly the money `Balance`
+    counts as not unlocked, and a test holds them equal.
+    **Unlock times are honoured now.** The scanner used to drop every
+    output whose transaction named an unlock time, which (unnoticed) meant
+    mined rewards too, whose unlock time is 60 blocks on. Outputs locked to
+    a block are now kept with that block (`unlock_block`), and need
+    max(10, or 60 for a reward; unlock block − their height) confirmations,
+    for the balance, for choosing what to spend and for this list alike.
+    Outputs locked to a time are still not kept: the phone's clock can't
+    say when they unlock. Rewards already passed by an existing wallet only
+    appear after a restore from an earlier height.
+47. **Where a piece came from**: "Received · 08:40" (when it arrived), or
+    "Change · Corner Café" / "Change · 86Ux … 7kQa" when it is change from
+    one of this wallet's own payments, named as Activity titles it; change
+    from a spend found on the chain that this phone didn't send (a restored
+    wallet) is just "Change".
+48. **When it will be ready**: about 2 minutes a remaining block, counted
+    from the last block scanned if it came within the last 2 minutes, else
+    from now (the wallet is catching up, a block is late, or the phone's
+    clock is behind the block's). "09:02" is the phone's time of day only,
+    with no date (a 60-block reward can cross midnight; rare enough).
+    "in 14 min", rounded up, at least "in 1 min", then "in 1 h 20 min".
+    Pieces are listed soonest ready first. Home asks Rust again every 30 s
+    while the card shows, so the times count down between blocks.
+49. **The summary**: "1.253 XMR not ready yet", "3 pieces · all ready about
+    09:07" ("1 piece · ready about …"), and progress weighted by amount,
+    Σ(amount × confirmations ÷ needed) ÷ total, shown as a whole percent
+    rounded down. The old "confirming" pill and `Balance::confirming` are
+    gone.
+50. **The card**: folded by default under the balance; a button with
+    expanded/collapsed state for TalkBack; the bar and each ring report
+    themselves as progress. Green is `Fob.green` (not the brighter
+    `greenFill`), which keeps 3:1 against the line colour in light mode.
+51. **A payment's own screen takes its status from Rust**
+    (`activity::status`): Activity's words while it waits ("Sending",
+    "On the way", "Confirming · 3 of 10", "Not ready · 3 of 10"), then
+    "Confirmed · 24". The app's `settled` flag went with it.

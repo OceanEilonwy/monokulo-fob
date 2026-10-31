@@ -57,8 +57,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -358,10 +360,15 @@ fun SyncChip(text: String, synced: Boolean, progress: Float, error: Boolean, onC
     }
 }
 
+/** A bar on the line colour, filled as far as [progress] (0 to 1); TalkBack reads it as a progress bar. */
 @Composable
-fun ProgressBar(progress: Float, height: Dp = 6.dp) {
-    Box(Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2)).background(Fob.line)) {
-        Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(height).clip(RoundedCornerShape(height / 2)).background(Fob.orange))
+fun ProgressBar(progress: Float, height: Dp = 6.dp, fill: Color = Fob.orange) {
+    val done = progress.coerceIn(0f, 1f)
+    Box(
+        Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2)).background(Fob.line)
+            .semantics { progressBarRangeInfo = ProgressBarRangeInfo(done, 0f..1f) },
+    ) {
+        Box(Modifier.fillMaxWidth(done).height(height).clip(RoundedCornerShape(height / 2)).background(fill))
     }
 }
 

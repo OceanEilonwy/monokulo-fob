@@ -15,6 +15,7 @@ pub mod error;
 pub mod fetch;
 pub mod keys;
 pub mod network;
+pub mod not_ready;
 pub mod node;
 pub mod qr;
 pub mod receipt;
