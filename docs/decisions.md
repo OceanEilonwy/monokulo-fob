@@ -154,3 +154,19 @@ Calls made while building the first version, with why. Newest last.
     now lives in one app-wide `WalletModel` that the service shares, so the
     file is never open twice. Tested: a month of stagenet restored, Home
     pressed at 10 s, caught up in the background by 20 s, service gone.
+
+## Look
+
+36. **The mark is the Fob seal**: the Monokulo iris pressed into a disc of
+    orange wax with a calm, five-lobed edge, after the fob seals that hung on
+    watch chains and signed letters. It replaces the lens with a watch crown
+    and bow, which shrank to a blob at launcher size. One formula draws it:
+    `docs/brand/seal.py` writes the launcher, themed and status-bar icons and
+    the SVGs in `docs/brand/`, and `FobMark` uses the same edge. The themed
+    icon has its own one-colour drawable, with the ring and blades cut
+    through the wax; before, it reused the colour foreground, which Android
+    flattens to a plain disc.
+37. **In the wordmark the seal is the o**, placed from measured edges of the
+    f and b in Manrope ExtraBold: 0.125 em from the f, 0.1 em to the b
+    (the f's crossbar points straight at the seal, so equal gaps looked
+    tight on that side), and 1.24 x-heights tall, centred on the x-height.
