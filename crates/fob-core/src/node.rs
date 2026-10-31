@@ -213,6 +213,15 @@ impl Report {
         self.rows.iter().find(|r| r.mark == Mark::Fail).map_or("Working", |r| r.step.failed())
     }
 
+    /// The verdict's mark: Checking, Fail when any check failed, else Pass.
+    pub fn mark(&self) -> Mark {
+        match () {
+            _ if self.checking() => Mark::Checking,
+            _ if self.rows.iter().any(|r| r.mark == Mark::Fail) => Mark::Fail,
+            _ => Mark::Pass,
+        }
+    }
+
     pub fn usable(&self) -> Usable {
         let mut failed = self.rows.iter().filter(|r| r.mark == Mark::Fail).map(|r| r.step).peekable();
         match () {
@@ -327,6 +336,15 @@ impl Failure {
         }
     }
 
+    /// The node's certificate, if that's why a request failed: one with a
+    /// problem the node isn't marked to accept, or one no mark accepts.
+    fn refused(certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> Option<Failure> {
+        match certificate {
+            Some(Err(problem)) if !self_signed || !problem.acceptable() => Some(Failure::Certificate(problem)),
+            _ => None,
+        }
+    }
+
     /// From the transport's error text (reqwest's, with its causes).
     fn from_text(text: &str) -> Failure {
         let lower = text.to_ascii_lowercase();
@@ -404,10 +422,8 @@ impl Live {
     }
 
     fn failure(&self, e: InterfaceError) -> Failure {
-        if !self.self_signed
-            && let Some(Err(problem)) = self.transport.certificate()
-        {
-            return Failure::Certificate(problem);
+        if let Some(refused) = Failure::refused(self.transport.certificate(), self.self_signed) {
+            return refused;
         }
         match e {
             InterfaceError::InterfaceError(text) => Failure::from_text(&text),

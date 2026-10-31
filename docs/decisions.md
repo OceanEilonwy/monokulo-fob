@@ -1824,3 +1824,18 @@ Calls made while building the first version, with why. Newest last.
     Keys a badge goes under its title when both don't fit.
 244. **Money's value sits at the row's end**, by the chevron as Theme's;
     a long currency name wraps within about 150 dp.
+245. **A marked node's certificate is accepted only for what a node's own
+    can have** (review R7): self-signed (an unknown issuer, an authority's
+    certificate used as the server's own, monerod's version 1), expired,
+    not yet valid, or for another name. A certificate that is broken,
+    revoked or wrongly signed by its authority is "not valid, not
+    accepted" whatever the mark, rather than read as self-signed; a
+    handshake not signed by the certificate's key (someone answering with
+    a certificate they don't hold the key of) fails the Certificate row
+    as "signature doesn't match, not accepted", not "couldn't connect".
+    Fob's node client follows no redirects (monerod never sends one): one
+    would take the node's certificate rule, and a name lookup that skips
+    the onion check, to another host; it reads "answered 307". The
+    connection kept is keyed by the node and its mark together, so a mark
+    taken off mid-connection never leaves a relaxed one in use. The
+    Working card's mark comes from Rust (`Report::mark`).
