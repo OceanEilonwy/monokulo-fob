@@ -14,6 +14,7 @@ import uniffi.fob.ActivityDay
 import uniffi.fob.Balance
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
+import uniffi.fob.NotReady
 import uniffi.fob.Prepared
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
@@ -45,6 +46,10 @@ class WalletModel(private val app: Application) {
     /** Activity grouped by the phone's days, ready to draw. */
     private val _activity = MutableStateFlow<List<ActivityDay>>(emptyList())
     val activity: StateFlow<List<ActivityDay>> = _activity
+
+    /** The money not ready to spend yet, piece by piece; null when all of it is. */
+    private val _notReady = MutableStateFlow<NotReady?>(null)
+    val notReady: StateFlow<NotReady?> = _notReady
 
     /**
      * Light, dark or as the phone is. Only how Fob looks, the same for every
@@ -113,7 +118,9 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return
         _balance.value = wallet.balance()
         val now = System.currentTimeMillis()
-        _activity.value = wallet.activityDays((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+        val (seconds, offset, hours24) = Triple((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+        _activity.value = wallet.activityDays(seconds, offset, hours24)
+        _notReady.value = wallet.notReady(seconds, offset, hours24)
     }
 
     /** Pull to refresh: asks the node now, and returns once that round is over. */
@@ -187,6 +194,7 @@ class WalletModel(private val app: Application) {
         _wallet.value = null
         _balance.value = null
         _activity.value = emptyList()
+        _notReady.value = null
         _status.value = null
         prefs.edit().putString("network", network.name.lowercase()).apply()
         _network.value = network
@@ -200,6 +208,7 @@ class WalletModel(private val app: Application) {
         _wallet.value = null
         _balance.value = null
         _activity.value = emptyList()
+        _notReady.value = null
         _status.value = null
         File(path(network)).delete()
     }

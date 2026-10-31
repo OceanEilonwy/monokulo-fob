@@ -22,7 +22,7 @@ use monero_wallet::{
     interface::prelude::*,
     ringct::RctType,
     send::{Change, SendError, SignableTransaction},
-    transaction::{Input, Transaction},
+    transaction::{Input, Timelock, Transaction},
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -30,10 +30,12 @@ use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 use crate::{
+    activity::{Clock, short_address},
     amount,
     error::{FobError, Result},
     keys::{Keys, SeedKind, StoredKeys},
     network::Network,
+    not_ready::{self, NotReady, Piece, Source},
     receipt::ReceiptView,
     store,
     uri::{self, WalletCode},
@@ -82,6 +84,11 @@ struct Owned {
     amount: u64,
     subaddress: u32,
     coinbase: bool,
+    /// The block its transaction's unlock time names, if any (a mined
+    /// reward's is 60 blocks on): it can't be spent before the chain has
+    /// that many blocks. 0 for none.
+    #[serde(default)]
+    unlock_block: u64,
     /// The output's one-time key, in hex: a second output with the same key
     /// is the burning bug and isn't counted.
     #[serde(default)]
@@ -157,8 +164,6 @@ pub struct Balance {
     pub total: u64,
     /// What can be sent now.
     pub unlocked: u64,
-    /// Arrived but still confirming.
-    pub confirming: u64,
 }
 
 impl Balance {
@@ -631,7 +636,7 @@ impl Wallet {
         let mut balance = Balance::default();
         for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
             balance.total += output.amount;
-            if confirmations(&state, output.height) >= if output.coinbase { COINBASE_UNLOCK } else { UNLOCK } {
+            if confirmations(&state, output.height) >= output.needed() {
                 balance.unlocked += output.amount;
             }
         }
@@ -641,8 +646,47 @@ impl Wallet {
         for (amount, _) in self.inner.pool.lock().expect("pool lock").values() {
             balance.total += amount;
         }
-        balance.confirming = balance.total - balance.unlocked;
         balance
+    }
+
+    /// Each output not ready to spend yet, the same money
+    /// [`balance`](Wallet::balance) counts as not unlocked: outputs short of
+    /// their confirmations, change from payments not yet mined, and payments
+    /// to this wallet still in the pool (one piece per transaction there).
+    async fn not_ready_pieces(&self) -> (Vec<not_ready::Piece>, u64) {
+        let state = self.inner.state.lock().await;
+        // A payment's name, as Activity titles it.
+        let name = |sent: &Sent| match sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok()) {
+            Some(receipt) => ReceiptView::from(&receipt).merchant,
+            None => short_address(&sent.to),
+        };
+        let mut pieces = vec![];
+        for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
+            let needed = output.needed();
+            let confirmations = confirmations(&state, output.height);
+            if confirmations >= needed {
+                continue;
+            }
+            let source = match state.sent.iter().find(|s| s.tx == output.tx) {
+                Some(sent) => Source::Change(Some(name(sent))),
+                None if state.spends.iter().any(|s| s.tx == output.tx) => Source::Change(None),
+                None => Source::Received,
+            };
+            pieces.push(Piece { amount: output.amount, confirmations, needed, source, time: output.time });
+        }
+        for sent in state.sent.iter().filter(|s| s.height.is_none() && s.change > 0) {
+            pieces.push(Piece { amount: sent.change, confirmations: 0, needed: UNLOCK, source: Source::Change(Some(name(sent))), time: sent.time });
+        }
+        for (amount, seen) in self.inner.pool.lock().expect("pool lock").values() {
+            pieces.push(Piece { amount: *amount, confirmations: 0, needed: UNLOCK, source: Source::Received, time: *seen });
+        }
+        (pieces, state.last_block_time)
+    }
+
+    /// The money not ready yet as Home shows it, or `None` when all of it is.
+    pub async fn not_ready(&self, clock: Clock) -> Option<NotReady> {
+        let (pieces, last_block_time) = self.not_ready_pieces().await;
+        not_ready::summarise(pieces, last_block_time, clock)
     }
 
     /// Every payment in and out, newest first, unconfirmed ones on top.
@@ -844,7 +888,15 @@ impl Wallet {
 
             *self.inner.last_block.lock().expect("block lock") = Some(scannable.block.clone());
             let found = scanner.scan(scannable).map_err(|e| FobError::Node(format!("scanning block {height}: {e:?}")))?;
-            for output in found.not_additionally_locked() {
+            for output in found.ignore_additional_timelock() {
+                // Locked to a block (a mined reward, rarely anything else):
+                // kept, and not spent before then. Locked to a time: not
+                // kept, as before, since a phone's clock can't say when.
+                let unlock_block = match output.additional_timelock() {
+                    Timelock::None => 0,
+                    Timelock::Block(block) => block as u64,
+                    Timelock::Time(_) => continue,
+                };
                 let tx = hex::encode(output.transaction());
                 let key = hex::encode(output.key().compress().to_bytes());
                 // Seen before: the same output again, or the burning bug (a
@@ -862,6 +914,7 @@ impl Wallet {
                 state.outputs.push(Owned {
                     output: hex::encode(output.serialize()),
                     coinbase: tx == miner_tx,
+                    unlock_block,
                     key,
                     tx,
                     height,
@@ -1134,7 +1187,7 @@ impl Wallet {
                 .enumerate()
                 .filter(|(_, o)| {
                     o.spent_in.is_none()
-                        && confirmations(&state, o.height) >= if o.coinbase { COINBASE_UNLOCK } else { UNLOCK }
+                        && confirmations(&state, o.height) >= o.needed()
                 })
                 .filter_map(|(i, o)| {
                     let bytes = hex::decode(&o.output).ok()?;
@@ -1249,6 +1302,16 @@ impl Wallet {
     }
 }
 
+impl Owned {
+    /// Confirmations before it can be spent: 10 (60 for a mined reward), or
+    /// more if its unlock time names a later block. Monero lets an output
+    /// with unlock time `b` be spent once the chain has `b` blocks.
+    fn needed(&self) -> u64 {
+        let window = if self.coinbase { COINBASE_UNLOCK } else { UNLOCK };
+        window.max(self.unlock_block.saturating_sub(self.height))
+    }
+}
+
 fn confirmations(state: &State, height: u64) -> u64 {
     state.tip.saturating_sub(height)
 }
@@ -1271,6 +1334,70 @@ mod tests {
         assert_eq!(april - march, 31 * 720);
         assert!(restore_point(Network::Mainnet, "12/03/2026").is_err());
         assert!(restore_point(Network::Mainnet, "2026-13-01").is_err());
+    }
+
+    #[tokio::test]
+    async fn money_not_ready_is_found_piece_by_piece() {
+        let wallet = Wallet::create(&dir("not-ready"), [1; 32], Network::Stagenet).unwrap();
+        let owned = |tx: &str, height: u64, amount: u64, coinbase: bool| Owned {
+            output: String::new(),
+            tx: tx.into(),
+            height,
+            time: 1_000 + height,
+            amount,
+            subaddress: 0,
+            coinbase,
+            unlock_block: if coinbase { height + 60 } else { 0 },
+            key: tx.into(),
+            key_image: None,
+            spent_in: None,
+        };
+        let sent = |tx: &str, height: Option<u64>, change: u64| Sent {
+            tx: tx.into(),
+            to: "86Ux3m9Pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7kQa".into(),
+            amount: 1,
+            fee: 1,
+            change,
+            time: 5_000,
+            height,
+            receipt: None,
+        };
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.tip = 100;
+            state.last_block_time = 4_000;
+            state.outputs = vec![
+                owned("in", 97, 10, false),
+                owned("old", 50, 20, false),
+                owned("mined", 80, 30, true),
+                owned("change", 99, 40, false),
+                owned("restored", 98, 50, false),
+                Owned { unlock_block: 200, ..owned("locked", 40, 80, false) },
+            ];
+            state.sent = vec![sent("change", Some(99), 40), sent("pending", None, 60), sent("nothing-back", None, 0)];
+            state.spends = vec![ChainSpend { tx: "restored".into(), height: 98, time: 1_098, fee: 1 }];
+        }
+        wallet.inner.pool.lock().unwrap().insert("pool".into(), (70, 6_000));
+
+        let (pieces, last) = wallet.not_ready_pieces().await;
+        let shown: Vec<_> = pieces.iter().map(|p| (p.amount, p.confirmations, p.needed, p.source.clone())).collect();
+        let to = Some("86Ux … 7kQa".to_owned());
+        assert_eq!(
+            shown,
+            [
+                (10, 3, 10, Source::Received),
+                (30, 20, 60, Source::Received),
+                (40, 1, 10, Source::Change(to.clone())),
+                (50, 2, 10, Source::Change(None)),
+                (80, 60, 160, Source::Received),
+                (60, 0, 10, Source::Change(to)),
+                (70, 0, 10, Source::Received),
+            ]
+        );
+        assert_eq!(last, 4_000);
+        // The same money the balance counts as not unlocked.
+        let balance = wallet.balance().await;
+        assert_eq!(balance.total - balance.unlocked, pieces.iter().map(|p| p.amount).sum::<u64>());
     }
 
     #[tokio::test]
@@ -1315,9 +1442,9 @@ mod tests {
 
     #[test]
     fn the_ready_line_shows_only_while_some_money_is_waiting() {
-        let all = Balance { total: 2_500_000_000_000, unlocked: 2_500_000_000_000, confirming: 0 };
+        let all = Balance { total: 2_500_000_000_000, unlocked: 2_500_000_000_000 };
         assert_eq!(all.ready_text(), None);
-        let some = Balance { total: 2_500_000_000_000, unlocked: 500_000_000_000, confirming: 2_000_000_000_000 };
+        let some = Balance { total: 2_500_000_000_000, unlocked: 500_000_000_000 };
         assert_eq!(some.ready_text().as_deref(), Some("0.5 XMR ready to spend"));
     }
 

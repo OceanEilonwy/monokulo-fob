@@ -100,11 +100,7 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
             Card {
                 InfoRow("Transaction", activity.tx.take(4) + "…" + activity.tx.takeLast(4), mono = true)
                 Divider()
-                InfoRow("Status", when {
-                    activity.pending -> if (activity.outgoing) "Sending" else "On the way"
-                    activity.settled -> "Confirmed · ${activity.confirmations}"
-                    else -> "Confirming · ${activity.confirmations} of 10"
-                })
+                InfoRow("Status", activity.statusText)
                 activity.feeText?.let { Divider(); InfoRow("Network fee", "$it XMR") }
                 activity.to?.let { Divider(); InfoRow("To", it.take(8) + "…" + it.takeLast(6), mono = true) }
             }

@@ -1,31 +1,53 @@
 package com.monokulo.fob.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.collapse
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.expand
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -34,6 +56,7 @@ import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.FobMark
 import com.monokulo.fob.ui.IconBadge
@@ -46,9 +69,12 @@ import com.monokulo.fob.ui.ProgressBar
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
 import com.monokulo.fob.ui.display
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.fob.ActivityRow
 import uniffi.fob.Network
+import uniffi.fob.NotReady
+import uniffi.fob.NotReadyPiece
 import uniffi.fob.SyncStatus
 import java.text.DateFormat
 import java.util.Date
@@ -65,12 +91,20 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
     val balance by model.balance.collectAsState()
     val activity by model.activity.collectAsState()
     val status by model.status.collectAsState()
+    val notReady by model.notReady.collectAsState()
     val network by model.network.collectAsState()
     val synced = status?.synced == true
     val error = status?.error
     val canSpend = wallet?.canSpend() != false
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
+    // Ready times count down between blocks: Rust writes them again each half minute.
+    LaunchedEffect(notReady != null) {
+        while (notReady != null) {
+            delay(30_000)
+            model.refresh()
+        }
+    }
 
     Page(refreshing = refreshing, onRefresh = {
         refreshing = true
@@ -101,17 +135,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 Text("XMR", fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Fob.muted, modifier = Modifier.padding(bottom = 10.dp))
             }
             balance?.readyText?.let { Text(it, color = Fob.muted, fontSize = 15.sp) }
-            balance?.let { b ->
-                if (b.confirming > 0u) {
-                    Row(
-                        Modifier.padding(top = 14.dp).clip(RoundedCornerShape(18.dp)).background(Fob.sunken).padding(start = 10.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        StrokeIcon(Icons.down, tint = Fob.green, size = 18.dp)
-                        Text("${b.confirmingText} XMR confirming · ${b.unlockedText} ready", fontSize = 14.sp)
-                    }
-                }
-            }
+            notReady?.let { NotReadyCard(it) }
             val s = status
             if (s != null && !s.synced && s.tip > 0u) {
                 Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -131,7 +155,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             if (!canSpend) Text("This wallet only watches: it can see payments but not send them.", color = Fob.muted, fontSize = 13.sp)
         }
 
-        Card(Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 24.dp), padding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)) {
+        Card(Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 24.dp), padding = PaddingValues(vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 10.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Activity", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 if (!synced && activity.isNotEmpty()) Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp)
@@ -147,6 +171,88 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 day.rows.forEach { row -> PaymentRow(row) { nav.go(Screen.Receipt(row.activity)) } }
             }
         }
+    }
+}
+
+/**
+ * Money not ready to spend yet: folded, one line and a bar; opened, a row
+ * per piece with its confirmations in a ring. Rust wrote every word.
+ */
+@Composable
+private fun NotReadyCard(n: NotReady) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    val turn by animateFloatAsState(if (open) -90f else 90f, label = "chevron")
+    val state = if (open) "Expanded" else "Collapsed"
+    Card(Modifier.padding(top = 16.dp), padding = PaddingValues(0.dp)) {
+        Column(
+            Modifier.fillMaxWidth()
+                .clickable(role = Role.Button, onClickLabel = if (open) "Hide pieces" else "Show pieces") { open = !open }
+                .semantics {
+                    stateDescription = state
+                    if (open) collapse { open = false; true } else expand { open = true; true }
+                }
+                .padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(n.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(n.line, color = Fob.muted, fontSize = 13.sp)
+                }
+                Text(n.percent, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Box(Modifier.rotate(turn)) { StrokeIcon(Icons.chevron, tint = Fob.muted, size = 18.dp) }
+            }
+            ProgressBar(n.progress, fill = Fob.green)
+        }
+        AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Column {
+                Divider()
+                Column(Modifier.padding(vertical = 6.dp)) { n.pieces.forEach { PieceRow(it) } }
+            }
+        }
+    }
+}
+
+/** One output not ready yet: its confirmations in a ring, where it came from, when it will be ready. */
+@Composable
+private fun PieceRow(p: NotReadyPiece) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics(mergeDescendants = true) {}.padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        ConfirmationRing(p.confirmations, p.needed, p.progress)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            // Step 4 adds the amount's fiat value beside it.
+            Text("${p.amountText} XMR", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text(p.source, color = Fob.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(p.ready, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text(p.eta, color = Fob.muted, fontSize = 12.sp)
+        }
+    }
+}
+
+/** A 34dp ring: green as far as the confirmations go, their number inside. */
+@Composable
+private fun ConfirmationRing(confirmations: ULong, needed: ULong, progress: Float) {
+    val (track, arc) = Fob.track to Fob.green
+    Box(
+        Modifier.size(34.dp).semantics {
+            contentDescription = "$confirmations of $needed confirmations"
+            progressBarRangeInfo = ProgressBarRangeInfo(confirmations.toFloat(), 0f..needed.toFloat())
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(34.dp)) {
+            val width = 3.dp.toPx()
+            val stroke = Stroke(width, cap = StrokeCap.Round)
+            val inset = Offset(width / 2, width / 2)
+            val ring = Size(size.width - width, size.height - width)
+            drawArc(track, 0f, 360f, false, topLeft = inset, size = ring, style = stroke)
+            if (progress > 0f) drawArc(arc, -90f, 360f * progress.coerceIn(0f, 1f), false, topLeft = inset, size = ring, style = stroke)
+        }
+        Text("$confirmations", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

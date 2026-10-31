@@ -44,7 +44,7 @@ pub struct Day {
 const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
 /// Days since the epoch on the phone's calendar, and seconds into that day.
-fn local(time: u64, clock: Clock) -> (i64, i64) {
+pub(crate) fn local(time: u64, clock: Clock) -> (i64, i64) {
     let t = time as i64 + i64::from(clock.utc_offset);
     (t.div_euclid(86_400), t.rem_euclid(86_400))
 }
@@ -76,7 +76,7 @@ fn day_label(day: i64, clock: Clock) -> String {
     if year == this_year { date } else { format!("{date} {year}") }
 }
 
-fn time_of_day(seconds: i64, clock: Clock) -> String {
+pub(crate) fn time_of_day(seconds: i64, clock: Clock) -> String {
     let (h, m) = (seconds / 3600, seconds % 3600 / 60);
     if clock.hours_24 {
         format!("{h:02}:{m:02}")
@@ -92,6 +92,24 @@ pub fn short_address(address: &str) -> String {
     if n <= 8 { address.to_owned() } else { format!("{} … {}", &address[..4], &address[n - 4..]) }
 }
 
+/// While a payment isn't settled: "Sending", "On the way",
+/// "Confirming · 3 of 10" (out) or "Not ready · 3 of 10" (in).
+fn waiting(activity: &Activity) -> Option<String> {
+    let out = activity.direction == Direction::Out;
+    let c = activity.confirmations;
+    match () {
+        _ if activity.height.is_none() => Some(if out { "Sending".to_owned() } else { "On the way".to_owned() }),
+        _ if c < UNLOCK => Some(format!("{} · {c} of {UNLOCK}", if out { "Confirming" } else { "Not ready" })),
+        _ => None,
+    }
+}
+
+/// A payment's status on its own screen: as in Activity while it waits,
+/// then "Confirmed · 24".
+pub fn status(activity: &Activity) -> String {
+    waiting(activity).unwrap_or_else(|| format!("Confirmed · {}", activity.confirmations))
+}
+
 fn row(activity: Activity, time: i64, clock: Clock) -> Row {
     let out = activity.direction == Direction::Out;
     let title = match (&activity.receipt, &activity.to) {
@@ -100,13 +118,11 @@ fn row(activity: Activity, time: i64, clock: Clock) -> Row {
         _ if out => "Sent".into(),
         _ => "Received".into(),
     };
-    let c = activity.confirmations;
-    let status = match () {
-        _ if activity.height.is_none() => Some(if out { "Sending".to_owned() } else { "On the way".to_owned() }),
-        _ if c < UNLOCK => Some(format!("{} · {c} of {UNLOCK}", if out { "Confirming" } else { "Not ready" })),
+    let status = match waiting(&activity) {
+        Some(waiting) => Some(waiting),
         // A receipt says it was a payment; "Sent" would only repeat it.
-        _ if out && activity.receipt.is_none() => Some("Sent".into()),
-        _ => None,
+        None if out && activity.receipt.is_none() => Some("Sent".into()),
+        None => None,
     };
     let receipt = activity.receipt.as_ref().map(|r| {
         let items = format!("{} item{}", r.item_count, if r.item_count == 1 { "" } else { "s" });
@@ -250,6 +266,26 @@ mod tests {
                 ("Kiosk Café", "Confirming · 4 of 10 · receipt, 1 item · 07:00", "−0.000000000001", Some("$13.50")),
             ]
         );
+    }
+
+    #[test]
+    fn a_payment_s_own_screen_says_where_it_is() {
+        let mut sending = activity(Direction::Out, 1, NOW, 0);
+        sending.height = None;
+        let mut on_the_way = activity(Direction::In, 1, NOW, 0);
+        on_the_way.height = None;
+        let shown: Vec<_> = [
+            sending,
+            on_the_way,
+            activity(Direction::Out, 1, NOW, 3),
+            activity(Direction::In, 1, NOW, 9),
+            activity(Direction::In, 1, NOW, 24),
+            activity(Direction::Out, 1, NOW, 10),
+        ]
+        .iter()
+        .map(status)
+        .collect();
+        assert_eq!(shown, ["Sending", "On the way", "Confirming · 3 of 10", "Not ready · 9 of 10", "Confirmed · 24", "Confirmed · 10"]);
     }
 
     #[test]
