@@ -1226,6 +1226,22 @@ impl FobWallet {
         Ok(self.inner.share_went_out(id, kind.into()).await?)
     }
 
+    /// Touch phones, while Share my profile is in front: the swap the card
+    /// service and the reader both talk to, on its own new address.
+    pub async fn start_swap(&self) -> Result<Arc<TouchSwap>> {
+        Ok(Arc::new(TouchSwap { inner: self.inner.start_swap().await? }))
+    }
+
+    /// The swap is over, done or the screen closed: kept as a share when
+    /// anything went out; their profile when it came (once).
+    pub async fn end_swap(&self, swap: Arc<TouchSwap>) -> Result<Option<Swapped>> {
+        Ok(self.inner.end_swap(&swap.inner).await?.map(|(share, scanned)| {
+            let (title, line) = profile::swapped_words(&scanned.code.name);
+            let text = uri::profile_uri(&scanned.code.address, &scanned.code.name, scanned.code.photo.as_deref());
+            Swapped { share: share.id, title, line, text, profile: scanned.into() }
+        }))
+    }
+
     /// Your shares, newest first; the clock as for `activity_days`.
     pub async fn profile_shares(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ShareLine> {
         let clock = activity::Clock { now, utc_offset, hours_24 };
@@ -1240,27 +1256,7 @@ impl FobWallet {
     /// A scanned profile code ("Another Fob scans the code"), with the
     /// contact it would change; throws when it isn't a profile.
     pub async fn scanned_profile(&self, text: String) -> Result<ScannedProfile> {
-        let s = self.inner.scanned_profile(&text).await?;
-        Ok(ScannedProfile {
-            address: s.code.address,
-            name: s.code.name,
-            photo: s.code.photo,
-            initial: s.initial,
-            address_short: s.address_short,
-            note: s.note,
-            pay: s.pay,
-            add: s.add,
-            clash: s.clash.map(|c| ProfileClash {
-                contact: c.contact.into(),
-                why: c.why,
-                changes: c.changes.into_iter().map(|c| ProfileChange { label: c.label, now: c.now, new: c.new }).collect(),
-                photo_changes: c.photo_changes,
-                ask: c.ask,
-                update: c.update,
-                keep: c.keep,
-                add_new: c.add_new,
-            }),
-        })
+        Ok(self.inner.scanned_profile(&text).await?.into())
     }
 
     /// "Add contact" or "Add as new contact" on a scanned profile.
@@ -1302,11 +1298,13 @@ pub struct ProfileRow {
 }
 
 /// How a share went out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ShareKind {
     CodeShown,
     LinkCopied,
     LinkShared,
+    /// By touching phones, with whom (none when theirs didn't come).
+    TouchedPhones { name: Option<String> },
 }
 
 impl From<ShareKind> for profile::ShareKind {
@@ -1315,6 +1313,7 @@ impl From<ShareKind> for profile::ShareKind {
             ShareKind::CodeShown => profile::ShareKind::CodeShown,
             ShareKind::LinkCopied => profile::ShareKind::LinkCopied,
             ShareKind::LinkShared => profile::ShareKind::LinkShared,
+            ShareKind::TouchedPhones { name } => profile::ShareKind::TouchedPhones { name },
         }
     }
 }
@@ -1325,8 +1324,91 @@ impl From<profile::ShareKind> for ShareKind {
             profile::ShareKind::CodeShown => ShareKind::CodeShown,
             profile::ShareKind::LinkCopied => ShareKind::LinkCopied,
             profile::ShareKind::LinkShared => ShareKind::LinkShared,
+            profile::ShareKind::TouchedPhones { name } => ShareKind::TouchedPhones { name },
         }
     }
+}
+
+/// Touch phones' swap for one Share my profile screen. The app's card
+/// service and reader hand it the bytes NFC brings and send what it gives
+/// back; the protocol is all here.
+#[derive(uniffi::Object)]
+pub struct TouchSwap {
+    inner: fob_core::swap::Session,
+}
+
+/// What the reader sends next.
+#[derive(uniffi::Enum)]
+pub enum ReaderStep {
+    /// Send this command, and give back the answer.
+    Send { apdu: Vec<u8> },
+    /// Both phones have each other's profile.
+    Done,
+    /// This touch took nothing; say why.
+    Failed { reason: String },
+}
+
+#[uniffi::export]
+impl TouchSwap {
+    /// The card's answer to a reader's command.
+    pub fn card_answer(&self, apdu: Vec<u8>) -> Vec<u8> {
+        self.inner.card_answer(&apdu)
+    }
+
+    /// The card's link went (the service was deactivated).
+    pub fn card_lost(&self) {
+        self.inner.card_lost()
+    }
+
+    /// The reader found a card: the first command, or none once over.
+    pub fn reader_start(&self) -> Option<Vec<u8>> {
+        self.inner.reader_start()
+    }
+
+    /// The card's answer to the last command: what to do next.
+    pub fn reader_next(&self, response: Vec<u8>) -> ReaderStep {
+        match self.inner.reader_next(&response) {
+            fob_core::swap::Step::Send(apdu) => ReaderStep::Send { apdu },
+            fob_core::swap::Step::Done(_) => ReaderStep::Done,
+            fob_core::swap::Step::Failed(problem) => ReaderStep::Failed { reason: problem.text() },
+        }
+    }
+
+    /// The reader's link went (the card moved away, or timed out).
+    pub fn reader_lost(&self) {
+        self.inner.reader_lost()
+    }
+
+    /// Midway through an exchange: don't switch roles now.
+    pub fn busy(&self) -> bool {
+        self.inner.busy()
+    }
+
+    /// Their profile came, as card or reader.
+    pub fn swapped(&self) -> bool {
+        self.inner.got().is_some()
+    }
+}
+
+/// What the card service answers while no Share my profile is in front:
+/// "not available", whoever asks.
+#[uniffi::export]
+pub fn swap_not_available() -> Vec<u8> {
+    fob_core::swap::NOT_AVAILABLE.to_vec()
+}
+
+/// Touched phones: both got each other's profile.
+#[derive(uniffi::Record)]
+pub struct Swapped {
+    /// The share it's kept as.
+    pub share: u64,
+    /// "Swapped with Sam"
+    pub title: String,
+    /// "Sam got your profile, and you got Sam's."
+    pub line: String,
+    /// Their profile as a code, for Add contact and Pay.
+    pub text: String,
+    pub profile: ScannedProfile,
 }
 
 /// A share of your profile and its code.
@@ -1400,6 +1482,31 @@ pub struct ScannedProfile {
     /// "Add contact"
     pub add: String,
     pub clash: Option<ProfileClash>,
+}
+
+impl From<profile::Scanned> for ScannedProfile {
+    fn from(s: profile::Scanned) -> Self {
+        ScannedProfile {
+            address: s.code.address,
+            name: s.code.name,
+            photo: s.code.photo,
+            initial: s.initial,
+            address_short: s.address_short,
+            note: s.note,
+            pay: s.pay,
+            add: s.add,
+            clash: s.clash.map(|c| ProfileClash {
+                contact: c.contact.into(),
+                why: c.why,
+                changes: c.changes.into_iter().map(|c| ProfileChange { label: c.label, now: c.now, new: c.new }).collect(),
+                photo_changes: c.photo_changes,
+                ask: c.ask,
+                update: c.update,
+                keep: c.keep,
+                add_new: c.add_new,
+            }),
+        }
+    }
 }
 
 /// Whether a scanned code is a profile (a name, maybe a photo, nothing to

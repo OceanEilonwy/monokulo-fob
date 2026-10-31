@@ -44,26 +44,32 @@ impl Profile {
     }
 }
 
-/// How a share went out. Each kind keeps its name in the file, so a kind
-/// added later (step 10's touched phones, with whom) reads beside these.
+/// How a share went out. Each kind keeps its name in the file (serde's
+/// external tags), so kinds added later read beside these.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShareKind {
-    /// The code was on screen: the kind every share starts as.
+    /// The code was on screen: the kind every share from Share my profile
+    /// starts as.
     CodeShown,
     /// Copy link was pressed on its screen.
     LinkCopied,
     /// Share was pressed on its screen.
     LinkShared,
+    /// Swapped by touching phones (NFC), with whom; no name when ours went
+    /// out whole but theirs didn't come.
+    TouchedPhones { name: Option<String> },
 }
 
 impl ShareKind {
-    /// "Code shown", "Link copied", "Link shared".
-    pub fn title(&self) -> &'static str {
+    /// "Code shown", "Link copied", "Link shared", "Touched phones with Sam".
+    pub fn title(&self) -> String {
         match self {
-            ShareKind::CodeShown => "Code shown",
-            ShareKind::LinkCopied => "Link copied",
-            ShareKind::LinkShared => "Link shared",
+            ShareKind::CodeShown => "Code shown".into(),
+            ShareKind::LinkCopied => "Link copied".into(),
+            ShareKind::LinkShared => "Link shared".into(),
+            ShareKind::TouchedPhones { name: Some(name) } => format!("Touched phones with {name}"),
+            ShareKind::TouchedPhones { name: None } => "Touched phones".into(),
         }
     }
 }
@@ -133,7 +139,7 @@ impl Book {
     }
 
     /// Records a share on `subaddress`, which must be one no share has had.
-    pub fn share(&mut self, subaddress: u32, address: String, now: u64) -> Result<Share> {
+    pub fn share(&mut self, subaddress: u32, address: String, kind: ShareKind, now: u64) -> Result<Share> {
         if self.profile.is_none() {
             return Err(FobError::Profile("Set up your profile first.".into()));
         }
@@ -142,7 +148,7 @@ impl Book {
         }
         let id = self.next_id.max(self.shares.iter().map(|s| s.id + 1).max().unwrap_or(1)).max(1);
         self.next_id = id + 1;
-        let share = Share { id, subaddress, address, kind: ShareKind::CodeShown, created: now };
+        let share = Share { id, subaddress, address, kind, created: now };
         self.shares.push(share.clone());
         Ok(share)
     }
@@ -157,10 +163,12 @@ impl Book {
     }
 
     /// Copy link or Share pressed on a share's screen: it's now that kind,
-    /// the last pressed. Returns whether it changed.
+    /// the last pressed. A share made by touching phones stays one: who it
+    /// went to is what it's listed by. Returns whether it changed.
     pub fn went_out(&mut self, id: u64, kind: ShareKind) -> bool {
+        let link = matches!(kind, ShareKind::LinkCopied | ShareKind::LinkShared);
         match self.shares.iter_mut().find(|s| s.id == id) {
-            Some(s) if s.kind != kind && kind != ShareKind::CodeShown => {
+            Some(s) if link && s.kind != kind && !matches!(s.kind, ShareKind::TouchedPhones { .. }) => {
                 s.kind = kind;
                 true
             }
@@ -232,7 +240,7 @@ pub fn lines(book: &Book, rows: &[Activity], clock: Clock) -> Vec<Line> {
                 id: s.id,
                 address: s.address.clone(),
                 kind: s.kind.clone(),
-                title: s.kind.title().into(),
+                title: s.kind.title(),
                 when: when(s.created, clock),
                 any: got.is_some(),
                 received: got.unwrap_or_else(|| "nothing yet".into()),
@@ -267,6 +275,12 @@ pub fn shared_text(created: u64, clock: Clock) -> String {
 
 /// The title of a payment that came to a share's address.
 pub const VIA: &str = "Via your profile";
+
+/// What Swapped says once phones have touched: "Swapped with Sam" and
+/// "Sam got your profile, and you got Sam's."
+pub fn swapped_words(name: &str) -> (String, String) {
+    (format!("Swapped with {name}"), format!("{name} got your profile, and you got {name}'s."))
+}
 
 /// Settings' row: "Your profile" with "Henry · name and photo, share as a
 /// code", or "Set up your profile" before there's one.
@@ -480,11 +494,11 @@ mod tests {
     fn a_share_needs_a_profile_and_an_address_of_its_own_and_goes_out_as_pressed() {
         let keys = Keys::generate(Network::Stagenet).keys;
         let mut book = Book::default();
-        assert!(book.share(5, keys.address(5), NOW).is_err(), "no profile yet");
+        assert!(book.share(5, keys.address(5), ShareKind::CodeShown, NOW).is_err(), "no profile yet");
         book.set("Henry", None).unwrap();
-        let first = book.share(5, keys.address(5), NOW - DAY * 3).unwrap();
-        assert!(book.share(5, keys.address(5), NOW).is_err(), "that address is the first share's");
-        let second = book.share(6, keys.address(6), NOW).unwrap();
+        let first = book.share(5, keys.address(5), ShareKind::CodeShown, NOW - DAY * 3).unwrap();
+        assert!(book.share(5, keys.address(5), ShareKind::CodeShown, NOW).is_err(), "that address is the first share's");
+        let second = book.share(6, keys.address(6), ShareKind::CodeShown, NOW).unwrap();
         assert_eq!((first.id, second.id, second.kind.clone()), (1, 2, ShareKind::CodeShown));
         assert!(book.went_out(second.id, ShareKind::LinkCopied));
         assert!(book.went_out(second.id, ShareKind::LinkShared));
@@ -507,8 +521,8 @@ mod tests {
         let keys = Keys::generate(Network::Stagenet).keys;
         let mut book = Book::default();
         book.set("Henry", None).unwrap();
-        let old = book.share(3, keys.address(3), NOW - DAY * 3).unwrap();
-        book.share(4, keys.address(4), NOW - 2 * 3600).unwrap();
+        let old = book.share(3, keys.address(3), ShareKind::CodeShown, NOW - DAY * 3).unwrap();
+        book.share(4, keys.address(4), ShareKind::CodeShown, NOW - 2 * 3600).unwrap();
         book.went_out(old.id, ShareKind::LinkCopied);
         let rows = vec![paid_in(4, 30_000_000_000, NOW - 3600, Some(166_000_000)), paid_in(4, 10_000_000_000, NOW - 1800, Some(165_000_000)), paid_in(3, 5_000_000_000, NOW, None)];
         let lines = lines(&book, &rows, clock());
@@ -524,6 +538,24 @@ mod tests {
         );
         assert_eq!(shared_text(NOW - 2 * 3600, clock()), "Shared 10:00");
         assert_eq!(shared_text(NOW - DAY * 3, clock()), "Shared 28 Oct");
+    }
+
+    #[test]
+    fn a_share_by_touching_phones_names_whom_and_stays_one() {
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let mut book = Book::default();
+        book.set("Henry", None).unwrap();
+        let sam = book.share(7, keys.address(7), ShareKind::TouchedPhones { name: Some("Sam".into()) }, NOW).unwrap();
+        let nobody = book.share(8, keys.address(8), ShareKind::TouchedPhones { name: None }, NOW + 1).unwrap();
+        // Copy link on its code again doesn't make it a link.
+        assert!(!book.went_out(sam.id, ShareKind::LinkCopied));
+        let titles: Vec<String> = lines(&book, &[], clock()).into_iter().map(|l| l.title).collect();
+        assert_eq!(titles, ["Touched phones", "Touched phones with Sam"]);
+        let json = serde_json::to_string(&book).unwrap();
+        assert!(json.contains(r#""kind":{"touched_phones":{"name":"Sam"}}"#), "{json}");
+        assert_eq!(serde_json::from_str::<Book>(&json).unwrap(), book);
+        assert_eq!(book.get(nobody.id).unwrap().kind, ShareKind::TouchedPhones { name: None });
+        assert_eq!(swapped_words("Sam"), ("Swapped with Sam".into(), "Sam got your profile, and you got Sam's.".into()));
     }
 
     #[test]

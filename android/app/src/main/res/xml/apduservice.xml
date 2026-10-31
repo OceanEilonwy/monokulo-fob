@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Touch phones: Fob's own application on the card side, answered only
+     while Share my profile is in front on an unlocked phone. The AID is
+     fob-core's swap::AID (F0 then "FOBSWAP"); a test there checks it. -->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/swap_service"
+    android:requireDeviceUnlock="true">
+    <aid-group android:description="@string/swap_service" android:category="other">
+        <aid-filter android:name="F0464F4253574150" />
+    </aid-group>
+</host-apdu-service>

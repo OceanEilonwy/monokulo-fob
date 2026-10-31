@@ -11,6 +11,7 @@
 //! - [`requests`]: requests to be paid, each on an address of its own.
 //! - [`profile`]: your name and photo, shared as a code on a new address
 //!   each time.
+//! - [`swap`]: touch phones, two Fobs swapping profiles over NFC.
 //! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
@@ -31,6 +32,7 @@ pub mod qr;
 pub mod receipt;
 pub mod requests;
 pub mod split;
+pub mod swap;
 pub mod transport;
 mod store;
 pub mod uri;

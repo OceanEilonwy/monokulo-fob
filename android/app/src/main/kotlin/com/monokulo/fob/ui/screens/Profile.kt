@@ -2,6 +2,23 @@ package com.monokulo.fob.ui.screens
 
 import android.content.ClipData
 import android.content.Intent
+import android.os.Build
+import android.view.HapticFeedbackConstants
+import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.border
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.monokulo.fob.Nfc
+import com.monokulo.fob.SwapRunner
+import com.monokulo.fob.TouchPhones
+import com.monokulo.fob.nfcState
+import kotlinx.coroutines.flow.first
+import uniffi.fob.Swapped
+import uniffi.fob.TouchSwap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -242,8 +259,11 @@ private fun ShareRow(s: ShareLine, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(Modifier.size(32.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) {
-            // Step 10 adds touched phones' icon.
-            StrokeIcon(if (s.kind == ShareKind.CODE_SHOWN) Icons.request else Icons.link, size = 16.dp)
+            when (s.kind) {
+                is ShareKind.CodeShown -> StrokeIcon(Icons.request, size = 16.dp)
+                is ShareKind.TouchedPhones -> StrokeIcon(Icons.touch, size = 16.dp, width = 1.8f)
+                else -> StrokeIcon(Icons.link, size = 16.dp)
+            }
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(s.title, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -257,24 +277,217 @@ private fun ShareRow(s: ShareLine, onClick: () -> Unit) {
 }
 
 /**
- * A share's code (Round 6 › "Share my profile: code, or touch phones"):
- * white in both themes with the screen as bright as it goes, the photo and
- * name over a dense code as wide as the screen, then Copy link and Share,
- * each kept as how the share went out. Close goes back.
+ * Share my profile (Round 6 › "Share my profile: code, or touch phones"):
+ * the share's code, and while it's open with NFC on, touch phones: this
+ * phone answers as a card and now and then reads, so another Fob on this
+ * screen held to it swaps profiles, each on a new address of its own. The
+ * strip opens Touch phones, which says how; either way a swap ends on
+ * Swapped, with a buzz.
  */
 @Composable
 fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
     val wallet by model.wallet.collectAsState()
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val clipboard = LocalClipboard.current
+    val view = LocalView.current
     var share by remember { mutableStateOf<ProfileShare?>(null) }
     var profile by remember { mutableStateOf<Profile?>(null) }
+    var touching by remember { mutableStateOf(false) }
+    var swapped by remember { mutableStateOf<Swapped?>(null) }
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
         share = w.shareCode(id) ?: run { nav.back(); return@LaunchedEffect }
         profile = w.profile()
     }
+    val nfc = rememberTouchPhones(model, running = swapped == null) { done ->
+        swapped = done
+        view.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.LONG_PRESS)
+    }
+    BackHandler(enabled = touching && swapped == null) { touching = false }
+    val done = swapped
+    when {
+        done != null -> SwappedView(model, nav, profile, done)
+        touching -> TouchView(profile, onBack = { touching = false })
+        else -> ShareCode(model, nav, id, share, profile, nfc, onTouch = { touching = true })
+    }
+}
+
+/**
+ * Touch phones while Share my profile is open: NFC as it is now (looked at
+ * again on coming back, from its settings say), the swap once it's on,
+ * answering and reading only while the screen is in front and [running],
+ * and [onSwapped] once theirs came. Leaving ends the swap, kept as a share
+ * when ours went out.
+ */
+@Composable
+private fun rememberTouchPhones(model: WalletModel, running: Boolean, onSwapped: (Swapped) -> Unit): Nfc {
+    val context = LocalContext.current
+    val activity = LocalActivity.current
+    val scope = rememberCoroutineScope()
+    val swappedNow by rememberUpdatedState(onSwapped)
+    var nfc by remember { mutableStateOf(nfcState(context)) }
+    var swap by remember { mutableStateOf<TouchSwap?>(null) }
+    LifecycleResumeEffect(Unit) {
+        nfc = nfcState(context)
+        onPauseOrDispose {}
+    }
+    // Made once NFC is on, so a phone without it hands out no address.
+    LaunchedEffect(nfc) { if (nfc == Nfc.ON && swap == null) swap = runCatching { model.startSwap() }.getOrNull() }
+    val s = swap
+    DisposableEffect(s) { onDispose { if (s != null) model.endSwapLater(s) } }
+    if (s != null && activity != null && running) {
+        LifecycleResumeEffect(s) {
+            val runner = SwapRunner(activity, s, scope)
+            runner.start()
+            onPauseOrDispose { runner.stop() }
+        }
+    }
+    LaunchedEffect(s) {
+        if (s == null) return@LaunchedEffect
+        TouchPhones.swapped.first { it === s }
+        runCatching { model.endSwap(s) }.getOrNull()?.let { swappedNow(it) }
+    }
+    return nfc
+}
+
+/** "Or touch phones", on the white of the code: opens Touch phones, or NFC's settings while it's off. */
+@Composable
+private fun TouchStrip(nfc: Nfc, onClick: () -> Unit) {
+    Row(
+        Modifier.padding(horizontal = 24.dp).clip(RoundedCornerShape(20.dp)).background(Fob.qrStrip)
+            .clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) {}
+            .heightIn(min = 48.dp).padding(start = 12.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        StrokeIcon(Icons.touch, tint = Fob.qrAccent, size = 28.dp, width = 1.8f)
+        Column {
+            Text("Or touch phones", color = Fob.qrDark, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (nfc == Nfc.ON) "Both on this screen, backs together: you swap" else "NFC is off. Tap to turn it on, then come back.",
+                color = Fob.qrMuted, fontSize = 12.5.sp, lineHeight = 17.sp,
+            )
+        }
+    }
+}
+
+/**
+ * Touch phones (Round 6 › "Touch phones"): rings round your photo, how to
+ * hold the phones, why the last touch took nothing, and the way back to
+ * the code. The swap runs as on the code.
+ */
+@Composable
+private fun TouchView(profile: Profile?, onBack: () -> Unit) {
+    val problem by TouchPhones.problem.collectAsState()
+    Column(Modifier.fillMaxSize().background(Fob.paper).safeDrawingPadding()) {
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack, modifier = Modifier.semantics { contentDescription = "Back to the code" }) { StrokeIcon(Icons.close, size = 20.dp) }
+        }
+        Column(
+            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(start = 28.dp, end = 28.dp, bottom = 60.dp),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
+        ) {
+            Box(Modifier.size(220.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.matchParentSize().border(2.dp, Fob.line, CircleShape))
+                Box(Modifier.matchParentSize().padding(30.dp).border(2.dp, Fob.track, CircleShape))
+                Box(Modifier.matchParentSize().padding(60.dp).clip(CircleShape).background(Fob.highlight))
+                profile?.let { Avatar(it.name, it.initial, it.photo, 88.dp) }
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Touch phones", style = display(26), textAlign = TextAlign.Center, modifier = Modifier.semantics { heading() })
+                Text(
+                    "Hold the backs of the two phones together. The other person needs Fob open on Share my profile too.",
+                    color = Fob.muted, fontSize = 16.sp, lineHeight = 23.sp, textAlign = TextAlign.Center,
+                )
+            }
+            problem?.let { Text(it, fontSize = 14.sp, lineHeight = 20.sp, textAlign = TextAlign.Center, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
+            Box(Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).clickable(role = Role.Button, onClick = onBack).padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                Text("No NFC? Scan each other's code instead.", color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
+/**
+ * Swapped (Round 6 › "Swapped: both got each other"): both photos with a
+ * tick, Rust's words, their name and address, then Not now (back to Your
+ * profile) or Add contact, which asks first when it would change a
+ * contact (decision 5), as a scanned profile does.
+ */
+@Composable
+private fun SwappedView(model: WalletModel, nav: Nav, profile: Profile?, done: Swapped) {
+    val network by model.network.collectAsState()
+    val scope = rememberCoroutineScope()
+    val found = done.profile
+    var asking by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = asking) { asking = false }
+    Box(Modifier.fillMaxSize().background(Fob.paper)) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Column(
+                Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 40.dp),
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                Box(Modifier.width(194.dp).height(80.dp)) {
+                    profile?.let { Avatar(it.name, it.initial, it.photo, 80.dp, Modifier.align(Alignment.CenterStart), describe = true) }
+                    Avatar(found.name, found.initial, found.photo, 80.dp, Modifier.align(Alignment.CenterEnd), describe = true)
+                    Box(
+                        Modifier.align(Alignment.Center).size(44.dp).clip(CircleShape).background(Fob.paper).padding(4.dp).clip(CircleShape).background(Fob.greenFill),
+                        contentAlignment = Alignment.Center,
+                    ) { StrokeIcon(Icons.check, tint = Fob.onGreen, size = 20.dp, width = 2.8f) }
+                }
+                Text(done.title, style = display(26), textAlign = TextAlign.Center, modifier = Modifier.semantics { heading() })
+                Text(done.line, color = Fob.muted, fontSize = 15.sp, lineHeight = 21.sp, textAlign = TextAlign.Center)
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Fob.card).padding(horizontal = 20.dp, vertical = 16.dp)
+                        .semantics(mergeDescendants = true) {},
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Avatar(found.name, found.initial, found.photo, 48.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(found.name, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AddressPattern(found.address, 18.dp)
+                            Text(found.addressShort, fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Fob.muted, maxLines = 1)
+                        }
+                    }
+                }
+                ErrorText(error)
+            }
+            Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlineButton("Not now", { nav.back() }, Modifier.weight(1f))
+                PrimaryButton(found.add, {
+                    if (found.clash != null) asking = true
+                    else scope.launch {
+                        error = null
+                        runCatching { model.changeContacts { it.addContactFromProfile(done.text) } }
+                            .onSuccess { nav.replace(Screen.Contact(it.id)) }.onFailure { error = it.reason() }
+                    }
+                }, Modifier.weight(1f))
+            }
+        }
+        if (asking) {
+            Box(Modifier.fillMaxSize().background(Fob.scrim).clickable(onClickLabel = "Close", indication = null, interactionSource = null) { asking = false })
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                ProfileFound(
+                    model, nav, done.text, found,
+                    onPay = { nav.replace(Screen.Send(draft = SendDraft(found.address, request = parsePayment(network, done.text), read = done.text))) },
+                    onClose = { asking = false }, startAsking = true, openContact = { nav.replace(Screen.Contact(it)) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A share's code: white in both themes with the screen as bright as it
+ * goes, the photo and name over a dense code as wide as the screen, the
+ * touch phones strip when the phone has NFC, then Copy link and Share,
+ * each kept as how the share went out. Close goes back.
+ */
+@Composable
+private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileShare?, profile: Profile?, nfc: Nfc, onTouch: () -> Unit) {
+    val wallet by model.wallet.collectAsState()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val clipboard = LocalClipboard.current
     FullBrightness()
     val code = share?.code
     val qr = remember(code) { code?.let { runCatching { qrCode(it) }.getOrNull() } }
@@ -290,7 +503,7 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
         }
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             // As wide as the screen allows, leaving room for the words; the quiet zone is the code's own margin.
-            val side: Dp = minOf(maxWidth - 16.dp, maxHeight - 150.dp).coerceAtLeast(160.dp)
+            val side: Dp = minOf(maxWidth - 16.dp, maxHeight - if (nfc == Nfc.NONE) 150.dp else 230.dp).coerceAtLeast(160.dp)
             Column(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterVertically),
@@ -305,7 +518,13 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
                     }
                 }
                 if (qr != null) QrImage(qr, side, description = "Your profile's code", quiet = 4) else Spacer(Modifier.size(side))
-                // Step 10: the "Or touch phones" strip (NFC swap) goes here, between the code and the line under it.
+                // Hidden on a phone without NFC; while it's off, the strip opens NFC's settings.
+                if (nfc != Nfc.NONE) {
+                    TouchStrip(nfc) {
+                        if (nfc == Nfc.ON) onTouch()
+                        else runCatching { context.startActivity(Intent(android.provider.Settings.ACTION_NFC_SETTINGS)) }
+                    }
+                }
                 Text(
                     "A new address for this share, never used again.", color = Fob.qrMuted, fontSize = 13.sp, lineHeight = 19.sp,
                     textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp),
@@ -316,12 +535,12 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
             OutlineButton("Copy link", {
                 val c = code ?: return@OutlineButton
                 scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Fob profile", c).toClipEntry()) }
-                wentOut(ShareKind.LINK_COPIED)
+                wentOut(ShareKind.LinkCopied)
             }, Modifier.weight(1f), enabled = code != null, tint = Fob.qrDark, edge = Fob.qrMuted)
             PrimaryButton("Share", {
                 val c = code ?: return@PrimaryButton
                 context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, c), null))
-                wentOut(ShareKind.LINK_SHARED)
+                wentOut(ShareKind.LinkShared)
             }, Modifier.weight(1f), enabled = code != null)
         }
     }
@@ -336,15 +555,18 @@ fun ProfileShareScreen(model: WalletModel, nav: Nav, id: ULong) {
  * new contact. Nothing changes without a press.
  */
 @Composable
-fun ProfileFound(model: WalletModel, nav: Nav, text: String, found: ScannedProfile, onPay: () -> Unit, onClose: () -> Unit) {
+fun ProfileFound(
+    model: WalletModel, nav: Nav, text: String, found: ScannedProfile, onPay: () -> Unit, onClose: () -> Unit,
+    startAsking: Boolean = false, openContact: (ULong) -> Unit = { nav.go(Screen.Contact(it)) },
+) {
     val scope = rememberCoroutineScope()
-    var asking by remember(found) { mutableStateOf(false) }
+    var asking by remember(found) { mutableStateOf(startAsking) }
     var error by remember(found) { mutableStateOf<String?>(null) }
 
     fun open(change: suspend (uniffi.fob.FobWallet) -> uniffi.fob.Contact) {
         error = null
         scope.launch {
-            runCatching { model.changeContacts(change) }.onSuccess { onClose(); nav.go(Screen.Contact(it.id)) }.onFailure { error = it.reason() }
+            runCatching { model.changeContacts(change) }.onSuccess { onClose(); openContact(it.id) }.onFailure { error = it.reason() }
         }
     }
 
@@ -387,7 +609,7 @@ fun ProfileFound(model: WalletModel, nav: Nav, text: String, found: ScannedProfi
             Text(clash.ask, color = Fob.muted, fontSize = 13.5.sp, lineHeight = 19.sp, textAlign = TextAlign.Center)
             ErrorText(error)
             PrimaryButton(clash.update, {
-                if (clash.changes.isEmpty()) { onClose(); nav.go(Screen.Contact(clash.contact.id)) }
+                if (clash.changes.isEmpty()) { onClose(); openContact(clash.contact.id) }
                 else open { it.updateContactFromProfile(clash.contact.id, text) }
             }, height = 52.dp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {

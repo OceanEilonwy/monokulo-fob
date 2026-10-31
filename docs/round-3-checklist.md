@@ -272,3 +272,32 @@ Scanning a profile (from a second device)
 Old wallet and dark mode
 - [ ] A wallet from before this step opens: no profile, Settings "Set up your profile", Activity unchanged.
 - [ ] Dark mode: editor, Your profile, the switch card, shares, the scanned sheet and the asking view (orange arrows, "now" muted) readable; avatars' initials readable.
+
+## Step 10 · Touch phones
+
+Emulators have no NFC: on one, the strip must simply not show. Everything else needs two Android phones with NFC, both with a profile, both on the same network. The protocol itself is proved by `swap.rs`'s tests.
+
+One phone, or the emulator
+- [ ] Emulator (no NFC) → Share my profile shows no "Or touch phones" strip; the code as large as before.
+- [ ] Phone with NFC on → the strip under the code: phone with waves in orange, "Or touch phones", "Both on this screen, backs together: you swap", on a warm grey pill; light and dark mode alike (the screen stays white).
+- [ ] NFC off in the phone's settings → the strip says "NFC is off. Tap to turn it on, then come back."; tap → NFC settings; turn it on, Back → the strip says "Both on this screen…".
+- [ ] Tap the strip → Touch phones: X top left (TalkBack "Back to the code"), rings round your photo (88), "Touch phones", the board's line, "No NFC? Scan each other's code instead." (tap → the code); Back → the code. Dark mode: rings and words readable on paper.
+- [ ] Hold the phone on the share screen to a contactless bank or transit card → nothing taken, maybe "The other phone isn't on Share my profile."; no crash.
+- [ ] Open Share my profile and close it without touching → Your shares has only the "Code shown" share; Receive's New address skips one number (the swap's, never given).
+
+Two phones (A and B)
+- [ ] Both on Share my profile (the code or Touch phones), backs together a second or two → both buzz and show "Swapped with <other>", both photos with a green tick, "<other> got your profile, and you got <other>'s.", the card with their name, pattern and three-part address, Not now and Add contact.
+- [ ] Only A on Share my profile, B on Home → nothing on either; A's Touch phones may say "The other phone isn't on Share my profile."
+- [ ] B on Share my profile with its screen locked (power button) → A gets nothing; unlock B onto the share screen → the swap works.
+- [ ] B in the background (Home button) with Share my profile under → A gets nothing.
+- [ ] Pull the phones apart mid-touch → no Swapped; touching again works.
+- [ ] One on stagenet, the other on mainnet → no Swapped; a line saying the address is another network's.
+- [ ] Largest profiles (40-character names, photos near 1.5 KB) both ways → swapped in one touch, about a second.
+- [ ] Add contact (no clash) → the new contact's card: name, photo, the swapped address as send address; Back → Your profile.
+- [ ] Add contact with a contact of that name already → the asking sheet ("You have a contact named Sam.", now → new, Update Sam / Keep as is / Add as new contact) over a scrim; the scrim or Back closes it; Update → Sam's card, updated.
+- [ ] Not now → Your profile; Your shares lists "Touched phones with Sam" (phone icon), "Today 09:15", that swap's pattern, "nothing yet"; Activity shows "Shared your profile" for it.
+- [ ] Pay the swapped address from the other phone → "Via your profile" in Activity and "+…" on that share.
+- [ ] Tap the "Touched phones with Sam" share → its code again; Copy link → still "Touched phones with Sam".
+- [ ] Pulled apart just as B buzzes (rare) → B has A, A hasn't B; A's shares may show "Touched phones" with no name; touching again swaps both.
+- [ ] A 40-character name → "Swapped with …" wraps; the card's name two lines at most.
+- [ ] TalkBack: the strip reads as one button; Swapped's photos are described; a failure line is announced.
