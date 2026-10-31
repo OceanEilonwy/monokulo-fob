@@ -277,10 +277,39 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (leading != null) {
-            StrokeIcon(leading, tint = Fob.onOrange, width = iconWidth)
+            StrokeIcon(leading, tint = if (enabled) Fob.onOrange else Fob.muted, width = iconWidth)
             Spacer(Modifier.width(10.dp))
         }
         Text(text, color = if (enabled) Fob.onOrange else Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * A warning that stops someone losing money or keys, one style everywhere
+ * (Backup and keys, Seed phrase, Wallet code, Home's backup reminder, the
+ * mainnet and remove dialogs, a contact's replaced address): the
+ * [Fob.warning] tint, an orange mark, ink words at body size. No edge or
+ * outline. With [title] and [onClick] it is a card that opens something,
+ * with a chevron. Over the camera it takes the camera's colours.
+ */
+@Composable
+fun Warning(
+    text: String, modifier: Modifier = Modifier, title: String? = null, icon: String = Icons.warning,
+    surface: Color = Fob.warning, ink: Color = Fob.ink, mark: Color = Fob.orangeText, onClick: (() -> Unit)? = null,
+) {
+    Row(
+        modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(surface)
+            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) {} else Modifier)
+            .padding(start = 16.dp, end = if (onClick != null) 12.dp else 16.dp, top = 14.dp, bottom = 14.dp),
+        verticalAlignment = if (onClick != null) Alignment.CenterVertically else Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        StrokeIcon(icon, tint = mark, size = 24.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            title?.let { Text(it, color = ink, fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold) }
+            Text(text, color = ink, fontSize = 15.sp, lineHeight = 21.sp)
+        }
+        if (onClick != null) StrokeIcon(Icons.chevron, tint = ink, size = 16.dp)
     }
 }
 

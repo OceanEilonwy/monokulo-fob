@@ -79,6 +79,7 @@ import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
+import com.monokulo.fob.ui.Warning
 import com.monokulo.fob.ui.display
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -262,19 +263,7 @@ private fun ReadyCard(n: NotReady) {
 /** Rust's reminder that a new wallet's seed phrase isn't written down; it opens the words after the phone's lock. */
 @Composable
 private fun BackupCard(r: BackupReminder, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(18.dp)).background(Fob.highlight)
-            .clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) {}
-            .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        StrokeIcon(Icons.lines, tint = Fob.orangeText, size = 22.dp)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(r.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Text(r.line, color = Fob.muted, fontSize = 13.sp, lineHeight = 18.sp)
-        }
-        StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
-    }
+    Warning(r.line, Modifier.padding(bottom = 12.dp), title = r.title, icon = Icons.lines, onClick = onClick)
 }
 
 /** Activity's ways to Contacts and Coins: a sunken pill, 40dp tall within a 48dp target. */

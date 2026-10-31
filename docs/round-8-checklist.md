@@ -61,3 +61,19 @@ every step is in. Each item: what to do, what should happen.
 - [ ] TalkBack on Receive's card → reads "Payment code" and offers "Show larger"; the dots aren't a separate stop.
 - [ ] Share my profile → its code is unchanged (no square in the middle), still scans with the photo.
 - [ ] Backup and keys › Wallet code → unchanged, no square; still scans.
+
+## Step 4 · Coins and warnings
+
+- [ ] New wallet, no coins → Coins shows Split up at the bottom, greyed out (sunken fill, muted words and icon); tapping does nothing; TalkBack reads "Split up, button, disabled".
+- [ ] Only a payment not ready yet (0–9 confirmations) → Split up still greyed out; once it's ready (or within 30 s of the coin turning ready) it turns orange and opens Split up.
+- [ ] Open Coins with ready coins, watching closely (or a screen record) → Split up goes from greyed to orange; never orange first then grey.
+- [ ] View-only wallet → Coins shows no Split up at all, as before.
+- [ ] Light and dark → the greyed Split up reads clearly as off, its words legible.
+- [ ] Backup and keys, light then dark → the warning sits on a clear peach (light) or deep brown (dark) block, words in full ink at body size, orange triangle; no edge or outline.
+- [ ] Seed phrase (from the hub and from Home's reminder) → "These 16 words are your wallet …" in the same block above the words; a view-only wallet's "This wallet only watches …" stays plain.
+- [ ] Wallet code, full and view-only wallet → each warning in the same block.
+- [ ] Home's backup reminder (new wallet) → same block with the lines icon, title, line in ink and a chevron; tapping it opens the seed after the lock; TalkBack reads it as one button.
+- [ ] Settings › Network › Use mainnet → the dialog's text in the warning block; Back to stagenet stays plain text. Settings › Remove this wallet → the warning block.
+- [ ] Contacts › add a contact, paste an address that replaces one → the "replaces" warning in the same block, Use it and the other button below.
+- [ ] Restore › Scan a wallet code → the warning card on the camera keeps its dark card and light words, same layout as the others.
+- [ ] 200 % font → every warning wraps inside its block, the triangle stays at the top left, nothing clipped.

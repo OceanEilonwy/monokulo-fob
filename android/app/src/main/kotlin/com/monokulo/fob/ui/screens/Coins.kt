@@ -52,7 +52,8 @@ import uniffi.fob.NotReadyPiece
 
 /**
  * Every coin the wallet holds: why there are several, the bar from Home,
- * those ready to spend and those not yet, and Split up at the bottom.
+ * those ready to spend and those not yet, and Split up at the bottom,
+ * greyed out until a coin is ready to spend.
  * Rust wrote every word.
  */
 @Composable
@@ -70,7 +71,9 @@ fun CoinsScreen(model: WalletModel, nav: Nav) {
         }
     }
     val canSpend = wallet?.canSpend() != false
-    Page(bottom = if (canSpend) ({ PrimaryButton("Split up", { nav.go(Screen.Split) }, leading = Icons.split, iconWidth = 1.8f) }) else null) {
+    // Greyed out until Rust says a coin is ready, so it never shows pressable before the coins load.
+    val canSplit = coins?.canSplit == true
+    Page(bottom = if (canSpend) ({ PrimaryButton("Split up", { nav.go(Screen.Split) }, enabled = canSplit, leading = Icons.split, iconWidth = 1.8f) }) else null) {
         TopBar("Coins", onBack = { nav.back() })
         val c = coins ?: return@Page
         Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

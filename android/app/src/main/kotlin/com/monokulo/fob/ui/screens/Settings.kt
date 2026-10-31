@@ -88,6 +88,7 @@ import androidx.compose.ui.text.withStyle
 import com.monokulo.fob.ui.Manrope
 import com.monokulo.fob.ui.Radio
 import com.monokulo.fob.ui.SearchField
+import com.monokulo.fob.ui.Warning
 import uniffi.fob.CurrencyRow
 import uniffi.fob.PriceSettings
 import uniffi.fob.Activity
@@ -222,7 +223,10 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
         AlertDialog(
             onDismissRequest = { switching = false },
             title = { Text(if (target == Network.MAINNET) "Use mainnet?" else "Back to stagenet?") },
-            text = { Text(if (target == Network.MAINNET) "Mainnet is real money. Fob is new: start with amounts you could lose. Your stagenet wallet stays here." else "Your mainnet wallet stays on this phone.") },
+            text = {
+                if (target == Network.MAINNET) Warning("Mainnet is real money. Fob is new: start with amounts you could lose. Your stagenet wallet stays here.")
+                else Text("Your mainnet wallet stays on this phone.")
+            },
             confirmButton = { TextButton("Switch", { switching = false; model.switchNetwork(target); nav.reset(if (model.hasWallet(target)) Screen.Home else Screen.Welcome) }) },
             dismissButton = { TextButton("Cancel", { switching = false }, color = Fob.ink) },
         )
@@ -243,7 +247,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
         AlertDialog(
             onDismissRequest = { forgetting = false },
             title = { Text("Remove this wallet?") },
-            text = { Text("It's deleted from this phone. Only its seed phrase or wallet code can bring it back, so check you have one first.") },
+            text = { Warning("It's deleted from this phone. Only its seed phrase or wallet code can bring it back, so check you have one first.") },
             confirmButton = { TextButton("Remove", { forgetting = false; model.forget(); nav.reset(Screen.Welcome) }, color = Fob.red) },
             dismissButton = { TextButton("Cancel", { forgetting = false }, color = Fob.ink) },
         )
@@ -672,17 +676,10 @@ fun WalletCodeScreen(model: WalletModel, nav: Nav) {
     }) {
         TopBar("Wallet code", onBack = { nav.back() })
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.highlight).padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                StrokeIcon(Icons.warning, tint = Fob.orangeText, size = 22.dp, width = 1.8f)
-                Text(
-                    if (wallet?.canSpend() != false) "This code holds the keys to spend your money. Show it only to restore this wallet, with no one watching."
-                    else "This code lets anyone see this wallet's payments.",
-                    fontSize = 14.sp, lineHeight = 20.sp,
-                )
-            }
+            Warning(
+                if (wallet?.canSpend() != false) "This code holds the keys to spend your money. Show it only to restore this wallet, with no one watching."
+                else "This code lets anyone see this wallet's payments.",
+            )
             val c = code
             if (shown && c != null) {
                 runCatching { qrCode(c) }.getOrNull()?.let { qr ->

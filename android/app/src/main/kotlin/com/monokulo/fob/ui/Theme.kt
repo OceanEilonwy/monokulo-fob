@@ -37,6 +37,11 @@ class FobColors(
     /** What sits on [greenFill]: the tick on Paid. */
     val onGreen: Color,
     val highlight: Color,
+    /**
+     * Behind a warning that stops someone losing money or keys: a stronger
+     * orange tint than [highlight], with ink words and an [orangeText] mark.
+     */
+    val warning: Color,
     /** The first, middle and last groups of an address on Receive. */
     val addressMark: Color,
     val onAddressMark: Color,
@@ -71,6 +76,7 @@ val LightColors = FobColors(
     greenFill = Color(0xFF4CC27A),
     onGreen = Color(0xFF1A1917),
     highlight = Color(0xFFFBF3E8),
+    warning = Color(0xFFF7D6B4),
     addressMark = Color(0xFFFBE3CC),
     onAddressMark = Color(0xFF7A2F00),
     red = Color(0xFFB3261E),
@@ -100,6 +106,7 @@ val DarkColors = FobColors(
     greenFill = Color(0xFF5CC88A),
     onGreen = Color(0xFF111111),
     highlight = Color(0xFF2E2418),
+    warning = Color(0xFF46301A),
     addressMark = Color(0xFF4A2A12),
     onAddressMark = Color(0xFFFFC9A0),
     red = Color(0xFFF2B8B5),
@@ -133,6 +140,7 @@ object Fob {
     val greenFill: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.greenFill
     val onGreen: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onGreen
     val highlight: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.highlight
+    val warning: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.warning
     val addressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.addressMark
     val onAddressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onAddressMark
     val red: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.red

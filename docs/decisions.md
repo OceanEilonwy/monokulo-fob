@@ -2133,3 +2133,41 @@ Calls made while building the first version, with why. Newest last.
       as before) and Backup's wallet code (`qr_code`, M, no
       pattern; it isn't an address to pay). A request's own screen keeps
       its small pattern beside the address row.
+269. **Coins: Split up greyed out until a coin is ready** (round 8 › step
+    4, item 6). `Coins.can_split` (fob-core `not_ready::coins`, FFI
+    `Coins.canSplit`) is true when some coin is ready to spend (the ready
+    sum above zero); `Wallet::coins` also clears it for a view-only
+    wallet. Kotlin passes it to `PrimaryButton(enabled = …)`; with no
+    coins, or only coins not ready yet, Split up stays in its place in
+    `PrimaryButton`'s disabled style (sunken fill, muted words and now a
+    muted icon too, where the icon stayed dark before) and can't be
+    pressed. Until the Coins view has loaded (it arrives a frame late
+    until step 7) the button is drawn disabled, so it never flashes
+    pressable. A view-only wallet still shows no Split up at all, as
+    before: it can never split, so a button greyed out for good would only
+    be noise. Not part of the condition: whether the ready coins cover a
+    note and the fee; Split up's own screen says so when they don't.
+270. **One stronger warning style** (round 8 › step 4, item 11). A new
+    `Warning` composable in ui/Components.kt and a new theme role
+    `Fob.warning` (light `#F7D6B4`, dark `#46301A`) replace the
+    `Fob.highlight` rows each screen drew itself. Words are ink (not
+    muted) at body size, 15 sp on 21 sp, the warning mark 24 dp in
+    `orangeText`; no edge, no outline, 18 dp corners. Used by: Backup and
+    keys' "Anyone who sees these …", Seed phrase's "These N words are your
+    wallet …" (was muted text with no block), Wallet code's two warnings,
+    Home's backup reminder (title, a line now in ink at body size instead
+    of muted 13 sp, its chevron), the "Use mainnet?" and "Remove this
+    wallet?" dialogs' text, a contact's "replaces …" address warning, and
+    Restore's scan screen, which keeps the camera's colours
+    (`cameraCard`, `onCamera`, `cameraWarning`) through the same
+    composable. Keys has no warning of its own (the hub's covers it).
+    Left on `highlight`, as they aren't warnings: Split up's tip (step 8
+    reworks it), the Stagenet and Quickest badges, Profile's ring.
+    Contrast (WCAG): light ink `#1A1917` on `#F7D6B4` 12.74:1, the mark
+    `#B34700` 3.99:1 (graphics need 3:1); dark ink `#F2EEE6` on `#46301A`
+    10.69:1, the mark `#FF8F45` 5.46:1; the camera's `#F4F1EA` on
+    `#3A3732` 10.50:1, mark 5.05:1. Against the page the surface went from
+    1.03:1 (light) and 1.22:1 (dark) to 1.22:1 and 1.50:1 (on a card or
+    dialog 1.10 → 1.38 and 1.11 → 1.36), so the block now reads as a
+    block. The disabled Split up: muted on sunken 6.10:1 light, 6.29:1
+    dark.

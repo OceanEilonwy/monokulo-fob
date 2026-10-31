@@ -1163,7 +1163,10 @@ impl Wallet {
         let (ready, waiting, last_block_time) = self.coin_pieces().await;
         let price = self.price_now().await;
         let age = self.price_age(clock.now).await;
-        not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), age.as_deref(), clock)
+        let mut coins = not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), age.as_deref(), clock);
+        // A view-only wallet can't split, whatever it holds.
+        coins.can_split &= self.can_spend();
+        coins
     }
 
     /// The money not ready yet as Home shows it, beside what's ready to
@@ -3028,6 +3031,8 @@ mod tests {
         let balance = wallet.balance().await;
         assert_eq!(balance.unlocked, ready.iter().map(|p| p.amount).sum::<u64>());
         assert_eq!(balance.total - balance.unlocked, pieces.iter().map(|p| p.amount).sum::<u64>());
+        // Coins ready to spend: Split up can be pressed.
+        assert!(wallet.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.can_split);
         // The Coins screen counts them all.
         let coins = wallet.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
         assert_eq!((coins.ready_coins.len(), coins.not_ready_coins.len()), (2, 7));
@@ -3069,6 +3074,23 @@ mod tests {
         let watch =
             Wallet::restore_view_only(&dir("watch"), [1; 32], Network::Stagenet, &full.primary_address(), &full.view_key_hex(), Some(5)).unwrap();
         assert!(!watch.can_spend());
+        // Even holding a ready coin, a view-only wallet can't split.
+        watch.inner.state.lock().await.outputs = vec![Owned {
+            output: String::new(),
+            tx: "in".into(),
+            height: 0,
+            time: 0,
+            amount: 10,
+            subaddress: 0,
+            coinbase: false,
+            unlock_block: 0,
+            key: "in".into(),
+            key_image: None,
+            spent_in: None,
+        }];
+        watch.inner.state.lock().await.tip = 100;
+        let coins = watch.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
+        assert!(coins.ready > 0 && !coins.can_split);
         assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::ViewOnly)));
     }
 
