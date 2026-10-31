@@ -289,8 +289,9 @@ private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
         Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
-        Text(value, fontSize = 15.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Text(title, fontSize = 16.sp)
+        // The value at the end, by the chevron, cut short before the title is.
+        Text(value, fontSize = 15.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }
 }
