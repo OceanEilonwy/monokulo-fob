@@ -283,8 +283,8 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
 
 /**
  * A warning that stops someone losing money or keys, one style everywhere
- * (Backup and keys, Seed phrase, Wallet code, Home's backup reminder, the
- * mainnet and remove dialogs, a contact's replaced address): the
+ * (Backup and keys, a new wallet's seed phrase and Home's backup reminder,
+ * the mainnet and remove dialogs, a contact's replaced address): the
  * [Fob.warning] tint, an orange mark, ink words at body size. No edge or
  * outline. With [title] and [onClick] it is a card that opens something,
  * with a chevron. Over the camera it takes the camera's colours.

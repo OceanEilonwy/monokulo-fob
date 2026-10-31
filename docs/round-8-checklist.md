@@ -92,3 +92,16 @@ every step is in. Each item: what to do, what should happen.
 - [ ] A currency but no price yet (airplane mode on a new wallet) → no swap on Home, no chip on the fields, the field line says there's no price.
 - [ ] Swap Home to the currency first, choose XMR, then choose the currency again → the currency leads again once its price is in.
 - [ ] Install over round 7 with a wallet saved with Show first = the currency → it opens, Home leads with the currency; one saved with Show first = XMR leads with XMR.
+
+## Step 6 · Wallet code
+
+- [ ] Settings › Backup and keys → the phone's lock once, then the hub with its warning block.
+- [ ] Hub › Wallet code → the QR shows at once with "Scan it in Fob, the Monero GUI or Cake Wallet." under it; no warning block, no Show the code or Hide button, no second lock prompt. Scan it from another Fob's Restore › Scan a wallet code → Wallet code found.
+- [ ] Same with a view-only wallet → the code at once, no "This code lets anyone see …".
+- [ ] Hub › Seed phrase → the words at once, no "These 16 words are your wallet …" block; Done goes back to the hub. With the backup still pending, the button reads "I've written them down" and Home's reminder goes after tapping it.
+- [ ] Hub › Keys → every key at once, as before.
+- [ ] Home's backup reminder (new wallet, words not written down) → the lock, then Seed phrase with the warning block above the words.
+- [ ] Create a wallet → "Back up your wallet" with the warning block, no lock.
+- [ ] On Wallet code, Seed phrase and Keys, try a screenshot → blocked; the recents thumbnail is blank.
+- [ ] On Wallet code (and on Seed phrase from the hub, and from Home's reminder) press Home, reopen Fob → back on Settings (or Home), not on the secret; opening the hub asks for the lock again. Turning the phone keeps the code on screen.
+- [ ] Light and dark, 200 % font → the code stays centred and fits; TalkBack reads "Wallet code" on the QR, then the scan line.

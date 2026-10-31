@@ -2213,3 +2213,28 @@ Calls made while building the first version, with why. Newest last.
     before; a chip tap switches that field only. `fiat_first` stays
     Home's balance order alone, so the swap is "remembered as before"
     without one field's tap reordering the balance.
+276. **Backup and keys is the one place that warns** (round 8 › step 6,
+    item 12). Its warning and the phone's lock come first; what it opens
+    shows its secret straight away:
+    - Wallet code: no warning block ("This code holds the keys to spend
+      your money …" / "This code lets anyone see this wallet's
+      payments.") and no Show the code / Hide step; the code draws as soon
+      as Rust returns it, with "Scan it in Fob, the Monero GUI or Cake
+      Wallet." under it (kept by 266). Both texts were Kotlin's, so no
+      Rust text or function goes; `can_spend` is still used by Home and
+      Coins.
+    - Seed phrase from the hub: no "These 16 words are your wallet …"
+      block above the words.
+    - Keys already had neither (round 7), so it is unchanged.
+    - None of them asks for the lock again; FLAG_SECURE (`NoScreenshots`)
+      and the onStop cut (now a `locked()` check, as `ShowSeed` became a
+      data class) are as before.
+277. **The other ways to the seed phrase keep their warning.** Wallet
+    code and Keys are reachable only from the hub. The seed phrase has
+    two more ways: Home's backup reminder (`Screen.ShowSeed(warn = true)`,
+    after the phone's lock, as before) and a new wallet's "Back up your
+    wallet" step (`Screen.Backup`, no lock: the wallet was just made).
+    Both keep the warning block, since nothing before them showed one;
+    the reminder card is a call to act, not the warning about who can use
+    the words. The mainnet switch shows no secret, so it has nothing to
+    change.
