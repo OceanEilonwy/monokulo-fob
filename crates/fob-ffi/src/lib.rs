@@ -472,3 +472,34 @@ pub fn is_amount(text: String) -> bool {
 pub fn default_nodes(network: Network) -> Vec<String> {
     fob_core::Network::from(network).default_nodes().iter().map(|n| (*n).to_owned()).collect()
 }
+
+#[derive(uniffi::Record)]
+pub struct NodeCheck {
+    pub url: String,
+    pub reachable: bool,
+    pub right_network: bool,
+    pub synced: bool,
+    pub height: u64,
+    pub latency_ms: u64,
+    pub blocks_per_second: f64,
+    pub error: Option<String>,
+}
+
+/// Checks nodes at once: reachable, right network, synced, and how fast.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn check_nodes(network: Network, urls: Vec<String>) -> Vec<NodeCheck> {
+    fob_core::node::check_all(network.into(), &urls)
+        .await
+        .into_iter()
+        .map(|c| NodeCheck {
+            url: c.url,
+            reachable: c.reachable,
+            right_network: c.right_network,
+            synced: c.synced,
+            height: c.height,
+            latency_ms: c.latency_ms,
+            blocks_per_second: c.blocks_per_second,
+            error: c.error,
+        })
+        .collect()
+}

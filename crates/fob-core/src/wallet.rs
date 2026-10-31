@@ -440,8 +440,9 @@ impl Wallet {
 
     /// Talks to another node from now on.
     pub async fn set_node(&self, url: &str) -> Result<()> {
-        let url = url.trim().trim_end_matches('/');
-        let url = if url.contains("://") { url.to_owned() } else { format!("http://{url}") };
+        let url = crate::node::normalize(url);
+        // A node on the other network would never find this wallet's money.
+        crate::node::on_network(self.network(), &url).await.map_err(FobError::Node)?;
         {
             let mut state = self.inner.state.lock().await;
             state.node = url;

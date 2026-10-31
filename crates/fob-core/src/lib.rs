@@ -12,6 +12,7 @@ pub mod error;
 pub mod fetch;
 pub mod keys;
 pub mod network;
+pub mod node;
 pub mod qr;
 pub mod receipt;
 pub mod transport;
