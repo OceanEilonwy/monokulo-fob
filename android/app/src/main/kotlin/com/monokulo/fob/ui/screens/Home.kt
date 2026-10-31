@@ -186,7 +186,9 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             }
             activity.forEach { day ->
                 DayLabel(day.label)
-                day.rows.forEach { row -> PaymentRow(row) { nav.go(Screen.Receipt(row.activity)) } }
+                day.rows.forEach { row ->
+                    PaymentRow(row) { nav.go(if (row.activity.receipt != null) Screen.Receipt(row.activity) else Screen.Payment(row.activity)) }
+                }
             }
         }
     }

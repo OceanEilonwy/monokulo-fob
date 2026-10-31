@@ -1,6 +1,5 @@
 package com.monokulo.fob.ui.screens
 
-import android.content.ClipData
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,9 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -63,16 +60,14 @@ import uniffi.fob.ZmqStatus
 import uniffi.fob.checkNodes
 import uniffi.fob.defaultNodes
 import uniffi.fob.qrCode
-import java.text.DateFormat
-import java.util.Date
 
+/** A payment that came with a receipt: the receipt, then what it was worth and its details, as for any payment. */
 @Composable
 fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
     val receipt = activity.receipt
+    val detail = rememberPayment(model, activity.tx)
     Page {
-        TopBar(if (receipt != null) "Receipt" else if (activity.outgoing) "Sent" else "Received", onBack = { nav.back() })
+        TopBar("Receipt", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (receipt != null) {
                 Card(padding = PaddingValues(vertical = 18.dp)) {
@@ -90,23 +85,13 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
                         Text("${activity.amountText} XMR", color = Fob.muted, fontSize = 15.sp)
                     }
                 }
-            } else {
-                Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text((if (activity.outgoing) "−" else "+") + activity.amountText + " XMR", style = display(40), color = if (activity.outgoing) Fob.ink else Fob.green)
-                    Text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(activity.time.toLong() * 1000)), color = Fob.muted, fontSize = 15.sp)
-                }
             }
-            Card {
-                InfoRow("Transaction", activity.tx.take(4) + "…" + activity.tx.takeLast(4), mono = true)
-                Divider()
-                InfoRow("Status", activity.statusText)
-                activity.feeText?.let { Divider(); InfoRow("Network fee", "$it XMR") }
-                activity.to?.let { Divider(); InfoRow("To", it.take(8) + "…" + it.takeLast(6), mono = true) }
+            detail?.let { d ->
+                if (d.priced) PriceBoxes(d)
+                PaymentDetails(d)
             }
-            if (receipt != null) Text("Open Receipt Format, from the shop's payment code. Kept on this phone with the payment.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
-            OutlineButton("Copy transaction ID", {
-                scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Transaction", activity.tx).toClipEntry()) }
-            }, Modifier.fillMaxWidth())
+            Text("Open Receipt Format, from the shop's payment code. Kept on this phone with the payment.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
+            detail?.footer?.let { Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp)) }
         }
     }
 }

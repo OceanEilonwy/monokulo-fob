@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 use crate::{
-    activity::{Clock, short_address},
+    activity::{self, Clock, short_address},
     amount,
     error::{FobError, Result},
     keys::{Keys, SeedKind, StoredKeys},
@@ -120,6 +120,9 @@ struct Sent {
     height: Option<u64>,
     /// The ORF receipt JSON from the payment code.
     receipt: Option<String>,
+    /// The payment code's description (`tx_description`), if it had one.
+    #[serde(default)]
+    note: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -156,6 +159,10 @@ struct State {
     /// record per currency.
     #[serde(default)]
     price_records: HashMap<String, Vec<price::Record>>,
+    /// The note last put in a payment code for each address, by its index:
+    /// what payments to that address are for.
+    #[serde(default)]
+    notes: HashMap<u32, String>,
 }
 
 #[derive(Serialize)]
@@ -210,6 +217,29 @@ pub struct Activity {
     /// What one XMR was worth when it moved, in the currency prices are
     /// shown in; `None` with prices off or no price to be had.
     pub price: Option<price::Record>,
+    /// The address (by index) a payment in came to; 0 is the main address.
+    pub subaddress: Option<u32>,
+    /// Its pieces, in atomic units: the outputs received for a payment in,
+    /// the outputs spent for one out.
+    pub pieces: Vec<u64>,
+    /// What it was for: the note in the payment code (Fob's own for its
+    /// address, or the payee's description when paying).
+    pub note: Option<String>,
+}
+
+/// Receive's payment code and the words around it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReceiveCode {
+    /// `monero:<address>?tx_amount=…&tx_description=…`, always in XMR.
+    pub uri: String,
+    /// The big line on the expanded code: "$20.00" for an amount typed in
+    /// money, else "0.5 XMR".
+    pub headline: Option<String>,
+    /// The line under it: "0.1204 XMR · Coffee beans", or the note.
+    pub detail: Option<String>,
+    /// Under the field, for an amount in money: "The code asks for 0.1204
+    /// XMR · 1 XMR = $166.10".
+    pub asks: Option<String>,
 }
 
 /// How far syncing has got.
@@ -253,6 +283,7 @@ struct PreparedTx {
     inputs: Vec<usize>,
     input_total: u64,
     receipt: Option<String>,
+    note: Option<String>,
 }
 
 struct Inner {
@@ -397,6 +428,7 @@ impl Wallet {
             prices: price::Settings::default(),
             price_cache: price::Cache::default(),
             price_records: HashMap::new(),
+            notes: HashMap::new(),
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -535,6 +567,15 @@ impl Wallet {
         state.receive_index += 1;
         self.save_state(&state)?;
         Ok(self.inner.keys.address(state.receive_index))
+    }
+
+    /// Keeps the note put in a payment code for the address at `index`, so
+    /// payments to it say what they were for; a blank one forgets it.
+    pub async fn remember_receive_note(&self, index: u32, note: &str) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        let note = note.trim();
+        let changed = if note.is_empty() { state.notes.remove(&index).is_some() } else { state.notes.insert(index, note.to_owned()).as_deref() != Some(note) };
+        if changed { self.save_state(&state) } else { Ok(()) }
     }
 
     pub async fn receive_index(&self) -> u32 {
@@ -742,6 +783,9 @@ impl Wallet {
                 receipt: receipt.as_ref().map(ReceiptView::from),
                 receipt_json: sent.receipt.clone(),
                 price: None,
+                subaddress: None,
+                pieces: vec![],
+                note: None,
             });
         }
         // Spends found on the chain that this wallet didn't send (a restored
@@ -764,6 +808,9 @@ impl Wallet {
                 receipt: None,
                 receipt_json: None,
                 price: None,
+                subaddress: None,
+                pieces: vec![],
+                note: None,
             });
         }
         let mut incoming: HashMap<&str, Activity> = HashMap::new();
@@ -780,6 +827,9 @@ impl Wallet {
                 receipt: None,
                 receipt_json: None,
                 price: None,
+                subaddress: None,
+                pieces: vec![],
+                note: None,
             });
             row.amount += output.amount;
         }
@@ -798,12 +848,27 @@ impl Wallet {
                     receipt: None,
                     receipt_json: None,
                     price: None,
+                    subaddress: None,
+                    pieces: vec![],
+                    note: None,
                 });
             }
         }
-        if state.prices.on {
-            for row in &mut rows {
+        for row in &mut rows {
+            if state.prices.on {
                 row.price = state.price_records.get(&row.tx).and_then(|r| r.iter().find(|r| r.currency == state.prices.currency)).cloned();
+            }
+            match row.direction {
+                Direction::In => {
+                    let outputs: Vec<&Owned> = state.outputs.iter().filter(|o| o.tx == row.tx).collect();
+                    row.pieces = outputs.iter().map(|o| o.amount).collect();
+                    row.subaddress = outputs.first().map(|o| o.subaddress);
+                    row.note = row.subaddress.and_then(|s| state.notes.get(&s)).cloned();
+                }
+                Direction::Out => {
+                    row.pieces = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(row.tx.as_str())).map(|o| o.amount).collect();
+                    row.note = state.sent.iter().find(|s| s.tx == row.tx).and_then(|s| s.note.clone());
+                }
             }
         }
         rows.sort_by_key(|r| std::cmp::Reverse((r.height.is_none(), r.height, r.time)));
@@ -1216,8 +1281,9 @@ impl Wallet {
     }
 
     /// Builds a payment to `to`, choosing the money to spend and the fee.
-    /// Nothing leaves the wallet until [`send`](Wallet::send).
-    pub async fn prepare(&self, to: &str, amount: u64, receipt_json: Option<String>) -> Result<Prepared> {
+    /// Nothing leaves the wallet until [`send`](Wallet::send). `note` (the
+    /// payment code's description) is kept with the payment once sent.
+    pub async fn prepare(&self, to: &str, amount: u64, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
         self.inner.keys.spend()?;
         let network = self.network();
         let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::BadAddress(network.name()))?;
@@ -1305,6 +1371,7 @@ impl Wallet {
                 inputs: chosen.iter().map(|c| c.0).collect(),
                 input_total: total,
                 receipt: receipt.is_some().then_some(receipt_json).flatten(),
+                note: note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
             },
         );
         Ok(Prepared { id, to: to.trim().to_owned(), amount, fee, receipt: receipt.as_ref().map(ReceiptView::from) })
@@ -1341,6 +1408,7 @@ impl Wallet {
             time: now(),
             height: None,
             receipt: prepared.receipt,
+            note: prepared.note,
         });
         self.record_prices(&mut state);
         self.save_state(&state)?;
@@ -1471,6 +1539,64 @@ impl Wallet {
     /// What `atomic` XMR is worth now: "$83.03"; `None` without a current price.
     pub async fn worth_now(&self, atomic: u64) -> Option<String> {
         self.price_now().await.map(|(currency, p)| price::value(atomic, p, &currency))
+    }
+
+    /// The payment `tx` as its own screen shows it, or `None` if there's no
+    /// such payment.
+    pub async fn payment(&self, tx: &str, clock: Clock) -> Option<activity::Detail> {
+        let row = self.activity().await.into_iter().find(|a| a.tx == tx)?;
+        let settings = self.price_settings().await;
+        let now = self.price_now().await;
+        Some(activity::detail(&row, now.as_ref().map(|(c, p)| (c, *p)), settings.on, settings.provider.name(), clock))
+    }
+
+    /// Whether Receive can take an amount in money: the currency and what
+    /// goes before what's typed ("$", or the code), with prices on and a
+    /// current price.
+    pub async fn receive_currency(&self) -> Option<(String, String)> {
+        let (currency, _) = self.price_now().await?;
+        Some((currency.symbol.map(str::to_owned).unwrap_or_else(|| currency.code.clone()), currency.code))
+    }
+
+    /// Receive's amount as typed, the other way: money to XMR (`to_fiat`
+    /// false) or XMR to money, for switching the field. Blank, or nothing to
+    /// convert with, gives blank.
+    pub async fn convert_amount(&self, text: &str, to_fiat: bool) -> String {
+        let Some((currency, p)) = self.price_now().await else { return String::new() };
+        if to_fiat {
+            amount::parse(text).map(|a| price::plain(price::to_minor(a, p, &currency), &currency)).unwrap_or_default()
+        } else {
+            price::parse(text, &currency).ok().and_then(|m| price::to_atomic(m, p, &currency)).map(amount::format).unwrap_or_default()
+        }
+    }
+
+    /// Receive's payment code for `address`, with an amount typed in XMR or,
+    /// when `in_fiat`, in money (the code still asks in XMR, converted at
+    /// the current price), and a note for the payer.
+    pub async fn receive_code(&self, address: &str, amount_text: Option<&str>, in_fiat: bool, note: Option<&str>) -> Result<ReceiveCode> {
+        let typed = amount_text.map(str::trim).filter(|a| !a.is_empty());
+        let price = self.price_now().await;
+        let (xmr, fiat) = match (typed, in_fiat) {
+            (None, _) => (None, None),
+            (Some(t), false) => (Some(amount::parse(t)?), None),
+            (Some(t), true) => {
+                let (currency, p) = price.as_ref().ok_or_else(|| FobError::Price("no price to convert with".into()))?;
+                let minor = price::parse(t, currency)?;
+                (Some(price::to_atomic(minor, *p, currency).ok_or(FobError::BadAmount)?), Some(price::format(minor, currency)))
+            }
+        };
+        let xmr = xmr.filter(|a| *a > 0);
+        let xmr_text = xmr.map(amount::format);
+        let code = uri::receive(address, xmr_text.as_deref(), note)?;
+        Ok(match (fiat.filter(|_| xmr.is_some()), xmr_text, price) {
+            (Some(fiat), Some(xmr), Some((currency, p))) => ReceiveCode {
+                uri: code.uri,
+                headline: Some(fiat),
+                detail: Some([Some(format!("{xmr} XMR")), code.detail].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
+                asks: Some(format!("The code asks for {xmr} XMR · {}", price::rate(p, &currency))),
+            },
+            _ => ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail, asks: None },
+        })
     }
 
     /// Asks the provider for what's due, if prices are on: the current price
@@ -1634,6 +1760,7 @@ mod tests {
             time: 5_000,
             height,
             receipt: None,
+            note: None,
         };
         {
             let mut state = wallet.inner.state.lock().await;
@@ -1703,7 +1830,7 @@ mod tests {
         let watch =
             Wallet::restore_view_only(&dir("watch"), [1; 32], Network::Stagenet, &full.primary_address(), &full.view_key_hex(), Some(5)).unwrap();
         assert!(!watch.can_spend());
-        assert!(matches!(watch.prepare(&full.primary_address(), 1, None).await, Err(FobError::ViewOnly)));
+        assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::ViewOnly)));
     }
 
     #[tokio::test]
@@ -1896,7 +2023,7 @@ mod tests {
         {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t - 120, XMR / 2));
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None });
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None });
             assert!(wallet.record_prices(&mut state));
             wallet.save_state(&state).unwrap();
         }
@@ -1979,6 +2106,57 @@ mod tests {
         assert_eq!(fake.asked(), (1, 1));
         assert_eq!(price_of(&wallet.activity().await, "in"), None);
         assert_eq!(wallet.worth_now(XMR).await, None);
+    }
+
+    #[tokio::test]
+    async fn receive_takes_an_amount_in_money_and_asks_in_xmr() {
+        let wallet = Wallet::create(&dir("receive-fiat"), [1; 32], Network::Stagenet).unwrap();
+        let address = wallet.receive_address().await.unwrap();
+        // No price yet: XMR only.
+        assert_eq!(wallet.receive_currency().await, None);
+        assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Price(_))));
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, now()).await.unwrap();
+        assert_eq!(wallet.receive_currency().await, Some(("$".into(), "USD".into())));
+
+        let code = wallet.receive_code(&address, Some("20"), true, Some("Coffee beans")).await.unwrap();
+        assert_eq!(code.uri, format!("monero:{address}?tx_amount=0.1204&tx_description=Coffee%20beans"));
+        assert_eq!(code.headline.as_deref(), Some("$20.00"));
+        assert_eq!(code.detail.as_deref(), Some("0.1204 XMR · Coffee beans"));
+        assert_eq!(code.asks.as_deref(), Some("The code asks for 0.1204 XMR · 1 XMR = $166.10"));
+        // In XMR, as before.
+        let code = wallet.receive_code(&address, Some("0.5"), false, None).await.unwrap();
+        assert_eq!((code.headline.as_deref(), code.detail, code.asks), (Some("0.5 XMR"), None, None));
+        assert!(wallet.receive_code(&address, Some("20.123"), true, None).await.is_err());
+        // Switching the field converts what's typed.
+        assert_eq!(wallet.convert_amount("20", false).await, "0.1204");
+        assert_eq!(wallet.convert_amount("0.1204", true).await, "20.00");
+        assert_eq!(wallet.convert_amount("", true).await, "");
+        // Prices off: no money at all.
+        wallet.set_prices_on(false).await.unwrap();
+        assert_eq!(wallet.receive_currency().await, None);
+        assert_eq!(wallet.convert_amount("20", false).await, "");
+    }
+
+    #[tokio::test]
+    async fn notes_go_with_payments_in_and_out() {
+        let wallet = Wallet::create(&dir("notes"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        wallet.remember_receive_note(1, " Coffee beans ").await.unwrap();
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.outputs.push(received("in", t, XMR / 2));
+            state.outputs.push(Owned { key: "in-2".into(), output: "2".into(), ..received("in", t, XMR / 4) });
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()) });
+        }
+        let clock = Clock { now: t, utc_offset: 0, hours_24: true };
+        let shown = wallet.payment("in", clock).await.unwrap();
+        assert_eq!((shown.party.as_deref(), shown.pieces.as_deref()), (Some("Address 1 · Coffee beans"), Some("2 · 0.5 + 0.25")));
+        assert!(shown.when.ends_with(" · Coffee beans"));
+        assert!(wallet.payment("out", clock).await.unwrap().when.ends_with(" · Rent"));
+        assert!(wallet.payment("nothing", clock).await.is_none());
+        // A blank note forgets it.
+        wallet.remember_receive_note(1, "").await.unwrap();
+        assert_eq!(wallet.payment("in", clock).await.unwrap().party.as_deref(), Some("Address 1"));
     }
 
     #[tokio::test]

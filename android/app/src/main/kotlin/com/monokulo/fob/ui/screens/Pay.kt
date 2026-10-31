@@ -33,9 +33,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -67,6 +72,7 @@ import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.QrImage
+import com.monokulo.fob.ui.Segmented
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.TextButton
@@ -81,12 +87,12 @@ import uniffi.fob.Prepared
 import uniffi.fob.QrCode
 import uniffi.fob.Receipt
 import uniffi.fob.ReceiveCode
+import uniffi.fob.ReceiveCurrency
 import uniffi.fob.addressGroups
 import uniffi.fob.classifyCode
 import uniffi.fob.isAmount
 import uniffi.fob.parsePayment
 import uniffi.fob.qrCode
-import uniffi.fob.receiveCode
 
 @Composable
 fun ReceiveScreen(model: WalletModel, nav: Nav) {
@@ -99,16 +105,42 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
     var amount by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var expanded by rememberSaveable { mutableStateOf(false) }
+    // The amount in money (Rust converts it to XMR for the code) while there's a price; XMR otherwise.
+    val prices by model.prices.collectAsState()
+    val balance by model.balance.collectAsState()
+    var currency by remember { mutableStateOf<ReceiveCurrency?>(null) }
+    var inFiat by remember { mutableStateOf(false) }
+    var defaulted by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf<ReceiveCode?>(null) }
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
         address = w.receiveAddress()
         index = w.receiveIndex()
     }
-    val code = address?.let { runCatching { receiveCode(it, amount, note) }.getOrNull() }
+    // A new price comes with a new balance.
+    LaunchedEffect(wallet, prices, balance) {
+        val c = wallet?.receiveCurrency()
+        currency = c
+        if (c != null && !defaulted && amount.isBlank()) inFiat = true
+        if (c != null) defaulted = true
+        if (c == null && inFiat) { inFiat = false; amount = "" }
+    }
+    LaunchedEffect(wallet, address, amount, inFiat, note, currency) {
+        val w = wallet ?: return@LaunchedEffect
+        val a = address ?: return@LaunchedEffect
+        code = runCatching { w.receiveCode(a, amount, inFiat && currency != null, note) }.getOrNull()
+    }
+    // The note goes with the address it was typed for, kept when the screen or the address changes.
+    val latestNote by rememberUpdatedState(note)
+    DisposableEffect(index) {
+        val shown = index
+        onDispose { if (shown > 0u && latestNote.isNotBlank()) model.rememberReceiveNote(shown, latestNote) }
+    }
     val qr = code?.let { runCatching { qrCode(it.uri) }.getOrNull() }
     val groups = remember(address) { address?.let { addressGroups(it) } ?: emptyList() }
-    if (expanded && code != null && qr != null && address != null) {
-        ExpandedQr(code, qr, address!!) { expanded = false }
+    val shownCode = code
+    if (expanded && shownCode != null && qr != null && address != null) {
+        ExpandedQr(shownCode, qr, address!!) { expanded = false }
         return
     }
     Page(bottom = {
@@ -158,9 +190,35 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
                 }
                 AddressGroups(groups)
             }
-            Field(amount, { amount = it }, "Amount in XMR (optional)", hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else null)
+            AmountField(
+                amount, { amount = it }, currency, inFiat,
+                onSwitch = { toFiat -> scope.launch { amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
+                hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else code?.asks,
+            )
             Field(note, { note = it }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true)
         }
+    }
+}
+
+/**
+ * Receive's amount: in money with its symbol before it while there's a
+ * price, a <CUR> | XMR switch at the right; XMR only, no switch, without.
+ */
+@Composable
+private fun AmountField(value: String, onChange: (String) -> Unit, currency: ReceiveCurrency?, inFiat: Boolean, onSwitch: (Boolean) -> Unit, hint: String?) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedTextField(
+            value = value, onValueChange = onChange, singleLine = true,
+            label = { Text(if (currency == null) "Amount in XMR (optional)" else "Amount (optional)") },
+            prefix = if (inFiat && currency != null) ({ Text(currency.prefix, fontSize = 16.sp) }) else null,
+            trailingIcon = currency?.let { c ->
+                { Segmented(listOf(c.code, "XMR"), if (inFiat) 0 else 1, { i -> onSwitch(i == 0) }, Modifier.padding(end = 8.dp), height = 32.dp) }
+            },
+            shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth(),
+            textStyle = TextStyle(fontSize = 16.sp),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        )
+        if (hint != null) Text(hint, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }
 
@@ -208,7 +266,7 @@ private fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: 
         ) {
             if (code.headline != null || code.detail != null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    // Step 4 puts the fiat amount here and the XMR in the line below.
+                    // Rust writes both: "$20.00" over "0.1204 XMR · note" for money, "0.5 XMR" over the note for XMR.
                     code.headline?.let { Text(it, style = display(34), color = Fob.qrDark, textAlign = TextAlign.Center) }
                     code.detail?.let { Text(it, color = Fob.qrMuted, fontSize = 16.sp, textAlign = TextAlign.Center) }
                 }
@@ -282,7 +340,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?) {
             busy = true
             error = null
             scope.launch {
-                runCatching { model.prepare(to.trim(), amount, r?.receiptJson) }
+                runCatching { model.prepare(to.trim(), amount, r?.receiptJson, r?.description) }
                     .onSuccess { nav.back(); nav.go(Screen.Confirm(it, r?.description)) }
                     .onFailure { error = it.reason() }
                 busy = false
@@ -340,14 +398,16 @@ fun ConfirmScreen(model: WalletModel, nav: Nav, prepared: Prepared, note: String
             Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(prepared.receipt?.total ?: "${prepared.amountText} XMR", style = display(52))
                 if (prepared.receipt != null) Text("${prepared.amountText} XMR", color = Fob.muted, fontSize = 18.sp)
+                // Worth now, at the current price.
+                else prepared.amountFiat?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
                 note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
             Card {
                 InfoRow("To", short(prepared.to, 2), mono = true)
                 Divider()
-                InfoRow("Network fee", "${prepared.feeText} XMR")
+                InfoRow("Network fee", "${prepared.feeText} XMR" + (prepared.feeFiat?.let { " · $it" } ?: ""))
                 Divider()
-                InfoRow("Total", "${prepared.totalText} XMR", bold = true)
+                InfoRow("Total", "${prepared.totalText} XMR" + (prepared.totalFiat?.let { " · $it" } ?: ""), bold = true)
             }
             Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {

@@ -199,20 +199,13 @@ pub struct PriceSettings {
 }
 
 #[derive(uniffi::Record)]
+/// A payment in Activity: enough to open its screen, which asks `payment`
+/// for the rest.
 pub struct Activity {
     pub tx: String,
     pub outgoing: bool,
     /// "0.1421", without a sign.
     pub amount_text: String,
-    pub fee_text: Option<String>,
-    pub to: Option<String>,
-    /// Seconds since the epoch.
-    pub time: u64,
-    pub confirmations: u64,
-    /// Sent but not yet in a block.
-    pub pending: bool,
-    /// For its own screen: "Sending", "Not ready · 3 of 10", "Confirmed · 24".
-    pub status_text: String,
     pub receipt: Option<Receipt>,
 }
 
@@ -220,13 +213,7 @@ fn activity(a: fob_core::Activity) -> Activity {
     Activity {
         outgoing: a.direction == fob_core::Direction::Out,
         amount_text: xmr(a.amount),
-        fee_text: a.fee.map(amount::format),
-        pending: a.height.is_none(),
-        status_text: activity::status(&a),
         tx: a.tx,
-        to: a.to,
-        time: a.time,
-        confirmations: a.confirmations,
         receipt: a.receipt.map(Into::into),
     }
 }
@@ -386,6 +373,10 @@ pub struct Prepared {
     pub amount_text: String,
     pub fee_text: String,
     pub total_text: String,
+    /// What they're worth now, with prices on: "$20.00".
+    pub amount_fiat: Option<String>,
+    pub fee_fiat: Option<String>,
+    pub total_fiat: Option<String>,
     pub receipt: Option<Receipt>,
 }
 
@@ -669,16 +660,73 @@ impl FobWallet {
 
     /// Builds a payment for the confirm screen. `amount` is text as typed;
     /// `receipt_json` comes from the scanned `PaymentRequest`.
-    pub async fn prepare(&self, to: String, amount: String, receipt_json: Option<String>) -> Result<Prepared> {
+    /// `note` is the payment code's description, kept with the payment.
+    pub async fn prepare(&self, to: String, amount: String, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
         let atomic = amount::parse(&amount)?;
-        let p = self.inner.prepare(&to, atomic, receipt_json).await?;
+        let p = self.inner.prepare(&to, atomic, receipt_json, note).await?;
         Ok(Prepared {
             id: p.id,
             to: p.to,
             amount_text: exact(p.amount),
             fee_text: amount::format(p.fee),
             total_text: amount::format(p.amount + p.fee),
+            amount_fiat: self.inner.worth_now(p.amount).await,
+            fee_fiat: self.inner.worth_now(p.fee).await,
+            total_fiat: self.inner.worth_now(p.amount + p.fee).await,
             receipt: p.receipt.map(Into::into),
+        })
+    }
+
+    /// Keeps the note typed on Receive for the address at `index`, so
+    /// payments to it say what they were for.
+    pub async fn remember_receive_note(&self, index: u32, note: String) -> Result<()> {
+        Ok(self.inner.remember_receive_note(index, &note).await?)
+    }
+
+    /// The money Receive's amount can be typed in; `None` with prices off
+    /// or no current price, when it takes XMR only.
+    pub async fn receive_currency(&self) -> Option<ReceiveCurrency> {
+        self.inner.receive_currency().await.map(|(prefix, code)| ReceiveCurrency { prefix, code })
+    }
+
+    /// Receive's amount switched between money and XMR (`to_fiat`): the
+    /// typed text converted, or blank.
+    pub async fn convert_amount(&self, text: String, to_fiat: bool) -> String {
+        self.inner.convert_amount(&text, to_fiat).await
+    }
+
+    /// A payment code to show: the address and, if typed, an amount (in
+    /// money when `in_fiat`) and a note for the payer. Throws when the
+    /// amount isn't one.
+    pub async fn receive_code(&self, address: String, amount: Option<String>, in_fiat: bool, note: Option<String>) -> Result<ReceiveCode> {
+        let r = self.inner.receive_code(&address, amount.as_deref(), in_fiat, note.as_deref()).await?;
+        Ok(ReceiveCode { uri: r.uri, headline: r.headline, detail: r.detail, asks: r.asks })
+    }
+
+    /// The payment `tx` for its own screen; the clock as for `activity_days`.
+    pub async fn payment(&self, tx: String, now: u64, utc_offset: i32, hours_24: bool) -> Option<PaymentDetail> {
+        let d = self.inner.payment(&tx, activity::Clock { now, utc_offset, hours_24 }).await?;
+        Some(PaymentDetail {
+            amount_text: d.amount,
+            when: d.when,
+            priced: d.priced,
+            worth_now: d.worth_now,
+            rate_now: d.rate_now,
+            then_label: d.then_label,
+            worth_then: d.worth_then,
+            rate_then: d.rate_then,
+            change: d.change,
+            up: d.up,
+            status: d.status,
+            progress: d.progress,
+            party_label: d.party_label,
+            party: d.party,
+            pieces_label: d.pieces_label,
+            pieces: d.pieces,
+            fee: d.fee,
+            tx_short: d.tx_short,
+            tx,
+            footer: d.footer,
         })
     }
 
@@ -710,20 +758,67 @@ pub fn parse_payment(network: Network, text: String) -> Result<PaymentRequest> {
 /// Receive's payment code and the words around it.
 #[derive(uniffi::Record)]
 pub struct ReceiveCode {
-    /// The payment code: `monero:<address>?tx_amount=…&tx_description=…`.
+    /// The payment code: `monero:<address>?tx_amount=…&tx_description=…`,
+    /// always in XMR.
     pub uri: String,
-    /// The big line on the expanded code: "0.5 XMR", when there's an amount.
+    /// The big line on the expanded code: "$20.00" or "0.5 XMR", when
+    /// there's an amount.
     pub headline: Option<String>,
-    /// The small line under it: the note, when there is one.
+    /// The small line under it: "0.1204 XMR · Coffee beans", or the note.
     pub detail: Option<String>,
+    /// Under the field for an amount in money: "The code asks for 0.1204
+    /// XMR · 1 XMR = $166.10".
+    pub asks: Option<String>,
 }
 
-/// A payment code to show: the address and, if typed, an amount and a note
-/// for the payer. Throws when the amount isn't one.
-#[uniffi::export]
-pub fn receive_code(address: String, amount: Option<String>, note: Option<String>) -> Result<ReceiveCode> {
-    let r = uri::receive(&address, amount.as_deref(), note.as_deref())?;
-    Ok(ReceiveCode { uri: r.uri, headline: r.headline, detail: r.detail })
+/// The money Receive's amount can be typed in.
+#[derive(uniffi::Record)]
+pub struct ReceiveCurrency {
+    /// Before what's typed: "$", or the code for a currency without a symbol.
+    pub prefix: String,
+    /// "USD", for the toggle.
+    pub code: String,
+}
+
+/// A payment's own screen, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct PaymentDetail {
+    /// "+0.5", "−0.1421"
+    pub amount_text: String,
+    /// "Today 08:40 · Coffee beans"
+    pub when: String,
+    /// Prices are on: show the two boxes.
+    pub priced: bool,
+    /// "$83.03" or "Not available"
+    pub worth_now: String,
+    /// "1 XMR = $166.06"
+    pub rate_now: Option<String>,
+    /// "When received", "When sent"
+    pub then_label: String,
+    pub worth_then: String,
+    pub rate_then: Option<String>,
+    /// "Up $3.63 (4.6%) since then"
+    pub change: Option<String>,
+    /// Green when up, muted when down.
+    pub up: bool,
+    pub status: String,
+    /// While not ready: 0 to 1, for a thin bar.
+    pub progress: Option<f32>,
+    /// "From", "To"
+    pub party_label: String,
+    pub party: Option<String>,
+    /// "Pieces", "Pieces spent"
+    pub pieces_label: String,
+    /// "2 · 0.3 + 0.2"
+    pub pieces: Option<String>,
+    /// "0.00003 XMR", for a payment out.
+    pub fee: Option<String>,
+    /// "a1b2c3 … d4e5f6"
+    pub tx_short: String,
+    /// The whole id, to copy.
+    pub tx: String,
+    /// "Prices from Kraken."
+    pub footer: Option<String>,
 }
 
 /// A piece of an address, as Receive shows it.

@@ -111,6 +111,134 @@ pub fn status(activity: &Activity) -> String {
     waiting(activity).unwrap_or_else(|| format!("Confirmed · {}", activity.confirmations))
 }
 
+/// When, for a payment's own screen: "Today 08:40", "Yesterday 08:40",
+/// "27 Oct 08:40", "27 Oct 2025 08:40".
+pub fn when(time: u64, clock: Clock) -> String {
+    let (day, seconds) = local(time, clock);
+    let (today, _) = local(clock.now, clock);
+    let date = match day {
+        _ if day == today => "Today".to_owned(),
+        _ if day == today - 1 => "Yesterday".to_owned(),
+        _ => {
+            let (year, month, d) = civil(day);
+            let name = &MONTHS[month - 1];
+            let name = format!("{}{}", &name[..1], name[1..].to_lowercase());
+            if year == civil(today).0 { format!("{d} {name}") } else { format!("{d} {name} {year}") }
+        }
+    };
+    format!("{date} {}", time_of_day(seconds, clock))
+}
+
+/// The words for "Not available", where a price can't be had.
+pub const NOT_AVAILABLE: &str = "Not available";
+
+/// A payment's own screen, every word ready to draw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Detail {
+    /// With its sign and every digit: "+0.5", "−0.1421".
+    pub amount: String,
+    /// "Today 08:40 · Coffee beans"
+    pub when: String,
+    /// Prices are on: the two price boxes show.
+    pub priced: bool,
+    /// What it's worth now: "$83.03", or "Not available".
+    pub worth_now: String,
+    /// "1 XMR = $166.06", with a current price.
+    pub rate_now: Option<String>,
+    /// "When received", "When sent".
+    pub then_label: String,
+    /// What it was worth then, or "Not available".
+    pub worth_then: String,
+    pub rate_then: Option<String>,
+    /// "Up $3.63 (4.6%) since then", when both values are known.
+    pub change: Option<String>,
+    /// The change is up (drawn green; down is muted).
+    pub up: bool,
+    /// "Not ready · 3 of 10", "Confirmed · 24".
+    pub status: String,
+    /// While it can't be spent or isn't settled: confirmations ÷ 10.
+    pub progress: Option<f32>,
+    /// "From" or "To".
+    pub party_label: String,
+    /// "Address 3 · Coffee beans", "Main address", "86Ux … 7kQa"; `None`
+    /// when not known (on its way in the pool, or a restored wallet's send).
+    pub party: Option<String>,
+    /// "Pieces" (received) or "Pieces spent".
+    pub pieces_label: String,
+    /// "2 · 0.3 + 0.2"
+    pub pieces: Option<String>,
+    /// The network fee of a payment out: "0.00003 XMR".
+    pub fee: Option<String>,
+    /// The transaction id cut to its ends: "a1b2c3 … d4e5f6".
+    pub tx_short: String,
+    /// "Prices from Kraken.", when a price shows.
+    pub footer: Option<String>,
+}
+
+/// Pieces as "2 · 0.3 + 0.2", largest first; past four, "+ 3 more".
+fn pieces(amounts: &[u64]) -> Option<String> {
+    if amounts.is_empty() {
+        return None;
+    }
+    let mut sorted = amounts.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let mut parts: Vec<String> = sorted.iter().take(4).map(|a| amount::format_short(*a)).collect();
+    if sorted.len() > 4 {
+        parts.push(format!("{} more", sorted.len() - 4));
+    }
+    Some(format!("{} · {}", sorted.len(), parts.join(" + ")))
+}
+
+/// The words of a payment's own screen. `now` is the current price shown
+/// (none with prices off or none asked within the hour); `prices_on` says
+/// whether prices show at all; `provider` names where they come from.
+pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_on: bool, provider: &str, clock: Clock) -> Detail {
+    let out = activity.direction == Direction::Out;
+    let worth = |price: u64, currency: &price::Currency| price::value(activity.amount, price, currency);
+    let then = activity.price.as_ref().map(|r| (price::currency(&r.currency), r.price));
+    let change = match (now, &then) {
+        (Some((c, p)), Some((tc, tp))) if c.code == tc.code => {
+            Some(price::change(price::to_minor(activity.amount, *tp, tc), price::to_minor(activity.amount, p, c), c))
+        }
+        _ => None,
+    };
+    let party = if out {
+        activity.to.as_deref().map(short_address)
+    } else {
+        activity.subaddress.map(|i| {
+            let address = if i == 0 { "Main address".to_owned() } else { format!("Address {i}") };
+            match &activity.note {
+                Some(note) => format!("{address} · {note}"),
+                None => address,
+            }
+        })
+    };
+    let note = activity.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default();
+    let shown = prices_on && (now.is_some() || then.is_some());
+    let tx = &activity.tx;
+    Detail {
+        amount: format!("{}{}", if out { "−" } else { "+" }, amount::format(activity.amount)),
+        when: format!("{}{note}", when(activity.time, clock)),
+        priced: prices_on,
+        worth_now: now.map(|(c, p)| worth(p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
+        rate_now: now.map(|(c, p)| price::rate(p, c)),
+        then_label: if out { "When sent" } else { "When received" }.into(),
+        worth_then: then.as_ref().map(|(c, p)| worth(*p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
+        rate_then: then.as_ref().map(|(c, p)| price::rate(*p, c)),
+        up: change.as_ref().is_some_and(|c| c.1),
+        change: change.map(|c| c.0),
+        status: status(activity),
+        progress: waiting(activity).map(|_| (activity.confirmations as f32 / UNLOCK as f32).min(1.0)),
+        party_label: if out { "To" } else { "From" }.into(),
+        party,
+        pieces_label: if out { "Pieces spent" } else { "Pieces" }.into(),
+        pieces: pieces(&activity.pieces),
+        fee: activity.fee.filter(|_| out).map(|f| format!("{} XMR", amount::format(f))),
+        tx_short: if tx.len() > 12 { format!("{} … {}", &tx[..6], &tx[tx.len() - 6..]) } else { tx.clone() },
+        footer: shown.then(|| format!("Prices from {provider}.")),
+    }
+}
+
 fn row(activity: Activity, time: i64, clock: Clock) -> Row {
     let out = activity.direction == Direction::Out;
     let title = match (&activity.receipt, &activity.to) {
@@ -188,6 +316,9 @@ mod tests {
             receipt: None,
             receipt_json: None,
             price: None,
+            subaddress: None,
+            pieces: vec![],
+            note: None,
         }
     }
 
@@ -287,6 +418,53 @@ mod tests {
         let rows = by_day(vec![priced, paid, unpriced], clock(0)).remove(0).rows;
         let fiat: Vec<_> = rows.iter().map(|r| r.fiat.as_deref()).collect();
         assert_eq!(fiat, [Some("$83.03"), Some("$13.50"), None]);
+    }
+
+    #[test]
+    fn a_payment_s_own_screen_reads_like_the_designs() {
+        let usd = crate::price::currency("USD");
+        let c = clock(0);
+        let at = |h: u64, m: u64| NOW - 12 * HOUR + h * HOUR + m * 60;
+        let mut received = activity(Direction::In, 500_000_000_000, at(8, 40), 3);
+        received.tx = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90".into();
+        received.price = Some(crate::price::Record { currency: "USD".into(), price: 158_800_000, provider: "Kraken".into(), at: at(8, 40), daily: false });
+        received.subaddress = Some(3);
+        received.note = Some("Coffee beans".into());
+        received.pieces = vec![200_000_000_000, 300_000_000_000];
+        let d = detail(&received, Some((&usd, 166_060_000)), true, "Kraken", c);
+        assert_eq!((d.amount.as_str(), d.when.as_str()), ("+0.5", "Today 08:40 · Coffee beans"));
+        assert_eq!((d.worth_now.as_str(), d.rate_now.as_deref()), ("$83.03", Some("1 XMR = $166.06")));
+        assert_eq!((d.then_label.as_str(), d.worth_then.as_str(), d.rate_then.as_deref()), ("When received", "$79.40", Some("1 XMR = $158.80")));
+        assert_eq!((d.change.as_deref(), d.up), (Some("Up $3.63 (4.6%) since then"), true));
+        assert_eq!((d.status.as_str(), d.progress), ("Not ready · 3 of 10", Some(0.3)));
+        assert_eq!((d.party_label.as_str(), d.party.as_deref()), ("From", Some("Address 3 · Coffee beans")));
+        assert_eq!((d.pieces_label.as_str(), d.pieces.as_deref()), ("Pieces", Some("2 · 0.3 + 0.2")));
+        assert_eq!((d.fee, d.tx_short.as_str(), d.footer.as_deref()), (None, "a1b2c3 … 7e8f90", Some("Prices from Kraken.")));
+
+        // Sent days ago, no price recorded, prices now unavailable.
+        let mut sent = activity(Direction::Out, 100_000_000_000, NOW - 4 * DAY, 30);
+        sent.fee = Some(30_000_000);
+        sent.to = Some("86Ux3m9Pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7kQa".into());
+        sent.pieces = (1..=6).map(|i| i * 100_000_000_000).collect();
+        let d = detail(&sent, None, true, "Kraken", c);
+        assert_eq!((d.amount.as_str(), d.when.as_str()), ("−0.1", "27 Oct 12:00"));
+        assert_eq!((d.worth_now.as_str(), d.worth_then.as_str(), d.then_label.as_str()), ("Not available", "Not available", "When sent"));
+        assert_eq!((d.change, d.progress, d.footer), (None, None, None));
+        assert_eq!((d.party_label.as_str(), d.party.as_deref()), ("To", Some("86Ux … 7kQa")));
+        assert_eq!(d.pieces.as_deref(), Some("6 · 0.6 + 0.5 + 0.4 + 0.3 + 2 more"));
+        assert_eq!(d.fee.as_deref(), Some("0.00003 XMR"));
+        // Down since then, in muted words.
+        let mut fell = received.clone();
+        fell.price.as_mut().unwrap().price = 170_000_000;
+        let d = detail(&fell, Some((&usd, 166_060_000)), true, "Kraken", c);
+        assert_eq!((d.change.as_deref(), d.up), (Some("Down $1.97 (2.3%) since then"), false));
+        // Main address, prices off.
+        received.subaddress = Some(0);
+        received.note = None;
+        let d = detail(&received, None, false, "Kraken", c);
+        assert_eq!((d.party.as_deref(), d.priced, d.footer), (Some("Main address"), false, None));
+        assert_eq!(when(NOW - 400 * DAY, c), "26 Sep 2025 12:00");
+        assert_eq!(when(NOW - DAY, c), "Yesterday 12:00");
     }
 
     #[test]
