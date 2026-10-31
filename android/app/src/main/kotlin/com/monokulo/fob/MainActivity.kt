@@ -41,7 +41,6 @@ import com.monokulo.fob.ui.screens.RestoreFoundScreen
 import com.monokulo.fob.ui.screens.RestoreScanScreen
 import com.monokulo.fob.ui.screens.RestoreSeedScreen
 import com.monokulo.fob.ui.screens.RestoreViewOnlyScreen
-import com.monokulo.fob.ui.screens.ScanPayScreen
 import com.monokulo.fob.ui.screens.SendScreen
 import com.monokulo.fob.ui.screens.SettingsScreen
 import com.monokulo.fob.ui.screens.SplitScreen
@@ -64,10 +63,9 @@ sealed interface Screen {
     data class RestoreFound(val code: String) : Screen
     data object Home : Screen
     data object Receive : Screen
-    data object ScanPay : Screen
-    /** The send form, filled from a scanned or linked payment code when there was one. */
+    /** Send: the camera under a sheet with the form; [code], from a link, is read as if scanned. */
     data class Send(val code: String? = null) : Screen
-    /** [note]: the payment code's description, shown again before sending. */
+    /** [note]: typed on Send, or the payment code's description, shown again before sending. */
     data class Confirm(val prepared: Prepared, val note: String? = null) : Screen
     data class Paid(val prepared: Prepared, val tx: String) : Screen
     data class Receipt(val activity: Activity) : Screen
@@ -197,7 +195,6 @@ class MainActivity : FragmentActivity() {
             is Screen.RestoreFound -> RestoreFoundScreen(model, nav, screen.code)
             Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav) else WelcomeScreen(model, nav)
             Screen.Receive -> ReceiveScreen(model, nav)
-            Screen.ScanPay -> ScanPayScreen(model, nav)
             is Screen.Send -> SendScreen(model, nav, screen.code)
             is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
             is Screen.Paid -> PaidScreen(nav, screen.prepared)

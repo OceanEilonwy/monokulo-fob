@@ -16,6 +16,7 @@ import uniffi.fob.Coins
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
 import uniffi.fob.NotReady
+import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentDetail
 import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
@@ -275,9 +276,20 @@ class WalletModel(private val app: Application) {
         File(path(network)).delete()
     }
 
-    /** [note]: the payment code's description, kept with the payment. */
-    suspend fun prepare(to: String, amount: String, receiptJson: String?, note: String?): Prepared =
-        requireNotNull(_wallet.value).prepare(to, amount, receiptJson, note)
+    /**
+     * [amount] as the amount field took it, in money when [inFiat] (Rust
+     * converts at the current price); [note] (typed, or the payment
+     * code's description) is kept with the payment.
+     */
+    suspend fun prepare(to: String, amount: String, inFiat: Boolean, receiptJson: String?, note: String?): Prepared =
+        requireNotNull(_wallet.value).prepare(to, amount, inFiat, receiptJson, note)
+
+    /** Who this wallet paid before, for Send's sheet; empty without a wallet. */
+    suspend fun paidBefore(): List<PaidBefore> {
+        val wallet = _wallet.value ?: return emptyList()
+        val (seconds, offset, hours24) = clock()
+        return wallet.paidBefore(seconds, offset, hours24)
+    }
 
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */
     suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)

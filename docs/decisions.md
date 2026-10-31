@@ -627,3 +627,77 @@ Calls made while building the first version, with why. Newest last.
     toggle B means `prepare` taking an amount in money (or converting
     first, with the price moving between the two), and the Send screen is
     redrawn in step 4 anyway, so it moves to the new field there.
+
+## Round 3: Send with the camera
+
+92. **Send is one screen, the camera under a sheet** (Round 3 › "Send B"):
+    Home's Send opens it, and a `monero:` link opens it too, its code read
+    as if scanned. The old Scan to pay screen and the old Send form are
+    gone (`ScanPayScreen`, `Screen.ScanPay`), and with them ffi's
+    `is_amount`, which the field's `sendable` (decision 96) replaced.
+    Folded, the sheet holds "Paste an address", the people paid before and
+    the ready line; pulled up (the handle dragged 40 dp, or tapped), the
+    form: To, Amount (toggle B), Note, the ready line and an orange Review
+    to the confirm screen, which is unchanged (pattern, swipe, fingerprint).
+    Back folds the sheet first, then closes Send. The camera stays full
+    screen behind the sheet and keeps scanning, its viewfinder drawn small
+    (100 dp) above the form, or not at all where the screen is under
+    560 dp tall (landscape); folded, the sheet takes at most 62% of the
+    height so a landscape phone keeps a strip of camera to aim with.
+93. **What a scan, a paste or a link does**: a wallet code, or anything
+    that isn't a payment code, says so (over the camera folded, under To
+    pulled up); an address, or a payment code without an amount, fills To
+    (and Note from its `tx_description`) and pulls the sheet up; a payment
+    code with an amount goes straight to the confirm screen with its
+    receipt and description. If that payment can't be prepared (not enough
+    ready, no node), the form opens filled, the amount in XMR, with the
+    reason. Changing the address or that amount drops the code's receipt,
+    which was for that payment only. The camera reads a code many times a
+    second, so each text is taken once until To is edited. A whole
+    `monero:` code typed or pasted into To is read as a code.
+94. **The clipboard is read only when Paste is tapped** (the sheet's row
+    and the To field's button), never to preview it, so Android shows no
+    paste notice before the tap; an empty clipboard says "Nothing to
+    paste."
+95. **Paid before, until contacts** (`activity::paid_before`,
+    `Wallet::paid_before`): where the board has CONTACTS with "All", the
+    sheet shows "PAID BEFORE" (no "All": nothing to open yet) until steps 5
+    and 6: the last 3 addresses paid, each once, newest first, splits left
+    out (they pay this wallet). Each row: the address's pattern, the shop
+    on the last payment's receipt or the address cut to its ends ("86Ux …
+    7kQa", as in Activity), and a line about the last payment: its note
+    and day ("Lunch money · 27 Oct"), or its day and amount ("Today ·
+    $24.50": the receipt's total, else its worth when sent, else "0.1421
+    XMR"). Hidden when nothing was sent. Tapping fills To and pulls the
+    sheet up. Step 6 swaps contacts in at the marked spot in `Send.kt`.
+96. **Send takes an amount in money** (`Wallet::typed_amount`,
+    `Wallet::prepare_typed`; ffi `prepare(to, amount, in_fiat, …)`): the
+    text as typed and the field's unit go to Rust, which converts money at
+    the current price with the rounding the field's line showed ("≈ 0.1204
+    XMR"), so what's reviewed is what was shown unless the price moved in
+    between (the confirm screen's XMR is then the truth). Receive's code
+    uses the same conversion. The field opens in money while there's a
+    price, as Receive's does. `AmountField::sendable` says whether what's
+    typed comes to more than nothing, for Review.
+97. **The note is the sent payment's note**: typed on Send (placeholder
+    "What it's for, kept on this phone"), or prefilled from a code's
+    `tx_description`, and kept in `Sent::note`, the field the description
+    already used, so it shows on the payment's screen after the time and on
+    the confirm screen under the amount. It never leaves the phone.
+98. **To shows "84Bv9 … 99fQ2" while not being edited** (`uri::short`,
+    ffi `short_address`): the first and last five, as the board, with the
+    pattern in front once it's an address of this network (Rust's
+    `parse_payment` decides); tapping edits the whole address underneath.
+99. **The ready line** (`Wallet::ready_line`, `Balance::ready_line`):
+    "1.8592 XMR ready to spend · $308.70", the money only with a current
+    price; under the folded sheet's rows and under the form.
+100. **Safe areas over the camera**: the top bar sits below the status bar
+    and clear of a cutout (`safeDrawing`, top and sides), the sheet's
+    content above the gesture bar and the keyboard and clear of the sides;
+    the camera and the sheet's paper still reach the edges. Restore's
+    "Scan a wallet code" screen, which had the same 32 dp guess at the
+    status bar, now uses the safe area too.
+101. **Torch**: shown only once the camera is open and has a light, as a
+    switch ("Torch", on or off for TalkBack); on, its circle fills with the
+    camera's card colour and the lamp turns orange. It goes off with the
+    camera when Send closes.

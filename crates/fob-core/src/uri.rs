@@ -182,6 +182,17 @@ pub fn address_groups(address: &str) -> Vec<AddressGroup> {
         .collect()
 }
 
+/// An address in a field, its first and last five: "84Bv9 … 99fQ2". Short
+/// text is kept as it is.
+pub fn short(address: &str) -> String {
+    let chars: Vec<char> = address.trim().chars().collect();
+    if chars.len() <= 12 {
+        return chars.into_iter().collect();
+    }
+    let (head, tail): (String, String) = (chars[..5].iter().collect(), chars[chars.len() - 5..].iter().collect());
+    format!("{head} … {tail}")
+}
+
 /// A wallet code: `monero_wallet:` with keys or seed (the form the Monero GUI
 /// and Cake Wallet show), or a code holding only seed words.
 pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
@@ -393,6 +404,14 @@ mod tests {
         assert_eq!((groups.len(), groups[21].text.as_str()), (22, "4"));
         let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
         assert_eq!(marked, [0, 11, 21]);
+    }
+
+    #[test]
+    fn an_address_in_a_field_shows_its_first_and_last_five() {
+        let address = wallet().address(1);
+        assert_eq!(short(&address), format!("{} … {}", &address[..5], &address[90..]));
+        assert_eq!(short(" 84Bv9qqqqqqqqqqqqq99fQ2 "), "84Bv9 … 99fQ2");
+        assert_eq!(short("86Ux"), "86Ux");
     }
 
     #[test]

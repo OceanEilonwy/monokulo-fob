@@ -133,6 +133,8 @@ pub struct Balance {
     pub fiat_text: Option<String>,
     /// Show [`fiat_text`](Self::fiat_text) first, the XMR under it.
     pub fiat_first: bool,
+    /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70".
+    pub ready_line: String,
 }
 
 /// A currency to choose.
@@ -760,6 +762,7 @@ impl FobWallet {
             unlocked_text: xmr(b.unlocked),
             fiat_text: self.inner.worth_now(b.total).await,
             fiat_first: self.inner.price_settings().await.fiat_first,
+            ready_line: self.inner.ready_line().await,
         }
     }
 
@@ -873,13 +876,25 @@ impl FobWallet {
         Ok(self.inner.set_fiat_first(fiat_first).await?)
     }
 
-    /// Builds a payment for the confirm screen. `amount` is text as typed;
-    /// `receipt_json` comes from the scanned `PaymentRequest`.
-    /// `note` is the payment code's description, kept with the payment.
-    pub async fn prepare(&self, to: String, amount: String, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
-        let atomic = amount::parse(&amount)?;
-        let p = self.inner.prepare(&to, atomic, receipt_json, note).await?;
+    /// Builds a payment for the confirm screen. `amount` is text as typed
+    /// in the amount field, in money when `in_fiat` (converted at the
+    /// current price) or XMR; `receipt_json` comes from the scanned
+    /// `PaymentRequest`. `note` (typed on Send, or the payment code's
+    /// description) is kept with the payment.
+    pub async fn prepare(&self, to: String, amount: String, in_fiat: bool, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
+        let p = self.inner.prepare_typed(&to, &amount, in_fiat, receipt_json, note).await?;
         Ok(prepared(&self.inner, p).await)
+    }
+
+    /// The people this wallet paid before, the most recent first, for
+    /// Send's sheet; the clock as for `activity_days`.
+    pub async fn paid_before(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<PaidBefore> {
+        self.inner
+            .paid_before(activity::Clock { now, utc_offset, hours_24 })
+            .await
+            .into_iter()
+            .map(|p| PaidBefore { address: p.address, name: p.name, line: p.line })
+            .collect()
     }
 
     /// What Split up opens with: pieces learned from the last 30 days'
@@ -927,7 +942,16 @@ impl FobWallet {
     /// money only with prices on and a current price.
     pub async fn amount_entry(&self, text: String, in_fiat: bool) -> AmountEntry {
         let f = self.inner.amount_field(&text, in_fiat).await;
-        AmountEntry { in_fiat: f.in_fiat, sign: f.sign, unit: f.unit, can_switch: f.can_switch, line: f.line, label: f.label, switch_label: f.switch_label }
+        AmountEntry {
+            in_fiat: f.in_fiat,
+            sign: f.sign,
+            unit: f.unit,
+            can_switch: f.can_switch,
+            line: f.line,
+            label: f.label,
+            switch_label: f.switch_label,
+            sendable: f.sendable,
+        }
     }
 
     /// An amount field's text switched between money and XMR (`to_fiat`):
@@ -1028,6 +1052,18 @@ pub struct AmountEntry {
     pub label: String,
     /// "Amount in US dollars. Switch to XMR"
     pub switch_label: Option<String>,
+    /// What's typed comes to more than nothing: Send can review it.
+    pub sendable: bool,
+}
+
+/// Someone this wallet paid before, on Send's sheet.
+#[derive(uniffi::Record)]
+pub struct PaidBefore {
+    pub address: String,
+    /// "Corner Café", "86Ux … 7kQa"
+    pub name: String,
+    /// "Lunch money · 27 Oct", "Today · $24.50"
+    pub line: String,
 }
 
 /// A payment's own screen, every word from Rust.
@@ -1097,6 +1133,12 @@ pub struct AddressGroup {
     pub highlighted: bool,
 }
 
+/// An address in a field, its first and last five: "84Bv9 … 99fQ2".
+#[uniffi::export]
+pub fn short_address(address: String) -> String {
+    uri::short(&address)
+}
+
 /// An address in groups of five, the first, middle and last highlighted.
 #[uniffi::export]
 pub fn address_groups(address: String) -> Vec<AddressGroup> {
@@ -1145,12 +1187,6 @@ pub struct AddressPattern {
 pub fn address_pattern(address: String) -> AddressPattern {
     let p = pattern::address_pattern(&address);
     AddressPattern { cells: p.cells, colour: p.colour, dots: p.dots() }
-}
-
-/// Whether text someone is typing is an amount above zero.
-#[uniffi::export]
-pub fn is_amount(text: String) -> bool {
-    amount::parse(&text).is_ok_and(|a| a > 0)
 }
 
 #[uniffi::export]
