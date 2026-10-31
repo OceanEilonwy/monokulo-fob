@@ -25,6 +25,10 @@ const BLOCK_SECONDS: u64 = 120;
 /// never skips a payment: a week of blocks.
 pub const RESTORE_MARGIN: u64 = 7 * 24 * 3600 / BLOCK_SECONDS;
 
+/// How far from the anchor a height's date is still worth naming: a year
+/// of blocks.
+const DATED_SPAN: u64 = 365 * 24 * 3600 / BLOCK_SECONDS;
+
 impl Network {
     pub fn name(self) -> &'static str {
         match self {
@@ -82,6 +86,14 @@ impl Network {
         }
     }
 
+    /// When `height` was mined, close enough to name the day: within a year
+    /// of the anchor. Further off, blocks that didn't come every two
+    /// minutes on average make the estimate weeks or months out (mainnet's
+    /// first two-minute block, in September 2015, comes out as March 2016).
+    pub fn dated(self, height: u64) -> Option<u64> {
+        (height.abs_diff(self.anchor().height) <= DATED_SPAN).then(|| self.timestamp_for(height))
+    }
+
     /// Roughly when `height` was mined, for showing "starts from 12 Mar".
     pub fn timestamp_for(self, height: u64) -> u64 {
         let anchor = self.anchor();
@@ -107,6 +119,16 @@ mod tests {
     #[test]
     fn dates_before_monero_start_from_block_zero() {
         assert_eq!(Network::Stagenet.restore_height_for(0), 0);
+    }
+
+    #[test]
+    fn only_heights_within_a_year_of_the_anchor_are_dated() {
+        let a = MAINNET_ANCHOR;
+        assert_eq!(Network::Mainnet.dated(a.height), Some(a.timestamp));
+        assert_eq!(Network::Mainnet.dated(a.height - DATED_SPAN), Some(a.timestamp - DATED_SPAN * BLOCK_SECONDS));
+        assert_eq!(Network::Mainnet.dated(a.height - DATED_SPAN - 1), None);
+        assert_eq!(Network::Mainnet.dated(a.height + DATED_SPAN + 1), None);
+        assert_eq!(Network::Stagenet.dated(0), None);
     }
 
     #[test]

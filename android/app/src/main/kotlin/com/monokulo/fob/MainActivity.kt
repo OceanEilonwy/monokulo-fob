@@ -47,6 +47,7 @@ import com.monokulo.fob.ui.screens.ContactScanScreen
 import com.monokulo.fob.ui.screens.ContactScreen
 import com.monokulo.fob.ui.screens.ContactsScreen
 import com.monokulo.fob.ui.screens.HomeScreen
+import com.monokulo.fob.ui.screens.KeysScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
 import com.monokulo.fob.ui.screens.PaymentScreen
@@ -117,8 +118,14 @@ sealed interface Screen {
     data object PriceFrom : Screen
     /** "Also show amounts in": every currency, with a search. */
     data object CurrencyList : Screen
-    /** Backup and keys: Seed phrase and Wallet code, until step 7 adds the keys. */
+    /**
+     * Backup and keys: Seed phrase, Wallet code and Keys, opened from
+     * Settings once the phone's lock says it's you; its screens don't ask
+     * again.
+     */
     data object BackupKeys : Screen
+    /** Every key in full, each with Copy; from Backup and keys. */
+    data object Keys : Screen
     /** Everyone this wallet pays, and who was paid but isn't saved. */
     data object Contacts : Screen
     /** A contact's card. */
@@ -249,7 +256,8 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
-     * Fingerprint, face or screen lock before money leaves; passes on a
+     * Fingerprint, face or screen lock before money leaves or Backup and
+     * keys opens; passes on a
      * phone with none set up. A prompt already up (the activity made again
      * under it) is waited for, not asked twice.
      */
@@ -308,10 +316,11 @@ class MainActivity : FragmentActivity() {
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
             Screen.Coins -> CoinsScreen(model, nav)
             Screen.Split -> SplitScreen(model, nav)
-            Screen.Settings -> SettingsScreen(model, nav)
+            Screen.Settings -> SettingsScreen(model, nav, ::confirmIdentity, ::identityPending)
             Screen.PriceFrom -> PriceFromScreen(model, nav)
             Screen.CurrencyList -> CurrencyListScreen(model, nav)
             Screen.BackupKeys -> BackupKeysScreen(model, nav)
+            Screen.Keys -> KeysScreen(model, nav)
             Screen.Contacts -> ContactsScreen(model, nav)
             is Screen.Contact -> ContactScreen(model, nav, screen.id)
             is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill, screen.forRequest)

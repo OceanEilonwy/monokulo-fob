@@ -126,9 +126,19 @@ pub fn status(activity: &Activity) -> String {
 /// A day that isn't today or yesterday: "27 Oct", "27 Oct 2025".
 pub(crate) fn date(day: i64, today: i64) -> String {
     let (year, month, d) = civil(day);
-    let name = &MONTHS[month - 1];
-    let name = format!("{}{}", &name[..1], name[1..].to_lowercase());
+    let name = month_name(month);
     if year == civil(today).0 { format!("{d} {name}") } else { format!("{d} {name} {year}") }
+}
+
+/// A day with its year whatever the year: "2 Sep 2026".
+pub(crate) fn full_date(day: i64) -> String {
+    let (year, month, d) = civil(day);
+    format!("{d} {} {year}", month_name(month))
+}
+
+fn month_name(month: usize) -> String {
+    let name = &MONTHS[month - 1];
+    format!("{}{}", &name[..1], name[1..].to_lowercase())
 }
 
 /// When, for a payment's own screen: "Today 08:40", "Yesterday 08:40",

@@ -130,6 +130,10 @@ object Icons {
     const val request = "M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h2 M18 14h2 M14 18h2 M18 18h2"
     /** Two people (drawn at stroke 1.8): Contacts in Settings. */
     const val people = "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M2 21c0-4 3-7 7-7s7 3 7 7 M16 3.5a4 4 0 0 1 0 7.5 M18 14.5c2.4.8 4 3.2 4 6.5"
+    /** Two columns of words (drawn at stroke 1.8): Seed phrase in Backup and keys. */
+    const val seedWords = "M4 6h7 M4 10h7 M4 14h7 M4 18h7 M14 6h6 M14 10h6 M14 14h6 M14 18h6"
+    /** Two sheets, one over the other (drawn at stroke 1.8): Copy. */
+    const val copy = "M9 9h11v11H9z M5 15H4V4h11v1"
     /** A key (drawn at stroke 1.8): Backup and keys. */
     const val key = "M8 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M12 11h9 M18 11v3 M15 11v2"
     /** A globe (drawn at stroke 1.8): a price provider that answers over the web. */

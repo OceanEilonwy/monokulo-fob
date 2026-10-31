@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, amount, contacts, not_ready, pattern, price, profile, qr, receipt, split, uri};
+use fob_core::{activity, amount, contacts, keys, not_ready, pattern, price, profile, qr, receipt, split, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -145,6 +145,105 @@ pub struct BackupReminder {
     pub title: String,
     /// "Your 16 words aren't written down yet. …"
     pub line: String,
+}
+
+/// Backup and keys, every word from fob-core, and Settings' line for it.
+#[derive(uniffi::Record)]
+pub struct BackupHub {
+    /// The warning card: "Anyone who sees these can take or watch your money. …"
+    pub warning: String,
+    /// Under "Back up": Seed phrase (not on a view-only wallet), Wallet code.
+    pub backup: Vec<HubRow>,
+    /// Under "For other wallets": Keys.
+    pub other: Vec<HubRow>,
+    /// Under the cards: "The seed phrase is all you need. …"
+    pub footer: String,
+    /// Settings' Backup and keys row: "Seed phrase, wallet code, keys".
+    pub settings_line: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct HubRow {
+    pub item: HubItem,
+    /// "Seed phrase"
+    pub title: String,
+    /// "16 words that restore everything · backed up"
+    pub line: String,
+}
+
+/// What a row of Backup and keys opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum HubItem {
+    SeedPhrase,
+    WalletCode,
+    Keys,
+}
+
+impl From<keys::HubRow> for HubRow {
+    fn from(r: keys::HubRow) -> Self {
+        let item = match r.item {
+            keys::HubItem::SeedPhrase => HubItem::SeedPhrase,
+            keys::HubItem::WalletCode => HubItem::WalletCode,
+            keys::HubItem::Keys => HubItem::Keys,
+        };
+        HubRow { item, title: r.title, line: r.line }
+    }
+}
+
+/// A card of Keys: "Secret: keep to yourself" or "Public".
+#[derive(uniffi::Record)]
+pub struct KeyGroup {
+    pub title: String,
+    pub keys: Vec<KeyRow>,
+}
+
+/// One key, in full, with its Copy button's label.
+#[derive(uniffi::Record)]
+pub struct KeyRow {
+    /// "Secret spend key"
+    pub title: String,
+    /// Sets the badge's colour.
+    pub badge: KeyBadge,
+    /// "Spends money", "Sees payments", "Public"
+    pub badge_text: String,
+    /// "With the view key, restores this wallet anywhere."; none for the public keys.
+    pub line: Option<String>,
+    /// 64 hex digits, the whole address, or "1690400 · 2 Sep 2026".
+    pub value: String,
+    /// What Copy puts on the clipboard: the value, the restore height without its date.
+    pub clip: String,
+    /// "Copy the secret spend key"
+    pub copy: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum KeyBadge {
+    SpendsMoney,
+    SeesPayments,
+    Public,
+}
+
+impl From<keys::KeyGroup> for KeyGroup {
+    fn from(g: keys::KeyGroup) -> Self {
+        let keys = g
+            .keys
+            .into_iter()
+            .map(|k| KeyRow {
+                title: k.title,
+                badge: match k.badge {
+                    keys::KeyBadge::SpendsMoney => KeyBadge::SpendsMoney,
+                    keys::KeyBadge::SeesPayments => KeyBadge::SeesPayments,
+                    keys::KeyBadge::Public => KeyBadge::Public,
+                },
+                badge_text: k.badge_text,
+                line: k.line,
+                value: k.value.to_string(),
+                clip: k.clip.to_string(),
+                copy: k.copy,
+            })
+            .collect();
+        KeyGroup { title: g.title, keys }
+    }
 }
 
 /// One row of the "Also show amounts in" list.
@@ -920,6 +1019,24 @@ impl FobWallet {
 
     pub async fn wallet_code(&self) -> String {
         self.inner.wallet_code().await.to_string()
+    }
+
+    /// Backup and keys' words (no secrets), and Settings' line for its row.
+    pub async fn backup_hub(&self) -> BackupHub {
+        let hub = self.inner.backup_hub().await;
+        BackupHub {
+            warning: hub.warning,
+            backup: hub.backup.into_iter().map(Into::into).collect(),
+            other: hub.other.into_iter().map(Into::into).collect(),
+            footer: hub.footer,
+            settings_line: hub.settings_line,
+        }
+    }
+
+    /// Keys: every key in full, secret ones first; a view-only wallet has
+    /// no secret spend key.
+    pub async fn keys_page(&self) -> Vec<KeyGroup> {
+        self.inner.keys_page().await.into_iter().map(Into::into).collect()
     }
 
     pub async fn receive_address(&self) -> Result<String> {

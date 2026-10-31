@@ -1624,3 +1624,48 @@ Calls made while building the first version, with why. Newest last.
     "Still finding older ones" note always gets its own line under the
     header now. Beside the title it never fitted next to two chips on a
     360 dp phone. The title is now marked as a heading for TalkBack.
+216. **The fingerprint is asked at Backup and keys' door** (decision 5):
+    Settings' row asks for the phone's lock (fingerprint, face or screen
+    lock, the same prompt as Confirm) and opens Backup and keys only on
+    success; cancelling leaves you on Settings. Seed phrase, Wallet code
+    and Keys are reached only from the hub, so the visit is unlocked by
+    being past that door on the stack: hub to Keys and back, then to Seed
+    phrase, asks nothing more. Leaving to Settings and coming back asks
+    again. A second tap while the prompt is up is ignored, and a prompt
+    up while the activity is made again (font size, language) still
+    answers Settings, as Confirm's does. A phone with no lock set opens
+    it straight away, as sending does. Home's backup reminder still opens
+    the seed phrase directly: it is a new wallet's backup step, as before,
+    not Backup and keys.
+217. **Seed phrase's line says the count and the backup**: "16 words
+    that restore everything" (25 for a classic seed), then "· backed up"
+    for a wallet made here whose words were said to be written down, or
+    "· not written down yet" while Home's reminder is still up. A
+    restored wallet says nothing more: its words came from somewhere
+    already, and one restored from a spend key never had them shown. A
+    file from before the reminder counts as backed up, as Home treats it.
+218. **A view-only wallet's Backup and keys** has Wallet code and Keys
+    only; its warning reads "Anyone who sees these can watch your money.
+    …", its footer "This wallet only watches. The code and keys are for
+    moving it to another app.", Settings' line "Wallet code, keys". Its
+    Keys page has the secret view key alone under Secret, and all four
+    public values: the file keeps the address's public spend key; only
+    the secret spend key and seed are missing, which it never stored.
+219. **The restore height is dated only when the date can be named**:
+    within a year of the network's anchor block, where the two-minute
+    estimate is days out at most. Further back, blocks didn't average two
+    minutes (mainnet's first two-minute block, September 2015, estimates
+    as March 2016), so an old height shows as the number alone. It is the
+    wallet code's height (the first block scanned, or where scanning
+    starts for a new wallet before its first sync). Copy puts the number
+    alone on the clipboard, as other wallets take it.
+220. **Every Copy on Keys marks the clip sensitive**, the public keys and
+    address too (EXTRA_IS_SENSITIVE on Android 13+, the same extra by name
+    before, which some keyboards read): the address ties payments to you,
+    and one rule is simpler to check. The button's icon turns to a tick
+    and "Copied" shows under the value for 2 s, read by TalkBack;
+    Android 13+'s own clipboard notice shows too, with the content hidden.
+221. **Keys' values wrap at any character**: the 64-digit keys and the
+    95-character address have no spaces, so Compose breaks them where the
+    line ends; monospace at 12.5 sp, as the board. The hub and Keys block
+    screenshots, as Seed phrase and Wallet code already did.
