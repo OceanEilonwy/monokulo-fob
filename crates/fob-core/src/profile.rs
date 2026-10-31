@@ -176,6 +176,23 @@ impl Book {
         }
     }
 
+    /// Touched phones on share `id`'s screen: it's now kept as that,
+    /// naming whom once theirs came (a name, once there, isn't taken away).
+    /// Returns the share when it changed.
+    pub fn touched(&mut self, id: u64, name: Option<String>) -> Option<Share> {
+        let share = self.shares.iter_mut().find(|s| s.id == id)?;
+        let name = match (&share.kind, name) {
+            (ShareKind::TouchedPhones { name: Some(had) }, _) => Some(had.clone()),
+            (_, name) => name,
+        };
+        let kind = ShareKind::TouchedPhones { name };
+        if share.kind == kind {
+            return None;
+        }
+        share.kind = kind;
+        Some(share.clone())
+    }
+
     /// Every share, newest first.
     pub fn newest_first(&self) -> Vec<&Share> {
         let mut all: Vec<&Share> = self.shares.iter().collect();
@@ -555,6 +572,13 @@ mod tests {
         assert!(json.contains(r#""kind":{"touched_phones":{"name":"Sam"}}"#), "{json}");
         assert_eq!(serde_json::from_str::<Book>(&json).unwrap(), book);
         assert_eq!(book.get(nobody.id).unwrap().kind, ShareKind::TouchedPhones { name: None });
+        // A code's share that phones then touched on: kept as the touch.
+        let shown = book.share(9, keys.address(9), ShareKind::CodeShown, NOW + 2).unwrap();
+        assert_eq!(book.touched(shown.id, None).unwrap().kind, ShareKind::TouchedPhones { name: None });
+        assert!(book.touched(shown.id, None).is_none(), "kept already");
+        assert_eq!(book.touched(shown.id, Some("Jo".into())).unwrap().kind, ShareKind::TouchedPhones { name: Some("Jo".into()) });
+        assert!(book.touched(shown.id, None).is_none(), "the name stays");
+        assert!(book.touched(99, None).is_none());
         assert_eq!(swapped_words("Sam"), ("Swapped with Sam".into(), "Sam got your profile, and you got Sam's.".into()));
     }
 

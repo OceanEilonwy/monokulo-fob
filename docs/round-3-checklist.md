@@ -283,7 +283,7 @@ One phone, or the emulator
 - [ ] NFC off in the phone's settings → the strip says "NFC is off. Tap to turn it on, then come back."; tap → NFC settings; turn it on, Back → the strip says "Both on this screen…".
 - [ ] Tap the strip → Touch phones: X top left (TalkBack "Back to the code"), rings round your photo (88), "Touch phones", the board's line, "No NFC? Scan each other's code instead." (tap → the code); Back → the code. Dark mode: rings and words readable on paper.
 - [ ] Hold the phone on the share screen to a contactless bank or transit card → nothing taken, maybe "The other phone isn't on Share my profile."; no crash.
-- [ ] Open Share my profile and close it without touching → Your shares has only the "Code shown" share; Receive's New address skips one number (the swap's, never given).
+- [ ] Open Share my profile and close it without touching → Your shares has only the "Code shown" share; Receive's New address skips only that share's number (the swap uses the share's address, no second one).
 
 Two phones (A and B)
 - [ ] Both on Share my profile (the code or Touch phones), backs together a second or two → both buzz and show "Swapped with <other>", both photos with a green tick, "<other> got your profile, and you got <other>'s.", the card with their name, pattern and three-part address, Not now and Add contact.

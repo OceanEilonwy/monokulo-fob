@@ -387,8 +387,8 @@ class WalletModel(private val app: Application) {
         return wallet.profileShares(seconds, offset, hours24)
     }
 
-    /** Touch phones, as Share my profile opens with NFC on: a swap on its own new address. */
-    suspend fun startSwap(): TouchSwap = requireNotNull(_wallet.value).startSwap()
+    /** Touch phones, as share [id]'s screen opens with NFC on: a swap on that share's address. */
+    suspend fun startSwap(id: ULong): TouchSwap = requireNotNull(_wallet.value).startSwap(id)
 
     /** Ends a swap, keeping it as a share when anything went out; their profile when it came. */
     suspend fun endSwap(swap: TouchSwap): Swapped? {
