@@ -1,0 +1,35 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      # Fob's own crates. The tests against live stagenet nodes are ignored
+      # by default: CI doesn't depend on public nodes being up.
+      - name: Test
+        run: cargo test --locked -p fob-core -p fob-ffi
+      - name: Clippy
+        run: cargo clippy --locked -p fob-core -p fob-ffi --all-targets -- -D warnings

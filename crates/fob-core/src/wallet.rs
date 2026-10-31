@@ -12,6 +12,9 @@ use std::{
 
 use crate::decoys::Decoys;
 use crate::fetch::{Adaptive, Pipeline, Tuning};
+
+/// A node, as a raw transport, a daemon, a decoy source and what's been learned about it.
+type Connection = (Transport, Daemon, Decoys, Arc<Adaptive>);
 use crate::transport::{Daemon, Transport};
 use monero_wallet::{
     OutputWithDecoys, Scanner, WalletOutput,
@@ -209,7 +212,7 @@ struct Inner {
     file_key: Zeroizing<[u8; 32]>,
     keys: Keys,
     state: Mutex<State>,
-    rpc: Mutex<Option<(String, Transport, Daemon, Decoys, Arc<Adaptive>)>>,
+    rpc: Mutex<Option<(String, Connection)>>,
     /// Blocks being fetched ahead of the scanner.
     pipeline: Mutex<Option<Pipeline>>,
     prepared: Mutex<HashMap<u64, PreparedTx>>,
@@ -459,20 +462,20 @@ impl Wallet {
 
     /// The node: as a raw transport (for [`fetch`](crate::fetch)), as a
     /// daemon, and as a source of decoys with the output distribution cached.
-    async fn connection(&self) -> Result<(Transport, Daemon, Decoys, Arc<Adaptive>)> {
+    async fn connection(&self) -> Result<Connection> {
         let node = self.inner.state.lock().await.node.clone();
         let mut rpc = self.inner.rpc.lock().await;
-        if let Some((url, transport, daemon, decoys, adaptive)) = rpc.as_ref() {
-            if *url == node {
-                return Ok((transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone()));
-            }
+        if let Some((url, connection)) = rpc.as_ref()
+            && *url == node
+        {
+            return Ok(connection.clone());
         }
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let transport = Transport::new(&node).map_err(err)?;
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
         let decoys = Decoys::new(daemon.clone(), transport.clone(), self.inner.path.with_extension("decoys"));
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
-        *rpc = Some((node, transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone()));
+        *rpc = Some((node, (transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone())));
         Ok((transport, daemon, decoys, adaptive))
     }
 
@@ -570,7 +573,7 @@ impl Wallet {
                 });
             }
         }
-        rows.sort_by(|a, b| (b.height.is_none(), b.height, b.time).cmp(&(a.height.is_none(), a.height, a.time)));
+        rows.sort_by_key(|r| std::cmp::Reverse((r.height.is_none(), r.height, r.time)));
         rows
     }
 
@@ -646,11 +649,11 @@ impl Wallet {
         };
         // A reorganisation shows as a first block that doesn't follow the last
         // one scanned: forget the recent blocks and scan them again.
-        if let (Some((_, hash)), Some(first)) = (&recent, blocks.first()) {
-            if hex::encode(first.block.header.previous) != *hash {
-                self.rewind().await?;
-                return Ok(true);
-            }
+        if let (Some((_, hash)), Some(first)) = (&recent, blocks.first())
+            && hex::encode(first.block.header.previous) != *hash
+        {
+            self.rewind().await?;
+            return Ok(true);
         }
 
         let mut state = self.inner.state.lock().await;
@@ -937,7 +940,7 @@ impl Wallet {
                     Some((i, o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
                 })
                 .collect();
-            candidates.sort_by(|a, b| b.1.cmp(&a.1));
+            candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
             let available = candidates.iter().map(|c| c.1).sum::<u64>();
             (candidates, available)
         };

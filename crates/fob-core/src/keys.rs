@@ -108,10 +108,10 @@ impl Keys {
     pub fn from_spend_key(network: Network, spend_hex: &str, view_hex: Option<&str>) -> Result<Keys> {
         let spend = parse_scalar(spend_hex)?;
         let keys = Keys::from_spend(network, *spend, None);
-        if let Some(view_hex) = view_hex {
-            if *parse_scalar(view_hex)? != *keys.view {
-                return Err(FobError::BadKey);
-            }
+        if let Some(view_hex) = view_hex
+            && *parse_scalar(view_hex)? != *keys.view
+        {
+            return Err(FobError::BadKey);
         }
         Ok(keys)
     }

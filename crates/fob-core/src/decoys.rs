@@ -49,7 +49,7 @@ impl Distribution {
         if bytes.len() < 8 || bytes.len() % 8 != 0 {
             return None;
         }
-        let mut words = bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().expect("8 bytes")));
+        let mut words = bytes.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c));
         let start = usize::try_from(words.next()?).ok()?;
         Some(Distribution { start, counts: words.collect() })
     }
