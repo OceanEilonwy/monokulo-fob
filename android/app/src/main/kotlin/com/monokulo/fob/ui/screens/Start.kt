@@ -388,6 +388,11 @@ fun CameraOrAsk(
     }
     val ask = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) { if (!granted) ask.launch(android.Manifest.permission.CAMERA) }
+    // Allowed in Android's settings meanwhile: the camera shows on coming back.
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        if (!granted) granted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        onPauseOrDispose {}
+    }
     // Light status bar icons over the dark camera, whatever the theme.
     BarIcons(darkIcons = false, statusOnly = true)
     if (granted) {
