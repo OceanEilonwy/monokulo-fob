@@ -58,6 +58,7 @@ import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.ErrorText
+import com.monokulo.fob.ui.LabelAndValue
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.OutlineButton
@@ -213,16 +214,18 @@ private fun CheckRows(rows: List<NodeCheckRow>, minHeight: Dp, lines: Boolean) {
     Column {
         rows.forEach { row ->
             if (lines) Box(Modifier.fillMaxWidth().heightIn(min = 1.dp, max = 1.dp).background(Fob.line))
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = minHeight).padding(vertical = 6.dp).clearAndSetSemantics { contentDescription = row.label },
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+            // The result keeps its words whole at a big font; the title wraps first.
+            LabelAndValue(
+                Modifier.heightIn(min = minHeight).padding(vertical = 6.dp).clearAndSetSemantics { contentDescription = row.label },
+                gap = 12.dp, centred = true,
+                label = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        MarkCircle(row.mark, 20.dp)
+                        Text(row.title, fontSize = 14.sp)
+                    }
+                },
             ) {
-                MarkCircle(row.mark, 20.dp)
-                Text(row.title, fontSize = 14.sp)
-                Text(
-                    row.result, fontSize = 13.sp, color = if (row.mark == CheckMark.FAIL) Fob.red else Fob.muted,
-                    textAlign = TextAlign.End, modifier = Modifier.weight(1f),
-                )
+                Text(row.result, fontSize = 13.sp, color = if (row.mark == CheckMark.FAIL) Fob.red else Fob.muted, textAlign = TextAlign.End)
             }
         }
     }
@@ -239,7 +242,8 @@ private fun WorkingCard(report: NodeReport) {
             MarkCircle(report.mark(), 40.dp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(report.verdict, style = display(22))
-                Text(report.address, fontSize = 13.sp, color = Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // Whole, wrapping if it must: it's what's being checked.
+                Text(report.address, fontSize = 13.sp, color = Fob.muted)
             }
         }
         CheckRows(report.rows, minHeight = 40.dp, lines = true)
