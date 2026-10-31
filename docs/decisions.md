@@ -1402,3 +1402,59 @@ Calls made while building the first version, with why. Newest last.
     only with a currency, "Price from" opens a dialog of the check's lines
     and the two transports; a move's words show as a toast. The Show
     prices switch and `set_prices_on` are gone.
+188. **One run of failures, held in Rust**: every price lookup says who
+    asked: the 5-minute refresh (background), or the user (pull, Retry, a
+    changed currency or provider, a money amount typed). A failure the
+    user caused always shows the toast; the background's shows only when
+    it starts a run, and later background failures in the run update the
+    words without showing again. A lookup that works ends the run and
+    takes the toast down; a lookup with nothing due (asked a minute ago)
+    leaves the run as it is. The app shows a toast whose id is new: a new
+    id is a new showing, so a toast swiped away stays away until the user
+    does something or a later run starts. Changing currency or provider
+    forgets the run (it was about settings gone) and asks at once, as the
+    user. The run isn't kept in the wallet file: a new start begins clean.
+189. **The toast's words**: title "Couldn't get the USD price", or "Couldn't
+    get 29 Oct's USD price" when only a day's history failed (the newest
+    day a payment lacks a price for). Line: who failed and how ("Kraken
+    didn't answer", "CoinGecko is busy", "Kraken answered without a
+    price", "Tor isn't built yet") and what Fob uses instead: "using the
+    14:02 price" (or "yesterday's 14:02 price"), "shown as not available"
+    for history, "amounts stay in XMR" for a price over a day old. With no
+    price ever kept for the settings the line is the boards' "No price yet
+    · amounts stay in XMR", or "No price yet · type the amount in XMR" when
+    the lookup came from a money amount typed (ToastStates and ToastSend);
+    the Settings row still names the reason. Retry: "Trying again…",
+    "Asking Kraken for the USD price", then "USD price updated", "1 XMR =
+    $166.10". Straight apostrophes, as Rust's other words.
+190. **A price is shown for a day**: amounts keep the last current price
+    for up to 24 hours (it was an hour), and money can be typed on Send
+    and Receive against it; older, or none, and amounts are XMR only and
+    the amount field says "No USD price now · type the amount in XMR".
+    A payment is still only priced at its moment from a price within the
+    hour (decision 64's rule stays; decision 63's hour for showing gives
+    way). Once a price has missed a refresh (10 minutes old) the amount
+    field says when it's from: "≈ 0.1204 XMR
+    · price from 14:02" in place of the rate, "1 XMR = $166.10 · price
+    from 14:02" while empty. Home's balance and Send's ready line keep
+    the price without an age; the toast says when it's old.
+191. **Money typed asks again**: an amount field in money with something
+    typed, against a price 5 minutes old or more (or none), has the price
+    task ask now, as typing, at most once a minute; the task, not the
+    keystroke, does the asking, so typing never waits on the network.
+192. **Toast placement**: the toast is one composable over the app's root,
+    inside the safe area (above the gesture bar and the keyboard), 16 dp
+    up, or 8 dp above the screen's bottom bar: `Page` reports its bottom
+    slot's height, Send's open sheet the Review column's, through
+    `LocalBottomSpace`; a screen going takes its height with it. Inverse
+    roles were added to the theme (`inverse`, `onInverse`, `inverseMuted`,
+    `inverseAccent`, `inverseGreen`): dark card on the light theme, light
+    card on the dark one. Swiped down (half of 96 dp) or sideways (96 dp)
+    it goes; shorter swipes spring back. TalkBack reads it as a polite
+    live region and offers Dismiss as an action, the swipe's stand-in.
+193. **Price from is a screen now**: the cog and Settings' row open
+    `Screen.PriceFrom` (step 1's stopgap lines and transports, unchanged),
+    so Back returns to the screen the cog was tapped on. Picking a
+    provider or transport goes back, as the dialog closed. Settings' Price
+    from row is red with Rust's line while lookups fail ("Kraken · over
+    the internet · Not answering").

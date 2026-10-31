@@ -180,7 +180,11 @@ fun Page(
             }
         }
         if (bottom != null) {
-            Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = bottom)
+            // The price toast rises above it.
+            Column(
+                Modifier.fillMaxWidth().bottomSpace().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp), content = bottom,
+            )
         }
     }
 }
@@ -270,7 +274,10 @@ fun InfoRow(label: String, value: String, bold: Boolean = false, mono: Boolean =
 
 /** A setting or link row: title, subtitle, and a chevron or a switch. */
 @Composable
-fun SettingRow(title: String, subtitle: String? = null, onClick: (() -> Unit)? = null, checked: Boolean? = null, onChecked: ((Boolean) -> Unit)? = null, titleColor: Color = Fob.ink) {
+fun SettingRow(
+    title: String, subtitle: String? = null, onClick: (() -> Unit)? = null, checked: Boolean? = null, onChecked: ((Boolean) -> Unit)? = null,
+    titleColor: Color = Fob.ink, subtitleColor: Color = Fob.muted,
+) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 64.dp)
             .let { if (onClick != null) it.clickable(role = Role.Button, onClick = onClick) else it }
@@ -280,7 +287,7 @@ fun SettingRow(title: String, subtitle: String? = null, onClick: (() -> Unit)? =
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, fontSize = 16.sp, color = titleColor)
-            if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = Fob.muted)
+            if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = subtitleColor)
         }
         when {
             checked != null -> Switch(

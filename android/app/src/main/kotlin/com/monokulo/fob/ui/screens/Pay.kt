@@ -165,7 +165,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     LaunchedEffect(choosing) { if (choosing) people = model.requestContacts() }
     // A new price comes with a new balance. In money by default while there's one.
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
-        val e = wallet?.amountEntry(amount, inFiat) ?: return@LaunchedEffect
+        if (wallet == null) return@LaunchedEffect
+        val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
         if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
         if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
@@ -285,7 +286,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                             val w = wallet ?: return@launch
                             val toFiat = !inFiat
                             val switched = w.convertAmount(amount, toFiat)
-                            val e = w.amountEntry(switched, toFiat)
+                            val e = model.amountEntry(switched, toFiat) ?: return@launch
                             amount = switched; inFiat = toFiat; entry = e
                         }
                     },

@@ -46,7 +46,7 @@ pub use error::{FobError, Result};
 pub use keys::SeedKind;
 pub use network::Network;
 pub use zmq::ZmqStatus;
-pub use wallet::{Activity, Balance, CodePreview, Direction, Prepared, SyncListener, SyncStatus, Wallet, preview_wallet_code, restore_point};
+pub use wallet::{Activity, Balance, CodePreview, Direction, Prepared, Retried, SyncListener, SyncStatus, Wallet, preview_wallet_code, restore_point};
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()

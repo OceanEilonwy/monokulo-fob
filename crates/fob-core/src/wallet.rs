@@ -341,6 +341,15 @@ pub trait SyncListener: Send + Sync {
     fn on_status(&self, status: SyncStatus);
 }
 
+/// What the price toast's Retry came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Retried {
+    /// It worked: "USD price updated", "1 XMR = $166.10", shown for 2 s.
+    Updated { title: String, line: String },
+    /// It failed again: the toast with its new words.
+    Failed(price::alert::Toast),
+}
+
 /// A payment ready to sign: shown on the confirm screen, sent by its `id`.
 #[derive(Clone, Debug)]
 pub struct Prepared {
@@ -410,10 +419,14 @@ struct Inner {
     last_block: std::sync::Mutex<Option<monero_wallet::block::Block>>,
     /// Asks for prices every 5 minutes while Fob is on screen.
     prices_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Has the price task ask at once (a setting changed).
+    /// Has the price task ask at once (a setting changed, a money amount
+    /// was typed), for whom it says here.
     prices_wake: tokio::sync::Notify,
-    /// Why the last price request failed, until one works.
-    price_error: std::sync::Mutex<Option<String>>,
+    prices_asked: std::sync::Mutex<Option<price::alert::Asked>>,
+    /// When a money amount typed last had the price task ask.
+    typed_asked: std::sync::Mutex<u64>,
+    /// The run of failed price lookups, for the toast.
+    price_alerts: std::sync::Mutex<price::alert::Alerts>,
     /// The node's fee per unit of weight and its rounding mask, as last
     /// asked: Split up's fee "about" before a payment is built.
     fee_rate: std::sync::Mutex<Option<(u64, u64)>>,
@@ -633,7 +646,9 @@ impl Wallet {
                 last_block: std::sync::Mutex::new(None),
                 prices_task: std::sync::Mutex::new(None),
                 prices_wake: tokio::sync::Notify::new(),
-                price_error: std::sync::Mutex::new(None),
+                prices_asked: std::sync::Mutex::new(None),
+                typed_asked: std::sync::Mutex::new(0),
+                price_alerts: std::sync::Mutex::new(price::alert::Alerts::default()),
                 fee_rate: std::sync::Mutex::new(None),
                 fresh_share: std::sync::Mutex::new(None),
                 live_swap: std::sync::Mutex::new(std::sync::Weak::new()),
@@ -1932,9 +1947,34 @@ impl Wallet {
         self.inner.state.lock().await.prices.clone()
     }
 
-    /// Why prices couldn't be had last time, until they can.
-    pub fn price_error(&self) -> Option<String> {
-        self.inner.price_error.lock().expect("price lock").clone()
+    /// The failure in the current run of failed price lookups, if one is
+    /// going on.
+    pub fn price_alert(&self) -> Option<price::alert::Alert> {
+        self.inner.price_alerts.lock().expect("price lock").alert().cloned()
+    }
+
+    /// The price toast, while lookups are failing: what failed and what Fob
+    /// uses instead. The app shows one whose `id` it hasn't shown yet.
+    pub async fn price_toast(&self, clock: Clock) -> Option<price::alert::Toast> {
+        let alert = self.price_alert()?;
+        let state = self.inner.state.lock().await;
+        Some(price::alert::toast(&alert, state.price_cache.last(&state.prices), clock))
+    }
+
+    /// Settings' Price from row: "Kraken · over the internet", and while
+    /// lookups fail, why ("… · Not answering"), and whether they do.
+    pub async fn price_from_line(&self) -> (String, bool) {
+        let source = self.price_settings().await.source_text();
+        match self.price_alert() {
+            Some(alert) => (format!("{source} · {}", alert.failed.failure.text()), true),
+            None => (source, false),
+        }
+    }
+
+    /// Has the price task ask now, for `asked`.
+    fn ask_prices(&self, asked: price::alert::Asked) {
+        *self.inner.prices_asked.lock().expect("price lock") = Some(asked);
+        self.inner.prices_wake.notify_one();
     }
 
     async fn change_prices<T>(&self, change: impl FnOnce(&mut price::Settings) -> Result<T>) -> Result<T> {
@@ -1945,8 +1985,9 @@ impl Wallet {
             state.prices = settings;
             self.record_prices(&mut state);
             self.save_state(&state)?;
-            *self.inner.price_error.lock().expect("price lock") = None;
-            self.inner.prices_wake.notify_one();
+            // The run was about settings gone; the user's new ones are asked now.
+            self.inner.price_alerts.lock().expect("price lock").reset();
+            self.ask_prices(price::alert::Asked::User);
         }
         Ok(said)
     }
@@ -1996,10 +2037,10 @@ impl Wallet {
     }
 
     /// The current price shown now, when amounts are also shown in a
-    /// currency and one was asked within the hour: (currency, price).
+    /// currency and one was asked within the day: (currency, price).
     pub async fn price_now(&self) -> Option<(price::Currency, u64)> {
         let state = self.inner.state.lock().await;
-        state.price_cache.fresh(&state.prices, now()).map(|c| (price::currency(&c.currency), c.price))
+        state.price_cache.shown(&state.prices, now()).map(|c| (price::currency(&c.currency), c.price))
     }
 
     /// What `atomic` XMR is worth now: "$83.03"; `None` without a current price.
@@ -2017,10 +2058,29 @@ impl Wallet {
     }
 
     /// An amount field for `text`, typed in money (`in_fiat`) or XMR: in
-    /// money only with a currency besides XMR and a current price.
-    pub async fn amount_field(&self, text: &str, in_fiat: bool) -> price::AmountField {
-        let now = self.price_now().await;
-        price::amount_field(text, in_fiat, now.as_ref().map(|(c, p)| (c, *p)))
+    /// money only with a currency besides XMR and a price from within the
+    /// day, saying when it's from once it's aged (`clock`, the phone's).
+    /// Money typed against a price 5 minutes old or more has the price
+    /// task ask (at most once a minute), a failure shown as the user's.
+    pub async fn amount_field(&self, text: &str, in_fiat: bool, clock: Clock) -> price::AmountField {
+        let (wanted, shown) = {
+            let state = self.inner.state.lock().await;
+            (state.prices.code().map(price::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
+        };
+        if in_fiat && !text.trim().is_empty() && wanted.is_some() && shown.as_ref().is_none_or(|c| clock.now.saturating_sub(c.at) >= price::REFRESH) {
+            let mut last = self.inner.typed_asked.lock().expect("price lock");
+            if clock.now.saturating_sub(*last) >= price::PULL_REFRESH {
+                *last = clock.now;
+                self.ask_prices(price::alert::Asked::Typing);
+            }
+        }
+        let age = shown.as_ref().and_then(|c| price::alert::age(c.at, clock));
+        let price = match (&wanted, &shown) {
+            (Some(c), Some(now)) => price::FieldPrice::At(c, now.price, age.as_deref()),
+            (Some(c), None) => price::FieldPrice::Missing(c),
+            (None, _) => price::FieldPrice::None,
+        };
+        price::amount_field(text, in_fiat, price)
     }
 
     /// An amount field's text as typed, the other way: money to XMR (`to_fiat`
@@ -2495,30 +2555,41 @@ impl Wallet {
     }
 
     /// Asks the provider for what's due, unless XMR only: the current price
-    /// every 5 minutes (a minute when `pulled`), the daily history once a
-    /// day while a payment lacks a price. Returns whether anything changed.
-    pub async fn refresh_prices(&self, pulled: bool) -> Result<bool> {
+    /// every 5 minutes (a minute when the user asked), the daily history
+    /// once a day while a payment lacks a price. Returns whether anything
+    /// changed. A failure goes to the run of failures as `asked` says.
+    pub async fn refresh_prices(&self, asked: price::alert::Asked) -> Result<bool> {
         let provider = self.inner.state.lock().await.prices.provider;
-        let result = self.refresh_prices_from(&provider, pulled, now()).await;
-        *self.inner.price_error.lock().expect("price lock") = result.as_ref().err().map(ToString::to_string);
-        result
+        self.refresh_prices_from(&provider, asked, now()).await
     }
 
-    async fn refresh_prices_from(&self, source: &impl price::Source, pulled: bool, now: u64) -> Result<bool> {
-        let (settings, code, current_due, history_due) = {
+    async fn refresh_prices_from(&self, source: &impl price::Source, asked: price::alert::Asked, now: u64) -> Result<bool> {
+        let pulled = asked != price::alert::Asked::Background;
+        let (settings, code, current_due, history_due, lacking_day) = {
             let state = self.inner.state.lock().await;
             let settings = state.prices.clone();
             let Some(code) = settings.currency.clone() else { return Ok(false) };
             let window = price::window(source, now);
-            let lacking = self.payment_times(&state).into_iter().any(|(tx, time)| {
-                window.contains(&price::day(time))
-                    && !state.price_records.get(&tx).is_some_and(|r| r.iter().any(|r| r.currency == code))
-            });
+            // The newest day a payment lacks a price for, to name it.
+            let lacking_day = self
+                .payment_times(&state)
+                .into_iter()
+                .filter(|(tx, time)| {
+                    window.contains(&price::day(*time))
+                        && !state.price_records.get(tx).is_some_and(|r| r.iter().any(|r| r.currency == code))
+                })
+                .map(|(_, time)| price::day(time))
+                .max();
             let current_due = price::current_due(&state.price_cache, &settings, now, pulled);
-            let history_due = lacking && price::history_due(&state.price_cache, &settings, now);
-            (settings, code, current_due, history_due)
+            let history_due = lacking_day.is_some() && price::history_due(&state.price_cache, &settings, now);
+            (settings, code, current_due, history_due, lacking_day)
         };
+        if !current_due && !history_due {
+            return Ok(false);
+        }
+        let failed = |failure, day| price::alert::Failed { failure, provider: source.name().into(), currency: code.clone(), day };
         if !settings.transport.available() {
+            self.inner.price_alerts.lock().expect("price lock").looked_up(Some(failed(price::Failure::TorNotYet, None)), asked);
             return Err(FobError::PriceFailed(price::Failure::TorNotYet));
         }
         let current = if current_due { Some(source.current(&code, settings.transport).await) } else { None };
@@ -2529,6 +2600,17 @@ impl Wallet {
             // Changed while asking: these answers are for settings gone.
             return Ok(false);
         }
+        // A failure in a word: the current price's first, else the day's.
+        let kind = |e: &FobError| match e {
+            FobError::PriceFailed(f) => *f,
+            _ => price::Failure::NotAnswering,
+        };
+        let failure = match (&current, &history) {
+            (Some(Err(e)), _) => Some(failed(kind(e), None)),
+            (_, Some(Err(e))) => Some(failed(kind(e), lacking_day)),
+            _ => None,
+        };
+        self.inner.price_alerts.lock().expect("price lock").looked_up(failure, asked);
         let mut changed = false;
         let mut error = None;
         match current {
@@ -2567,9 +2649,10 @@ impl Wallet {
         let wallet = self.clone();
         let handle = crate::runtime().spawn(async move {
             loop {
-                let before = wallet.price_error();
-                let changed = wallet.refresh_prices(false).await.unwrap_or(false);
-                if changed || wallet.price_error() != before {
+                let asked = wallet.inner.prices_asked.lock().expect("price lock").take().unwrap_or(price::alert::Asked::Background);
+                let before = wallet.price_alert();
+                let changed = wallet.refresh_prices(asked).await.unwrap_or(false);
+                if changed || wallet.price_alert() != before {
                     listener.on_status(wallet.status());
                 }
                 tokio::select! {
@@ -2590,7 +2673,23 @@ impl Wallet {
     /// Pull to refresh: new blocks and the pool as [`sync_now`](Wallet::sync_now),
     /// and the price if a minute has passed. Returns when both are done.
     pub async fn pull(&self) {
-        let _ = tokio::join!(self.sync_now(), self.refresh_prices(true));
+        let _ = tokio::join!(self.sync_now(), self.refresh_prices(price::alert::Asked::User));
+    }
+
+    /// The toast's Retry: asks again as the user, and says what came of it.
+    pub async fn retry_prices(&self, clock: Clock) -> Retried {
+        let provider = self.inner.state.lock().await.prices.provider;
+        self.retry_prices_from(&provider, clock).await
+    }
+
+    async fn retry_prices_from(&self, source: &impl price::Source, clock: Clock) -> Retried {
+        let _ = self.refresh_prices_from(source, price::alert::Asked::User, clock.now).await;
+        if let Some(toast) = self.price_toast(clock).await {
+            return Retried::Failed(toast);
+        }
+        let state = self.inner.state.lock().await;
+        let (title, line) = price::alert::updated(&state.price_cache, &state.prices, clock.now);
+        Retried::Updated { title, line }
     }
 }
 
@@ -2611,6 +2710,12 @@ fn confirmations(state: &State, height: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::price::alert::Asked;
+
+    /// The phone's clock now, at UTC.
+    fn clock_now() -> Clock {
+        Clock { now: now(), utc_offset: 0, hours_24: true }
+    }
 
     fn dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fob-wallet-{name}-{}", std::process::id()));
@@ -2939,7 +3044,7 @@ mod tests {
         let t = now();
         let fake = FakePrices::new(166_060_000, vec![]);
         // Nothing to price yet: the current price only, no history.
-        assert!(wallet.refresh_prices_from(&fake, false, t).await.unwrap());
+        assert!(wallet.refresh_prices_from(&fake, Asked::Background, t).await.unwrap());
         assert_eq!(fake.asked(), (1, 0));
         assert_eq!(wallet.worth_now(XMR / 2).await.as_deref(), Some("$83.03"));
         {
@@ -2957,8 +3062,8 @@ mod tests {
         let record = again.activity().await.into_iter().find(|a| a.tx == "in").unwrap().price.unwrap();
         assert_eq!((record.currency.as_str(), record.provider.as_str(), record.at), ("USD", "Kraken", t));
         // Asked again only after 5 minutes (a minute when pulled).
-        assert!(!wallet.refresh_prices_from(&fake, false, t + 299).await.unwrap());
-        assert!(wallet.refresh_prices_from(&fake, true, t + 60).await.unwrap());
+        assert!(!wallet.refresh_prices_from(&fake, Asked::Background, t + 299).await.unwrap());
+        assert!(wallet.refresh_prices_from(&fake, Asked::User, t + 60).await.unwrap());
         assert_eq!(fake.asked(), (2, 0));
     }
 
@@ -2975,7 +3080,7 @@ mod tests {
             // No price on hand: nothing recorded yet.
             assert!(!wallet.record_prices(&mut state));
         }
-        assert!(wallet.refresh_prices_from(&fake, false, t).await.unwrap());
+        assert!(wallet.refresh_prices_from(&fake, Asked::Background, t).await.unwrap());
         assert_eq!(fake.asked(), (1, 1), "the whole window, once");
         let activity = wallet.activity().await;
         assert_eq!(price_of(&activity, "ten-days"), Some((150_000_000, true)));
@@ -2992,11 +3097,11 @@ mod tests {
         state.outputs.push(received("last-week", t - 7 * DAY, XMR));
         assert!(!wallet.record_prices(&mut state), "not in the history fetched");
         drop(state);
-        wallet.refresh_prices_from(&fake, false, t + 600).await.unwrap();
+        wallet.refresh_prices_from(&fake, Asked::Background, t + 600).await.unwrap();
         assert_eq!(fake.asked(), (2, 1));
         assert_eq!(price_of(&wallet.activity().await, "last-week"), None);
         // The next day it is.
-        wallet.refresh_prices_from(&fake, false, t + DAY).await.unwrap();
+        wallet.refresh_prices_from(&fake, Asked::Background, t + DAY).await.unwrap();
         assert_eq!(fake.asked(), (3, 2));
     }
 
@@ -3005,10 +3110,10 @@ mod tests {
         let wallet = Wallet::create(&dir("price-off"), [1; 32], Network::Stagenet).unwrap();
         let t = now();
         let fake = FakePrices::new(166_000_000, vec![(price::day(t), 165_000_000)]);
-        wallet.refresh_prices_from(&fake, false, t).await.unwrap();
+        wallet.refresh_prices_from(&fake, Asked::Background, t).await.unwrap();
         assert_eq!(wallet.set_currency(None).await.unwrap(), None);
         wallet.inner.state.lock().await.outputs.push(received("while-off", t, XMR));
-        assert!(!wallet.refresh_prices_from(&fake, true, t + DAY).await.unwrap());
+        assert!(!wallet.refresh_prices_from(&fake, Asked::User, t + DAY).await.unwrap());
         assert_eq!(fake.asked(), (1, 0), "no request with XMR only");
         assert_eq!(wallet.worth_now(XMR).await, None);
         assert!(!wallet.record_prices(&mut *wallet.inner.state.lock().await));
@@ -3024,10 +3129,123 @@ mod tests {
         let t = now();
         wallet.inner.state.lock().await.outputs.push(received("in", t - 3 * DAY, XMR));
         let fake = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
-        assert!(wallet.refresh_prices_from(&fake, false, t).await.is_err());
+        assert!(wallet.refresh_prices_from(&fake, Asked::Background, t).await.is_err());
         assert_eq!(fake.asked(), (1, 1));
         assert_eq!(price_of(&wallet.activity().await, "in"), None);
         assert_eq!(wallet.worth_now(XMR).await, None);
+    }
+
+    #[tokio::test]
+    async fn failed_lookups_show_once_per_run_in_the_background_and_always_for_the_user() {
+        let wallet = Wallet::create(&dir("price-alerts"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let clock = Clock { now: t, utc_offset: 0, hours_24: true };
+        let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
+        let working = FakePrices::new(166_100_000, vec![]);
+        assert_eq!(wallet.price_from_line().await, ("Kraken · over the internet".into(), false));
+        // The first background failure shows.
+        assert!(wallet.refresh_prices_from(&failing, Asked::Background, t).await.is_err());
+        let first = wallet.price_toast(clock).await.unwrap();
+        assert_eq!((first.title.as_str(), first.line.as_str()), ("Couldn't get the USD price", "No price yet · amounts stay in XMR"));
+        assert_eq!(wallet.price_from_line().await, ("Kraken · over the internet · Not answering".into(), true));
+        // Five minutes on, failing still: not again.
+        wallet.refresh_prices_from(&failing, Asked::Background, t + 300).await.unwrap_err();
+        assert_eq!(wallet.price_toast(clock).await.unwrap().id, first.id);
+        // Pulled: shown again.
+        wallet.refresh_prices_from(&failing, Asked::User, t + 400).await.unwrap_err();
+        let pulled = wallet.price_toast(clock).await.unwrap();
+        assert!(pulled.id > first.id);
+        // A lookup that works ends it.
+        wallet.refresh_prices_from(&working, Asked::Background, t + 600).await.unwrap();
+        assert_eq!(wallet.price_toast(clock).await, None);
+        assert!(!wallet.price_from_line().await.1);
+        // The next run's first background failure shows, with the price kept.
+        wallet.refresh_prices_from(&failing, Asked::Background, t + 900).await.unwrap_err();
+        let later = wallet.price_toast(Clock { now: t + 900, ..clock }).await.unwrap();
+        assert!(later.id > pulled.id);
+        assert!(later.line.starts_with("Kraken didn't answer · using the "), "{}", later.line);
+        // Changing currency forgets the run (and asks at once, as the user).
+        wallet.set_currency(Some("EUR")).await.unwrap();
+        assert_eq!(wallet.price_toast(clock).await, None);
+        assert_eq!(*wallet.inner.prices_asked.lock().unwrap(), Some(Asked::User));
+    }
+
+    #[tokio::test]
+    async fn a_day_s_history_that_fails_is_named() {
+        let wallet = Wallet::create(&dir("price-alert-day"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        wallet.inner.state.lock().await.outputs.push(received("in", t - 2 * DAY, XMR));
+        wallet.inner.state.lock().await.outputs.push(received("older", t - 5 * DAY, XMR));
+        // The current price came; the history didn't.
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
+        wallet.inner.state.lock().await.price_cache.history.clear();
+        let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
+        wallet.refresh_prices_from(&failing, Asked::Background, t + 60).await.unwrap_err();
+        assert_eq!(failing.asked(), (0, 1), "only the history was due");
+        let clock = Clock { now: t + 60, utc_offset: 0, hours_24: true };
+        let toast = wallet.price_toast(clock).await.unwrap();
+        let (today, _) = activity::local(t + 60, clock);
+        assert_eq!(toast.title, format!("Couldn't get {}'s USD price", activity::date(price::day(t - 2 * DAY), today)));
+        assert_eq!(toast.line, "Kraken didn't answer · shown as not available");
+    }
+
+    #[tokio::test]
+    async fn retry_says_what_came_of_it() {
+        let wallet = Wallet::create(&dir("price-retry"), [1; 32], Network::Stagenet).unwrap();
+        let clock = clock_now();
+        let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
+        wallet.refresh_prices_from(&failing, Asked::Background, clock.now).await.unwrap_err();
+        let shown = wallet.price_toast(clock).await.unwrap();
+        // Failing again: the toast again, as a new showing.
+        let Retried::Failed(again) = wallet.retry_prices_from(&failing, clock).await else { panic!("it failed") };
+        assert!(again.id > shown.id);
+        assert_eq!((again.retrying_title.as_str(), again.retrying_line.as_str()), ("Trying again…", "Asking Kraken for the USD price"));
+        assert_eq!(failing.asked().0, 2);
+        // Working: the words for 2 s, and the run is over.
+        let worked = wallet.retry_prices_from(&FakePrices::new(166_100_000, vec![]), clock).await;
+        assert_eq!(worked, Retried::Updated { title: "USD price updated".into(), line: "1 XMR = $166.10".into() });
+        assert_eq!(wallet.price_toast(clock).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_old_price_keeps_amounts_with_its_age_and_one_over_a_day_turns_money_off() {
+        let wallet = Wallet::create(&dir("price-age"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let at = |now| Clock { now, utc_offset: 0, hours_24: true };
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
+        // Just asked: the rate.
+        assert_eq!(wallet.amount_field("20", true, at(t)).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+        // A refresh missed: when it's from, money still typed.
+        let f = wallet.amount_field("20", true, at(t + price::AGED)).await;
+        assert!(f.in_fiat && f.can_switch);
+        let from = price::alert::age(t, at(t + price::AGED)).unwrap();
+        assert_eq!(f.line, Some(format!("≈ 0.1204 XMR · {from}")));
+        // Over a day: XMR only, saying why.
+        let f = wallet.amount_field("20", true, at(t + price::SHOWN)).await;
+        assert!(!f.in_fiat && !f.can_switch);
+        assert_eq!(f.line.as_deref(), Some("No USD price now · type the amount in XMR"));
+    }
+
+    #[tokio::test]
+    async fn money_typed_against_an_old_price_asks_again_at_most_once_a_minute() {
+        let wallet = Wallet::create(&dir("price-typed"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let at = |now| Clock { now, utc_offset: 0, hours_24: true };
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
+        let asked = || wallet.inner.prices_asked.lock().unwrap().take();
+        // A fresh price, XMR typed, or nothing typed: no lookup.
+        wallet.amount_field("20", true, at(t + 60)).await;
+        wallet.amount_field("0.5", false, at(t + price::REFRESH)).await;
+        wallet.amount_field(" ", true, at(t + price::REFRESH)).await;
+        assert_eq!(asked(), None);
+        // Money typed against a price 5 minutes old: asked, as typing.
+        wallet.amount_field("20", true, at(t + price::REFRESH)).await;
+        assert_eq!(asked(), Some(Asked::Typing));
+        // The next key within the minute: not again.
+        wallet.amount_field("205", true, at(t + price::REFRESH + 59)).await;
+        assert_eq!(asked(), None);
+        wallet.amount_field("2050", true, at(t + price::REFRESH + 60)).await;
+        assert_eq!(asked(), Some(Asked::Typing));
     }
 
     #[tokio::test]
@@ -3035,10 +3253,10 @@ mod tests {
         let wallet = Wallet::create(&dir("receive-fiat"), [1; 32], Network::Stagenet).unwrap();
         let address = wallet.receive_address().await.unwrap();
         // No price yet: XMR only.
-        assert!(!wallet.amount_field("", true).await.can_switch);
+        assert!(!wallet.amount_field("", true, clock_now()).await.can_switch);
         assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Price(_))));
-        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, now()).await.unwrap();
-        let field = wallet.amount_field("20", true).await;
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
+        let field = wallet.amount_field("20", true, clock_now()).await;
         assert_eq!((field.sign.as_deref(), field.unit.as_str(), field.in_fiat), (Some("$"), "USD", true));
         // What the field says the code asks for is what it asks for.
         assert_eq!(field.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
@@ -3057,7 +3275,7 @@ mod tests {
         assert_eq!(wallet.convert_amount("", true).await, "");
         // XMR only: no money at all.
         wallet.set_currency(None).await.unwrap();
-        assert_eq!(wallet.amount_field("20", true).await.unit, "XMR");
+        assert_eq!(wallet.amount_field("20", true, clock_now()).await.unit, "XMR");
         assert_eq!(wallet.convert_amount("20", false).await, "");
     }
 
@@ -3069,9 +3287,9 @@ mod tests {
         assert_eq!(wallet.typed_amount(" 0.5 ", false).await.unwrap(), (XMR / 2, None));
         assert!(matches!(wallet.typed_amount("20", true).await, Err(FobError::Price(_))));
         assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Price(_))));
-        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, now()).await.unwrap();
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
         // The XMR the field's line showed for it.
-        assert_eq!(wallet.amount_field("20", true).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+        assert_eq!(wallet.amount_field("20", true, clock_now()).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
         assert_eq!(wallet.typed_amount("20", true).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
         assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::BadAmount)));
         // Converted before the address and amount are checked, as prepare checks them.
@@ -3097,7 +3315,7 @@ mod tests {
             state.sent.push(Sent { tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None });
         }
         assert_eq!(wallet.ready_line().await, "2 XMR ready to spend");
-        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, t).await.unwrap();
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
         assert_eq!(wallet.ready_line().await, "2 XMR ready to spend · $332.20");
         let paid = wallet.paid_before(clock).await;
         assert_eq!(paid.len(), 1);
@@ -3228,7 +3446,7 @@ mod tests {
         let wallet = Wallet::create(&dir("price-move"), [1; 32], Network::Stagenet).unwrap();
         let t = now();
         wallet.inner.state.lock().await.outputs.push(received("in", t, XMR));
-        wallet.refresh_prices_from(&FakePrices::new(166_000_000, vec![]), false, t).await.unwrap();
+        wallet.refresh_prices_from(&FakePrices::new(166_000_000, vec![]), Asked::Background, t).await.unwrap();
         assert_eq!(price_of(&wallet.activity().await, "in"), Some((166_000_000, false)));
         let said = wallet.set_currency(Some("NZD")).await.unwrap();
         assert_eq!(said.as_deref(), Some("Kraken doesn't price New Zealand dollars, so Fob now asks CoinGecko"));
@@ -3425,13 +3643,13 @@ mod tests {
     async fn a_request_asked_in_money_keeps_what_it_came_to_then() {
         let wallet = Wallet::create(&dir("request-fiat"), [1; 32], Network::Stagenet).unwrap();
         assert!(matches!(wallet.make_request(None, Some("80"), true, None).await, Err(FobError::Price(_))));
-        wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), false, now()).await.unwrap();
+        wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), Asked::Background, now()).await.unwrap();
         let (request, code) = wallet.make_request(None, Some("80"), true, Some("Concert tickets")).await.unwrap();
         let asked = request.asked.clone().unwrap();
         assert_eq!((asked.typed.as_str(), asked.unit.as_str(), asked.xmr, asked.fiat.as_deref()), ("80", "USD", 481_750_000_000, Some("$80.00")));
         assert_eq!((code.headline.as_deref(), code.detail.as_deref()), (Some("$80.00"), Some("0.48175 XMR · Concert tickets")));
         // A new price changes nothing about it.
-        wallet.refresh_prices_from(&FakePrices::new(200_000_000, vec![]), true, now() + 120).await.unwrap();
+        wallet.refresh_prices_from(&FakePrices::new(200_000_000, vec![]), Asked::User, now() + 120).await.unwrap();
         assert_eq!(wallet.request_code(request.id).await.unwrap(), code);
         assert_eq!(wallet.request(request.id, Clock { now: now(), utc_offset: 0, hours_24: true }).await.unwrap().headline, "$80.00");
     }

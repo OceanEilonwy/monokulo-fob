@@ -124,7 +124,7 @@ pub fn status(activity: &Activity) -> String {
 }
 
 /// A day that isn't today or yesterday: "27 Oct", "27 Oct 2025".
-fn date(day: i64, today: i64) -> String {
+pub(crate) fn date(day: i64, today: i64) -> String {
     let (year, month, d) = civil(day);
     let name = &MONTHS[month - 1];
     let name = format!("{}{}", &name[..1], name[1..].to_lowercase());
