@@ -138,6 +138,14 @@ impl Transport {
         }
     }
 
+    /// "Web", "Tor": its title on Price from's Ask over rows.
+    pub fn name(self) -> &'static str {
+        match self {
+            Transport::Web => "Web",
+            Transport::Tor => "Tor",
+        }
+    }
+
     /// The body at `url`, an `https://` address (never an onion one: Fob
     /// would resolve it through the phone's DNS).
     pub async fn get(self, url: &str) -> Result<Vec<u8>> {
@@ -336,9 +344,14 @@ impl Settings {
         self.currency.as_deref()
     }
 
-    /// "Kraken · over the internet".
+    /// "Kraken · web", "CoinGecko · Tor": the provider and the Ask over
+    /// row picked, by that row's name.
     pub fn source_text(&self) -> String {
-        format!("{} · {}", self.provider.name(), self.transport.text())
+        let transport = match self.transport {
+            Transport::Web => "web",
+            Transport::Tor => self.transport.name(),
+        };
+        format!("{} · {transport}", self.provider.name())
     }
 
     /// Moves the provider to the first that prices the currency, and the
@@ -574,13 +587,13 @@ pub fn transport_rows(settings: &Settings) -> Vec<TransportRow> {
     [Transport::Web, Transport::Tor]
         .into_iter()
         .map(|t| {
-            let (title, line) = match t {
-                Transport::Web => ("Web", "The provider sees this phone's IP address".to_owned()),
-                Transport::Tor if !settings.provider.answers_over(t) => ("Tor", format!("{} doesn't answer {}", settings.provider.name(), t.text())),
-                Transport::Tor if !t.available() => ("Tor", "Hides this phone's IP address · not built into Fob yet".to_owned()),
-                Transport::Tor => ("Tor", "Hides this phone's IP address; slower".to_owned()),
+            let line = match t {
+                Transport::Web => "The provider sees this phone's IP address".to_owned(),
+                Transport::Tor if !settings.provider.answers_over(t) => format!("{} doesn't answer {}", settings.provider.name(), t.text()),
+                Transport::Tor if !t.available() => "Hides this phone's IP address · not built into Fob yet".to_owned(),
+                Transport::Tor => "Hides this phone's IP address; slower".to_owned(),
             };
-            TransportRow { transport: t, title, line, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
+            TransportRow { transport: t, title: t.name(), line, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
         })
         .collect()
 }
@@ -1293,7 +1306,9 @@ mod tests {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings, Settings::default());
         assert_eq!(settings.code(), Some("USD"), "dollars unless XMR only is chosen");
-        assert_eq!(settings.source_text(), "Kraken · over the internet");
+        assert_eq!(settings.source_text(), "Kraken · web");
+        let coingecko_tor = Settings { provider: Provider::CoinGecko, transport: Transport::Tor, ..Settings::default() };
+        assert_eq!(coingecko_tor.source_text(), "CoinGecko · Tor", "the Ask over row's name");
         let cache: Cache = serde_json::from_str("{}").unwrap();
         assert_eq!(cache, Cache::default());
     }
