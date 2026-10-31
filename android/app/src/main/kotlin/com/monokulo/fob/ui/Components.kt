@@ -65,7 +65,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import uniffi.fob.QrCode
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** The stroke icons from the designs, as SVG path data on a 24 × 24 grid. */
 object Icons {
@@ -259,16 +262,29 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
     }
 }
 
-/** The Fob mark: the Monokulo lens with a watch crown and bow. */
+/** The Fob seal's wax edge (the Calm pour); docs/brand/seal.py draws the icons from the same formula. */
+private fun waxRadius(t: Float) = 39.5f + 1.7f * sin(5f * t + 0.4f) + 0.6f * sin(9f * t + 1f)
+
+/** The Fob mark: the Monokulo iris pressed into a disc of orange wax. */
 @Composable
-fun FobMark(size: Dp, ring: Color = Fob.ink) {
-    Canvas(Modifier.width(size).height(size * 76f / 64f).semantics { contentDescription = "Fob" }) {
-        val u = this.size.width / 64f
-        drawCircle(ring, radius = 4.5f * u, center = Offset(32f * u, 6.5f * u), style = Stroke(3f * u))
-        drawRoundRect(ring, topLeft = Offset(28f * u, 9.5f * u), size = Size(8f * u, 8f * u), cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f * u))
-        val c = Offset(32f * u, 44f * u)
-        val k = 1.42f * u
-        drawCircle(Fob.orange, radius = 15.75f * k, center = c)
+fun FobMark(size: Dp) {
+    Canvas(Modifier.size(size).semantics { contentDescription = "Fob" }) {
+        val steps = 120
+        val radii = FloatArray(steps) { waxRadius(it * 2f * PI.toFloat() / steps) }
+        val u = this.size.width / 2f / radii.max()
+        val c = center
+        val wax = Path()
+        radii.forEachIndexed { i, r ->
+            val t = i * 2f * PI.toFloat() / steps
+            val x = c.x + cos(t) * r * u
+            val y = c.y + sin(t) * r * u
+            if (i == 0) wax.moveTo(x, y) else wax.lineTo(x, y)
+        }
+        wax.close()
+        drawPath(wax, Fob.orange)
+        val deep = Color(0xFFC24E00)
+        drawCircle(deep, radius = 29f * u, center = c, style = Stroke(3.2f * u))
+        val k = 2.05f * u
         fun p(x: Float, y: Float) = Offset(c.x + (x - 30f) * k, c.y + (y - 28f) * k)
         fun poly(color: Color, vararg pts: Pair<Float, Float>) {
             val path = Path()
@@ -276,15 +292,13 @@ fun FobMark(size: Dp, ring: Color = Fob.ink) {
             path.close()
             drawPath(path, color)
         }
-        val mid = Color(0xFFE85D00)
-        poly(mid, 30f to 23f, 34.33f to 25.5f, 35.5f to 18.47f)
-        poly(mid, 34.33f to 25.5f, 34.33f to 30.5f, 41f to 28f)
-        poly(mid, 34.33f to 30.5f, 30f to 33f, 35.5f to 37.53f)
-        poly(mid, 30f to 33f, 25.67f to 30.5f, 24.5f to 37.53f)
-        poly(mid, 25.67f to 30.5f, 25.67f to 25.5f, 19f to 28f)
-        poly(mid, 25.67f to 25.5f, 30f to 23f, 24.5f to 18.47f)
-        poly(Color(0xFFC24E00), 30f to 23f, 34.33f to 25.5f, 34.33f to 30.5f, 30f to 33f, 25.67f to 30.5f, 25.67f to 25.5f)
-        drawCircle(ring, radius = 18f * k, center = c, style = Stroke(4.5f * k))
+        poly(deep, 30f to 23f, 34.33f to 25.5f, 35.5f to 18.47f)
+        poly(deep, 34.33f to 25.5f, 34.33f to 30.5f, 41f to 28f)
+        poly(deep, 34.33f to 30.5f, 30f to 33f, 35.5f to 37.53f)
+        poly(deep, 30f to 33f, 25.67f to 30.5f, 24.5f to 37.53f)
+        poly(deep, 25.67f to 30.5f, 25.67f to 25.5f, 19f to 28f)
+        poly(deep, 25.67f to 25.5f, 30f to 23f, 24.5f to 18.47f)
+        poly(Fob.ink, 30f to 23f, 34.33f to 25.5f, 34.33f to 30.5f, 30f to 33f, 25.67f to 30.5f, 25.67f to 25.5f)
     }
 }
 
