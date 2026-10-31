@@ -7,6 +7,8 @@ import android.os.PersistableBundle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -152,6 +154,7 @@ private fun sensitiveClip(label: String, text: String): ClipData =
         description.extras = PersistableBundle().apply { putBoolean(sensitive, true) }
     }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun KeyLine(key: KeyRow, copied: Boolean, onCopy: () -> Unit) {
     Row(
@@ -159,8 +162,12 @@ private fun KeyLine(key: KeyRow, copied: Boolean, onCopy: () -> Unit) {
         verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(key.title, fontSize = 15.sp, modifier = Modifier.weight(1f, fill = false))
+            // The badge goes under the title when both don't fit (a small phone, a big font), never squeezing it.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(key.title, fontSize = 15.sp)
                 Badge(key)
             }
             key.line?.let { Text(it, color = Fob.muted, fontSize = 12.5.sp) }
