@@ -274,8 +274,6 @@ pub struct NotReadyPiece {
     pub confirmations_text: String,
     /// "09:02"
     pub ready: String,
-    /// "in 14 min"
-    pub eta: String,
 }
 
 /// A line of Home's opened card.
@@ -287,6 +285,8 @@ pub struct NotReadySum {
     pub amount_text: String,
     /// Worth now, with prices on: "$308.70".
     pub fiat_text: Option<String>,
+    /// The line for TalkBack: "Ready to spend, 1.8592 XMR, $308.70".
+    pub description: String,
 }
 
 /// The money not ready yet beside what is, for Home's card.
@@ -309,8 +309,6 @@ pub struct NotReady {
     pub sums: Vec<NotReadySum>,
     /// Weighted by amount, 0 to 1: how much of the not-ready part is green.
     pub progress: f32,
-    /// Soonest ready first.
-    pub pieces: Vec<NotReadyPiece>,
 }
 
 impl From<not_ready::NotReady> for NotReady {
@@ -323,9 +321,8 @@ impl From<not_ready::NotReady> for NotReady {
             all_ready: n.all_ready,
             all_ready_line: n.all_ready_line,
             description: n.description,
-            sums: n.sums.into_iter().map(|s| NotReadySum { label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
+            sums: n.sums.into_iter().map(|s| NotReadySum { description: s.description(), label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
             progress: n.progress,
-            pieces: n.pieces.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -341,7 +338,6 @@ impl From<not_ready::PieceView> for NotReadyPiece {
             source: p.source,
             confirmations_text: p.confirmations_text,
             ready: p.ready,
-            eta: p.eta,
         }
     }
 }
@@ -367,6 +363,9 @@ pub struct Coins {
     pub not_ready: u64,
     /// The not-ready part's weighted progress, 0 to 1.
     pub progress: f32,
+    /// The bar for TalkBack: "1.8592 XMR ready, 0.6221 XMR not yet, 37%
+    /// of the way".
+    pub bar_description: String,
     /// "Ready · 5 coins"
     pub ready_title: String,
     /// "1.8592 · $308.70"
@@ -388,6 +387,7 @@ impl From<not_ready::Coins> for Coins {
             ready: c.ready,
             not_ready: c.not_ready,
             progress: c.progress,
+            bar_description: c.bar_description,
             ready_title: c.ready_title,
             ready_sum: c.ready_sum,
             ready_coins: c.ready_coins.into_iter().map(|c| Coin { amount_text: c.amount, fiat_text: c.fiat, source: c.source }).collect(),

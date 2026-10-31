@@ -76,7 +76,7 @@ fun CoinsScreen(model: WalletModel, nav: Nav) {
         Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(Modifier.padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(c.intro, color = Fob.muted, fontSize = 15.sp, lineHeight = 21.sp)
-                if (c.ready > 0u || c.notReady > 0u) CoinBar(c.ready, c.notReady, c.progress)
+                if (c.ready > 0u || c.notReady > 0u) CoinBar(c.ready, c.notReady, c.progress, c.barDescription)
             }
             if (c.readyCoins.isNotEmpty()) {
                 CoinCard(c.readyTitle, c.readySum) { c.readyCoins.forEach { ReadyCoinRow(it) } }
