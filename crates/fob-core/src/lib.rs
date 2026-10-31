@@ -12,11 +12,12 @@
 //! - [`profile`]: your name and photo, shared as a code on a new address
 //!   each time.
 //! - [`swap`]: touch phones, two Fobs swapping profiles over NFC.
-//! - [`amount`], [`activity`], [`not_ready`], [`receipt`], [`qr`],
+//! - [`amount`], [`activity`], [`catch_up`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
 pub mod activity;
 pub mod amount;
+pub mod catch_up;
 pub mod contacts;
 mod decoys;
 pub mod error;

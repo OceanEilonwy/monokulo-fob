@@ -1533,3 +1533,42 @@ Calls made while building the first version, with why. Newest last.
     live rate, so notes stay the same round amounts as XMR moves; a
     currency that loses much of its value (the Argentine peso) needs its
     entry raised in a later build.
+204. **Link speed** (decision 2): the transport counts the bytes of every
+    `get_blocks.bin` response the block fetcher reads (not decoys or JSON
+    calls, and no extra requests). The sync loop samples that count and
+    the scanned height at each report; blocks per second and MB/s are
+    measured from the newest sample back to the last one at least 5 s
+    older, and say nothing until 3 s have been measured. A catch-up's
+    measurements start again after it ends, after a failure and after a
+    wait. MB are decimal: "1.8 MB/s", "12 MB/s" from 10 up, "640 kB/s"
+    under one; blocks "28/s", "0.8/s" under ten.
+205. **Time left** (decision 1): none until the speed has settled, and the
+    first one shown must be at least 10 s, so a catch-up that ends within
+    about 13 s shows only Starting, then Synced. After that it only goes
+    down, unless a new estimate is at least half as much again and 30 s
+    more than what's shown (a node that slows a lot); a window with no
+    blocks at all keeps what's shown. Rounded for reading: under a minute
+    up to the next 10 s ("20 s"), then the nearest minute ("6 min"), the
+    nearest 5 minutes under 10 hours ("1 h 10 min"), then whole hours.
+206. **The chip's words** come from Rust: "Starting", "6 min left",
+    "Synced", "Can't reach node", and for TalkBack "Catching up, 34%,
+    about 6 minutes left" (minutes and hours spelt out). The percent rounds
+    down and stays at 99% until synced. A failed round shows the red dot
+    even when the wallet was synced, since the node didn't answer the last
+    poll (before, a synced wallet hid the failure).
+207. **The details card** opens in every state. Catching up: the board's
+    rows, with "Working it out" and "Measuring" before the speed settles,
+    and "You can still receive while Fob catches up." for a watch-only
+    wallet. Synced: "Synced", Payments up to and Latest block, no bar and
+    no "checked … ago" (kept simple; Node's checks come in step 8). Can't
+    reach node: the rows that still hold, "Fob keeps trying on its own."
+    and the error in red, moved here from under Home's balance with the
+    bar and sync line. Payments up to reads "Today, 14:20",
+    "Yesterday, 14:20", "29 Oct, 14:20". Node settings closes the card and
+    opens Node.
+208. **The card is a popup** under the chip against the screen's end edge,
+    at most 300 dp wide; tapping outside it or Back closes it, and the chip
+    is a button with expand and collapse actions. The ffi's `SyncStatus`
+    drops `seconds_left` and `up_to` (only Home's sync line read them) for
+    `chip_look`, `chip_text` and `chip_label`; `sync_details` gives the
+    card for the phone's clock.

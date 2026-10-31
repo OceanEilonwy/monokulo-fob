@@ -71,3 +71,20 @@ through step 1's stopgap dialogs in Settings.
 - [ ] With a price, stay offline 10+ minutes → Home's money reads "$412.06 · 12 min old" at the line's end; with money first, the big "$412.06" with "12 min old" small beside it; after an hour "1 h old"; Send's ready line "… ready to spend · $308.70 · 1 h old"
 - [ ] Coins › Split up in Japanese yen → notes ¥1,000 to ¥50,000; in Vietnamese dong ₫100,000 to ₫5,000,000, each label fitting its tile; in Kuwaiti dinar 1 KWD to 50 KWD; in US dollars $5 to $200 as before
 - [ ] Dark mode → Price from's radios, badges and red failures readable; the notice light on dark
+
+## Step 4 · Sync chip
+
+- [ ] Restore a wallet from far back → chip "Starting" with an empty ring for about 3 s, then "N min left" with the ring filling; no bar or "Up to …" line under the balance; "Balance so far" still above it
+- [ ] Watch the chip for a minute while catching up → the time only goes down ("7 min left", "6 min left"…), never back up for a small wobble; near the end "20 s left", then a green dot and "Synced"
+- [ ] Open Fob a few blocks behind → "Starting", then "Synced", no time shown
+- [ ] Tap the chip while catching up → a card under it at the right edge: "Catching up" with the percent, an orange bar, Time left "about 4 min", Payments up to "29 Oct, 14:20", Blocks "3,360 of 9,880 · 28/s", Link speed "1.8 MB/s", "You can still receive and send while Fob catches up.", Node settings
+- [ ] Leave the card open → its numbers move with the chip's
+- [ ] Tap outside the card, press Back, or tap the chip again → it closes (the chip doesn't reopen it)
+- [ ] Node settings on the card → the card closes and Node opens; Back → Home with the card closed
+- [ ] Synced, tap the chip → "Synced" card with Payments up to ("Today, 14:20") and Latest block, no bar
+- [ ] Airplane mode → red dot "Can't reach node"; card titled "Can't reach node" with "Fob keeps trying on its own." and the error in red; no error line under the balance
+- [ ] Watch-only wallet catching up → card says "You can still receive while Fob catches up."
+- [ ] TalkBack → chip reads "Catching up, 34%, about 6 minutes left, button, collapsed"; double tap opens the card and focus can move into it (title read as a heading, each row as one item, e.g. "Time left, about 4 min"); "expanded" when open
+- [ ] Dark mode → chip on the dark sunken colour, ring track and arc readable, card on the dark card colour with its shadow, Node settings in the orange text colour
+- [ ] Font size 200% → chip text on one line; card rows wrap their values rather than overlapping the labels
+- [ ] Phone in landscape → the card stays under the chip and on screen

@@ -27,6 +27,8 @@ pub struct Transport {
     client: reqwest::Client,
     base: Arc<str>,
     requests: Arc<AtomicU64>,
+    /// Bytes the block fetcher has taken from the node, for the link speed.
+    received: Arc<AtomicU64>,
 }
 
 pub type Daemon = MoneroDaemon<Transport>;
@@ -53,12 +55,21 @@ impl Transport {
             .tcp_keepalive(Duration::from_secs(30))
             .build()
             .map_err(|e| InterfaceError::InternalError(format!("HTTP client: {e}")))?;
-        Ok(Transport { client, base: url.trim_end_matches('/').into(), requests: Arc::new(AtomicU64::new(0)) })
+        Ok(Transport { client, base: url.trim_end_matches('/').into(), requests: Arc::new(AtomicU64::new(0)), received: Arc::new(AtomicU64::new(0)) })
     }
 
     /// Requests made so far, for tests and benchmarks.
     pub fn requests(&self) -> u64 {
         self.requests.load(Ordering::Relaxed)
+    }
+
+    /// Bytes of blocks fetched so far: what the link speed measures.
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn count_received(&self, bytes: usize) {
+        self.received.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 }
 

@@ -69,7 +69,6 @@ import com.monokulo.fob.ui.Manrope
 import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
-import com.monokulo.fob.ui.ProgressBar
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
 import com.monokulo.fob.ui.display
@@ -79,15 +78,6 @@ import uniffi.fob.ActivityRow
 import uniffi.fob.BackupReminder
 import uniffi.fob.Network
 import uniffi.fob.NotReady
-import uniffi.fob.SyncStatus
-import java.text.DateFormat
-import java.util.Date
-
-fun syncLine(status: SyncStatus): String {
-    val upTo = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(status.upTo.toLong() * 1000))
-    val left = status.secondsLeft?.toLong()?.let { s -> if (s < 90) "about $s s left" else "about ${(s + 30) / 60} min left" }
-    return listOfNotNull(if (status.upTo > 0u) "Up to $upTo" else null, left).joinToString(" · ")
-}
 
 @Composable
 fun HomeScreen(model: WalletModel, nav: Nav) {
@@ -99,7 +89,6 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
     val prices by model.prices.collectAsState()
     val network by model.network.collectAsState()
     val synced = status?.synced == true
-    val error = status?.error
     val canSpend = wallet?.canSpend() != false
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
@@ -126,13 +115,9 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             Text("Fob", style = display(22))
             if (network == Network.STAGENET) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
             Spacer(Modifier.weight(1f))
-            val chip = when {
-                status == null -> "Starting"
-                error != null && !synced -> "Can't reach node"
-                synced -> "Synced"
-                else -> "Catching up · ${((status?.progress ?: 0f) * 100).toInt()}%"
-            }
-            SyncChip(chip, synced, status?.progress ?: 0f, error != null && !synced) { nav.go(Screen.Node) }
+            // Tapping the chip opens Rust's details card under it, Node settings on it.
+            var syncOpen by rememberSaveable { mutableStateOf(false) }
+            SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails) { nav.go(Screen.Node) }
             IconButton(onClick = { nav.go(Screen.Settings) }, modifier = Modifier.semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear, width = 1.8f) }
         }
 
@@ -171,14 +156,6 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             reminder?.let { BackupCard(it) { nav.go(Screen.ShowSeed) } }
             notReady?.let { ReadyCard(it) }
-            val s = status
-            if (s != null && !s.synced && s.tip > 0u) {
-                Column(Modifier.padding(start = 4.dp, end = 4.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ProgressBar(s.progress)
-                    Text(syncLine(s), color = Fob.muted, fontSize = 14.sp)
-                }
-            }
-            if (error != null && !synced) Text(error, color = Fob.red, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, top = 8.dp))
         }
 
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

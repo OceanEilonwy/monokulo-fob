@@ -31,6 +31,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     activity::{self, Clock, short_address},
+    catch_up,
     amount,
     contacts::{self, Contact},
     error::{FobError, Result},
@@ -326,7 +327,14 @@ pub struct SyncStatus {
     pub synced: bool,
     /// 0 to 1, from the restore height to the tip.
     pub progress: f32,
+    /// The time left as the chip shows it: none until the speed settles,
+    /// and never up again unless the estimate rises a lot (see [`catch_up`]).
     pub seconds_left: Option<u64>,
+    /// Blocks scanned per second over the last few seconds, once settled.
+    pub blocks_per_second: Option<f64>,
+    /// Megabytes a second the fetcher took from the node over the last few
+    /// seconds, once settled.
+    pub link_mb_per_second: Option<f64>,
     /// When the last scanned block was mined.
     pub up_to: u64,
     pub error: Option<String>,
@@ -1493,29 +1501,32 @@ impl Wallet {
         self.save_state(&state)
     }
 
-    async fn report(&self, listener: &dyn SyncListener, rate: &mut Option<(Instant, u64)>, error: Option<String>) {
+    /// Tells `listener` where syncing is, measuring this catch-up's `pace`
+    /// as it goes (a failure starts it again).
+    async fn report(&self, listener: &dyn SyncListener, pace: &mut catch_up::Pace, error: Option<String>) {
         self.refresh_status().await;
         let (next, tip) = {
             let status = self.status();
             (status.scanned, status.tip)
         };
-        let left = tip.saturating_sub(next);
-        let seconds_left = match rate {
-            _ if left == 0 => Some(0),
-            Some((since, from)) if next > *from => {
-                let per_block = since.elapsed().as_secs_f64() / (next - *from) as f64;
-                Some((per_block * left as f64).ceil() as u64)
-            }
-            _ => None,
-        };
-        if rate.is_none() && left > 0 {
-            *rate = Some((Instant::now(), next));
+        let received = self.inner.rpc.lock().await.as_ref().map_or(0, |(_, (transport, ..))| transport.received());
+        if error.is_some() {
+            pace.reset();
         }
+        let seconds_left = pace.sample(Instant::now(), received, next, tip.saturating_sub(next));
+        let speeds = pace.speeds();
         let status = self.set_status(|s| {
             s.seconds_left = seconds_left;
+            s.blocks_per_second = speeds.map(|s| s.blocks_per_second);
+            s.link_mb_per_second = speeds.map(|s| s.bytes_per_second / 1e6);
             s.error = error;
         });
         listener.on_status(status);
+    }
+
+    /// The card Home's sync chip opens, for the status now.
+    pub fn sync_details(&self, clock: Clock) -> catch_up::Details {
+        catch_up::details(&self.status(), self.can_spend(), clock)
     }
 
     /// Keeps the wallet up to date in the background until [`stop_sync`]:
@@ -1530,22 +1541,22 @@ impl Wallet {
         *self.inner.listener.lock().expect("listener lock") = Some(listener.clone());
         let wallet = self.clone();
         let handle = crate::runtime().spawn(async move {
-            let mut rate = None;
+            let mut pace = catch_up::Pace::default();
             let mut backoff = Duration::from_secs(2);
             loop {
                 match wallet.sync_step().await {
                     Ok(more) => {
                         backoff = Duration::from_secs(2);
-                        wallet.report(listener.as_ref(), &mut rate, None).await;
+                        wallet.report(listener.as_ref(), &mut pace, None).await;
                         if !more {
-                            rate = None;
+                            pace.reset();
                             wallet.inner.rounds.send_modify(|n| *n += 1);
                             let poll = if wallet.status().zmq == ZmqStatus::Listening { POLL_LISTENING } else { POLL };
                             wallet.wait(poll, listener.as_ref()).await;
                         }
                     }
                     Err(e) => {
-                        wallet.report(listener.as_ref(), &mut rate, Some(e.to_string())).await;
+                        wallet.report(listener.as_ref(), &mut pace, Some(e.to_string())).await;
                         wallet.inner.rounds.send_modify(|n| *n += 1);
                         wallet.wait(backoff, listener.as_ref()).await;
                         backoff = (backoff * 2).min(Duration::from_secs(60));
@@ -1584,7 +1595,7 @@ impl Wallet {
                     tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + POOL_GAP)).await;
                     if self.status().synced && self.status().error.is_none() && let Ok(rpc) = self.rpc().await {
                         let _ = self.scan_pool(&rpc).await;
-                        self.report(listener, &mut None, None).await;
+                        self.report(listener, &mut catch_up::Pace::default(), None).await;
                     }
                 }
             }
