@@ -1967,8 +1967,13 @@ Calls made while building the first version, with why. Newest last.
 260. **Money's value goes under its title when both don't fit** (review
     R3): beside the title it takes at most 152 dp and never more than
     leaves the title its longest word; when its own longest word doesn't
-    fit in that, it moves under the title (and its line), still at the
-    row's end by the chevron, as Keys' badge moves under its title.
+    fit in that, or when sitting beside it would wrap the title (and its
+    line) onto more lines than they take across the whole row (the
+    emulator re-check at 200 % on a 360 dp phone found "Also / show /
+    amounts / in" one word a line beside "US dollar"), it moves under the
+    title, still at the row's end by the chevron, as Keys' badge moves
+    under its title. Show first's XMR/currency switch does the same (it was
+    squeezing "Show / first" the same way).
 261. **The profile row wraps to two lines at a big font** (review R3): on
     one line the name is cut with an ellipsis so "· share as a code"
     always shows (decision 11), as long as at least three letters' width
