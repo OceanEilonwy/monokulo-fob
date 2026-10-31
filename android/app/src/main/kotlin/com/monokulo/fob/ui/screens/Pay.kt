@@ -90,6 +90,7 @@ import uniffi.fob.ReceiveCode
 import uniffi.fob.ReceiveCurrency
 import uniffi.fob.addressGroups
 import uniffi.fob.classifyCode
+import uniffi.fob.fitReceiveNote
 import uniffi.fob.isAmount
 import uniffi.fob.parsePayment
 import uniffi.fob.qrCode
@@ -104,6 +105,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
     var index by remember { mutableStateOf(0u) }
     var amount by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
+    // Rust cuts the note to what a code holds, and says so when it does.
+    var noteHint by remember { mutableStateOf<String?>(null) }
     var expanded by rememberSaveable { mutableStateOf(false) }
     // The amount in money (Rust converts it to XMR for the code) while there's a price; XMR otherwise.
     val prices by model.prices.collectAsState()
@@ -195,7 +198,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav) {
                 onSwitch = { toFiat -> scope.launch { amount = wallet?.convertAmount(amount, toFiat) ?: ""; inFiat = toFiat } },
                 hint = if (amount.isNotBlank() && code == null) "That isn't an amount" else code?.asks,
             )
-            Field(note, { note = it }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true)
+            Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
         }
     }
 }
