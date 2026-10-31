@@ -530,11 +530,15 @@ pub struct SyncStatus {
     pub scanned: u64,
     pub tip: u64,
     pub synced: bool,
+    /// 0 to 1: how far the chip's ring goes.
     pub progress: f32,
-    pub seconds_left: Option<u64>,
-    /// When the last scanned block was mined, seconds since the epoch.
-    pub up_to: u64,
     pub error: Option<String>,
+    /// How Home's sync chip looks.
+    pub chip_look: ChipLook,
+    /// "Starting", "6 min left", "Synced", "Can't reach node".
+    pub chip_text: String,
+    /// What TalkBack reads for the chip: "Catching up, 34%, about 6 minutes left".
+    pub chip_label: String,
     pub zmq: ZmqStatus,
     /// The subtitle for "Instant updates (ZMQ)": "host:18083 · listening", or "Off".
     pub zmq_text: String,
@@ -560,16 +564,61 @@ impl From<fob_core::ZmqStatus> for ZmqStatus {
     }
 }
 
+/// Home's sync chip: a ring while catching up, a green dot once synced, a
+/// red one when the node doesn't answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ChipLook {
+    Ring,
+    Synced,
+    Offline,
+}
+
+/// The card the sync chip opens.
+#[derive(uniffi::Record)]
+pub struct SyncDetails {
+    /// "Catching up", "Synced", "Can't reach node".
+    pub title: String,
+    /// "34%", while catching up.
+    pub percent: Option<String>,
+    /// The bar, while catching up.
+    pub progress: Option<f32>,
+    /// "Time left" · "about 4 min", "Blocks" · "3,360 of 9,880 · 28/s"…
+    pub rows: Vec<ReceiptLine>,
+    /// "You can still receive and send while Fob catches up."
+    pub note: Option<String>,
+    /// What went wrong, as the node or network said it.
+    pub error: Option<String>,
+}
+
+impl From<fob_core::catch_up::Details> for SyncDetails {
+    fn from(d: fob_core::catch_up::Details) -> Self {
+        SyncDetails {
+            title: d.title,
+            percent: d.percent,
+            progress: d.progress,
+            rows: d.rows.into_iter().map(|(label, amount)| ReceiptLine { label, amount }).collect(),
+            note: d.note,
+            error: d.error,
+        }
+    }
+}
+
 impl From<fob_core::SyncStatus> for SyncStatus {
     fn from(s: fob_core::SyncStatus) -> Self {
+        let chip = s.chip();
         SyncStatus {
             scanned: s.scanned,
             tip: s.tip,
             synced: s.synced,
             progress: s.progress,
-            seconds_left: s.seconds_left,
-            up_to: s.up_to,
             error: s.error,
+            chip_look: match chip.look {
+                fob_core::catch_up::Look::Ring => ChipLook::Ring,
+                fob_core::catch_up::Look::Synced => ChipLook::Synced,
+                fob_core::catch_up::Look::Offline => ChipLook::Offline,
+            },
+            chip_text: chip.text,
+            chip_label: chip.label,
             zmq: s.zmq.into(),
             zmq_text: s.zmq_text,
         }
@@ -952,6 +1001,12 @@ impl FobWallet {
 
     pub fn status(&self) -> SyncStatus {
         self.inner.status().into()
+    }
+
+    /// The card Home's sync chip opens, for the status now; the clock as
+    /// for `activity_days`.
+    pub fn sync_details(&self, now: u64, utc_offset: i32, hours_24: bool) -> SyncDetails {
+        self.inner.sync_details(activity::Clock { now, utc_offset, hours_24 }).into()
     }
 
     /// Keeps the wallet synced in the background until `stop_sync`.

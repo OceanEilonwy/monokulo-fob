@@ -41,6 +41,7 @@ import uniffi.fob.Swapped
 import uniffi.fob.TouchSwap
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
+import uniffi.fob.SyncDetails
 import java.io.File
 import java.util.TimeZone
 
@@ -254,6 +255,13 @@ class WalletModel(private val app: Application) {
     private fun clock(): Triple<ULong, Int, Boolean> {
         val now = System.currentTimeMillis()
         return Triple((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+    }
+
+    /** The card Home's sync chip opens, every word from Rust; null without a wallet. */
+    fun syncDetails(): SyncDetails? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.syncDetails(seconds, offset, hours24)
     }
 
     /** The Coins screen, every word from Rust; null without a wallet. */

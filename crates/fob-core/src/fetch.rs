@@ -285,6 +285,7 @@ async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u6
             let result = match transport.post("get_blocks.bin", request(from, left), Some(MAX_RESPONSE)).await {
                 Ok(response) => {
                     bytes += response.len();
+                    transport.count_received(response.len());
                     parse(&response)
                 }
                 Err(e) => Err(e),

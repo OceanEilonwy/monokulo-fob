@@ -499,29 +499,6 @@ fun FobMark(size: Dp) {
     }
 }
 
-/** The sync chip in the home bar: a green dot when up to date, a ring while catching up. */
-@Composable
-fun SyncChip(text: String, synced: Boolean, progress: Float, error: Boolean, onClick: () -> Unit) {
-    Row(
-        Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.sunken).clickable(role = Role.Button, onClick = onClick).padding(start = 10.dp, end = 14.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        when {
-            error -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.red))
-            synced -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.greenDot))
-            else -> {
-                val (track, arc) = Fob.track to Fob.orangeText
-                Canvas(Modifier.size(18.dp)) {
-                    val stroke = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round)
-                    drawArc(track, 0f, 360f, false, style = stroke)
-                    drawArc(arc, -90f, 360f * progress.coerceIn(0.02f, 1f), false, style = stroke)
-                }
-            }
-        }
-        Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-    }
-}
-
 /** A bar on the line colour, filled as far as [progress] (0 to 1); TalkBack reads it as a progress bar. */
 @Composable
 fun ProgressBar(progress: Float, height: Dp = 6.dp, fill: Color = Fob.orange) {
