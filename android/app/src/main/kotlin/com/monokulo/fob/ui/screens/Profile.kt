@@ -79,6 +79,7 @@ import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.BarIcons
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
@@ -489,6 +490,8 @@ private fun ShareCode(model: WalletModel, nav: Nav, id: ULong, share: ProfileSha
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
     FullBrightness()
+    // White in both themes: the bars' icons dark on it.
+    BarIcons(darkIcons = true)
     val code = share?.code
     val qr = remember(code) { code?.let { runCatching { qrCode(it) }.getOrNull() } }
 

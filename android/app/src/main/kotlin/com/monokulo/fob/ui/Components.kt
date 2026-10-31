@@ -554,6 +554,30 @@ fun NoScreenshots() {
 }
 
 /**
+ * The system bars' icons dark ([darkIcons]) or light while this is shown,
+ * whatever the theme: light over the camera, dark on a white code screen.
+ * The navigation bar's too unless [statusOnly]. Set again after a turn or
+ * a theme change, which set them afresh; put back as they were after.
+ */
+@Composable
+fun BarIcons(darkIcons: Boolean, statusOnly: Boolean = false) {
+    val window = androidx.activity.compose.LocalActivity.current?.window
+    val view = androidx.compose.ui.platform.LocalView.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    androidx.compose.runtime.DisposableEffect(window, configuration) {
+        val bars = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, view) }
+        val status = bars?.isAppearanceLightStatusBars
+        val navigation = bars?.isAppearanceLightNavigationBars
+        bars?.isAppearanceLightStatusBars = darkIcons
+        if (!statusOnly) bars?.isAppearanceLightNavigationBars = darkIcons
+        onDispose {
+            if (status != null) bars.isAppearanceLightStatusBars = status
+            if (navigation != null && !statusOnly) bars.isAppearanceLightNavigationBars = navigation
+        }
+    }
+}
+
+/**
  * A sheet over the screen, on a scrim: tapping the scrim or Back calls
  * [onDismiss]. Its paper reaches the bottom edge; what's on it stays above
  * the gesture bar and clear of the sides. [title] names it for TalkBack.
