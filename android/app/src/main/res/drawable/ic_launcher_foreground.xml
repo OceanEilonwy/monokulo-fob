@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Fob mark (the Monokulo lens with a watch crown and bow), centred in
+     the adaptive icon's 66 dp safe zone. Same geometry as the design's mark,
+     in a 64 × 76 box. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:translateX="28.5" android:translateY="23" android:scaleX="0.8" android:scaleY="0.8">
+        <path android:strokeColor="#1A1917" android:strokeWidth="3"
+            android:pathData="M27.5,6.5a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0z" />
+        <path android:fillColor="#1A1917" android:pathData="M30,9.5h4a2,2 0,0 1,2 2v4a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-4a2,2 0,0 1,2 -2z" />
+        <group android:translateX="32" android:translateY="44" android:scaleX="1.42" android:scaleY="1.42">
+            <group android:translateX="-30" android:translateY="-28">
+                <path android:fillColor="#FF6600" android:pathData="M14.25,28a15.75,15.75 0,1 0,31.5 0a15.75,15.75 0,1 0,-31.5 0z" />
+                <path android:fillColor="#C24E00" android:pathData="M30,23L34.33,25.5L34.33,30.5L30,33L25.67,30.5L25.67,25.5Z" />
+                <path android:fillColor="#E85D00" android:pathData="M30,23L34.33,25.5L35.5,18.47Z M34.33,25.5L34.33,30.5L41,28Z M34.33,30.5L30,33L35.5,37.53Z M30,33L25.67,30.5L24.5,37.53Z M25.67,30.5L25.67,25.5L19,28Z M25.67,25.5L30,23L24.5,18.47Z" />
+                <path android:strokeColor="#1A1917" android:strokeWidth="4.5"
+                    android:pathData="M12,28a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z" />
+            </group>
+        </group>
+    </group>
+</vector>
