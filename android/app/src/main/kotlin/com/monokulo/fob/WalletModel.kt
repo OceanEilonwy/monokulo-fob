@@ -7,11 +7,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.text.format.DateFormat
+import com.monokulo.fob.ui.PriceToastState
 import com.monokulo.fob.ui.ThemeChoice
 import uniffi.fob.ActivityDay
+import uniffi.fob.AmountEntry
 import uniffi.fob.Balance
 import uniffi.fob.Coins
 import uniffi.fob.ContactCard
@@ -26,6 +29,7 @@ import uniffi.fob.PaymentDetail
 import uniffi.fob.CurrencyList
 import uniffi.fob.PriceCheck
 import uniffi.fob.PriceProvider
+import uniffi.fob.PriceRetry
 import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
@@ -73,6 +77,17 @@ class WalletModel(private val app: Application) {
     /** How prices are shown, kept in the wallet file by Rust. */
     private val _prices = MutableStateFlow<PriceSettings?>(null)
     val prices: StateFlow<PriceSettings?> = _prices
+
+    /**
+     * The price toast, over every screen while price lookups fail. Rust
+     * says when (a new toast id) and in what words; this holds what's
+     * drawn and runs Retry.
+     */
+    private val _priceToast = MutableStateFlow<PriceToastState?>(null)
+    val priceToast: StateFlow<PriceToastState?> = _priceToast
+
+    /** The last toast id swiped away or retried: not shown again; Rust gives a new id when it should be. */
+    private var toastDone = 0uL
 
     /**
      * Light, dark or as the phone is. Only how Fob looks, the same for every
@@ -133,6 +148,9 @@ class WalletModel(private val app: Application) {
         _wallet.value?.let { close(it) }
         _wallet.value = wallet
         _status.value = wallet.status()
+        // Toast ids start again with each wallet opened.
+        toastDone = 0uL
+        _priceToast.value = null
         refresh()
         if (syncing) wallet.startSync(observer)
         if (visible) wallet.startPrices(observer)
@@ -151,6 +169,58 @@ class WalletModel(private val app: Application) {
         val (seconds, offset, hours24) = clock()
         _activity.value = wallet.activityDays(seconds, offset, hours24)
         _notReady.value = wallet.notReady(seconds, offset, hours24)
+        refreshToast(wallet)
+    }
+
+    /**
+     * The toast as Rust has it now: a new id shows (or comes back after a
+     * swipe), the same id only takes newer words, none takes it down (a
+     * lookup worked). Retry's own words aren't cut short.
+     */
+    private suspend fun refreshToast(wallet: FobWallet) {
+        val (seconds, offset, hours24) = clock()
+        val toast = wallet.priceToast(seconds, offset, hours24)?.takeIf { it.id > toastDone }
+        when (_priceToast.value) {
+            is PriceToastState.Retrying -> return
+            is PriceToastState.Updated -> if (toast == null) return
+            else -> {}
+        }
+        _priceToast.value = toast?.let { PriceToastState.Failed(it) }
+    }
+
+    /** The toast swiped away: gone until Rust shows another. */
+    fun dismissPriceToast() {
+        (_priceToast.value as? PriceToastState.Failed)?.let { toastDone = it.toast.id }
+        (_priceToast.value as? PriceToastState.Retrying)?.let { toastDone = it.toast.id }
+        _priceToast.value = null
+    }
+
+    /** The toast's Retry: "Trying again…", then the price it got for 2 s, or the failure again. */
+    fun retryPrices() {
+        val wallet = _wallet.value ?: return
+        val failed = (_priceToast.value as? PriceToastState.Failed)?.toast ?: return
+        toastDone = failed.id
+        val asking = PriceToastState.Retrying(failed)
+        _priceToast.value = asking
+        scope.launch {
+            val (seconds, offset, hours24) = clock()
+            val result = wallet.retryPrices(seconds, offset, hours24)
+            // Swiped away meanwhile: nothing more to say.
+            if (_priceToast.value !== asking) return@launch
+            when (result) {
+                is PriceRetry.Updated -> {
+                    val updated = PriceToastState.Updated(result.title, result.line)
+                    _priceToast.value = updated
+                    refresh()
+                    delay(2_000)
+                    if (_priceToast.value === updated) _priceToast.value = null
+                }
+                is PriceRetry.Failed -> {
+                    _priceToast.value = PriceToastState.Failed(result.toast)
+                    refresh()
+                }
+            }
+        }
     }
 
     /** The phone's clock as Rust takes it: now, its UTC offset, and whether it shows 24 hours. */
@@ -171,6 +241,17 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
         return wallet.payment(tx, seconds, offset, hours24)
+    }
+
+    /**
+     * An amount field's words for [text], in money when [inFiat], every word
+     * from Rust; null without a wallet. Money typed against an old price has
+     * Rust ask again, a failure coming as the toast.
+     */
+    suspend fun amountEntry(text: String, inFiat: Boolean): AmountEntry? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.amountEntry(text, inFiat, seconds, offset, hours24)
     }
 
     /** Keeps the note typed on Receive with the address it was for; outlives the screen. */
@@ -282,6 +363,7 @@ class WalletModel(private val app: Application) {
         _activity.value = emptyList()
         _notReady.value = null
         _prices.value = null
+        _priceToast.value = null
         _status.value = null
         prefs.edit().putString("network", network.name.lowercase()).apply()
         _network.value = network
@@ -297,6 +379,7 @@ class WalletModel(private val app: Application) {
         _activity.value = emptyList()
         _notReady.value = null
         _prices.value = null
+        _priceToast.value = null
         _status.value = null
         File(path(network)).delete()
     }

@@ -47,6 +47,12 @@ class FobColors(
     val track: Color,
     /** Over the screen behind a sheet that asks something. */
     val scrim: Color,
+    /** The price toast: dark on a light page, light on a dark one, with its words, button and marks. */
+    val inverse: Color,
+    val onInverse: Color,
+    val inverseMuted: Color,
+    val inverseAccent: Color,
+    val inverseGreen: Color,
 )
 
 /** The Monokulo family's colours, as in the Fob designs. */
@@ -71,6 +77,11 @@ val LightColors = FobColors(
     onRed = Color(0xFFFFFFFF),
     track = Color(0xFFD8D1C3),
     scrim = Color(0x731A1917),
+    inverse = Color(0xFF1A1917),
+    onInverse = Color(0xFFF4F1EA),
+    inverseMuted = Color(0xFFB0A999),
+    inverseAccent = Color(0xFFFF8F45),
+    inverseGreen = Color(0xFF5CC88A),
 )
 
 /** The same roles at night: warm greys, no black, the same orange. */
@@ -95,6 +106,11 @@ val DarkColors = FobColors(
     onRed = Color(0xFF601410),
     track = Color(0xFF3A3731),
     scrim = Color(0x99080706),
+    inverse = Color(0xFFF2EEE6),
+    onInverse = Color(0xFF1A1917),
+    inverseMuted = Color(0xFF5A564C),
+    inverseAccent = Color(0xFFB34700),
+    inverseGreen = Color(0xFF1F7A45),
 )
 
 val LocalFobColors = staticCompositionLocalOf { LightColors }
@@ -123,6 +139,11 @@ object Fob {
     val track: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.track
     val onRed: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onRed
     val scrim: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.scrim
+    val inverse: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverse
+    val onInverse: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onInverse
+    val inverseMuted: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverseMuted
+    val inverseAccent: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverseAccent
+    val inverseGreen: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverseGreen
 
     val orange = Color(0xFFFF6600)
     val onOrange = Color(0xFF111111)

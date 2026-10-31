@@ -89,6 +89,7 @@ import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.AmountField
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.bottomSpace
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
@@ -185,7 +186,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     var inFiat by remember { mutableStateOf(draft?.inFiat ?: false) }
     var defaulted by remember { mutableStateOf(draft != null && draft.amount.isNotBlank()) }
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
-        val e = wallet?.amountEntry(amount, inFiat) ?: return@LaunchedEffect
+        if (wallet == null) return@LaunchedEffect
+        val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
         if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
         if (!e.canSwitch && inFiat) { inFiat = false; amount = ""; return@LaunchedEffect }
@@ -389,7 +391,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                                         val w = wallet ?: return@launch
                                         val toFiat = !inFiat
                                         val switched = w.convertAmount(amount, toFiat)
-                                        val e = w.amountEntry(switched, toFiat)
+                                        val e = model.amountEntry(switched, toFiat) ?: return@launch
                                         amount = switched; inFiat = toFiat; entry = e
                                     }
                                 },
@@ -398,7 +400,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                         Labelled("Note (optional)") { NoteField(note) { note = it } }
                         balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp)) }
                     }
-                    Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // The price toast rises above Review (and the sheet's 16 dp under it).
+                    Column(Modifier.bottomSpace(16.dp).padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         ErrorText(error)
                         PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
                             val e = current ?: return@PrimaryButton

@@ -283,11 +283,42 @@ pub struct PriceSettings {
     pub provider: PriceProvider,
     /// "Show first" the currency, not XMR.
     pub fiat_first: bool,
-    /// "Kraken · over the internet"
+    /// Price from's row: "Kraken · over the internet", with why while
+    /// lookups fail ("… · Not answering").
     pub source_text: String,
+    /// Lookups are failing: the row is red.
+    pub failing: bool,
     pub sources: Vec<PriceSourceChoice>,
-    /// Why the last request failed, until one works.
-    pub error: Option<String>,
+}
+
+/// The price toast while lookups fail, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct PriceToast {
+    /// New each time Rust says to show it; the same while the background
+    /// meets the same run of failures again (newer words only).
+    pub id: u64,
+    /// "Couldn't get the USD price", "Couldn't get 29 Oct's USD price"
+    pub title: String,
+    /// "Kraken didn't answer · using the 14:02 price"
+    pub line: String,
+    /// While Retry asks: "Trying again…", "Asking Kraken for the USD price".
+    pub retrying_title: String,
+    pub retrying_line: String,
+}
+
+impl From<price::alert::Toast> for PriceToast {
+    fn from(t: price::alert::Toast) -> Self {
+        PriceToast { id: t.id, title: t.title, line: t.line, retrying_title: t.retrying_title, retrying_line: t.retrying_line }
+    }
+}
+
+/// What the toast's Retry came to.
+#[derive(uniffi::Enum)]
+pub enum PriceRetry {
+    /// It worked: "USD price updated", "1 XMR = $166.10", shown for 2 s.
+    Updated { title: String, line: String },
+    /// It failed again.
+    Failed { toast: PriceToast },
 }
 
 #[derive(uniffi::Record)]
@@ -955,14 +986,30 @@ impl FobWallet {
                 chosen: t == s.transport,
             })
             .collect();
+        let (source_text, failing) = self.inner.price_from_line().await;
         PriceSettings {
             currency_text: price::shown_in_text(&s),
             currency: s.currency.clone(),
             provider: s.provider.into(),
             fiat_first: s.fiat_first,
-            source_text: s.source_text(),
+            failing: failing && s.code().is_some(),
+            source_text,
             sources,
-            error: if s.code().is_some() { self.inner.price_error() } else { None },
+        }
+    }
+
+    /// The price toast while lookups fail; none once one works. Show it
+    /// when its `id` is one not shown (or swiped away) yet. The clock as
+    /// for `activity_days`.
+    pub async fn price_toast(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<PriceToast> {
+        self.inner.price_toast(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
+    }
+
+    /// The toast's Retry: asks for the price again and says what came of it.
+    pub async fn retry_prices(&self, now: u64, utc_offset: i32, hours_24: bool) -> PriceRetry {
+        match self.inner.retry_prices(activity::Clock { now, utc_offset, hours_24 }).await {
+            fob_core::Retried::Updated { title, line } => PriceRetry::Updated { title, line },
+            fob_core::Retried::Failed(toast) => PriceRetry::Failed { toast: toast.into() },
         }
     }
 
@@ -1085,9 +1132,12 @@ impl FobWallet {
     }
 
     /// An amount field for `text`, typed in money (`in_fiat`) or XMR; in
-    /// money only with a currency besides XMR and a current price.
-    pub async fn amount_entry(&self, text: String, in_fiat: bool) -> AmountEntry {
-        let f = self.inner.amount_field(&text, in_fiat).await;
+    /// money only with a currency besides XMR and a price from within the
+    /// day, its age said once it's aged (the clock as for `activity_days`).
+    /// Money typed against a price 5 minutes old has Rust ask again; a
+    /// failure comes as the price toast.
+    pub async fn amount_entry(&self, text: String, in_fiat: bool, now: u64, utc_offset: i32, hours_24: bool) -> AmountEntry {
+        let f = self.inner.amount_field(&text, in_fiat, activity::Clock { now, utc_offset, hours_24 }).await;
         AmountEntry {
             in_fiat: f.in_fiat,
             sign: f.sign,

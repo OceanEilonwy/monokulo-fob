@@ -14,7 +14,10 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -22,13 +25,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.monokulo.fob.ui.FobTheme
+import com.monokulo.fob.ui.LocalBottomSpace
 import com.monokulo.fob.ui.LocalFobColors
+import com.monokulo.fob.ui.PriceToastHost
 import com.monokulo.fob.ui.screens.BackupScreen
 import com.monokulo.fob.ui.screens.CoinsScreen
 import com.monokulo.fob.ui.screens.ConfirmScreen
@@ -40,6 +48,7 @@ import com.monokulo.fob.ui.screens.HomeScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
 import com.monokulo.fob.ui.screens.PaymentScreen
+import com.monokulo.fob.ui.screens.PriceFromScreen
 import com.monokulo.fob.ui.screens.ProfileEditScreen
 import com.monokulo.fob.ui.screens.ProfileScanScreen
 import com.monokulo.fob.ui.screens.ProfileScreen
@@ -102,6 +111,8 @@ sealed interface Screen {
     /** Split up: what's ready to spend paid back to this wallet as pieces. */
     data object Split : Screen
     data object Settings : Screen
+    /** Price from: each provider, checked as it opens; from Settings or the price toast's cog. */
+    data object PriceFrom : Screen
     /** Everyone this wallet pays, and who was paid but isn't saved. */
     data object Contacts : Screen
     /** A contact's card. */
@@ -194,7 +205,18 @@ class MainActivity : FragmentActivity() {
                     link.value = null
                 }
                 BackHandler(enabled = nav.stack.size > 1) { nav.back() }
-                App(nav)
+                // The price toast over whatever screen is open, above its bottom bar.
+                val bottomSpace = remember { mutableStateOf(0.dp) }
+                CompositionLocalProvider(LocalBottomSpace provides bottomSpace) {
+                    Box(Modifier.fillMaxSize()) {
+                        App(nav)
+                        val toast by model.priceToast.collectAsState()
+                        PriceToastHost(
+                            toast, onRetry = model::retryPrices, onDismiss = model::dismissPriceToast,
+                            onSettings = { if (nav.current != Screen.PriceFrom) nav.go(Screen.PriceFrom) },
+                        )
+                    }
+                }
             }
         }
     }
@@ -279,6 +301,7 @@ class MainActivity : FragmentActivity() {
             Screen.Coins -> CoinsScreen(model, nav)
             Screen.Split -> SplitScreen(model, nav)
             Screen.Settings -> SettingsScreen(model, nav)
+            Screen.PriceFrom -> PriceFromScreen(model, nav)
             Screen.Contacts -> ContactsScreen(model, nav)
             is Screen.Contact -> ContactScreen(model, nav, screen.id)
             is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill, screen.forRequest)

@@ -27,12 +27,15 @@
 //!   provider when someone paid: history comes as the provider's whole
 //!   daily window, at most once a day, and is looked up here.
 //! - The current price is asked at most every 5 minutes while Fob is on
-//!   screen, and on pull to refresh (at most once a minute).
+//!   screen, and on pull to refresh, Retry, a changed currency or provider
+//!   and a money amount typed against a price 5 minutes old (at most once a
+//!   minute for the same settings). Failures show as the toast of [`alert`].
 //!
 //! Prices are whole numbers: millionths of the currency for one XMR
 //! (`price`), never floats. Values are rounded half up to the currency's
 //! smallest unit (cents, or whole yen).
 
+pub mod alert;
 pub mod coingecko;
 pub mod currencies;
 pub mod kraken;
@@ -53,8 +56,14 @@ pub const MICRO: u64 = 1_000_000;
 pub const REFRESH: u64 = 5 * 60;
 /// The soonest pull to refresh asks again.
 pub const PULL_REFRESH: u64 = 60;
-/// A current price older than this isn't shown, nor recorded with a payment.
+/// A current price older than this isn't recorded with a payment.
 pub const FRESH: u64 = 60 * 60;
+/// A current price older than this isn't shown, nor converts money typed:
+/// amounts stay in XMR.
+pub const SHOWN: u64 = 24 * 60 * 60;
+/// A price older than this says when it's from where it converts an
+/// amount: one refresh missed.
+pub const AGED: u64 = 2 * REFRESH;
 /// How often the daily history is asked for.
 pub const HISTORY_EVERY: u64 = 24 * 60 * 60;
 /// How long Price from waits for each provider as it opens.
@@ -432,9 +441,14 @@ fn for_settings(settings: &Settings, currency: &str, provider: &str) -> bool {
 }
 
 impl Cache {
-    /// The current price for `settings`, if asked within the last hour.
-    pub fn fresh(&self, settings: &Settings, now: u64) -> Option<&Current> {
-        self.current.as_ref().filter(|c| for_settings(settings, &c.currency, &c.provider) && now.saturating_sub(c.at) < FRESH)
+    /// The last current price kept for `settings`, however old.
+    pub fn last(&self, settings: &Settings) -> Option<&Current> {
+        self.current.as_ref().filter(|c| for_settings(settings, &c.currency, &c.provider))
+    }
+
+    /// The current price for `settings`, if asked within the last day.
+    pub fn shown(&self, settings: &Settings, now: u64) -> Option<&Current> {
+        self.last(settings).filter(|c| now.saturating_sub(c.at) < SHOWN)
     }
 
     fn history(&self, settings: &Settings) -> Option<&History> {
@@ -730,11 +744,32 @@ pub struct AmountField {
     pub for_in_fiat: bool,
 }
 
+/// What an amount field converts with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldPrice<'a> {
+    /// XMR only: no currency chosen.
+    None,
+    /// A currency chosen, but no price for it, or only one over a day old:
+    /// the field takes XMR only, and says so.
+    Missing(&'a Currency),
+    /// A price, with its age once it isn't just asked ("price from 14:02").
+    At(&'a Currency, u64, Option<&'a str>),
+}
+
 /// The field for `text` typed in money (`in_fiat`) or XMR, at `price` when
 /// there is one (without, it takes XMR only).
-pub fn amount_field(text: &str, in_fiat: bool, price: Option<(&Currency, u64)>) -> AmountField {
+pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField {
     let (for_text, for_in_fiat) = (text.to_owned(), in_fiat);
     let text = text.trim();
+    let (missing, age) = match price {
+        FieldPrice::Missing(c) => (Some(c), None),
+        FieldPrice::At(_, _, age) => (None, age),
+        FieldPrice::None => (None, None),
+    };
+    let price = match price {
+        FieldPrice::At(c, p, _) => Some((c, p)),
+        _ => None,
+    };
     let in_fiat = in_fiat && price.is_some();
     // "US dollars", "XMR".
     let unit_name = |fiat: bool| match price {
@@ -742,11 +777,15 @@ pub fn amount_field(text: &str, in_fiat: bool, price: Option<(&Currency, u64)>) 
         Some((c, _)) if fiat => c.plural.to_owned(),
         _ => "XMR".to_owned(),
     };
+    // The rate; once the price is aged, when it's from in its place, so
+    // the line stays short.
+    let from = |p: u64, c: &Currency| age.map_or_else(|| rate(p, c), str::to_owned);
     let line = match price {
-        _ if text.is_empty() => price.map(|(c, p)| rate(p, c)),
-        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| format!("≈ {} XMR · {}", amount::format(a), rate(p, c))),
-        Some((c, p)) => amount::parse(text).ok().map(|a| format!("≈ {} · {}", value(a, p, c), rate(p, c))),
-        None => None,
+        Some((c, p)) if text.is_empty() => Some(age.map_or_else(|| rate(p, c), |age| format!("{} · {age}", rate(p, c)))),
+        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| format!("≈ {} XMR · {}", amount::format(a), from(p, c))),
+        Some((c, p)) => amount::parse(text).ok().map(|a| format!("≈ {} · {}", value(a, p, c), from(p, c))),
+        // Money can't be typed: why.
+        None => missing.map(|c| format!("No {} price now · type the amount in XMR", c.code)),
     };
     // What it comes to in XMR, the way Send converts it.
     let atomic = match price {
@@ -970,29 +1009,40 @@ mod tests {
         let (usd, eur, chf) = (usd(), eur(), currency("CHF"));
         let p = 166_100_000;
         // In dollars, as the board: "$ 20 [USD ⇅]", "≈ 0.1204 XMR · 1 XMR = $166.10".
-        let f = amount_field("20", true, Some((&usd, p)));
+        let f = amount_field("20", true, FieldPrice::At(&usd, p, None));
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch), (Some("$"), "USD", true, true));
         assert_eq!(f.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
         assert_eq!((f.label.as_str(), f.switch_label.as_deref()), ("Amount in US dollars", Some("Amount in US dollars. Switch to XMR")));
         // In XMR: the sign becomes ɱ.
-        let f = amount_field("0.1204", false, Some((&usd, p)));
+        let f = amount_field("0.1204", false, FieldPrice::At(&usd, p, None));
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat), (Some("ɱ"), "XMR", false));
         assert_eq!(f.line.as_deref(), Some("≈ $20.00 · 1 XMR = $166.10"));
         assert_eq!((f.label.as_str(), f.switch_label.as_deref()), ("Amount in XMR", Some("Amount in XMR. Switch to US dollars")));
         // Empty: the rate alone. Not an amount: says so.
-        assert_eq!(amount_field(" ", true, Some((&usd, p))).line.as_deref(), Some("1 XMR = $166.10"));
-        assert_eq!(amount_field("20.123", true, Some((&usd, p))).line.as_deref(), Some("That isn't an amount"));
-        assert_eq!(amount_field("abc", false, Some((&usd, p))).line.as_deref(), Some("That isn't an amount"));
+        assert_eq!(amount_field(" ", true, FieldPrice::At(&usd, p, None)).line.as_deref(), Some("1 XMR = $166.10"));
+        assert_eq!(amount_field("20.123", true, FieldPrice::At(&usd, p, None)).line.as_deref(), Some("That isn't an amount"));
+        assert_eq!(amount_field("abc", false, FieldPrice::At(&usd, p, None)).line.as_deref(), Some("That isn't an amount"));
         // Euros, and a currency without a symbol: the chip names it, no sign.
-        let f = amount_field("5", true, Some((&eur, p)));
+        let f = amount_field("5", true, FieldPrice::At(&eur, p, None));
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.label.as_str()), (Some("€"), "EUR", "Amount in euros"));
-        let f = amount_field("5", true, Some((&chf, p)));
+        let f = amount_field("5", true, FieldPrice::At(&chf, p, None));
         assert_eq!((f.sign, f.unit.as_str(), f.label.as_str()), (None, "CHF", "Amount in Swiss francs"));
         assert_eq!(f.line.as_deref(), Some("≈ 0.0301 XMR · 1 XMR = 166.10 CHF"));
         // No price: XMR only, no switch, nothing under it unless it's wrong.
-        let f = amount_field("20", true, None);
+        let f = amount_field("20", true, FieldPrice::None);
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch, f.line, f.switch_label), (Some("ɱ"), "XMR", false, false, None, None));
-        assert_eq!(amount_field("x", false, None).line.as_deref(), Some("That isn't an amount"));
+        assert_eq!(amount_field("x", false, FieldPrice::None).line.as_deref(), Some("That isn't an amount"));
+        // A currency chosen without a price to use: XMR only, saying why.
+        let f = amount_field("", true, FieldPrice::Missing(&usd));
+        assert_eq!((f.unit.as_str(), f.can_switch, f.line.as_deref()), ("XMR", false, Some("No USD price now · type the amount in XMR")));
+        assert_eq!(amount_field("0.5", false, FieldPrice::Missing(&usd)).line.as_deref(), Some("No USD price now · type the amount in XMR"));
+        assert_eq!(amount_field("x", false, FieldPrice::Missing(&usd)).line.as_deref(), Some("That isn't an amount"));
+        // An aged price says when it's from, in place of the rate once there's an amount.
+        let aged = FieldPrice::At(&usd, p, Some("price from 14:02"));
+        assert_eq!(amount_field("", true, aged).line.as_deref(), Some("1 XMR = $166.10 · price from 14:02"));
+        assert_eq!(amount_field("20", true, aged).line.as_deref(), Some("≈ 0.1204 XMR · price from 14:02"));
+        assert_eq!(amount_field("0.1204", false, aged).line.as_deref(), Some("≈ $20.00 · price from 14:02"));
+        assert!(amount_field("20", true, aged).can_switch);
     }
 
     #[test]
@@ -1008,16 +1058,16 @@ mod tests {
     fn the_amount_field_says_when_send_can_review_it() {
         let usd = usd();
         let p = 166_100_000;
-        let sendable = |text: &str, in_fiat: bool, price: Option<(&Currency, u64)>| amount_field(text, in_fiat, price).sendable;
-        assert!(sendable("20", true, Some((&usd, p))));
-        assert!(sendable("0.1204", false, Some((&usd, p))));
+        let sendable = |text: &str, in_fiat: bool, price: FieldPrice| amount_field(text, in_fiat, price).sendable;
+        assert!(sendable("20", true, FieldPrice::At(&usd, p, None)));
+        assert!(sendable("0.1204", false, FieldPrice::At(&usd, p, None)));
         // Typed in money without a price, it's read as XMR.
-        assert!(sendable("20", true, None));
+        assert!(sendable("20", true, FieldPrice::None));
         // It says what it was asked about, as asked.
-        let f = amount_field(" 20", true, None);
+        let f = amount_field(" 20", true, FieldPrice::None);
         assert_eq!((f.for_text.as_str(), f.for_in_fiat, f.in_fiat), (" 20", true, false));
         for (text, in_fiat) in [("", true), (" ", false), ("0", false), ("0.00", true), ("20.123", true), ("abc", false)] {
-            assert!(!sendable(text, in_fiat, Some((&usd, p))), "{text:?}");
+            assert!(!sendable(text, in_fiat, FieldPrice::At(&usd, p, None)), "{text:?}");
         }
     }
 
@@ -1117,8 +1167,12 @@ mod tests {
         // In another currency, nothing.
         let eur = Settings { currency: Some("EUR".into()), ..settings.clone() };
         assert_eq!(cache.value_at(&eur, now), None);
-        assert!(cache.fresh(&settings, now + FRESH - 1).is_some());
-        assert!(cache.fresh(&settings, now + FRESH).is_none());
+        // Shown for a day, recorded with a payment for an hour.
+        assert!(cache.shown(&settings, now + SHOWN - 1).is_some());
+        assert!(cache.shown(&settings, now + SHOWN).is_none());
+        assert!(cache.last(&settings).is_some());
+        assert!(cache.value_at(&settings, now + FRESH).is_some_and(|r| r.daily));
+        assert!(cache.shown(&eur, now).is_none() && cache.last(&eur).is_none());
     }
 
     #[test]
@@ -1184,11 +1238,11 @@ mod tests {
             assert_eq!(to_minor(atomic, p, &kwd), minor, "{minor}");
         }
         // The amount field takes them as typed.
-        let f = amount_field("1500", true, Some((&jpy, 93_477_400_000)));
+        let f = amount_field("1500", true, FieldPrice::At(&jpy, 93_477_400_000, None));
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.label.as_str()), (Some("¥"), "JPY", "Amount in Japanese yen"));
         assert_eq!(f.line.as_deref(), Some("≈ 0.01605 XMR · 1 XMR = ¥93,477"));
-        assert_eq!(amount_field("1500.5", true, Some((&jpy, 93_477_400_000))).line.as_deref(), Some("That isn't an amount"));
-        let f = amount_field("1.5", true, Some((&kwd, p)));
+        assert_eq!(amount_field("1500.5", true, FieldPrice::At(&jpy, 93_477_400_000, None)).line.as_deref(), Some("That isn't an amount"));
+        let f = amount_field("1.5", true, FieldPrice::At(&kwd, p, None));
         assert_eq!((f.sign, f.label.as_str(), f.line.as_deref()), (None, "Amount in Kuwaiti dinars", Some("≈ 0.02673 XMR · 1 XMR = 56.123 KWD")));
         assert!(f.sendable);
     }
