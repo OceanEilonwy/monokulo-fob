@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "third_party/monero-seed", "third_party/polyseed"]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+version = "0.1.0"
+
+# monero-oxide's cryptography is unusably slow unoptimised, even in tests.
+[profile.dev.package."*"]
+opt-level = 3
+
+# The library as the Android app ships it, once per ABI.
+# (Release builds for this machine keep symbols: UniFFI's bindgen reads them.)
+[profile.android]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true

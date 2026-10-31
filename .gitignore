@@ -1,0 +1,10 @@
+target/
+*.tmp
+/dist/*.apk
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+android/app/src/main/jniLibs/
+android/app/src/main/java/uniffi/
