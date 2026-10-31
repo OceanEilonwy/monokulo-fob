@@ -85,10 +85,7 @@ import uniffi.fob.Activity
 import uniffi.fob.CurrencyList
 import uniffi.fob.PriceCheck
 import uniffi.fob.Network
-import uniffi.fob.NodeCheck
 import uniffi.fob.ZmqStatus
-import uniffi.fob.checkNodes
-import uniffi.fob.defaultNodes
 import uniffi.fob.qrCode
 
 /** A payment that came with a receipt: the receipt, then what it was worth and its details, as for any payment. */
@@ -144,7 +141,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, confirmIdentity: suspend (Strin
     // Backup and keys' line, from Rust: "Seed phrase, wallet code, keys".
     var backupLine by remember { mutableStateOf("") }
     LaunchedEffect(wallet) {
-        node = wallet?.node() ?: ""
+        node = wallet?.nodeLine() ?: ""
         profile = wallet?.profile()
         profileRow = wallet?.profileRow()
         backupLine = wallet?.backupHub()?.settingsLine ?: ""
@@ -555,67 +552,6 @@ private fun Choice(title: String, chosen: Boolean, onClick: () -> Unit) {
     ) {
         Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
         if (chosen) StrokeIcon(Icons.check, size = 20.dp)
-    }
-}
-
-@Composable
-fun NodeScreen(model: WalletModel, nav: Nav) {
-    val wallet by model.wallet.collectAsState()
-    val network by model.network.collectAsState()
-    val status by model.status.collectAsState()
-    val scope = rememberCoroutineScope()
-    var node by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
-    var checks by remember { mutableStateOf<List<NodeCheck>>(emptyList()) }
-    LaunchedEffect(wallet) { node = wallet?.node() ?: "" }
-    Page(bottom = {
-        ErrorText(error)
-        PrimaryButton("Use this node", enabled = node.isNotBlank(), onClick = {
-            scope.launch { runCatching { model.setNode(node) }.onSuccess { nav.back() }.onFailure { error = it.reason() } }
-        })
-    }) {
-        TopBar("Node", onBack = { nav.back() })
-        Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            status?.let { s ->
-                Card {
-                    InfoRow("Status", when { s.error != null && !s.synced -> "Can't reach it"; s.synced -> "Synced"; else -> "Catching up · ${(s.progress * 100).toInt()}%" })
-                    Divider()
-                    InfoRow("Scanned", "${s.scanned} of ${s.tip}")
-                    s.error?.let { Divider(); Text(it, color = Fob.red, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) }
-                }
-            }
-            Field(node, { node = it }, "Node address", hint = "Your own node, or a public one: http://host:port or https://…")
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { SectionLabel("Nodes") }
-                TextButton(if (testing) "Testing…" else "Test speed", {
-                    if (!testing) {
-                        testing = true
-                        scope.launch {
-                            val urls = (listOf(node.trim()).filter { it.isNotEmpty() } + defaultNodes(network)).distinct()
-                            checks = checkNodes(network, urls)
-                            testing = false
-                        }
-                    }
-                })
-            }
-            Card {
-                val urls = (defaultNodes(network) + checks.map { it.url }).distinct()
-                val fastest = checks.filter { it.rightNetwork && it.error == null }.maxByOrNull { it.blocksPerSecond }?.url
-                urls.forEach { url ->
-                    val check = checks.firstOrNull { it.url == url }
-                    val result = when {
-                        check == null -> null
-                        !check.reachable -> "Can't reach it"
-                        !check.rightNetwork -> "Wrong network"
-                        check.error != null -> "${check.latencyMs} ms · ${check.error}"
-                        else -> "${check.blocksPerSecond.toInt()} blocks/s · ${check.latencyMs} ms" + (if (!check.synced) " · still syncing" else "") + (if (url == fastest) " · fastest" else "")
-                    }
-                    SettingRow(url, result, onClick = { node = url })
-                }
-            }
-            Text("Fob asks the node for blocks and sends your payments through it. It never sends your keys.", color = Fob.muted, fontSize = 13.sp)
-        }
     }
 }
 

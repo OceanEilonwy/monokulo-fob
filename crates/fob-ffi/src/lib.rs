@@ -1051,12 +1051,46 @@ impl FobWallet {
         self.inner.receive_index().await
     }
 
-    pub async fn node(&self) -> String {
-        self.inner.node().await
+    pub async fn node(&self) -> NodeSetting {
+        self.inner.node().await.into()
     }
 
-    pub async fn set_node(&self, url: String) -> Result<()> {
-        Ok(self.inner.set_node(&url).await?)
+    /// Settings' Node line: "Working · node.example:38081".
+    pub async fn node_line(&self) -> String {
+        self.inner.node_line().await
+    }
+
+    /// Switches to `url`; `self_signed` accepts its certificate unverified.
+    pub async fn set_node(&self, url: String, self_signed: bool) -> Result<()> {
+        Ok(self.inner.set_node(&url, self_signed).await?)
+    }
+
+    /// Runs the Node screen's checks on `node`, telling `observer` as each
+    /// one finishes; gives the last report.
+    pub async fn check_node(&self, node: NodeSetting, observer: Arc<dyn NodeCheckObserver>) -> NodeReport {
+        self.inner.check_node(&node.into(), &|report| observer.on_progress(report.clone().into())).await.into()
+    }
+
+    /// The other nodes to offer (the network's, then `added`), each saying
+    /// "Checking…" until [`check_nodes`](Self::check_nodes) answers.
+    pub async fn other_nodes(&self, added: Vec<NodeSetting>) -> Vec<NodeChoice> {
+        let network = self.inner.network();
+        let added: Vec<_> = added.into_iter().map(Into::into).collect();
+        self.inner
+            .other_nodes(&added)
+            .await
+            .into_iter()
+            .map(|n| {
+                let report = fob_core::node::Report::pending(network, &n);
+                NodeChoice::new(&report, report.line(false))
+            })
+            .collect()
+    }
+
+    /// Checks the other nodes at once: each one's line and whether it can be used.
+    pub async fn check_nodes(&self, nodes: Vec<NodeSetting>) -> Vec<NodeChoice> {
+        let nodes: Vec<_> = nodes.into_iter().map(Into::into).collect();
+        self.inner.check_nodes(&nodes).await.iter().map(|(report, line)| NodeChoice::new(report, line.clone())).collect()
     }
 
     /// The node's ZMQ publisher: the one set, else the usual port on the
@@ -2352,38 +2386,127 @@ pub fn address_pattern(address: String) -> AddressPattern {
     AddressPattern { cells: p.cells, colour: p.colour, dots: p.dots() }
 }
 
-#[uniffi::export]
-pub fn default_nodes(network: Network) -> Vec<String> {
-    fob_core::Network::from(network).default_nodes().iter().map(|n| (*n).to_owned()).collect()
-}
-
+/// A node, and whether its self-signed certificate is accepted.
 #[derive(uniffi::Record)]
-pub struct NodeCheck {
+pub struct NodeSetting {
     pub url: String,
-    pub reachable: bool,
-    pub right_network: bool,
-    pub synced: bool,
-    pub height: u64,
-    pub latency_ms: u64,
-    pub blocks_per_second: f64,
-    pub error: Option<String>,
+    pub self_signed: bool,
 }
 
-/// Checks nodes at once: reachable, right network, synced, and how fast.
-#[uniffi::export(async_runtime = "tokio")]
-pub async fn check_nodes(network: Network, urls: Vec<String>) -> Vec<NodeCheck> {
-    fob_core::node::check_all(network.into(), &urls)
-        .await
-        .into_iter()
-        .map(|c| NodeCheck {
-            url: c.url,
-            reachable: c.reachable,
-            right_network: c.right_network,
-            synced: c.synced,
-            height: c.height,
-            latency_ms: c.latency_ms,
-            blocks_per_second: c.blocks_per_second,
-            error: c.error,
-        })
-        .collect()
+impl From<fob_core::node::Setting> for NodeSetting {
+    fn from(s: fob_core::node::Setting) -> Self {
+        NodeSetting { url: s.url, self_signed: s.self_signed }
+    }
 }
+
+impl From<NodeSetting> for fob_core::node::Setting {
+    fn from(s: NodeSetting) -> Self {
+        fob_core::node::Setting { url: s.url, self_signed: s.self_signed }
+    }
+}
+
+/// How a node check came out: its icon and colour.
+#[derive(Clone, Copy, uniffi::Enum)]
+pub enum CheckMark {
+    Pass,
+    Fail,
+    Checking,
+    /// Not run: one it needs failed.
+    Skipped,
+}
+
+impl From<fob_core::node::Mark> for CheckMark {
+    fn from(m: fob_core::node::Mark) -> Self {
+        use fob_core::node::Mark as M;
+        match m {
+            M::Pass => CheckMark::Pass,
+            M::Fail => CheckMark::Fail,
+            M::Checking => CheckMark::Checking,
+            M::Skipped => CheckMark::Skipped,
+        }
+    }
+}
+
+/// One of a node's checks: "Up to date", "block 1,792,004 · 1 min ago".
+#[derive(uniffi::Record)]
+pub struct NodeCheckRow {
+    pub title: String,
+    pub result: String,
+    pub mark: CheckMark,
+    /// For TalkBack: "Up to date: 2 days behind".
+    pub label: String,
+}
+
+/// Whether a checked node can be switched to.
+#[derive(uniffi::Enum)]
+pub enum NodeUse {
+    Use,
+    /// Only Up to date failed: "Use it anyway".
+    UseAnyway,
+    No,
+}
+
+/// A node's checks as far as they've got, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct NodeReport {
+    pub node: NodeSetting,
+    /// "node.example:38081": no scheme, no login.
+    pub address: String,
+    /// "Working", "Checking…", or the failed check's words.
+    pub verdict: String,
+    pub rows: Vec<NodeCheckRow>,
+    pub usable: NodeUse,
+    pub checking: bool,
+}
+
+impl From<fob_core::node::Report> for NodeReport {
+    fn from(r: fob_core::node::Report) -> Self {
+        use fob_core::node::Usable;
+        NodeReport {
+            verdict: r.verdict().into(),
+            usable: match r.usable() {
+                Usable::Use => NodeUse::Use,
+                Usable::UseAnyway => NodeUse::UseAnyway,
+                Usable::No => NodeUse::No,
+            },
+            checking: r.checking(),
+            rows: r.rows.iter().map(|row| NodeCheckRow { title: row.title().into(), result: row.result.clone(), mark: row.mark.into(), label: row.label() }).collect(),
+            address: r.address,
+            node: NodeSetting { url: r.url, self_signed: r.self_signed },
+        }
+    }
+}
+
+/// Another node on the Node screen's list: its dot, address and one line.
+#[derive(uniffi::Record)]
+pub struct NodeChoice {
+    pub node: NodeSetting,
+    pub address: String,
+    /// "120 ms · in sync · fastest", "Didn't answer in 5 s", "Checking…".
+    pub line: String,
+    /// The dot: Pass when it can be used, Checking, else Fail.
+    pub mark: CheckMark,
+    /// Offer Use.
+    pub can_use: bool,
+}
+
+impl NodeChoice {
+    fn new(report: &fob_core::node::Report, line: String) -> NodeChoice {
+        let can_use = report.usable() == fob_core::node::Usable::Use;
+        NodeChoice {
+            node: NodeSetting { url: report.url.clone(), self_signed: report.self_signed },
+            address: report.address.clone(),
+            line,
+            mark: if report.checking() { CheckMark::Checking } else if can_use { CheckMark::Pass } else { CheckMark::Fail },
+            can_use,
+        }
+    }
+}
+
+/// Hears a node's checks as each finishes; implemented by the app. Called
+/// from Fob's own threads.
+#[uniffi::export(with_foreign)]
+pub trait NodeCheckObserver: Send + Sync {
+    fn on_progress(&self, report: NodeReport);
+}
+

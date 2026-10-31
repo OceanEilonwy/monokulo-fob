@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 async fn main() {
     let node = std::env::args().nth(1).unwrap_or_else(|| "http://node.monerodevs.org:38089".into());
     let count: u64 = std::env::args().nth(2).and_then(|n| n.parse().ok()).unwrap_or(2000);
-    let transport = Transport::new(&node).unwrap();
+    let transport = Transport::new(&node, false).unwrap();
     let rpc = MoneroDaemon::new(transport.clone()).await.unwrap();
     let tip = rpc.latest_block_number().await.unwrap() as u64;
     let start = tip - count;

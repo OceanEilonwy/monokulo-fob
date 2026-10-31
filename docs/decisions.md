@@ -1669,3 +1669,76 @@ Calls made while building the first version, with why. Newest last.
     95-character address have no spaces, so Compose breaks them where the
     line ends; monospace at 12.5 sp, as the board. The hub and Keys block
     screenshots, as Seed phrase and Wallet code already did.
+222. **A node's checks and what stops what** (decision 10): Certificate
+    (https only), Answers, Right network, Up to date, Sends blocks to Fob,
+    in that order. A certificate that isn't accepted, or no answer, skips
+    everything after it (skipped rows show no result; TalkBack reads "not
+    checked"); the wrong network skips Up to date and Sends blocks. Up to
+    date failing doesn't stop Sends blocks: a node that's only behind can
+    still be used "anyway". When the node doesn't answer at all, the
+    Certificate row is skipped too, not failed: it was never seen.
+223. **Up to date's measure**: behind is the node's own target height, or
+    the tip this wallet last saw if higher, less its height; more than 5
+    blocks (about ten minutes) fails. A last block more than an hour old
+    fails too (a stuck node that thinks it's synced). The words are the
+    larger of blocks behind × 2 min and the last block's age: "20 min
+    behind", "5 h behind", "2 days behind". Passing reads "block 1,792,004
+    · 1 min ago" ("just now" under a minute). The last block comes from
+    `get_last_block_header`.
+224. **Timings**: Answers allows 5 s ("Didn't answer in 5 s", as the
+    board), the last block header 5 s, and the block sample 10 s ("no
+    blocks in 10 s"). The sample is the hundred blocks before the two
+    newest, through the same pipelined fetcher that syncs; blocks/s with
+    one decimal under 10, MB/s from the bytes it read (the sync card's
+    link-speed words).
+225. **Verdicts**: "Working", "Checking…" while any check runs, else the
+    first failed check's: "Certificate not accepted", "Doesn't answer",
+    "Wrong network", "Not up to date", "Doesn't send blocks". The list's
+    lines: "120 ms · in sync" (" · fastest" on the quickest at sending
+    blocks when two or more pass), the failed Answers row capitalised
+    ("Didn't answer in 5 s", "Refused to connect", "Address not found",
+    "Not a Monero node", "Wants a login" for a 401), "Mainnet node: this
+    wallet is stagenet", "Certificate self-signed, not accepted", and
+    "<ms> ms · 2 days behind" or "<ms> ms · no blocks in 10 s". Use shows
+    only on nodes that pass every check; a lagging one in the list has no
+    Use (add it in the sheet to "Use it anyway").
+226. **Self-signed certificates are checked by Fob, not reqwest**: every
+    node connection now uses a rustls config of its own with the usual
+    verifier (Mozilla's roots, as reqwest's default) wrapped to note what
+    it found. That's how the Certificate row can say "self-signed, not
+    accepted", "expired", "not valid yet" or "for another address" rather
+    than a TLS error string. With the node's "Accept self-signed
+    certificates" mark, any certificate passes (the handshake's signature
+    is still checked against it, so the link is encrypted to whoever holds
+    that key; nothing says who that is) and the row says "self-signed,
+    accepted"; a certificate that verifies anyway reads "valid". An unknown
+    issuer (a private authority) counts as self-signed: the box accepts
+    both. Price providers keep their own reqwest clients with reqwest's
+    usual verification, untouched.
+227. **The mark is kept with the node** in the wallet file
+    (`node_self_signed`, off for older files) and set only by switching:
+    `set_node(url, self_signed)`. Changing node drops the connection, so
+    the next request uses the new setting. Default nodes never have it.
+228. **Use in the list switches at once**, with no confirmation: the node
+    just passed every check, and switching back is one tap. The node left
+    stays on the list for this visit (added to the checked ones), and
+    every check runs again for the new node. A node checked in the sheet
+    and closed without Use joins the list for this visit; nothing about
+    added nodes is saved beyond the one in use.
+229. **The refresh ignores taps while checking** (it keeps the label
+    "Check again" with the state "Checking" for TalkBack) rather than the
+    board prototype's "Stop checking": leaving the screen stops checks.
+    Opening the screen and refresh check the node in use and the list at
+    once.
+230. **Settings' Node line** is Rust's "<verdict> · <host:port>": the last
+    full check of the node in use this run, else "Can't reach node" while
+    syncing fails, "Working" once it has synced or seen a tip, else the
+    address alone. Fob doesn't check the node on its own on every sync
+    yet (the board's note); the line reads syncing instead.
+231. **The sheet's buttons**: "Check" alone until the first check; then
+    "Check again" and "Use" (or "Use it anyway"; greyed when neither
+    applies). Editing the address or the box clears the checks back to
+    "Check". The board's one-line hint under the field stays; there's no
+    explanatory paragraph.
+232. **Addresses show host and port only**: no scheme, and never a login
+    from `user:pass@` in the URL.

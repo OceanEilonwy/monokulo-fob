@@ -144,3 +144,23 @@ through step 1's stopgap dialogs in Settings.
 - [ ] Dark mode → warning card, sunken icon circles and badges in dark colours; orange "Spends money" readable
 - [ ] TalkBack → each hub row read as one ("Seed phrase, 16 words …"); Copy buttons read "Copy the secret spend key", "Copy the main address" …
 - [ ] Small phone, font size 200% → keys wrap inside the card at any character, Copy stays 48 dp at the right, badge beside the title not clipped
+
+## Step 8 · Node
+- [ ] Settings → Syncing → Node reads "Working · stagenet.xmr-tw.org:38081" (after syncing or opening Node); tap it → Node screen: Back, "Node", refresh icon at the top right
+- [ ] Node opens → icon spins, card "Checking…" with rows filling in one by one; then a green tick, "Working", the address with no http://, Answers "<n> ms", Right network "stagenet", Up to date "block <n> · <n> min ago", Sends blocks to Fob "<n> blocks/s · <n> MB/s"
+- [ ] Tap refresh → spins again, checks run again; tapping while it spins does nothing
+- [ ] Change node: each other default node with a dot, its address and "Checking…", then "<ms> ms · in sync" (one "· fastest") with Use, green dot
+- [ ] Tap Use on another node → it becomes the card's node and is checked; the old one is now in the list; Home keeps syncing from the new one
+- [ ] Unreachable node: add "10.255.255.1:38081" → Answers "didn't answer in 5 s", the rest without results, verdict "Doesn't answer", Use greyed; closed, it shows in the list as "Didn't answer in 5 s" with a red dot and no Use
+- [ ] Closed port (your node's host, an unused port) → "refused to connect"; a made-up host → "address not found"
+- [ ] Mainnet node on a stagenet wallet (e.g. node.sethforprivacy.com:18089) → Right network "mainnet, not stagenet", verdict "Wrong network", list line "Mainnet node: this wallet is stagenet"
+- [ ] Lagging node (a node still syncing, or one stopped for an hour) → Up to date red "<n> h behind" / "<n> days behind", Sends blocks still checked; sheet button "Use it anyway" works and the Working card shows "Not up to date"
+- [ ] https node with a self-signed certificate, box unticked → Certificate "self-signed, not accepted" first, nothing else runs, verdict "Certificate not accepted"
+- [ ] Same node, tick "Accept self-signed certificates" → checks clear to "Check"; Check → Certificate "self-signed, accepted", the rest run; Use → syncing works through it; close and reopen Fob → still on it and still working
+- [ ] https public node (e.g. node.monerodevs.org:18089 on mainnet) → Certificate "valid"
+- [ ] Sheet: keyboard up → field, box and buttons stay above it; tap outside or Back → sheet closes, checks stop
+- [ ] Sync chip card → "Node settings" still opens Node
+- [ ] Dark mode → card, tick/"!"/dots circles, red and green dots, checkbox and sheet in dark colours; nothing black-on-dark
+- [ ] TalkBack → refresh reads "Check again" (and "Checking" while spinning); the verdict announced when it changes; each check read as one ("Up to date: block …", "Answers: not checked"); each list row read with its line, Use read "Use <address>"; the checkbox read as a checkbox with its state
+- [ ] Font size 200% → check results wrap at the right, list lines wrap, Use stays 48 dp
+- [ ] Onion address in the sheet → Answers "needs Tor, not in Fob yet", nothing looked up
