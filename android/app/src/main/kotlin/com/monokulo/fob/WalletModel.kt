@@ -28,7 +28,7 @@ import uniffi.fob.PaidBefore
 import uniffi.fob.RequestDetail
 import uniffi.fob.PaymentDetail
 import uniffi.fob.CurrencyList
-import uniffi.fob.PriceCheck
+import uniffi.fob.PriceChecks
 import uniffi.fob.PriceProvider
 import uniffi.fob.PriceRetry
 import uniffi.fob.PriceSettings
@@ -337,7 +337,7 @@ class WalletModel(private val app: Application) {
     }
 
     /** Every provider of the chosen currency asked for its price now; null with XMR only. */
-    suspend fun checkPrices(): List<PriceCheck>? = _wallet.value?.checkPrices()
+    suspend fun checkPrices(): PriceChecks? = _wallet.value?.checkPrices()
 
     /** The "Also show amounts in" list, with this phone's currency (its locale's) for Rust to place. */
     suspend fun currencyList(query: String): CurrencyList? {

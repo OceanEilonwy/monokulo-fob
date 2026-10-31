@@ -316,6 +316,14 @@ impl From<price::Provider> for PriceProvider {
     }
 }
 
+/// Price from's checks once they're in.
+#[derive(uniffi::Record)]
+pub struct PriceChecks {
+    pub lines: Vec<PriceCheck>,
+    /// What TalkBack says as they come in: "Kraken A$845.10, CoinGecko not answering".
+    pub summary: String,
+}
+
 /// One provider's line on Price from, checked as it opens.
 #[derive(uniffi::Record)]
 pub struct PriceCheck {
@@ -383,8 +391,11 @@ pub struct PriceSettings {
     pub currency_text: String,
     /// Under its title: "Uses today's XMR price", "Fob never looks up a price".
     pub currency_line: String,
-    /// For Price from's intro, "Prices in Australian dollars, …"; none with XMR only.
-    pub currency_plural: Option<String>,
+    /// Price from's intro: "Prices in " **"Australian dollars"** ", checked
+    /// as this page opens. …", or with XMR only one sentence, unbolded.
+    pub intro_before: String,
+    pub intro_bold: Option<String>,
+    pub intro_after: String,
     pub provider: PriceProvider,
     /// "Show first" the currency, not XMR.
     pub fiat_first: bool,
@@ -1224,10 +1235,13 @@ impl FobWallet {
             .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: r.line, available: r.available, chosen: r.chosen })
             .collect();
         let (source_text, failing) = self.inner.price_from_line(activity::Clock { now, utc_offset, hours_24 }).await;
+        let intro = price::price_from_intro(&s);
         PriceSettings {
             currency_text: price::shown_in_text(&s),
             currency_line: price::shown_in_line(&s).into(),
-            currency_plural: s.code().map(|c| price::currency(c).plural.to_owned()),
+            intro_before: intro.before,
+            intro_bold: intro.bold,
+            intro_after: intro.after,
             currency: s.currency.clone(),
             provider: s.provider.into(),
             fiat_first: s.fiat_first,
@@ -1276,26 +1290,26 @@ impl FobWallet {
 
     /// Price from, as it opens: every provider that prices the chosen
     /// currency asked at once (8 s each at most); none with XMR only.
-    pub async fn check_prices(&self) -> Option<Vec<PriceCheck>> {
+    pub async fn check_prices(&self) -> Option<PriceChecks> {
         let checks = self.inner.check_prices().await?;
-        Some(
-            checks
-                .into_iter()
-                .filter_map(|c| {
-                    Some(PriceCheck {
-                        provider: price::Provider::named(c.name)?.into(),
-                        name: c.name.into(),
-                        web: c.web,
-                        tor: c.tor,
-                        chosen: c.chosen,
-                        rate: c.rate,
-                        failure: c.failure,
-                        can_pick: c.can_pick,
-                        label: c.label,
-                    })
+        let summary = price::checks_summary(&checks);
+        let lines = checks
+            .into_iter()
+            .filter_map(|c| {
+                Some(PriceCheck {
+                    provider: price::Provider::named(c.name)?.into(),
+                    name: c.name.into(),
+                    web: c.web,
+                    tor: c.tor,
+                    chosen: c.chosen,
+                    rate: c.rate,
+                    failure: c.failure,
+                    can_pick: c.can_pick,
+                    label: c.label,
                 })
-                .collect(),
-        )
+            })
+            .collect();
+        Some(PriceChecks { lines, summary })
     }
 
     /// How price requests travel; one not available is refused.

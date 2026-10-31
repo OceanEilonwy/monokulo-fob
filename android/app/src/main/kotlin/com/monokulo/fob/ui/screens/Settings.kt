@@ -85,6 +85,7 @@ import uniffi.fob.PriceSettings
 import uniffi.fob.Activity
 import uniffi.fob.CurrencyList
 import uniffi.fob.PriceCheck
+import uniffi.fob.PriceChecks
 import uniffi.fob.Network
 import uniffi.fob.ZmqStatus
 import uniffi.fob.qrCode
@@ -425,7 +426,7 @@ private fun CurrencyLine(row: CurrencyRow, onClick: () -> Unit) {
 fun PriceFromScreen(model: WalletModel, nav: Nav) {
     val prices by model.prices.collectAsState()
     val scope = rememberCoroutineScope()
-    var checks by remember { mutableStateOf<List<PriceCheck>?>(null) }
+    var checks by remember { mutableStateOf<PriceChecks?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val p = prices
     val transport = p?.sources?.firstOrNull { it.chosen }?.transport
@@ -436,20 +437,21 @@ fun PriceFromScreen(model: WalletModel, nav: Nav) {
     Page {
         TopBar("Price from", onBack = { nav.back() })
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (p?.currency == null) {
-                Text("With XMR only, Fob never looks up a price.", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 8.dp))
-                return@Column
-            }
+            if (p == null) return@Column
+            // Rust's words, the currency in bold.
             Text(
                 buildAnnotatedString {
-                    append("Prices in ")
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Fob.ink)) { append(p.currencyPlural ?: p.currencyText) }
-                    append(", checked as this page opens. Tap a provider to pick it.")
+                    append(p.introBefore)
+                    p.introBold?.let { withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Fob.ink)) { append(it) } }
+                    append(p.introAfter)
                 },
                 color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(horizontal = 8.dp),
             )
+            if (p.currency == null) return@Column
+            // TalkBack hears Rust's summary once the checks are in, as it heard them being asked.
+            checks?.let { c -> Box(Modifier.size(1.dp).semantics { liveRegion = LiveRegionMode.Polite; contentDescription = c.summary }) }
             Card(Modifier.selectableGroup()) {
-                val lines = checks
+                val lines = checks?.lines
                 if (lines == null) {
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
