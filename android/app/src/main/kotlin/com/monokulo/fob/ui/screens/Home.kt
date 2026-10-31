@@ -127,7 +127,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 else -> "Catching up · ${((status?.progress ?: 0f) * 100).toInt()}%"
             }
             SyncChip(chip, synced, status?.progress ?: 0f, error != null && !synced) { nav.go(Screen.Node) }
-            IconButton(onClick = { nav.go(Screen.Settings) }, modifier = Modifier.semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear) }
+            IconButton(onClick = { nav.go(Screen.Settings) }, modifier = Modifier.semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear, width = 1.8f) }
         }
 
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -208,7 +208,7 @@ private fun NotReadyCard(n: NotReady, onSplit: (() -> Unit)?) {
     Card(Modifier.padding(top = 16.dp), padding = PaddingValues(0.dp)) {
         Column(
             Modifier.fillMaxWidth()
-                .clickable(role = Role.Button, onClickLabel = if (open) "Hide pieces" else "Show pieces") { open = !open }
+                .clickable(role = Role.Button, onClickLabel = if (open) "Hide coins" else "Show coins") { open = !open }
                 .semantics {
                     stateDescription = state
                     if (open) collapse { open = false; true } else expand { open = true; true }

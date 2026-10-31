@@ -31,7 +31,7 @@ const EVEN_PIECES: u32 = 12;
 const USUAL_PER_WEIGHT: u64 = 20_000;
 
 pub const TITLE: &str = "Split up";
-pub const INTRO: &str = "Each payment locks what's left of a piece for about 20 minutes. More, smaller pieces keep money ready to spend.";
+pub const INTRO: &str = "Each payment locks what's left of a coin for about 20 minutes. More, smaller coins keep money ready to spend.";
 const LEARNED: &str = "Picked from your last 30 days";
 const EVEN: &str = "Not enough payments yet to learn from, so here's an even mix. Change it to suit.";
 
@@ -158,7 +158,7 @@ fn sized(notes: &[Note], counts: &[u32]) -> Vec<u32> {
 pub fn check(notes: &[Note], counts: &[u32], budget: &Budget) -> Result<(), String> {
     let counts = sized(notes, counts);
     if pieces(&counts) > MAX_PIECES {
-        return Err(format!("{MAX_PIECES} pieces is the most one split can make"));
+        return Err(format!("{MAX_PIECES} coins is the most one split can make"));
     }
     if !budget.fits(pieces(&counts), value(notes, &counts)) {
         return Err("That's more than is ready to spend, with the fee".into());
@@ -169,13 +169,13 @@ pub fn check(notes: &[Note], counts: &[u32], budget: &Budget) -> Result<(), Stri
 /// One more of note `i`, or why not.
 pub fn add(notes: &[Note], counts: &[u32], i: usize, budget: &Budget) -> Result<Vec<u32>, String> {
     let mut counts = sized(notes, counts);
-    let note = notes.get(i).ok_or("There's no such piece")?;
+    let note = notes.get(i).ok_or("There's no such coin")?;
     if pieces(&counts) >= MAX_PIECES {
-        return Err(format!("{MAX_PIECES} pieces is the most one split can make"));
+        return Err(format!("{MAX_PIECES} coins is the most one split can make"));
     }
     counts[i] += 1;
     if !budget.fits(pieces(&counts), value(notes, &counts)) {
-        return Err(format!("Not enough ready to spend for another {} piece", note.spoken));
+        return Err(format!("Not enough ready to spend for another {} coin", note.spoken));
     }
     Ok(counts)
 }
@@ -274,9 +274,9 @@ pub struct Tile {
     pub count: u32,
     /// "× 4", or "tap to add".
     pub count_text: String,
-    /// "Add a $20 piece, 4 so far"
+    /// "Add a $20 coin, 4 so far"
     pub add_label: String,
-    /// "Remove a $20 piece"
+    /// "Remove a $20 coin"
     pub remove_label: String,
 }
 
@@ -301,14 +301,14 @@ pub struct View {
     pub pieces: u32,
     /// Pieces largest first, then what's left over.
     pub bar: Vec<Block>,
-    /// "11 pieces · $220"; `None` with no pieces.
+    /// "11 coins · $220"; `None` with no pieces.
     pub summary: Option<String>,
-    /// "+ $88.70 left as one piece"
+    /// "+ $88.70 left as one coin"
     pub left_over: Option<String>,
-    /// "Split into 11 pieces", or "Add a piece to split".
+    /// "Split into 11 coins", or "Add a coin to split".
     pub button: String,
     pub ready: bool,
-    /// "Network fee about $0.03 · pieces are set in XMR at today's price"
+    /// "Network fee about $0.03 · coins are set in XMR at today's price"
     pub footer: String,
 }
 
@@ -329,7 +329,7 @@ fn fee_text(fee: u64, money: Money) -> String {
 }
 
 fn plural(n: u32) -> String {
-    if n == 1 { "1 piece".into() } else { format!("{n} pieces") }
+    if n == 1 { "1 coin".into() } else { format!("{n} coins") }
 }
 
 /// The screen for `counts` of `notes`.
@@ -347,8 +347,8 @@ pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money) -> Vi
             label: note.label.clone(),
             count,
             count_text: if count > 0 { format!("× {count}") } else { "tap to add".into() },
-            add_label: format!("Add a {} piece, {} so far", note.spoken, if count == 0 { "none".to_owned() } else { count.to_string() }),
-            remove_label: format!("Remove a {} piece", note.spoken),
+            add_label: format!("Add a {} coin, {} so far", note.spoken, if count == 0 { "none".to_owned() } else { count.to_string() }),
+            remove_label: format!("Remove a {} coin", note.spoken),
         })
         .collect();
     // The pieces largest first, then what's left over.
@@ -371,7 +371,7 @@ pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money) -> Vi
     };
     let mut footer = format!("Network fee about {}", fee_text(fee, money));
     if money.is_some() {
-        footer.push_str(" · pieces are set in XMR at today's price");
+        footer.push_str(" · coins are set in XMR at today's price");
     }
     View {
         title: TITLE.into(),
@@ -380,8 +380,8 @@ pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money) -> Vi
         pieces: n,
         bar,
         summary: (n > 0).then(|| format!("{} · {summary_value}", plural(n))),
-        left_over: left.filter(|l| *l > 0 && n > 0).map(|l| format!("+ {} left as one piece", worth(l, money))),
-        button: if n == 0 { "Add a piece to split".into() } else { format!("Split into {}", plural(n)) },
+        left_over: left.filter(|l| *l > 0 && n > 0).map(|l| format!("+ {} left as one coin", worth(l, money))),
+        button: if n == 0 { "Add a coin to split".into() } else { format!("Split into {}", plural(n)) },
         ready: n > 0 && left.is_some() && n <= MAX_PIECES,
         footer,
         counts,
@@ -407,7 +407,7 @@ pub fn lines(notes: &[Note], counts: &[u32]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// "12 pieces", for Activity and the confirm screen.
+/// "12 coins", for Activity and the confirm screen.
 pub fn pieces_text(n: u32) -> String {
     plural(n)
 }
@@ -415,12 +415,12 @@ pub fn pieces_text(n: u32) -> String {
 /// Where a split pays, on the confirm screen.
 pub const TO: &str = "This wallet";
 
-/// The confirm screen's swipe: "Swipe to split into 12 pieces".
+/// The confirm screen's swipe: "Swipe to split into 12 coins".
 pub fn swipe_text(n: u32) -> String {
     format!("Swipe to split into {}", plural(n))
 }
 
-/// Under "Split up" once sent: "12 pieces on their way back to this wallet".
+/// Under "Split up" once sent: "12 coins on their way back to this wallet".
 pub fn done_text(n: u32) -> String {
     format!("{} on their way back to this wallet", plural(n))
 }
@@ -491,11 +491,11 @@ mod tests {
             counts = add(&notes, &counts, 0, &plenty).unwrap();
         }
         assert_eq!(counts, [15, 0, 0, 0, 0, 0]);
-        assert_eq!(add(&notes, &counts, 1, &plenty).unwrap_err(), "15 pieces is the most one split can make");
+        assert_eq!(add(&notes, &counts, 1, &plenty).unwrap_err(), "15 coins is the most one split can make");
         // 0.6 XMR: one 0.5 and then no 0.25 with the fee.
         let little = budget(600);
         let counts = add(&notes, &[], 4, &little).unwrap();
-        assert_eq!(add(&notes, &counts, 3, &little).unwrap_err(), "Not enough ready to spend for another 0.25 XMR piece");
+        assert_eq!(add(&notes, &counts, 3, &little).unwrap_err(), "Not enough ready to spend for another 0.25 XMR coin");
         assert!(add(&notes, &counts, 1, &little).is_ok());
         assert_eq!(remove(&notes, &counts, 4), [0; 6]);
         assert_eq!(remove(&notes, &[], 4), [0; 6]);
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(s.text, "Picked from your last 30 days: most payments were $5–$25.");
         // Shares 2 × $5, 1 × $10, 2 × $20, 2 × $50 of 7, filled to 15 in turn.
         assert_eq!(s.counts, [5, 2, 4, 4, 0, 0]);
-        assert_eq!(view(&notes, &s.counts, &budget(2_000), money).summary.as_deref(), Some("15 pieces · $325.00"));
+        assert_eq!(view(&notes, &s.counts, &budget(2_000), money).summary.as_deref(), Some("15 coins · $325.00"));
         // The same payments with $90: pieces in turn while they fit, $85.
         let small = suggest(&notes, &payments, &budget(300), money);
         assert_eq!(small.counts, [3, 0, 1, 1, 0, 0]);
@@ -568,17 +568,17 @@ mod tests {
         // $5 × 4, $10 × 4, $20 × 3: 11 pieces, $120. With 1 XMR ($300) ready.
         let b = budget(1_000);
         let v = view(&notes, &[4, 4, 3], &b, money);
-        assert_eq!(v.summary.as_deref(), Some("11 pieces · $120.00"));
+        assert_eq!(v.summary.as_deref(), Some("11 coins · $120.00"));
         let (fee, left) = b.plan(11, value(&notes, &[4, 4, 3]));
-        assert_eq!(v.left_over, Some(format!("+ {} left as one piece", price::value(left.unwrap(), PRICE, &usd))));
-        assert_eq!(v.button, "Split into 11 pieces");
+        assert_eq!(v.left_over, Some(format!("+ {} left as one coin", price::value(left.unwrap(), PRICE, &usd))));
+        assert_eq!(v.button, "Split into 11 coins");
         assert!(v.ready);
-        assert_eq!(v.footer, format!("Network fee about {} · pieces are set in XMR at today's price", price::value(fee, PRICE, &usd)));
+        assert_eq!(v.footer, format!("Network fee about {} · coins are set in XMR at today's price", price::value(fee, PRICE, &usd)));
         assert_eq!(v.counts, [4, 4, 3, 0, 0, 0]);
         let tile = |i: usize| (v.tiles[i].label.as_str(), v.tiles[i].count_text.as_str(), v.tiles[i].add_label.as_str());
-        assert_eq!(tile(2), ("$20", "× 3", "Add a $20 piece, 3 so far"));
-        assert_eq!(tile(5), ("$200", "tap to add", "Add a $200 piece, none so far"));
-        assert_eq!(v.tiles[0].remove_label, "Remove a $5 piece");
+        assert_eq!(tile(2), ("$20", "× 3", "Add a $20 coin, 3 so far"));
+        assert_eq!(tile(5), ("$200", "tap to add", "Add a $200 coin, none so far"));
+        assert_eq!(v.tiles[0].remove_label, "Remove a $5 coin");
         // The bar: 11 pieces largest first, then what's left, lighter.
         assert_eq!(v.bar.len(), 12);
         assert!(v.bar[11].left_over && !v.bar[0].left_over);
@@ -588,12 +588,12 @@ mod tests {
         assert!((v.bar[0].height - (20.0f32 / 180.0).sqrt()).abs() < 0.01, "{}", v.bar[0].height);
 
         let empty = view(&notes, &[], &b, money);
-        assert_eq!((empty.button.as_str(), empty.ready, empty.summary, empty.left_over, empty.bar.len()), ("Add a piece to split", false, None, None, 0));
+        assert_eq!((empty.button.as_str(), empty.ready, empty.summary, empty.left_over, empty.bar.len()), ("Add a coin to split", false, None, None, 0));
 
         let xmr = view(&super::notes(None), &[0, 0, 1], &b, None);
-        assert_eq!(xmr.summary.as_deref(), Some("1 piece · 0.1 XMR"));
+        assert_eq!(xmr.summary.as_deref(), Some("1 coin · 0.1 XMR"));
         assert!(xmr.footer.starts_with("Network fee about 0.000") && !xmr.footer.contains("today's price"), "{}", xmr.footer);
-        assert_eq!(xmr.button, "Split into 1 piece");
+        assert_eq!(xmr.button, "Split into 1 coin");
     }
 
     #[test]
@@ -601,9 +601,9 @@ mod tests {
         let notes = notes(None);
         assert_eq!(amounts(&notes, &[2, 0, 1]), [XMR / 10, XMR / 100, XMR / 100]);
         assert_eq!(lines(&notes, &[2, 0, 1]), [("0.1 XMR × 1".to_owned(), "0.1 XMR".to_owned()), ("0.01 XMR × 2".to_owned(), "0.02 XMR".to_owned())]);
-        assert_eq!(pieces_text(12), "12 pieces");
-        assert_eq!(swipe_text(1), "Swipe to split into 1 piece");
-        assert_eq!(done_text(12), "12 pieces on their way back to this wallet");
+        assert_eq!(pieces_text(12), "12 coins");
+        assert_eq!(swipe_text(1), "Swipe to split into 1 coin");
+        assert_eq!(done_text(12), "12 coins on their way back to this wallet");
         assert_eq!(fee_text(1, Some((&usd(), PRICE))), "less than $0.01");
     }
 }

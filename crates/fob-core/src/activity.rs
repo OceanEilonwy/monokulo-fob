@@ -164,7 +164,7 @@ pub struct Detail {
     /// "Address 3 · Coffee beans", "Main address", "86Ux … 7kQa"; `None`
     /// when not known (on its way in the pool, or a restored wallet's send).
     pub party: Option<String>,
-    /// "Pieces" (received) or "Pieces spent".
+    /// "Coins" (received) or "Coins spent".
     pub pieces_label: String,
     /// "2 · 0.3 + 0.2"
     pub pieces: Option<String>,
@@ -234,7 +234,7 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
         progress: waiting(activity).map(|_| (activity.confirmations as f32 / activity.needed.max(1) as f32).min(1.0)),
         party_label: if out { "To" } else { "From" }.into(),
         party,
-        pieces_label: if out { "Pieces spent" } else { "Pieces" }.into(),
+        pieces_label: if out { "Coins spent" } else { "Coins" }.into(),
         pieces: pieces(&activity.pieces),
         fee: activity.fee.filter(|_| out).map(|f| format!("{} XMR", amount::format(f))),
         tx_short: if tx.len() > 12 { format!("{} … {}", &tx[..6], &tx[tx.len() - 6..]) } else { tx.clone() },
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!((d.change.as_deref(), d.up), (Some("Up $3.63 (4.6%) since then"), true));
         assert_eq!((d.status.as_str(), d.progress), ("Not ready · 3 of 10", Some(0.3)));
         assert_eq!((d.party_label.as_str(), d.party.as_deref()), ("From", Some("Address 3 · Coffee beans")));
-        assert_eq!((d.pieces_label.as_str(), d.pieces.as_deref()), ("Pieces", Some("2 · 0.3 + 0.2")));
+        assert_eq!((d.pieces_label.as_str(), d.pieces.as_deref()), ("Coins", Some("2 · 0.3 + 0.2")));
         assert_eq!((d.fee, d.tx_short.as_str(), d.footer.as_deref()), (None, "a1b2c3 … 7e8f90", Some("Prices from Kraken.")));
 
         // Sent days ago, no price recorded, prices now unavailable.
@@ -515,7 +515,7 @@ mod tests {
         let confirming = Activity { confirmations: 3, ..split.clone() };
         let rows = by_day(vec![split.clone(), confirming], clock(0)).remove(0).rows;
         let shown: Vec<_> = rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.amount.as_str())).collect();
-        assert_eq!(shown, [("Split up", "12 pieces · 11:00", "−0.0001"), ("Split up", "Confirming · 3 of 10 · 12 pieces · 11:00", "−0.0001")]);
+        assert_eq!(shown, [("Split up", "12 coins · 11:00", "−0.0001"), ("Split up", "Confirming · 3 of 10 · 12 coins · 11:00", "−0.0001")]);
         assert_eq!(detail(&split, None, false, "Kraken", clock(0)).party.as_deref(), Some("This wallet"));
     }
 

@@ -63,7 +63,7 @@ pub struct NotReady {
     pub total: u64,
     /// "0.653 XMR not ready yet"
     pub title: String,
-    /// "3 pieces · all ready about 09:02", "1 piece · ready about 09:02".
+    /// "3 coins · all ready about 09:02", "1 coin · ready about 09:02".
     pub line: String,
     /// How far along, weighted by amount: Σ(amount × confirmations ÷ needed) ÷ total.
     pub progress: f32,
@@ -128,8 +128,8 @@ pub fn summarise(pieces: Vec<Piece>, last_block_time: u64, clock: Clock) -> Opti
     views.sort_by_key(|v| v.ready_at);
     let last = views.last().map(|v| v.ready.clone()).unwrap_or_default();
     let line = match views.len() {
-        1 => format!("1 piece · ready about {last}"),
-        n => format!("{n} pieces · all ready about {last}"),
+        1 => format!("1 coin · ready about {last}"),
+        n => format!("{n} coins · all ready about {last}"),
     };
     Some(NotReady {
         total,
@@ -175,7 +175,7 @@ mod tests {
         let n = summarise(pieces, last, clock()).unwrap();
         assert_eq!(n.title, "1.253 XMR not ready yet");
         // 07:48 + 30 s is 08:47:30; ten blocks on is 09:07:30.
-        assert_eq!(n.line, "3 pieces · all ready about 09:07");
+        assert_eq!(n.line, "3 coins · all ready about 09:07");
         // (0.653 × 0.3 + 0.1 × 0.9) ÷ 1.253 = 22.8%.
         assert_eq!(n.percent, "22%");
         assert!((n.progress - 0.2282).abs() < 0.001);
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn one_piece_says_so() {
         let n = summarise(vec![piece(XMR, 5, Source::Received, NOW)], NOW, clock()).unwrap();
-        assert_eq!(n.line, "1 piece · ready about 08:58");
+        assert_eq!(n.line, "1 coin · ready about 08:58");
         assert_eq!((n.percent.as_str(), n.pieces[0].progress), ("50%", 0.5));
     }
 

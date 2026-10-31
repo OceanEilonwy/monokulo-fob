@@ -1544,7 +1544,7 @@ impl Wallet {
         let (_, notes, budget) = self.split_setup().await;
         let amounts = split::amounts(&notes, counts);
         if amounts.is_empty() {
-            return Err(FobError::Split("Add a piece to split".into()));
+            return Err(FobError::Split("Add a coin to split".into()));
         }
         split::check(&notes, counts, &budget).map_err(FobError::Split)?;
         let address = self.split_address().await?;
@@ -2393,10 +2393,10 @@ mod tests {
         assert_eq!(suggestion.text, "Picked from your last 30 days: most payments were about 0.1 XMR.");
         assert_eq!(suggestion.counts, [0, 0, 15, 0, 0, 0]);
         let view = wallet.split_view(&suggestion.counts).await;
-        assert_eq!((view.summary.as_deref(), view.button.as_str()), (Some("15 pieces · 1.5 XMR"), "Split into 15 pieces"));
+        assert_eq!((view.summary.as_deref(), view.button.as_str()), (Some("15 coins · 1.5 XMR"), "Split into 15 coins"));
         assert!(view.footer.starts_with("Network fee about 0.0001"), "{}", view.footer);
         let refused = wallet.split_add(&suggestion.counts, 0).await.unwrap_err();
-        assert_eq!(refused.to_string(), "15 pieces is the most one split can make");
+        assert_eq!(refused.to_string(), "15 coins is the most one split can make");
         // Only the 2 XMR ready counts: a 1 XMR piece fits once, not twice.
         let one = wallet.split_add(&[], 5).await.unwrap();
         assert!(matches!(wallet.split_add(&one, 5).await, Err(FobError::Split(_))));
@@ -2436,7 +2436,7 @@ mod tests {
         assert_eq!(split.iter().map(|p| p.atomic).sum::<u64>(), 2 * XMR - 1);
         let row = activity::by_day(wallet.activity().await, clock).into_iter().flat_map(|d| d.rows).find(|r| r.activity.tx == "split").unwrap();
         assert_eq!((row.title.as_str(), row.amount.as_str()), ("Split up", "−0.000000000001"));
-        assert!(row.line.starts_with("Sending · 15 pieces · "), "{}", row.line);
+        assert!(row.line.starts_with("Sending · 15 coins · "), "{}", row.line);
     }
 
     #[tokio::test]

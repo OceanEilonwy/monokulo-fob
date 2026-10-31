@@ -187,7 +187,7 @@ private fun NoteTile(tile: SplitTile, modifier: Modifier, onAdd: () -> Unit, onR
 @Composable
 private fun PiecesBar(blocks: List<SplitBlock>) {
     Row(
-        Modifier.fillMaxWidth().height(44.dp).semantics { contentDescription = "${blocks.count { !it.leftOver }} pieces" },
+        Modifier.fillMaxWidth().height(44.dp).semantics { contentDescription = "${blocks.count { !it.leftOver }} coins" },
         horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom,
     ) {
         blocks.forEach { b ->
