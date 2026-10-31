@@ -1,9 +1,6 @@
 package com.monokulo.fob.ui.screens
 
 import android.content.ClipData
-import android.content.ClipDescription
-import android.os.Build
-import android.os.PersistableBundle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -43,7 +41,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
+import com.monokulo.fob.SecretClip
 import com.monokulo.fob.WalletModel
+import com.monokulo.fob.phoneLock
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
@@ -72,7 +72,8 @@ fun BackupKeysScreen(model: WalletModel, nav: Nav) {
     NoScreenshots()
     val wallet by model.wallet.collectAsState()
     var hub by remember { mutableStateOf<BackupHub?>(null) }
-    LaunchedEffect(wallet) { hub = wallet?.backupHub() }
+    val context = LocalContext.current
+    LaunchedEffect(wallet) { hub = wallet?.backupHub(phoneLock(context)) }
     Page {
         TopBar("Backup and keys", onBack = { nav.back() })
         val h = hub ?: return@Page
@@ -120,6 +121,7 @@ fun KeysScreen(model: WalletModel, nav: Nav) {
     var groups by remember { mutableStateOf<List<KeyGroup>>(emptyList()) }
     LaunchedEffect(wallet) { groups = wallet?.keysPage() ?: emptyList() }
     val clipboard = LocalClipboard.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // The key just copied, by title: its "Copied" shows for 2 s.
     var copied by remember { mutableStateOf<String?>(null) }
@@ -133,7 +135,12 @@ fun KeysScreen(model: WalletModel, nav: Nav) {
                     Card {
                         group.keys.forEach { key ->
                             KeyLine(key, copied = copied == key.title) {
-                                scope.launch { clipboard.setClipEntry(sensitiveClip(key.title, key.clip).toClipEntry()) }
+                                // A secret key comes off the clipboard after a minute or when Fob leaves the screen; a public one stays.
+                                if (key.badge == KeyBadge.PUBLIC) {
+                                    scope.launch { clipboard.setClipEntry(ClipData.newPlainText(key.title, key.clip).toClipEntry()) }
+                                } else {
+                                    SecretClip.copy(context, key.title, key.clip)
+                                }
                                 copied = key.title
                             }
                         }
@@ -143,16 +150,6 @@ fun KeysScreen(model: WalletModel, nav: Nav) {
         }
     }
 }
-
-/**
- * A clip the keyboard's and the system's clipboard previews don't show
- * (Android 13 and later); earlier versions ignore the mark.
- */
-private fun sensitiveClip(label: String, text: String): ClipData =
-    ClipData.newPlainText(label, text).apply {
-        val sensitive = if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"
-        description.extras = PersistableBundle().apply { putBoolean(sensitive, true) }
-    }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

@@ -806,15 +806,16 @@ impl Wallet {
 
     /// Backup and keys' words, and its line in Settings: the seed phrase's
     /// word count and whether it was written down (said only of a wallet
-    /// made here).
-    pub async fn backup_hub(&self) -> keys::Hub {
+    /// made here); `phone_lock`: the phone has a screen lock set, which
+    /// opening it asks for.
+    pub async fn backup_hub(&self, phone_lock: bool) -> keys::Hub {
         let state = self.inner.state.lock().await;
         let backed = match () {
             _ if state.restored => keys::Backed::Restored,
             _ if state.backup_pending => keys::Backed::Pending,
             _ => keys::Backed::Up,
         };
-        keys::hub(self.seed_words().map(|(_, words)| words.split_whitespace().count()), backed)
+        keys::hub(self.seed_words().map(|(_, words)| words.split_whitespace().count()), backed, phone_lock)
     }
 
     /// Keys' page: every key in full, the restore height with its date
@@ -4259,16 +4260,16 @@ mod tests {
     async fn backup_and_keys_says_whether_the_words_are_written_down_and_shows_the_restore_height() {
         let path = dir("hub");
         let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
-        assert_eq!(wallet.backup_hub().await.backup[0].line, "16 words that restore everything · not written down yet");
+        assert_eq!(wallet.backup_hub(true).await.backup[0].line, "16 words that restore everything · not written down yet");
         wallet.backup_done().await.unwrap();
-        let hub = Wallet::open(&path, [1; 32]).unwrap().backup_hub().await;
+        let hub = Wallet::open(&path, [1; 32]).unwrap().backup_hub(true).await;
         assert_eq!(hub.backup[0].line, "16 words that restore everything · backed up");
         assert_eq!(hub.settings_line, "Seed phrase, wallet code, keys");
         // Restored from 25 words: no word on whether they're written down.
         let classic = keys::Keys::from_spend_key(Network::Stagenet, &wallet.inner.keys.spend_key_hex().unwrap(), None).unwrap();
         let words = classic.seed_words().unwrap().1;
         let restored = Wallet::restore_words(&dir("hub-restored"), [1; 32], Network::Stagenet, &words, Some(2_200_000)).unwrap();
-        assert_eq!(restored.backup_hub().await.backup[0].line, "25 words that restore everything");
+        assert_eq!(restored.backup_hub(true).await.backup[0].line, "25 words that restore everything");
         let page = restored.keys_page().await;
         let height = &page[1].keys[1];
         assert_eq!(height.title, "Restore height");
@@ -4278,7 +4279,7 @@ mod tests {
         // A view-only wallet: Wallet code and Keys, and Keys without the
         // secret spend key.
         let watch = Wallet::restore_view_only(&dir("hub-watch"), [1; 32], Network::Stagenet, &wallet.primary_address(), &wallet.inner.keys.view_key_hex(), Some(0)).unwrap();
-        let hub = watch.backup_hub().await;
+        let hub = watch.backup_hub(true).await;
         assert_eq!(hub.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [keys::HubItem::WalletCode]);
         assert_eq!(hub.settings_line, "Wallet code, keys");
         let page = watch.keys_page().await;
