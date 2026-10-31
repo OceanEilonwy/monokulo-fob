@@ -39,7 +39,10 @@ impl Transport {
     }
 
     /// The transport alone, to keep a handle on it (see [`requests`](Self::requests)).
+    /// An onion node is refused here too, whatever path led to it (an
+    /// older wallet file, say): there's no Tor to reach it through.
     pub fn new(url: &str) -> Result<Transport, InterfaceError> {
+        crate::node::reachable(url).map_err(InterfaceError::InternalError)?;
         let client = reqwest::Client::builder()
             .read_timeout(QUIET)
             .connect_timeout(Duration::from_secs(15))

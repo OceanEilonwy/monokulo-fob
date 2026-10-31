@@ -29,9 +29,10 @@ pub struct NodeCheck {
     pub error: Option<String>,
 }
 
-/// What Fob says when asked to reach an onion service: it has no Tor yet,
-/// and resolving one through the phone's DNS would tell the network which.
-pub const NO_ONION: &str = "Fob can't reach .onion addresses yet";
+/// What Fob says when asked for a node on an onion service. It has no Tor
+/// yet, and looking the name up through the phone's DNS would tell whoever
+/// answers which onion service this wallet uses.
+pub const NO_ONION: &str = "Fob can't reach .onion nodes yet";
 
 /// Whether `host` is an onion service's (`….onion`, any case, with or
 /// without the root's dot).
@@ -39,6 +40,13 @@ pub fn is_onion(host: &str) -> bool {
     let host = host.trim_end_matches('.');
     let n = host.len();
     host.eq_ignore_ascii_case("onion") || n > 6 && host.is_char_boundary(n - 6) && host[n - 6..].eq_ignore_ascii_case(".onion")
+}
+
+/// Refuses a node Fob can't reach without leaking it: one on an onion
+/// service. Checked before anything connects (or looks a name up).
+pub fn reachable(url: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(&normalize(url)).map_err(|_| format!("{url} isn't an address Fob can read"))?;
+    if is_onion(url.host_str().unwrap_or("")) { Err(NO_ONION.into()) } else { Ok(()) }
 }
 
 /// A node address as people type it: `host:port` gets `http://`, no trailing slash.
@@ -66,6 +74,7 @@ async fn info(transport: &Transport) -> Result<(String, u64, bool, Duration), St
 
 /// Whether `url` is a node on `network`, without measuring its speed.
 pub async fn on_network(network: Network, url: &str) -> Result<(), String> {
+    reachable(url)?;
     let transport = Transport::new(&normalize(url)).map_err(|e| format!("{e:?}"))?;
     let (nettype, ..) = info(&transport).await?;
     if nettype != network.name() {
@@ -77,6 +86,9 @@ pub async fn on_network(network: Network, url: &str) -> Result<(), String> {
 /// Checks `url` for a wallet on `network`, and measures how fast it is.
 pub async fn check(network: Network, url: &str) -> NodeCheck {
     let url = normalize(url);
+    if let Err(e) = reachable(&url) {
+        return failed(url, e);
+    }
     let transport = match Transport::new(&url) {
         Ok(t) => t,
         Err(e) => return failed(url, format!("{e:?}")),
@@ -128,6 +140,32 @@ pub async fn check_all(network: Network, urls: &[String]) -> Vec<NodeCheck> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onion_hosts_are_known_by_name() {
+        let onion = "http://xmrnodexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion:18081";
+        for host in ["abc.onion", "ABC.ONION", "abc.onion.", "a.b.onion", "onion"] {
+            assert!(is_onion(host), "{host}");
+        }
+        for host in ["onion.example", "example.com", "notonion", "1.2.3.4", "", "é.onio"] {
+            assert!(!is_onion(host), "{host}");
+        }
+        assert_eq!(reachable(onion), Err(NO_ONION.into()));
+        assert_eq!(reachable("xmrnode.onion:18081"), Err(NO_ONION.into()), "without a scheme too");
+        assert_eq!(reachable("https://user:pw@Node.Onion./"), Err(NO_ONION.into()));
+        assert_eq!(reachable("node.example:18081"), Ok(()));
+    }
+
+    /// Refused before anything connects or looks the name up: a resolver
+    /// would hear which onion service the wallet uses.
+    #[tokio::test]
+    async fn an_onion_node_is_refused_before_any_lookup() {
+        let checked = check(Network::Stagenet, "xmrnode.onion:38081").await;
+        assert_eq!((checked.reachable, checked.error.as_deref()), (false, Some(NO_ONION)));
+        assert_eq!(on_network(Network::Stagenet, "http://xmrnode.onion:38081").await, Err(NO_ONION.into()));
+        let err = Transport::new("http://xmrnode.onion:38081").err().expect("refused");
+        assert!(format!("{err:?}").contains(NO_ONION), "{err:?}");
+    }
 
     #[test]
     fn addresses_are_written_one_way() {
