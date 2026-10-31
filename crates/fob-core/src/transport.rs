@@ -82,11 +82,80 @@ type Seen = Arc<std::sync::Mutex<Option<Result<(), CertProblem>>>>;
 /// certificate's key, but nothing says whose key that is. Only that one
 /// node's connections are made with it; price providers have their own
 /// clients with the usual check.
+///
+/// With any certificate accepted, the handshake's signature is checked
+/// against the certificate's key read on its own, not through webpki:
+/// monerod's own self-signed certificates are version 1, which webpki
+/// won't read at all, so the usual signature check would refuse them.
 #[derive(Debug)]
 struct Verifier {
     usual: Arc<rustls::client::WebPkiServerVerifier>,
+    algorithms: rustls::crypto::WebPkiSupportedAlgorithms,
     accept_any: bool,
     seen: Seen,
+}
+
+impl Verifier {
+    /// The handshake's signature over `message` by `cert`'s key, read
+    /// without judging the certificate (any version). TLS 1.2 says less of
+    /// the algorithm, so each that fits the scheme and the key is tried.
+    fn signed_by_key(&self, message: &[u8], cert: &[u8], dss: &rustls::DigitallySignedStruct, tls13: bool) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let (spki, algorithm, key) = public_key(cert).ok_or(rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        if tls13 {
+            return rustls::crypto::verify_tls13_signature_with_raw_key(message, &spki.into(), dss, &self.algorithms);
+        }
+        let unadvertised = rustls::Error::PeerMisbehaved(rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme);
+        let candidates = self.algorithms.mapping.iter().find(|(scheme, _)| *scheme == dss.scheme).ok_or(unadvertised)?.1;
+        candidates
+            .iter()
+            .filter(|a| a.public_key_alg_id().as_ref() == algorithm)
+            .find(|a| a.verify_signature(key, message, dss.signature()).is_ok())
+            .map(|_| rustls::client::danger::HandshakeSignatureValid::assertion())
+            .ok_or(rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature))
+    }
+}
+
+/// A certificate's public key, read without judging the certificate: its
+/// SubjectPublicKeyInfo whole, the algorithm's DER (inside its SEQUENCE,
+/// as webpki names algorithms) and the key's bytes.
+pub(crate) fn public_key(cert: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
+    let (cert, _) = der(cert, 0x30)?;
+    let (mut tbs, _) = der(cert, 0x30)?;
+    // [0] version: only in version 2 and 3 certificates.
+    if tbs.first() == Some(&0xa0) {
+        tbs = der(tbs, 0xa0)?.1;
+    }
+    // Serial number, signature algorithm, issuer, validity, subject.
+    for tag in [0x02, 0x30, 0x30, 0x30, 0x30] {
+        tbs = der(tbs, tag)?.1;
+    }
+    let (inside, _) = der(tbs, 0x30)?;
+    let spki = &tbs[..tbs.len() - der(tbs, 0x30)?.1.len()];
+    let (algorithm, rest) = der(inside, 0x30)?;
+    let (bits, _) = der(rest, 0x03)?;
+    // A key is whole bytes: no unused bits.
+    Some((spki, algorithm, bits.strip_prefix(&[0])?))
+}
+
+/// The DER element tagged `tag` at the start of `bytes`: its contents and
+/// what follows it.
+fn der(bytes: &[u8], tag: u8) -> Option<(&[u8], &[u8])> {
+    let (&found, bytes) = bytes.split_first()?;
+    let (&first, bytes) = bytes.split_first()?;
+    if found != tag {
+        return None;
+    }
+    let (len, bytes) = match first {
+        short @ 0..0x80 => (short as usize, bytes),
+        long => {
+            let n = (long & 0x7f) as usize;
+            if !(1..=4).contains(&n) || bytes.len() < n {
+                return None;
+            }
+            (bytes[..n].iter().fold(0usize, |len, &b| len << 8 | b as usize), &bytes[n..])
+        }
+    };
+    (bytes.len() >= len).then(|| bytes.split_at(len))
 }
 
 impl rustls::client::danger::ServerCertVerifier for Verifier {
@@ -112,6 +181,9 @@ impl rustls::client::danger::ServerCertVerifier for Verifier {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        if self.accept_any {
+            return self.signed_by_key(message, cert, dss, false);
+        }
         self.usual.verify_tls12_signature(message, cert, dss)
     }
 
@@ -121,6 +193,9 @@ impl rustls::client::danger::ServerCertVerifier for Verifier {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        if self.accept_any {
+            return self.signed_by_key(message, cert, dss, true);
+        }
         self.usual.verify_tls13_signature(message, cert, dss)
     }
 
@@ -134,11 +209,12 @@ fn tls(accept_any: bool, seen: Seen) -> Result<rustls::ClientConfig, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let roots = Arc::new(rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() });
     let usual = rustls::client::WebPkiServerVerifier::builder_with_provider(roots, provider.clone()).build().map_err(|e| e.to_string())?;
+    let provider_algorithms = provider.signature_verification_algorithms;
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(Verifier { usual, accept_any, seen }))
+        .with_custom_certificate_verifier(Arc::new(Verifier { usual, algorithms: provider_algorithms, accept_any, seen }))
         .with_no_client_auth();
     // As reqwest offers by default.
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
