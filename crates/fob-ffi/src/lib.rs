@@ -712,7 +712,7 @@ pub struct SyncDetails {
     pub progress: Option<f32>,
     /// "Time left" · "about 4 min", "Blocks" · "3,360 of 9,880 · 28/s"…
     pub rows: Vec<SyncRow>,
-    /// "You can still receive and send while Fob catches up."
+    /// "Fob keeps trying on its own." while it's failing.
     pub note: Option<String>,
     /// What went wrong, as the node or network said it.
     pub error: Option<String>,
@@ -863,7 +863,7 @@ pub struct SplitView {
     /// "Split into 11 pieces", or "Add a piece to split".
     pub button: String,
     pub ready: bool,
-    /// "Network fee about $0.03 · pieces are set in XMR at today's price"
+    /// "Network fee about $0.03", with " · 23 h old price" once the price is old
     pub footer: String,
 }
 
@@ -1625,12 +1625,6 @@ impl FobWallet {
     pub async fn profile_row(&self) -> ProfileRow {
         let row = self.inner.profile_row().await;
         ProfileRow { title: row.title, name: row.name, suffix: row.suffix }
-    }
-
-    /// Under Receive's note while requests carry your name: "The code names
-    /// you as “Henry” · change in Settings"; none while they don't.
-    pub async fn receive_name_line(&self) -> Option<String> {
-        self.inner.receive_name_line().await
     }
 
     /// Saves your name and photo (a WebP from `contact_photo_kept`); throws
@@ -2478,6 +2472,8 @@ impl From<fob_core::node::Mark> for CheckMark {
 pub struct NodeCheckRow {
     pub title: String,
     pub result: String,
+    /// A line of its own under the result: "1.8 MB/s" under "31 blocks/s".
+    pub second: Option<String>,
     pub mark: CheckMark,
     /// For TalkBack: "Up to date: 2 days behind".
     pub label: String,
@@ -2519,7 +2515,7 @@ impl From<fob_core::node::Report> for NodeReport {
                 Usable::No => NodeUse::No,
             },
             checking: r.checking(),
-            rows: r.rows.iter().map(|row| NodeCheckRow { title: row.title().into(), result: row.result.clone(), mark: row.mark.into(), label: row.label() }).collect(),
+            rows: r.rows.iter().map(|row| NodeCheckRow { title: row.title().into(), result: row.result.clone(), second: row.second.clone(), mark: row.mark.into(), label: row.label() }).collect(),
             address: r.address,
             node: NodeSetting { url: r.url, self_signed: r.self_signed },
         }

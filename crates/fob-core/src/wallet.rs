@@ -1665,7 +1665,7 @@ impl Wallet {
 
     /// The card Home's sync chip opens, for the status now.
     pub fn sync_details(&self, clock: Clock) -> catch_up::Details {
-        catch_up::details(&self.status(), self.can_spend(), clock)
+        catch_up::details(&self.status(), clock)
     }
 
     /// Keeps the wallet up to date in the background until [`stop_sync`]:
@@ -1927,19 +1927,14 @@ impl Wallet {
     }
 
     /// Split up's screen for `counts` of each note, at `clock` (the
-    /// phone's), which says how old the price the coins are set at is.
+    /// phone's), which says how old the price is.
     pub async fn split_view(&self, counts: &[u32], clock: Clock) -> split::View {
         let (money, notes, budget) = self.split_setup().await;
-        let priced = {
+        let age = {
             let state = self.inner.state.lock().await;
-            let shown = state.price_cache.shown(&state.prices, clock.now);
-            match shown.and_then(|c| Some((c.at, price::alert::old(c.at, clock.now)?))) {
-                // "the 09:00 price · 23 h old", "yesterday's 09:00 price · 23 h old".
-                Some((at, old)) => format!("{} · {old}", price::alert::price_from(at, clock, true)),
-                None => split::TODAY.to_owned(),
-            }
+            state.price_cache.shown(&state.prices, clock.now).and_then(|c| price::alert::old(c.at, clock.now))
         };
-        split::view(&notes, counts, &budget, money.as_ref().map(|(c, p)| (c, *p)), &priced)
+        split::view(&notes, counts, &budget, money.as_ref().map(|(c, p)| (c, *p)), age.as_deref())
     }
 
     /// One more piece of note `index`, or why not (the 15-piece cap, or not
@@ -2402,12 +2397,6 @@ impl Wallet {
     /// only "Add a shareable Fob contact" before there's a name.
     pub async fn profile_row(&self) -> profile::SettingsRow {
         profile::settings_row(self.inner.state.lock().await.profile.profile())
-    }
-
-    /// Under Receive's note while requests carry your name: "The code names
-    /// you as “Henry” · change in Settings".
-    pub async fn receive_name_line(&self) -> Option<String> {
-        profile::receive_line(&self.inner.state.lock().await.profile)
     }
 
     /// Changes the profile and saves it, or leaves it as it was when
@@ -3549,7 +3538,8 @@ mod tests {
         assert_eq!(wallet.coins(at(t)).await.ready_sum, "1 · $166.10");
         assert_eq!(wallet.not_ready(at(t)).await.unwrap().price_age, None);
         assert_eq!(wallet.payment("in", at(t)).await.unwrap().rate_now.as_deref(), Some("1 XMR = $166.10"));
-        assert!(wallet.split_view(&[1], at(t)).await.footer.ends_with("coins are set in XMR at today's price"));
+        let fresh = wallet.split_view(&[1], at(t)).await.footer;
+        assert!(fresh.starts_with("Network fee about ") && !fresh.contains('·'), "{fresh}");
         // A second short of a day: still shown, and how old it is said.
         let late = t + price::SHOWN - 1;
         assert_eq!(wallet.price_age(late).await.as_deref(), Some("23 h old"));
@@ -3559,9 +3549,7 @@ mod tests {
         assert!(n.all_ready_line.ends_with(" · price 23 h old"), "{}", n.all_ready_line);
         assert_eq!(wallet.payment("in", at(late)).await.unwrap().rate_now.as_deref(), Some("1 XMR = $166.10 · 23 h old"));
         let footer = wallet.split_view(&[1], at(late)).await.footer;
-        let from = price::alert::price_from(t, at(late), true);
-        assert!(footer.ends_with(&format!("coins are set in XMR at {from} · 23 h old")), "{footer}");
-        assert!(!footer.contains("today's"));
+        assert!(footer.starts_with("Network fee about ") && footer.ends_with(" · 23 h old price"), "{footer}");
         // A day: no price, so no age.
         assert_eq!(wallet.price_age(t + price::SHOWN).await, None);
     }
@@ -4630,11 +4618,9 @@ mod tests {
         let (bare, code) = wallet.make_request(None, None, false, None).await.unwrap();
         assert!(!code.uri.contains("recipient_name"));
         assert!(wallet.set_name_in_requests(true).await.is_err(), "no profile yet");
-        assert_eq!(wallet.receive_name_line().await, None);
         wallet.set_profile("Henry", None).await.unwrap();
         let (_, code) = wallet.make_request(None, Some("0.5"), false, None).await.unwrap();
         assert_eq!(code.uri, format!("monero:{}?tx_amount=0.5&recipient_name=Henry", wallet.inner.keys.address(2)));
-        assert_eq!(wallet.receive_name_line().await.as_deref(), Some("The code names you as “Henry” · change in Settings"));
         // A request's code again is the one that went out: no name added since, none taken away after.
         assert!(!wallet.request_code(bare.id).await.unwrap().uri.contains("recipient_name"));
         let (named, _) = wallet.make_request(None, None, false, Some("Named")).await.unwrap();
@@ -4643,7 +4629,6 @@ mod tests {
         wallet.set_name_in_requests(false).await.unwrap();
         assert!(wallet.request_code(named.id).await.unwrap().uri.contains("recipient_name=Henry"));
         assert!(!wallet.make_request(None, None, false, None).await.unwrap().1.uri.contains("recipient_name"));
-        assert_eq!(wallet.receive_name_line().await, None);
         assert!(!wallet.profile().await.unwrap().name_in_requests);
     }
 

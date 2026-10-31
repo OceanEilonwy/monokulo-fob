@@ -313,7 +313,7 @@ pub struct Details {
     /// Time left "about 4 min", Payments up to "29 Oct, 14:20", Blocks
     /// "3,360 of 9,880 · 28/s", Link speed "1.8 MB/s".
     pub rows: Vec<Row>,
-    /// "You can still receive and send while Fob catches up."
+    /// "Fob keeps trying on its own." while it's failing.
     pub note: Option<String>,
     /// What went wrong, as the node or the network said it.
     pub error: Option<String>,
@@ -332,7 +332,7 @@ fn date_time(time: u64, clock: Clock) -> String {
 }
 
 /// The card's words for `status`.
-pub fn details(status: &SyncStatus, can_spend: bool, clock: Clock) -> Details {
+pub fn details(status: &SyncStatus, clock: Clock) -> Details {
     let speeds = status.blocks_per_second.zip(status.link_mb_per_second);
     let catching_up = !status.synced && status.tip > 0;
     let row = |label: &str, value: String, spoken: String| Row { label: label.to_owned(), spoken: format!("{label}: {spoken}"), value };
@@ -371,12 +371,7 @@ pub fn details(status: &SyncStatus, can_spend: bool, clock: Clock) -> Details {
         _ if status.synced => "Synced",
         _ => "Catching up",
     };
-    let note = match () {
-        _ if status.error.is_some() => Some("Fob keeps trying on its own.".to_owned()),
-        _ if status.synced => None,
-        _ if can_spend => Some("You can still receive and send while Fob catches up.".to_owned()),
-        _ => Some("You can still receive while Fob catches up.".to_owned()),
-    };
+    let note = status.error.is_some().then(|| "Fob keeps trying on its own.".to_owned());
     Details {
         title: title.to_owned(),
         percent: (!status.synced).then(|| percent(status)),
@@ -658,7 +653,7 @@ mod tests {
     #[test]
     fn the_card_while_catching_up_is_the_boards() {
         let s = SyncStatus { blocks_per_second: Some(28.0), link_mb_per_second: Some(1.8), ..catching_up() };
-        let d = details(&s, true, clock());
+        let d = details(&s, clock());
         assert_eq!((d.title.as_str(), d.percent.as_deref()), ("Catching up", Some("34%")));
         let rows: Vec<(&str, &str)> = d.rows.iter().map(|r| (r.label.as_str(), r.value.as_str())).collect();
         assert_eq!(
@@ -672,17 +667,17 @@ mod tests {
             ["Time left: about 4 minutes", "Payments up to: 24 Oct, 07:33", "Blocks: 3,360 of 9,880, 28 a second", "Link speed: 1.8 megabytes a second"]
         );
         let slow = SyncStatus { blocks_per_second: Some(0.84), link_mb_per_second: Some(0.64), ..catching_up() };
-        let spoken: Vec<String> = details(&slow, true, clock()).rows.into_iter().map(|r| r.spoken).collect();
+        let spoken: Vec<String> = details(&slow, clock()).rows.into_iter().map(|r| r.spoken).collect();
         assert_eq!(spoken[2..], ["Blocks: 3,360 of 9,880, 0.8 a second", "Link speed: 640 kilobytes a second"]);
-        assert_eq!(d.note.as_deref(), Some("You can still receive and send while Fob catches up."));
-        assert_eq!(details(&s, false, clock()).note.as_deref(), Some("You can still receive while Fob catches up."));
+        // Catching up isn't news: no note under the rows.
+        assert_eq!(d.note, None);
     }
 
     #[test]
     fn the_card_before_the_speed_settles_says_so() {
         let mut s = catching_up();
         s.seconds_left = None;
-        let d = details(&s, true, clock());
+        let d = details(&s, clock());
         let rows: Vec<&str> = d.rows.iter().map(|r| r.value.as_str()).collect();
         assert_eq!(rows, ["Working it out", "24 Oct, 07:33", "3,360 of 9,880", "Measuring"]);
         assert_eq!(d.rows[0].spoken, "Time left: working it out");
@@ -692,14 +687,14 @@ mod tests {
     fn the_card_when_synced_or_offline() {
         let mut s = catching_up();
         (s.synced, s.scanned, s.progress, s.seconds_left, s.up_to) = (true, s.tip, 1.0, None, NOW - 90);
-        let d = details(&s, true, clock());
+        let d = details(&s, clock());
         assert_eq!((d.title.as_str(), d.percent, d.progress, d.note), ("Synced", None, None, None));
         let rows: Vec<(&str, &str, &str)> = d.rows.iter().map(|r| (r.label.as_str(), r.value.as_str(), r.spoken.as_str())).collect();
         assert_eq!(rows, [("Payments up to", "Today, 07:31", "Payments up to: Today, 07:31"), ("Latest block", "1,009,879", "Latest block: 1,009,879")]);
 
         let mut s = catching_up();
         s.error = Some("node: connection refused".into());
-        let d = details(&s, true, clock());
+        let d = details(&s, clock());
         assert_eq!(d.title, "Can't reach node");
         assert_eq!(d.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["Payments up to", "Blocks"]);
         assert_eq!((d.note.as_deref(), d.error.as_deref()), (Some("Fob keeps trying on its own."), Some("node: connection refused")));
@@ -707,7 +702,7 @@ mod tests {
         // The phone's own failure doesn't blame the node.
         s.error = Some("Couldn't read or save the wallet: disk full".into());
         s.error_local = true;
-        let d = details(&s, true, clock());
+        let d = details(&s, clock());
         assert_eq!((d.title.as_str(), d.note.as_deref()), ("Can't save the wallet", Some("Fob keeps trying on its own.")));
         let chip = s.chip();
         assert_eq!((chip.look, chip.text.as_str(), chip.label.as_str()), (Look::Offline, "Can't save", "Can't save the wallet"));

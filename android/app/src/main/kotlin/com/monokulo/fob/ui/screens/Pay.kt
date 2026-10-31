@@ -150,13 +150,10 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     // A request on its way: a second tap waits for it, not another (Rust gives the same one again anyway).
     var making by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    // "The code names you as “Henry” · change in Settings", while requests carry the profile's name.
-    var nameLine by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
         address = w.receiveAddress()
         index = w.receiveIndex()
-        nameLine = w.receiveNameLine()
     }
     LaunchedEffect(wallet, forId) {
         val w = wallet ?: return@LaunchedEffect
@@ -205,7 +202,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         onDispose { if (shown > 0u && latestNote.isNotBlank()) model.rememberReceiveNote(shown, latestNote) }
     }
     val shownAddress = request?.address ?: address
-    val shownIndex = request?.index ?: index
 
     /** The request for what's typed, for [contact] (the one already made, if it's the same), then [then] with it. */
     fun withRequest(contact: ULong?, then: (MadeRequest) -> Unit) {
@@ -268,18 +264,9 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         contentAlignment = Alignment.Center,
                     ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
                 }
-                shownAddress?.let {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AddressPattern(it, 36.dp)
-                        Text("The payer's Fob shows this pattern too", color = Fob.muted, fontSize = 13.sp)
-                    }
-                }
+                shownAddress?.let { AddressPattern(it, 36.dp) }
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (request != null) "Address $shownIndex · this request's own" else "Address $shownIndex · a new one each time",
-                            color = Fob.muted, fontSize = 13.sp, modifier = Modifier.weight(1f),
-                        )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         TextButton("New address", {
                             scope.launch {
                                 val w = wallet ?: return@launch
@@ -305,17 +292,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                     },
                 )
                 Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
-                // While requests carry your profile's name: tapping it opens Your profile, where the switch is.
-                nameLine?.let {
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
-                            .clickable(role = Role.Button, onClickLabel = "Change in Settings") { nav.go(Screen.Profile) }.padding(horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        StrokeIcon(Icons.person, tint = Fob.muted, size = 16.dp)
-                        Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    }
-                }
             }
         }
         if (choosing) {
@@ -358,10 +334,7 @@ private fun ForChip(contact: Contact, onClick: () -> Unit) {
 @Composable
 private fun ColumnScope.WhoFor(people: List<ContactRow>, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
     SheetHandle()
-    Column(Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Who is this for?", style = display(22), modifier = Modifier.semantics { heading() })
-        Text("Pick a contact: this request and its address go on their card, and what arrives shows as from them.", color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp)
-    }
+    Text("Who is this for?", style = display(22), modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp).semantics { heading() })
     Card(Modifier.weight(1f, fill = false)) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             people.forEach { p ->
@@ -435,7 +408,6 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Un
             }
             QrImage(qr, 320.dp, quiet = 4)
             AddressPattern(address, 48.dp)
-            Text("Screen brightness turned up while this is open", color = Fob.qrMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
     }
 }

@@ -152,10 +152,6 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
                     }
                 }
             }
-            Text(
-                "Contacts live in this wallet's file, on this phone only. Monero doesn't say who paid you, so contacts are for sending.",
-                color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(horizontal = 8.dp),
-            )
         }
     }
 }
@@ -459,11 +455,7 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
             }
         }
         if (choosing) {
-            PhotoSheet(
-                "Contact photo", photo != null, chooser,
-                "Cropped to a circle and kept small, inside this wallet's file on this phone. Fob never sends it anywhere.",
-                onRemove = { photo = null }, onDismiss = { choosing = false },
-            )
+            PhotoSheet("Contact photo", photo != null, chooser, onRemove = { photo = null }, onDismiss = { choosing = false })
         }
         if (confirming && id != null) {
             BottomSheet(texts.deleteTitle, onDismiss = { confirming = false }, background = Fob.card) {

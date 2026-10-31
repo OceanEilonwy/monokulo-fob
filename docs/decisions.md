@@ -1980,3 +1980,90 @@ Calls made while building the first version, with why. Newest last.
     of the name (about 13 sp × 3) fits beside it; otherwise the name goes
     over "· share as a code", the name still cut to one line and the rest
     wrapping, never clipped.
+
+## Round 8: texts
+
+262. **The texts the owner named are gone.** Contacts' list footer
+    ("Contacts live in this wallet's file, on this phone only. Monero
+    doesn't say who paid you, so contacts are for sending.", under Paid,
+    not saved); Receive's "The code names you as “Henry” · change in
+    Settings" row under the note, with `profile::receive_line`,
+    `Wallet::receive_name_line` and its FFI method (nothing else used
+    them; Your profile's "Name in payment requests" switch still says
+    whether the name goes out); Receive's "The payer's Fob shows this
+    pattern too" beside the address pattern and "Address N · a new one
+    each time" / "Address N · this request's own" over the address, so New
+    address now sits alone at the row's end. The pattern itself stays
+    where it was until step 3 moves it into the code.
+263. **Split up's footer is the network fee, and the price's age only
+    when it's old**: "Network fee about $0.03", or "Network fee about
+    $0.03 · 23 h old price" once the price has missed a refresh; nothing
+    about coins being set in XMR, and no age in XMR. `split::TODAY` went;
+    `split::view` takes the age (`price::alert::old`) rather than the
+    "the 09:00 price · 23 h old" words.
+264. **Node's "Sends blocks to Fob" puts the link speed on its own line**
+    under the blocks per second (decision 1 of the plan): a check's row
+    has a `second` line, set only for this check ("31 blocks/s" over
+    "1.8 MB/s"), and the Node screen draws it under the result, right
+    aligned, in the result's colour. TalkBack hears "Sends blocks to Fob:
+    31 blocks/s, 1.8 MB/s". The sync details card already had Blocks and
+    Link speed as rows of their own, so it's unchanged.
+265. **The sweep removed what explains Fob, reassures, or says what the
+    other side sees where the labels already say enough** (step 1):
+    - Receive's Who is this for? sheet: "Pick a contact: this request and
+      its address go on their card, and what arrives shows as from them."
+    - The full-screen payment code: "Screen brightness turned up while
+      this is open".
+    - A payment's receipt (Settings › payment detail): "Open Receipt
+      Format, from the shop's payment code. Kept on this phone with the
+      payment."
+    - Settings: Contacts' line "Who you pay, kept on this phone" became
+      "Who you pay"; Use mainnet's "Real money. Each network has its own
+      wallet." became "Real money"; Receipts' "Receipts from payment codes
+      that carry one, on this phone only." lost ", on this phone only".
+    - Instant updates: "Your node tells Fob about new blocks and payments
+      the moment it sees them. Fob still checks every two minutes in case
+      one is missed. Only your node's host is ever contacted."
+    - Send: the note's placeholder "What it's for, kept on this phone"
+      became "What it's for"; Paste an address's "Read from the clipboard
+      only when you tap".
+    - The photo sheet (Contact photo and Your photo): "Cropped to a circle
+      and kept small, inside this wallet's file on this phone. Fob never
+      sends it anywhere." and "Cropped to a circle and kept small, in this
+      wallet's file. It leaves the phone only in your profile's code, when
+      you share it." (`PhotoSheet` lost its footnote.)
+    - Edit your profile: the intro's "They go in your payment codes,
+      nowhere else." (the first sentence stays) and the name's help
+      "Anything you like; it doesn't have to be your real name. Change it
+      any time in Settings."
+    - Your profile: Name in payment requests' line "Requests carry your
+      name; only this profile code carries the photo", and "each its own
+      address" beside Your shares.
+    - Share my profile: "A new address for this share, never used again."
+    - Back up your wallet: "A 16-word Polyseed: it also remembers when the
+      wallet was made, so restoring is quick."
+    - View-only wallet: "Fob will see payments to this wallet but can't
+      spend them." (the way's own line, "Sees payments, can't spend",
+      says it).
+    - Wallet code found: "Fob keeps the keys encrypted on this phone,
+      behind the Android Keystore."
+    - Home's sync details while catching up: "You can still receive and
+      send while Fob catches up." / "You can still receive while Fob
+      catches up." (the failing note "Fob keeps trying on its own." stays;
+      `catch_up::details` no longer needs `can_spend`).
+    - Backup and keys › Keys: Main address's "Your first address; Fob
+      gives out new ones each time."
+266. **Kept for the owner to judge** (warnings, errors, empty states and
+    intros a screen needs stay; these were close calls): the welcome
+    screen's pitch and three points (its job is to explain), Restore's
+    "Scanning its code is quickest.", Receive's note placeholder "What
+    it's for, shown to the payer" (the note does go out), Coins' intro,
+    Price from's intro, the price transport lines ("The provider sees this
+    phone's IP address"), Backup and keys' "Fob hides them from
+    screenshots …" and "The seed phrase is all you need …", the key lines
+    (restore height, secret spend and view keys), Your shares' empty
+    state, a share's Activity line "A new address for this share · 09:15",
+    Home's "This wallet only watches …", the network switch dialogs'
+    "… stays here" sentences, and Wallet code's "Scan it in Fob, the
+    Monero GUI or Cake Wallet.". Show first's "Tap the balance to swap any
+    time" is left for step 5, which removes Show first.

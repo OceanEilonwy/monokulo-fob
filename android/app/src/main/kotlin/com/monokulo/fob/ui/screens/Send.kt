@@ -665,7 +665,7 @@ private fun NoteField(value: String, onChange: (String) -> Unit) {
                     .border(1.dp, if (focused) Fob.ink else Fob.outline, RoundedCornerShape(16.dp)).padding(horizontal = 16.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                if (value.isEmpty()) Text("What it's for, kept on this phone", style = style.copy(color = Fob.muted))
+                if (value.isEmpty()) Text("What it's for", style = style.copy(color = Fob.muted))
                 field()
             }
         },
@@ -682,10 +682,7 @@ private fun PasteRow(onPaste: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(Modifier.size(36.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(CLIPBOARD, tint = Fob.ink, size = 18.dp) }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Paste an address", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Text("Read from the clipboard only when you tap", color = Fob.muted, fontSize = 13.sp)
-        }
+        Text("Paste an address", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp)
     }
 }
