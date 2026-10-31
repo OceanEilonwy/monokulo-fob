@@ -469,7 +469,7 @@ impl Wallet {
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let transport = Transport::new(&node).map_err(err)?;
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
-        let decoys = Decoys::new(daemon.clone(), self.inner.path.with_extension("decoys"));
+        let decoys = Decoys::new(daemon.clone(), transport.clone(), self.inner.path.with_extension("decoys"));
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
         *rpc = Some((node, transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone()));
         Ok((transport, daemon, decoys, adaptive))
