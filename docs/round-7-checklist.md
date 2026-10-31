@@ -108,3 +108,19 @@ through step 1's stopgap dialogs in Settings.
 - [ ] Price toast showing while pulled up → it sits above Review, not over it
 - [ ] TalkBack on the handle → "Type the payment instead, collapsed" / "Back to the camera, expanded"; double tap moves the sheet
 - [ ] Dark mode → the sheet's paper and handle in dark colours, no light gap below Review while it moves
+
+## Step 6 · Home people
+- [ ] New wallet, no profile → person outline in a sunken circle between the chip and the cog; TalkBack "Add a shareable Fob contact, button"
+- [ ] Tap it with no profile → the profile setup screen (as Settings' row); save a name → back on Home the initial shows at once, no outline flash
+- [ ] Profile with a photo → the photo at 32 dp in the bar; TalkBack "Your profile, button"; tap → Your profile
+- [ ] Edit the photo or name in Your profile, go back → Home's avatar changed without reopening Fob
+- [ ] Photo set but name cleared (if possible) → outline, as Settings' row
+- [ ] Activity card → "Contacts" chip with the people icon before Coins, both 40 dp pills; Contacts opens Contacts, Coins opens Coins
+- [ ] 360 dp phone (or display size largest), stagenet, catching up with "6 min left" → "Fob" word hidden, badge, chip with words, avatar and cog all whole, nothing clipped
+- [ ] Same at font size 200% → the chip shows only its ring, the badge stays; TalkBack on the chip still reads the time left
+- [ ] Mainnet, synced, normal phone → mark, "Fob", chip "Synced", avatar, cog as the board
+- [ ] Activity header at font size 200% → chips move under "Activity", one per line if needed; nothing cut
+- [ ] Catching up with some activity → "Still finding older ones" on its own line under the header
+- [ ] Dark mode → the outline circle, chips and badge in dark colours; avatar initial readable
+- [ ] RTL language (e.g. Arabic) → the bar mirrors: mark at the right, cog at the left
+- [ ] Sync chip tapped with the avatar beside it → details card still opens under the chip

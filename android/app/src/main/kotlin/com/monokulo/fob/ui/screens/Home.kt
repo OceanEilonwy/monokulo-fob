@@ -11,9 +11,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -39,6 +40,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.collapse
@@ -55,11 +58,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
+import com.monokulo.fob.You
+import com.monokulo.fob.ui.Avatar
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.FobMark
@@ -79,6 +86,7 @@ import uniffi.fob.BackupReminder
 import uniffi.fob.Network
 import uniffi.fob.NotReady
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(model: WalletModel, nav: Nav) {
     val wallet by model.wallet.collectAsState()
@@ -88,6 +96,7 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
     val notReady by model.notReady.collectAsState()
     val prices by model.prices.collectAsState()
     val network by model.network.collectAsState()
+    val you by model.you.collectAsState()
     val synced = status?.synced == true
     val canSpend = wallet?.canSpend() != false
     val scope = rememberCoroutineScope()
@@ -110,15 +119,11 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
             refreshing = false
         }
     }) {
-        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FobMark(26.dp)
-            Text("Fob", style = display(22))
-            if (network == Network.STAGENET) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
-            Spacer(Modifier.weight(1f))
-            // Tapping the chip opens Rust's details card under it, Node settings on it.
-            var syncOpen by rememberSaveable { mutableStateOf(false) }
+        // Tapping the chip opens Rust's details card under it, Node settings on it.
+        var syncOpen by rememberSaveable { mutableStateOf(false) }
+        // Your photo opens Your profile, which goes on to setting one up while there's none (as Settings' row does).
+        TopBar(network == Network.STAGENET, you, onYou = { nav.go(Screen.Profile) }, onSettings = { nav.go(Screen.Settings) }) {
             SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails) { nav.go(Screen.Node) }
-            IconButton(onClick = { nav.go(Screen.Settings) }, modifier = Modifier.semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear, width = 1.8f) }
         }
 
         // The balance on one line: what "Show amounts in" puts first large on
@@ -167,11 +172,17 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
         }
 
         Card(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 24.dp), padding = PaddingValues(vertical = 8.dp)) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 20.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Activity", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                if (!synced && activity.isNotEmpty()) Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(end = 12.dp))
-                CoinsChip { nav.go(Screen.Coins) }
+            // The chips go under the title, one under the other if need be, when a narrow phone or a big font leaves
+            // no room beside it; the note while syncing has a line of its own under the title.
+            FlowRow(
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Activity", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).semantics { heading() })
+                Chip(Icons.people, "Contacts") { nav.go(Screen.Contacts) }
+                Chip(Icons.coins, "Coins") { nav.go(Screen.Coins) }
             }
+            if (!synced && activity.isNotEmpty()) Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp))
             if (activity.isEmpty()) {
                 Text(
                     if (synced) "Nothing yet. Tap Receive to get your address." else "Payments appear here as Fob finds them.",
@@ -264,16 +275,89 @@ private fun BackupCard(r: BackupReminder, onClick: () -> Unit) {
     }
 }
 
-/** Activity's way to the Coins screen: a sunken pill, 48dp tall to touch. */
+/** Activity's ways to Contacts and Coins: a sunken pill, 40dp tall within a 48dp target. */
 @Composable
-private fun CoinsChip(onClick: () -> Unit) {
+private fun Chip(icon: String, label: String, onClick: () -> Unit) {
     Box(Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).clickable(role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
         Row(
-            Modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(Fob.sunken).padding(horizontal = 12.dp),
+            Modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(20.dp)).background(Fob.sunken).padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            StrokeIcon(Icons.coins, size = 18.dp, width = 1.8f)
-            Text("Coins", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            StrokeIcon(icon, size = 18.dp, width = 1.8f)
+            Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * Home's top bar (board HomePeople): the mark, "Fob" and on stagenet its
+ * badge at the start; the sync [chip], your photo and Settings at the end.
+ * The end's three always fit whole: where the row is too narrow (a 360dp
+ * phone with the badge and "6 min left", a big font) the word "Fob" goes
+ * first, then the chip's words (its ring or dot stays), then the badge.
+ */
+@Composable
+private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
+    Layout(
+        content = {
+            Box(Modifier.layoutId("mark")) { FobMark(26.dp) }
+            Text("Fob", style = display(22), maxLines = 1, modifier = Modifier.layoutId("word"))
+            if (stagenet) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.layoutId("badge").clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
+            Box(Modifier.layoutId("chip")) { chip() }
+            YouButton(you, onYou, Modifier.layoutId("you"))
+            IconButton(onClick = onSettings, modifier = Modifier.layoutId("cog").semantics { contentDescription = "Settings" }) { StrokeIcon(Icons.gear, width = 1.8f) }
+        },
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp).heightIn(min = 64.dp),
+    ) { parts, c ->
+        fun part(id: String) = parts.firstOrNull { it.layoutId == id }
+        val loose = c.copy(minWidth = 0, minHeight = 0)
+        val gap = 10.dp.roundToPx()
+        val mark = part("mark")!!.measure(loose)
+        val you = part("you")!!.measure(loose)
+        val cog = part("cog")!!.measure(loose)
+        // The chip's room after the mark, a gap, and the two buttons with a little space before them.
+        val room = c.maxWidth - mark.width - gap - 4.dp.roundToPx() - you.width - cog.width
+        val word = part("word")!!
+        val badge = part("badge")
+        val wordWidth = word.maxIntrinsicWidth(Constraints.Infinity) + gap
+        val badgeWidth = badge?.let { it.maxIntrinsicWidth(Constraints.Infinity) + gap } ?: 0
+        val showWord = wordWidth + badgeWidth + part("chip")!!.maxIntrinsicWidth(Constraints.Infinity) <= room
+        // A chip without its words is the 48dp of its target.
+        val showBadge = badge != null && badgeWidth + 48.dp.roundToPx() <= room
+        val chipRoom = room - (if (showWord) wordWidth else 0) - (if (showBadge) badgeWidth else 0)
+        val chip = part("chip")!!.measure(loose.copy(maxWidth = chipRoom.coerceAtLeast(0)))
+        val start = listOfNotNull(mark, if (showWord) word.measure(loose) else null, if (showBadge) badge!!.measure(loose) else null)
+        val height = c.constrainHeight((start + listOf(chip, you, cog)).maxOf { it.height })
+        layout(c.maxWidth, height) {
+            var x = 0
+            start.forEach { it.placeRelative(x, (height - it.height) / 2); x += it.width + gap }
+            x = c.maxWidth
+            listOf(cog, you).forEach { x -= it.width; it.placeRelative(x, (height - it.height) / 2) }
+            chip.placeRelative(x - 4.dp.roundToPx() - chip.width, (height - chip.height) / 2)
+        }
+    }
+}
+
+/**
+ * Your photo (or initial) at 32dp in a 48dp button, or a person outline in
+ * a sunken circle while there's no profile name yet; TalkBack reads Rust's
+ * words for Settings' row, "Your profile" or "Add a shareable Fob contact".
+ */
+@Composable
+private fun YouButton(you: You?, onClick: () -> Unit, modifier: Modifier) {
+    val profile = you?.profile
+    Box(
+        modifier.size(48.dp).clip(CircleShape)
+            .clickable(enabled = you != null, role = Role.Button, onClick = onClick)
+            .semantics { you?.let { contentDescription = it.row.title } },
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            you == null -> {}
+            profile != null && you.row.name != null -> Avatar(profile.name, profile.initial, profile.photo, 32.dp)
+            else -> Box(Modifier.size(32.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) {
+                StrokeIcon(Icons.person, tint = Fob.muted, size = 18.dp, width = 1.8f)
+            }
         }
     }
 }

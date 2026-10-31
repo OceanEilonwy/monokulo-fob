@@ -35,6 +35,7 @@ import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
 import uniffi.fob.Prepared
 import uniffi.fob.Profile
+import uniffi.fob.ProfileRow
 import uniffi.fob.ProfileShare
 import uniffi.fob.ShareLine
 import uniffi.fob.Swapped
@@ -152,6 +153,14 @@ class WalletModel(private val app: Application) {
         open()
     }
 
+    /**
+     * Your profile and Settings' words for it, for Home's top bar: read
+     * when a wallet opens and again whenever it's saved, so Home has it at
+     * once on coming back from editing it.
+     */
+    private val _you = MutableStateFlow<You?>(null)
+    val you: StateFlow<You?> = _you
+
     private fun path(network: Network) = File(app.filesDir, "wallet-${network.name.lowercase()}.fob").absolutePath
 
     fun hasWallet(network: Network = _network.value) = File(path(network)).exists()
@@ -170,6 +179,7 @@ class WalletModel(private val app: Application) {
         _wallet.value?.let { close(it) }
         _wallet.value = wallet
         _status.value = wallet.status()
+        _you.value = You(wallet.profile(), wallet.profileRow())
         // Toast ids start again with each wallet opened.
         toastDone = 0uL
         _priceToast.value = null
@@ -400,6 +410,7 @@ class WalletModel(private val app: Application) {
         _prices.value = null
         _priceToast.value = null
         _status.value = null
+        _you.value = null
         prefs.edit().putString("network", network.name.lowercase()).apply()
         _network.value = network
         open()
@@ -416,6 +427,7 @@ class WalletModel(private val app: Application) {
         _prices.value = null
         _priceToast.value = null
         _status.value = null
+        _you.value = null
         File(path(network)).delete()
     }
 
@@ -504,7 +516,10 @@ class WalletModel(private val app: Application) {
     suspend fun requestContacts(): List<ContactRow> = _wallet.value?.requestContacts() ?: emptyList()
 
     /** Saves your name and photo; throws what Rust refused. */
-    suspend fun setProfile(name: String, photo: ByteArray?): Profile = requireNotNull(_wallet.value).setProfile(name, photo)
+    suspend fun setProfile(name: String, photo: ByteArray?): Profile {
+        val wallet = requireNotNull(_wallet.value)
+        return wallet.setProfile(name, photo).also { _you.value = You(it, wallet.profileRow()) }
+    }
 
     /** "Share my profile": a share on a new address, kept at once; Activity shows it. */
     suspend fun shareProfile(): ProfileShare {
@@ -560,3 +575,6 @@ class WalletModel(private val app: Application) {
         const val FAR_BEHIND = 720u
     }
 }
+
+/** Your profile (null before it's set up) and its row's words: "Your profile", or "Add a shareable Fob contact". */
+data class You(val profile: Profile?, val row: ProfileRow)

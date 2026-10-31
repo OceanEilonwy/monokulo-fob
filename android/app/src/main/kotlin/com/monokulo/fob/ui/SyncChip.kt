@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -40,6 +41,8 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -74,7 +77,7 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
     }
     Box {
         Box(
-            Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).clickable(role = Role.Button, onClick = toggle)
+            Modifier.heightIn(min = 48.dp).widthIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).clickable(role = Role.Button, onClick = toggle)
                 .clearAndSetSemantics {
                     contentDescription = label
                     role = Role.Button
@@ -83,24 +86,36 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Row(
-                Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.sunken).padding(start = 12.dp, end = 14.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                when (look) {
-                    ChipLook.OFFLINE -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.red))
-                    ChipLook.SYNCED -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.greenDot))
-                    ChipLook.RING -> {
-                        val (track, arc) = Fob.track to Fob.orangeText
-                        val progress = status?.progress ?: 0f
-                        Canvas(Modifier.size(16.dp)) {
-                            val stroke = Stroke(2.4.dp.toPx(), cap = StrokeCap.Round)
-                            drawArc(track, 0f, 360f, false, style = stroke)
-                            drawArc(arc, -90f, 360f * progress.coerceIn(0.02f, 1f), false, style = stroke)
+            // Where the top bar is too narrow for the words (a small phone, big
+            // font), only the ring or dot shows; TalkBack still reads the label.
+            Layout(
+                content = {
+                    when (look) {
+                        ChipLook.OFFLINE -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.red))
+                        ChipLook.SYNCED -> Box(Modifier.size(8.dp).clip(CircleShape).background(Fob.greenDot))
+                        ChipLook.RING -> {
+                            val (track, arc) = Fob.track to Fob.orangeText
+                            val progress = status?.progress ?: 0f
+                            Canvas(Modifier.size(16.dp)) {
+                                val stroke = Stroke(2.4.dp.toPx(), cap = StrokeCap.Round)
+                                drawArc(track, 0f, 360f, false, style = stroke)
+                                drawArc(arc, -90f, 360f * progress.coerceIn(0.02f, 1f), false, style = stroke)
+                            }
                         }
                     }
+                    Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                },
+                modifier = Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.sunken).padding(start = 12.dp, end = 14.dp),
+            ) { (mark, words), c ->
+                val m = mark.measure(Constraints())
+                val w = words.measure(Constraints())
+                val gap = 8.dp.roundToPx()
+                val fits = m.width + gap + w.width <= c.maxWidth
+                val h = c.constrainHeight(maxOf(m.height, w.height))
+                layout(if (fits) m.width + gap + w.width else m.width, h) {
+                    m.placeRelative(0, (h - m.height) / 2)
+                    if (fits) w.placeRelative(m.width + gap, (h - w.height) / 2)
                 }
-                Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
             }
         }
         if (open) {
