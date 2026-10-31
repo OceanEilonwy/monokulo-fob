@@ -1901,3 +1901,11 @@ Calls made while building the first version, with why. Newest last.
     (then in XMR) has the price task ask as typing, once a minute, when it
     opens or anything is typed, so its failure shows and a price that
     comes back lets money be typed again.
+252. **Price from's words are Rust's** (review R3): its intro ("Prices in
+    **Australian dollars**, checked as this page opens. Tap a provider to
+    pick it.", the plural in bold as a separate part) and the XMR-only
+    sentence ("With XMR only, Fob never looks up a price.") come from
+    `price_from_intro`; the Kotlin strings and fallback are gone. Once the
+    checks are in, a polite live region says Rust's summary ("Kraken
+    A$845.10, CoinGecko not answering"), as "Asking each provider…" was
+    said when they started.

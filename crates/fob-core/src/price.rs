@@ -578,6 +578,42 @@ pub fn shown_in_line(settings: &Settings) -> &'static str {
 
 const NEVER_LOOKS: &str = "Fob never looks up a price";
 
+/// Price from's words above its providers: the intro, its currency's
+/// plural in bold between `before` and `after` ("Prices in **Australian
+/// dollars**, checked as this page opens. Tap a provider to pick it."),
+/// or with XMR only the one sentence in `before`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriceFromIntro {
+    pub before: String,
+    pub bold: Option<String>,
+    pub after: String,
+}
+
+pub fn price_from_intro(settings: &Settings) -> PriceFromIntro {
+    match settings.code().map(currency) {
+        Some(c) => PriceFromIntro {
+            before: "Prices in ".into(),
+            bold: Some(if c.plural.is_empty() { c.code.clone() } else { c.plural.to_owned() }),
+            after: ", checked as this page opens. Tap a provider to pick it.".into(),
+        },
+        None => PriceFromIntro { before: format!("With XMR only, {}.", NEVER_LOOKS), bold: None, after: String::new() },
+    }
+}
+
+/// What TalkBack says once Price from's checks are in: "Kraken A$845.10,
+/// CoinGecko not answering".
+pub fn checks_summary(checks: &[Check]) -> String {
+    checks
+        .iter()
+        .map(|c| match (&c.rate, &c.failure) {
+            (Some(rate), _) => format!("{} {rate}", c.name),
+            (None, Some(failure)) => format!("{} {}", c.name, failure.to_lowercase()),
+            (None, None) => format!("{} not asked", c.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// One way to ask on Price from's "Ask over".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportRow {
@@ -1513,6 +1549,17 @@ mod tests {
         assert_eq!((lines[0].web, lines[0].tor, lines[1].tor), (true, false, true));
         assert_eq!(lines[0].label, "Kraken, web only, A$845.10");
         assert_eq!(lines[3].label, "Slow, web and Tor, not answering");
+        // Said once they're in, for TalkBack.
+        assert_eq!(checks_summary(&lines), "Kraken A$845.10, CoinGecko A$845.02, Busy busy, try again soon, Slow not answering");
+    }
+
+    #[test]
+    fn price_from_s_intro_is_rust_s() {
+        let mut s = Settings { currency: Some("AUD".into()), ..Settings::default() };
+        let intro = price_from_intro(&s);
+        assert_eq!((intro.before.as_str(), intro.bold.as_deref(), intro.after.as_str()), ("Prices in ", Some("Australian dollars"), ", checked as this page opens. Tap a provider to pick it."));
+        s.currency = None;
+        assert_eq!(price_from_intro(&s), PriceFromIntro { before: "With XMR only, Fob never looks up a price.".into(), bold: None, after: String::new() });
     }
 
     #[tokio::test(start_paused = true)]
