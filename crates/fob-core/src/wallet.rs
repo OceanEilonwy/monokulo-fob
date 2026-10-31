@@ -1961,13 +1961,13 @@ impl Wallet {
         Some(price::alert::toast(&alert, state.price_cache.last(&state.prices), clock))
     }
 
-    /// Settings' Price from row: "Kraken · over the internet", and while
-    /// lookups fail, why ("… · Not answering"), and whether they do.
-    pub async fn price_from_line(&self) -> (String, bool) {
-        let source = self.price_settings().await.source_text();
-        match self.price_alert() {
-            Some(alert) => (format!("{source} · {}", alert.failed.failure.text()), true),
-            None => (source, false),
+    /// Settings' Price from row: "Kraken · over the internet", or while
+    /// lookups fail the toast's line ("Kraken didn't answer · using the
+    /// 14:02 price"), and whether they do (the row is red, with Try again).
+    pub async fn price_from_line(&self, clock: Clock) -> (String, bool) {
+        match self.price_toast(clock).await {
+            Some(toast) => (toast.line, true),
+            None => (self.price_settings().await.source_text(), false),
         }
     }
 
@@ -2048,6 +2048,15 @@ impl Wallet {
         self.price_now().await.map(|(currency, p)| price::value(atomic, p, &currency))
     }
 
+    /// What `atomic` XMR is worth at `now` (seconds since the epoch), with
+    /// the price's age once it's missed a refresh: ("$412.06", Some("2 h
+    /// old")); `None` without a price from within the day.
+    pub async fn worth_aged(&self, atomic: u64, now: u64) -> Option<(String, Option<String>)> {
+        let state = self.inner.state.lock().await;
+        let c = state.price_cache.shown(&state.prices, now)?;
+        Some((price::value(atomic, c.price, &price::currency(&c.currency)), price::alert::old(c.at, now)))
+    }
+
     /// The payment `tx` as its own screen shows it, or `None` if there's no
     /// such payment.
     pub async fn payment(&self, tx: &str, clock: Clock) -> Option<activity::Detail> {
@@ -2125,13 +2134,15 @@ impl Wallet {
         self.prepare(to, atomic, note, code).await
     }
 
-    /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70", the money
-    /// only with a current price.
-    pub async fn ready_line(&self) -> String {
+    /// Under Send's sheet at `now`: "1.8592 XMR ready to spend · $308.70",
+    /// the money only with a price from within the day, and its age once
+    /// it's missed a refresh ("… · $308.70 · 2 h old").
+    pub async fn ready_line(&self, now: u64) -> String {
         let ready = self.balance().await.unlocked;
         let xmr = format!("{} XMR ready to spend", amount::format_short(ready));
-        match self.worth_now(ready).await {
-            Some(worth) => format!("{xmr} · {worth}"),
+        match self.worth_aged(ready, now).await {
+            Some((worth, Some(old))) => format!("{xmr} · {worth} · {old}"),
+            Some((worth, None)) => format!("{xmr} · {worth}"),
             None => xmr,
         }
     }
@@ -2196,9 +2207,9 @@ impl Wallet {
         self.inner.state.lock().await.profile.profile().cloned()
     }
 
-    /// Settings' row: "Your profile" with "Henry · name and photo, share as
-    /// a code", or "Set up your profile".
-    pub async fn profile_row(&self) -> (String, String) {
+    /// Settings' row: "Your profile" over "Henry · share as a code", or
+    /// only "Add a shareable Fob contact" before there's a name.
+    pub async fn profile_row(&self) -> profile::SettingsRow {
         profile::settings_row(self.inner.state.lock().await.profile.profile())
     }
 
@@ -3142,12 +3153,13 @@ mod tests {
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let failing = FakePrices { fail: true, ..FakePrices::new(1, vec![]) };
         let working = FakePrices::new(166_100_000, vec![]);
-        assert_eq!(wallet.price_from_line().await, ("Kraken · over the internet".into(), false));
+        assert_eq!(wallet.price_from_line(clock).await, ("Kraken · over the internet".into(), false));
         // The first background failure shows.
         assert!(wallet.refresh_prices_from(&failing, Asked::Background, t).await.is_err());
         let first = wallet.price_toast(clock).await.unwrap();
-        assert_eq!((first.title.as_str(), first.line.as_str()), ("Couldn't get the USD price", "No price yet · amounts stay in XMR"));
-        assert_eq!(wallet.price_from_line().await, ("Kraken · over the internet · Not answering".into(), true));
+        assert_eq!((first.title.as_str(), first.line.as_str()), ("Couldn't get the USD price", "Kraken didn't answer · no USD price yet"));
+        // Settings' row says the same, red.
+        assert_eq!(wallet.price_from_line(clock).await, ("Kraken didn't answer · no USD price yet".into(), true));
         // Five minutes on, failing still: not again.
         wallet.refresh_prices_from(&failing, Asked::Background, t + 300).await.unwrap_err();
         assert_eq!(wallet.price_toast(clock).await.unwrap().id, first.id);
@@ -3158,7 +3170,7 @@ mod tests {
         // A lookup that works ends it.
         wallet.refresh_prices_from(&working, Asked::Background, t + 600).await.unwrap();
         assert_eq!(wallet.price_toast(clock).await, None);
-        assert!(!wallet.price_from_line().await.1);
+        assert!(!wallet.price_from_line(clock).await.1);
         // The next run's first background failure shows, with the price kept.
         wallet.refresh_prices_from(&failing, Asked::Background, t + 900).await.unwrap_err();
         let later = wallet.price_toast(Clock { now: t + 900, ..clock }).await.unwrap();
@@ -3303,7 +3315,7 @@ mod tests {
         let wallet = Wallet::create(&dir("send-sheet"), [1; 32], Network::Stagenet).unwrap();
         let t = now();
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
-        assert_eq!(wallet.ready_line().await, "0 XMR ready to spend");
+        assert_eq!(wallet.ready_line(t).await, "0 XMR ready to spend");
         assert!(wallet.paid_before(clock).await.is_empty());
         let to = "5".repeat(95);
         {
@@ -3314,9 +3326,15 @@ mod tests {
             state.outputs.push(Owned { height: 95, key: "late".into(), ..received("late", t, XMR) });
             state.sent.push(Sent { tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None });
         }
-        assert_eq!(wallet.ready_line().await, "2 XMR ready to spend");
+        assert_eq!(wallet.ready_line(t).await, "2 XMR ready to spend");
         wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
-        assert_eq!(wallet.ready_line().await, "2 XMR ready to spend · $332.20");
+        assert_eq!(wallet.ready_line(t).await, "2 XMR ready to spend · $332.20");
+        // A price that's missed refreshes says how old it is; one over a
+        // day old isn't used.
+        assert_eq!(wallet.ready_line(t + 2 * 3_600).await, "2 XMR ready to spend · $332.20 · 2 h old");
+        assert_eq!(wallet.worth_aged(XMR, t + price::AGED).await, Some(("$166.10".into(), Some("10 min old".into()))));
+        assert_eq!(wallet.worth_aged(XMR, t + 60).await, Some(("$166.10".into(), None)));
+        assert_eq!(wallet.ready_line(t + price::SHOWN).await, "2 XMR ready to spend");
         let paid = wallet.paid_before(clock).await;
         assert_eq!(paid.len(), 1);
         assert_eq!((paid[0].address.as_str(), paid[0].name.as_str(), paid[0].line.as_str()), (to.as_str(), "5555 … 5555", "Lunch money · Today"));
@@ -3941,7 +3959,7 @@ mod tests {
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let address = |i: u32| wallet.inner.keys.address(i);
         assert!(wallet.share_profile().await.is_err(), "no profile yet");
-        assert_eq!(wallet.profile_row().await.0, "Set up your profile");
+        assert_eq!(wallet.profile_row().await.title, "Add a shareable Fob contact");
         wallet.set_profile("Henry", Some(webp(300))).await.unwrap();
         let own = wallet.receive_address().await.unwrap();
         let (first, code) = wallet.share_profile().await.unwrap();

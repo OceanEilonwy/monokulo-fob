@@ -90,18 +90,46 @@ fun Modifier.bottomSpace(extra: Dp = 0.dp): Modifier {
  * The price toast, the same over every screen: it rises from the bottom,
  * above the gesture bar and the screen's bottom bar ([LocalBottomSpace]).
  * Swiped down or sideways it goes ([onDismiss]); [onSettings] is the cog.
+ * A [notice] (Rust's words when a price choice moved something) sits
+ * above it for a few seconds; tapped, it goes.
  */
 @Composable
-fun PriceToastHost(state: PriceToastState?, onRetry: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit) {
+fun PriceToastHost(
+    state: PriceToastState?, onRetry: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit,
+    notice: String? = null, onNoticeDismiss: () -> Unit = {},
+) {
     val space by LocalBottomSpace.current
     // The last state drawn, so the toast keeps its words as it goes.
     var shown by remember { mutableStateOf(state) }
     if (state != null) shown = state
+    var said by remember { mutableStateOf(notice) }
+    if (notice != null) said = notice
     val lift by animateDpAsState(if (space > 0.dp) space + 8.dp else 16.dp, label = "toast lift")
     Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(bottom = lift), contentAlignment = Alignment.BottomCenter) {
-        AnimatedVisibility(state != null, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
-            shown?.let { ToastCard(it, onRetry, onSettings, onDismiss) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            AnimatedVisibility(notice != null, enter = slideInVertically { it } + fadeIn(), exit = fadeOut()) {
+                said?.let { Notice(it, onNoticeDismiss) }
+            }
+            AnimatedVisibility(state != null, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+                shown?.let { ToastCard(it, onRetry, onSettings, onDismiss) }
+            }
         }
+    }
+}
+
+/** A short note in the toast's colours: words only, read by TalkBack as they come. */
+@Composable
+private fun Notice(text: String, onDismiss: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        Modifier.padding(horizontal = 16.dp).widthIn(max = 560.dp).fillMaxWidth()
+            .shadow(8.dp, shape).clip(shape).background(Fob.inverse)
+            .clickable(onClickLabel = "Dismiss", onClick = onDismiss)
+            .semantics { liveRegion = LiveRegionMode.Polite }
+            .heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(text, color = Fob.onInverse, fontSize = 14.sp)
     }
 }
 

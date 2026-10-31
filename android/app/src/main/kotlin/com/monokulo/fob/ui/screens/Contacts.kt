@@ -72,6 +72,7 @@ import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
+import com.monokulo.fob.ui.SearchField
 import com.monokulo.fob.ui.PhotoButton
 import com.monokulo.fob.ui.PhotoSheet
 import com.monokulo.fob.ui.rememberPhotoChooser
@@ -126,7 +127,7 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
             }
         }
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            if (any) SearchField(search) { search = it }
+            if (any) SearchField(search, { search = it }, "Search names and notes", "Search contacts")
             val rows = saved
             when {
                 rows == null -> {}
@@ -156,28 +157,6 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
                 color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, modifier = Modifier.padding(horizontal = 8.dp),
             )
         }
-    }
-}
-
-/** Search names and notes, on a sunken pill. */
-@Composable
-private fun SearchField(value: String, onChange: (String) -> Unit) {
-    val style = TextStyle(fontSize = 16.sp, color = Fob.ink)
-    Row(
-        Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(24.dp)).background(Fob.sunken).padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        StrokeIcon(Icons.search, tint = Fob.muted, size = 18.dp)
-        BasicTextField(
-            value = value, onValueChange = onChange, singleLine = true, textStyle = style, cursorBrush = SolidColor(Fob.ink),
-            modifier = Modifier.weight(1f).semantics { contentDescription = "Search contacts" },
-            decorationBox = { field ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (value.isEmpty()) Text("Search names and notes", style = style.copy(color = Fob.muted))
-                    field()
-                }
-            },
-        )
     }
 }
 

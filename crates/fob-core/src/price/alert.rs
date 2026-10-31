@@ -92,8 +92,9 @@ pub struct Toast {
     pub id: u64,
     /// "Couldn't get the USD price", "Couldn't get 29 Oct's USD price".
     pub title: String,
-    /// "Kraken didn't answer · using the 14:02 price", "No price yet ·
-    /// amounts stay in XMR", "CoinGecko is busy · shown as not available".
+    /// "Kraken didn't answer · using the 14:02 price", "CoinGecko didn't
+    /// answer · no NZD price yet", "CoinGecko is busy · shown as not
+    /// available".
     pub line: String,
     /// While Retry asks: "Trying again…", "Asking Kraken for the USD price".
     pub retrying_title: String,
@@ -127,7 +128,9 @@ pub fn toast(alert: &Alert, last: Option<&Current>, clock: Clock) -> Toast {
         Some(c) if clock.now.saturating_sub(c.at) < super::SHOWN => format!("{reason} · using {}", price_from(c.at, clock, true)),
         // One too old to use: the reason, and what that means.
         Some(_) => format!("{reason} · {xmr}"),
-        None => format!("No price yet · {xmr}"),
+        // None ever kept: still why, and that there's none yet.
+        None if alert.typing => format!("{reason} · {xmr}"),
+        None => format!("{reason} · no {} price yet", f.currency),
     };
     Toast {
         id: alert.id,
@@ -159,6 +162,18 @@ fn price_from(at: u64, clock: Clock, the: bool) -> String {
 /// [`AGED`](super::AGED).
 pub fn age(at: u64, clock: Clock) -> Option<String> {
     (clock.now.saturating_sub(at) >= super::AGED).then(|| format!("price from {}", price_from(at, clock, false)))
+}
+
+/// Beside an amount converted at a price over [`AGED`](super::AGED) old
+/// (Home's balance, Send's ready line): "40 min old", "2 h old"; `None`
+/// while it's newer. Shown prices are under a day old, so never days.
+pub fn old(at: u64, now: u64) -> Option<String> {
+    let age = now.saturating_sub(at);
+    match age {
+        _ if age < super::AGED => None,
+        _ if age < 3_600 => Some(format!("{} min old", age / 60)),
+        _ => Some(format!("{} h old", age / 3_600)),
+    }
 }
 
 /// Retry's toast when it worked: "USD price updated", "1 XMR = $166.10".
@@ -231,10 +246,13 @@ mod tests {
         let t = toast(&alert(Failure::Busy, None, false), Some(&kept(now - 20 * 3600)), clock(now));
         assert_eq!(t.line, "Kraken is busy · using yesterday's 19:00 price");
         // None at all, or one too old to use.
+        // With none ever kept it still says why (ToastSettings).
         let t = toast(&alert(Failure::NotAnswering, None, false), None, clock(now));
-        assert_eq!(t.line, "No price yet · amounts stay in XMR");
-        let t = toast(&alert(Failure::NotAnswering, None, true), None, clock(now));
-        assert_eq!(t.line, "No price yet · type the amount in XMR");
+        assert_eq!(t.line, "Kraken didn't answer · no USD price yet");
+        let nzd = Alert { id: 1, failed: Failed { provider: "CoinGecko".into(), currency: "NZD".into(), ..failed(Failure::NotAnswering) }, typing: false };
+        assert_eq!(toast(&nzd, None, clock(now)).line, "CoinGecko didn't answer · no NZD price yet");
+        let t = toast(&alert(Failure::Busy, None, true), None, clock(now));
+        assert_eq!(t.line, "Kraken is busy · type the amount in XMR");
         let t = toast(&alert(Failure::BadAnswer, None, false), Some(&kept(now - super::super::SHOWN)), clock(now));
         assert_eq!(t.line, "Kraken answered without a price · amounts stay in XMR");
         // A day's history.
@@ -245,6 +263,20 @@ mod tests {
         let t = toast(&alert(Failure::NotAnswering, None, false), Some(&kept(at_1402)), Clock { hours_24: false, ..clock(now) });
         assert_eq!(t.line, "Kraken didn't answer · using the 2:02 pm price");
         assert_eq!(reason(Failure::TorNotYet, "CoinGecko"), "Tor isn't built yet");
+    }
+
+    #[test]
+    fn an_amount_says_how_old_its_price_is_after_ten_minutes() {
+        let now = 1_793_458_800;
+        assert_eq!(old(now, now), None);
+        assert_eq!(old(now - super::super::AGED + 1, now), None);
+        assert_eq!(old(now - super::super::AGED, now).as_deref(), Some("10 min old"));
+        assert_eq!(old(now - 59 * 60 - 59, now).as_deref(), Some("59 min old"));
+        assert_eq!(old(now - 3_600, now).as_deref(), Some("1 h old"));
+        assert_eq!(old(now - 2 * 3_600 - 1_799, now).as_deref(), Some("2 h old"));
+        assert_eq!(old(now - 23 * 3_600 - 3_599, now).as_deref(), Some("23 h old"));
+        // A clock gone back: as just asked.
+        assert_eq!(old(now + 60, now), None);
     }
 
     #[test]

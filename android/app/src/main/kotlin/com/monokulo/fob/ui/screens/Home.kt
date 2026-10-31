@@ -160,8 +160,11 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                     modifier = Modifier.weight(1f, fill = false).alignByBaseline(),
                 )
                 if (!fiatFirst) Text("XMR", fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Fob.muted, modifier = Modifier.alignByBaseline())
+                // Money first at a price over 10 minutes old: how old, beside it.
+                else b.fiatAge?.let { Text(it, fontSize = 15.sp, color = Fob.muted, maxLines = 1, modifier = Modifier.alignByBaseline()) }
             }
-            val end = if (fiatFirst) "${b.totalText} XMR" else fiat
+            // At the end, the money with its price's age once old: "$412.06 · 2 h old".
+            val end = if (fiatFirst) "${b.totalText} XMR" else b?.fiatLine
             end?.let { Text(it, color = Fob.muted, fontSize = 17.sp, maxLines = 1, modifier = Modifier.alignByBaseline()) }
         }
 

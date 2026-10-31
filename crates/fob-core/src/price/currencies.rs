@@ -22,59 +22,77 @@ pub struct Info {
     /// Digits after the point: ISO 4217's, except 0 for the rupiah and the
     /// forint, whose smaller units nobody writes.
     pub decimals: u32,
+    /// Split up's smallest note, in whole units: a round amount on the
+    /// 1-2-5 ladder worth about five US dollars (between about $2.50 and
+    /// $8 at late-2026 exchange rates): 5 dollars, 1,000 yen, 100,000 dong.
+    pub note: u64,
 }
 
-const fn c(code: &'static str, name: &'static str, plural: &'static str, symbol: Option<&'static str>, decimals: u32) -> Info {
-    Info { code, name, plural, symbol, decimals }
+const fn c(code: &'static str, name: &'static str, plural: &'static str, symbol: Option<&'static str>, decimals: u32, note: u64) -> Info {
+    Info { code, name, plural, symbol, decimals, note }
+}
+
+/// `n` without its trailing zeros: 2 for 2,000.
+fn lead(mut n: u64) -> u64 {
+    while n >= 10 && n.is_multiple_of(10) {
+        n /= 10;
+    }
+    n
+}
+
+/// The 1-2-5 ladder from `start` (itself on it): `count` round amounts,
+/// 5, 10, 20, 50, 100, 200 from 5; fewer where they'd overflow.
+pub fn ladder(start: u64, count: usize) -> Vec<u64> {
+    std::iter::successors(Some(start), |&n| if lead(n) == 2 { n.checked_mul(5).map(|m| m / 2) } else { n.checked_mul(2) }).take(count).collect()
 }
 
 /// By code.
 pub const TABLE: [Info; 45] = [
-    c("AED", "UAE dirham", "UAE dirhams", None, 2),
-    c("ARS", "Argentine peso", "Argentine pesos", None, 2),
-    c("AUD", "Australian dollar", "Australian dollars", Some("A$"), 2),
-    c("BDT", "Bangladeshi taka", "Bangladeshi taka", Some("৳"), 2),
-    c("BHD", "Bahraini dinar", "Bahraini dinars", None, 3),
-    c("BMD", "Bermudian dollar", "Bermudian dollars", None, 2),
-    c("BRL", "Brazilian real", "Brazilian reais", Some("R$"), 2),
-    c("CAD", "Canadian dollar", "Canadian dollars", Some("C$"), 2),
-    c("CHF", "Swiss franc", "Swiss francs", None, 2),
-    c("CLP", "Chilean peso", "Chilean pesos", None, 0),
-    c("CNY", "Chinese yuan", "Chinese yuan", Some("CN¥"), 2),
-    c("CZK", "Czech koruna", "Czech korunas", None, 2),
-    c("DKK", "Danish krone", "Danish kroner", None, 2),
-    c("EUR", "Euro", "euros", Some("€"), 2),
-    c("GBP", "British pound", "British pounds", Some("£"), 2),
-    c("GEL", "Georgian lari", "Georgian lari", Some("₾"), 2),
-    c("HKD", "Hong Kong dollar", "Hong Kong dollars", Some("HK$"), 2),
-    c("HUF", "Hungarian forint", "Hungarian forints", None, 0),
-    c("IDR", "Indonesian rupiah", "Indonesian rupiahs", Some("Rp"), 0),
-    c("ILS", "Israeli new shekel", "Israeli new shekels", Some("₪"), 2),
-    c("INR", "Indian rupee", "Indian rupees", Some("₹"), 2),
-    c("JPY", "Japanese yen", "Japanese yen", Some("¥"), 0),
-    c("KRW", "South Korean won", "South Korean won", Some("₩"), 0),
-    c("KWD", "Kuwaiti dinar", "Kuwaiti dinars", None, 3),
-    c("LKR", "Sri Lankan rupee", "Sri Lankan rupees", None, 2),
-    c("MMK", "Myanmar kyat", "Myanmar kyats", None, 2),
-    c("MXN", "Mexican peso", "Mexican pesos", Some("MX$"), 2),
-    c("MYR", "Malaysian ringgit", "Malaysian ringgits", Some("RM"), 2),
-    c("NGN", "Nigerian naira", "Nigerian naira", Some("₦"), 2),
-    c("NOK", "Norwegian krone", "Norwegian kroner", None, 2),
-    c("NZD", "New Zealand dollar", "New Zealand dollars", Some("NZ$"), 2),
-    c("PHP", "Philippine peso", "Philippine pesos", Some("₱"), 2),
-    c("PKR", "Pakistani rupee", "Pakistani rupees", None, 2),
-    c("PLN", "Polish złoty", "Polish złotys", None, 2),
-    c("RUB", "Russian ruble", "Russian rubles", Some("₽"), 2),
-    c("SAR", "Saudi riyal", "Saudi riyals", None, 2),
-    c("SEK", "Swedish krona", "Swedish kronor", None, 2),
-    c("SGD", "Singapore dollar", "Singapore dollars", Some("S$"), 2),
-    c("THB", "Thai baht", "Thai baht", Some("฿"), 2),
-    c("TRY", "Turkish lira", "Turkish lira", Some("₺"), 2),
-    c("TWD", "New Taiwan dollar", "New Taiwan dollars", Some("NT$"), 2),
-    c("UAH", "Ukrainian hryvnia", "Ukrainian hryvnias", Some("₴"), 2),
-    c("USD", "US dollar", "US dollars", Some("$"), 2),
-    c("VND", "Vietnamese dong", "Vietnamese dong", Some("₫"), 0),
-    c("ZAR", "South African rand", "South African rand", Some("R"), 2),
+    c("AED", "UAE dirham", "UAE dirhams", None, 2, 20),
+    c("ARS", "Argentine peso", "Argentine pesos", None, 2, 5000),
+    c("AUD", "Australian dollar", "Australian dollars", Some("A$"), 2, 5),
+    c("BDT", "Bangladeshi taka", "Bangladeshi taka", Some("৳"), 2, 500),
+    c("BHD", "Bahraini dinar", "Bahraini dinars", None, 3, 2),
+    c("BMD", "Bermudian dollar", "Bermudian dollars", None, 2, 5),
+    c("BRL", "Brazilian real", "Brazilian reais", Some("R$"), 2, 20),
+    c("CAD", "Canadian dollar", "Canadian dollars", Some("C$"), 2, 5),
+    c("CHF", "Swiss franc", "Swiss francs", None, 2, 5),
+    c("CLP", "Chilean peso", "Chilean pesos", None, 0, 5000),
+    c("CNY", "Chinese yuan", "Chinese yuan", Some("CN¥"), 2, 50),
+    c("CZK", "Czech koruna", "Czech korunas", None, 2, 100),
+    c("DKK", "Danish krone", "Danish kroner", None, 2, 50),
+    c("EUR", "Euro", "euros", Some("€"), 2, 5),
+    c("GBP", "British pound", "British pounds", Some("£"), 2, 5),
+    c("GEL", "Georgian lari", "Georgian lari", Some("₾"), 2, 10),
+    c("HKD", "Hong Kong dollar", "Hong Kong dollars", Some("HK$"), 2, 50),
+    c("HUF", "Hungarian forint", "Hungarian forints", None, 0, 2000),
+    c("IDR", "Indonesian rupiah", "Indonesian rupiahs", Some("Rp"), 0, 50_000),
+    c("ILS", "Israeli new shekel", "Israeli new shekels", Some("₪"), 2, 20),
+    c("INR", "Indian rupee", "Indian rupees", Some("₹"), 2, 500),
+    c("JPY", "Japanese yen", "Japanese yen", Some("¥"), 0, 1000),
+    c("KRW", "South Korean won", "South Korean won", Some("₩"), 0, 5000),
+    c("KWD", "Kuwaiti dinar", "Kuwaiti dinars", None, 3, 1),
+    c("LKR", "Sri Lankan rupee", "Sri Lankan rupees", None, 2, 1000),
+    c("MMK", "Myanmar kyat", "Myanmar kyats", None, 2, 10_000),
+    c("MXN", "Mexican peso", "Mexican pesos", Some("MX$"), 2, 100),
+    c("MYR", "Malaysian ringgit", "Malaysian ringgits", Some("RM"), 2, 20),
+    c("NGN", "Nigerian naira", "Nigerian naira", Some("₦"), 2, 5000),
+    c("NOK", "Norwegian krone", "Norwegian kroner", None, 2, 50),
+    c("NZD", "New Zealand dollar", "New Zealand dollars", Some("NZ$"), 2, 10),
+    c("PHP", "Philippine peso", "Philippine pesos", Some("₱"), 2, 200),
+    c("PKR", "Pakistani rupee", "Pakistani rupees", None, 2, 1000),
+    c("PLN", "Polish złoty", "Polish złotys", None, 2, 20),
+    c("RUB", "Russian ruble", "Russian rubles", Some("₽"), 2, 500),
+    c("SAR", "Saudi riyal", "Saudi riyals", None, 2, 20),
+    c("SEK", "Swedish krona", "Swedish kronor", None, 2, 50),
+    c("SGD", "Singapore dollar", "Singapore dollars", Some("S$"), 2, 5),
+    c("THB", "Thai baht", "Thai baht", Some("฿"), 2, 200),
+    c("TRY", "Turkish lira", "Turkish lira", Some("₺"), 2, 200),
+    c("TWD", "New Taiwan dollar", "New Taiwan dollars", Some("NT$"), 2, 200),
+    c("UAH", "Ukrainian hryvnia", "Ukrainian hryvnias", Some("₴"), 2, 200),
+    c("USD", "US dollar", "US dollars", Some("$"), 2, 5),
+    c("VND", "Vietnamese dong", "Vietnamese dong", Some("₫"), 0, 100_000),
+    c("ZAR", "South African rand", "South African rand", Some("R"), 2, 100),
 ];
 
 /// Every code in [`TABLE`], in its order.
@@ -176,6 +194,21 @@ mod tests {
         assert_eq!(found("euros"), ["EUR"]);
         assert_eq!(found(" "), by_name().iter().map(|c| c.code).collect::<Vec<_>>());
         assert!(found("xyz").is_empty());
+    }
+
+    #[test]
+    fn split_notes_are_round_amounts_of_about_five_dollars() {
+        assert!(TABLE.iter().all(|c| matches!(lead(c.note), 1 | 2 | 5)), "on the 1-2-5 ladder");
+        assert_eq!(ladder(5, 6), [5, 10, 20, 50, 100, 200]);
+        assert_eq!(ladder(1, 4), [1, 2, 5, 10]);
+        assert_eq!(ladder(2, 4), [2, 5, 10, 20]);
+        assert_eq!(ladder(50_000, 6), [50_000, 100_000, 200_000, 500_000, 1_000_000, 2_000_000]);
+        assert!(ladder(5_000_000_000_000_000_000, 6).len() < 6, "stops before overflowing");
+        // Currencies like the dollar start at 5; those with many units to the
+        // dollar start as high as a few dollars are there.
+        for (code, note) in [("USD", 5), ("EUR", 5), ("JPY", 1_000), ("KRW", 5_000), ("VND", 100_000), ("IDR", 50_000), ("KWD", 1)] {
+            assert_eq!(find(code).unwrap().note, note, "{code}");
+        }
     }
 
     #[test]

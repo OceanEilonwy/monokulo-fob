@@ -34,6 +34,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -122,6 +128,14 @@ object Icons {
     const val touch = "M7 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M18.5 8.5a5 5 0 0 1 0 7 M20.8 6.2a8.2 8.2 0 0 1 0 11.6"
     /** A payment code, drawn loose: a request in Activity. */
     const val request = "M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h2 M18 14h2 M14 18h2 M18 18h2"
+    /** Two people (drawn at stroke 1.8): Contacts in Settings. */
+    const val people = "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M2 21c0-4 3-7 7-7s7 3 7 7 M16 3.5a4 4 0 0 1 0 7.5 M18 14.5c2.4.8 4 3.2 4 6.5"
+    /** A key (drawn at stroke 1.8): Backup and keys. */
+    const val key = "M8 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M12 11h9 M18 11v3 M15 11v2"
+    /** A globe (drawn at stroke 1.8): a price provider that answers over the web. */
+    const val globe = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M3 12h18 M12 3c3 3 3 15 0 18 M12 3c-3 3-3 15 0 18"
+    /** An onion (drawn at stroke 1.6): one that answers over Tor. */
+    const val onion = "M12 3c-1 2-1 3 0 4 M12 7c-4 0-7 3.5-7 7.5S8 21 12 21s7-2.5 7-6.5S16 7 12 7Z M12 10c-2.5 0-4 2-4 4.5S9.5 18 12 18s4-1 4-3.5S14.5 10 12 10Z M12 13c-1 0-1.5.7-1.5 1.5S11 16 12 16s1.5-.7 1.5-1.5S13 13 12 13Z"
     /** Two coins, one behind the other (drawn at stroke 1.8). */
     const val coins = "M2.5 13a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z M6.5 13a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z M13.2 4.3A6.5 6.5 0 1 1 17.6 16.4"
     /** One coin splitting into three (drawn at stroke 1.8). */
@@ -321,6 +335,55 @@ fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mod
                 Text(label, color = if (chosen) Fob.onOrange else Fob.muted, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         }
+    }
+}
+
+/**
+ * A search on a sunken pill: the magnifier, what's typed (or [placeholder]),
+ * and a clear button once something is. [description] is TalkBack's name
+ * for the field; the keyboard's Search key just closes the keyboard.
+ */
+@Composable
+fun SearchField(value: String, onChange: (String) -> Unit, placeholder: String, description: String, modifier: Modifier = Modifier, height: Dp = 48.dp, onSearch: () -> Unit = {}) {
+    val style = TextStyle(fontSize = 16.sp, color = Fob.ink)
+    Row(
+        modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2)).background(Fob.sunken).padding(start = 16.dp, end = if (value.isEmpty()) 16.dp else 0.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        StrokeIcon(Icons.search, tint = Fob.muted, size = 18.dp)
+        BasicTextField(
+            value = value, onValueChange = onChange, singleLine = true, textStyle = style, cursorBrush = SolidColor(Fob.ink),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            modifier = Modifier.weight(1f).semantics { contentDescription = description },
+            decorationBox = { field ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (value.isEmpty()) Text(placeholder, style = style.copy(color = Fob.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    field()
+                }
+            },
+        )
+        if (value.isNotEmpty()) {
+            IconButton(onClick = { onChange("") }, modifier = Modifier.semantics { contentDescription = "Clear search" }) {
+                StrokeIcon(Icons.close, tint = Fob.muted, size = 18.dp)
+            }
+        }
+    }
+}
+
+/**
+ * A radio: a ring, filled in the middle when [chosen]; paler while it
+ * can't be [enabled]. Drawn only: the row around it is the control.
+ */
+@Composable
+fun Radio(chosen: Boolean, enabled: Boolean = true) {
+    val ring = when {
+        !enabled -> Fob.track
+        chosen -> Fob.ink
+        else -> Fob.outline
+    }
+    Box(Modifier.size(20.dp).border(2.dp, ring, CircleShape), contentAlignment = Alignment.Center) {
+        if (chosen) Box(Modifier.size(10.dp).clip(CircleShape).background(if (enabled) Fob.ink else Fob.outline))
     }
 }
 
