@@ -213,7 +213,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     fun take(text: String, asProfile: Boolean = true) {
         if (busy) return
         if (asProfile && isProfileCode(network, text)) {
-            scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { profile = text to s; notice = null } }.onFailure { notice = it.reason() } }
+            scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { profile = text to s; notice = null; open = false } }.onFailure { notice = it.reason() } }
             return
         }
         when (classifyCode(network, text)) {
@@ -252,9 +252,16 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         }
     }
 
+    /** The sheet pulled up or folded by hand: a reason shown for the other half goes. */
+    fun pull(up: Boolean) {
+        open = up
+        error = null
+        notice = null
+    }
+
     LaunchedEffect(code) { code?.let { read(it) } }
     // Back folds the sheet first, then closes Send.
-    BackHandler(enabled = open) { open = false }
+    BackHandler(enabled = open) { pull(false) }
     // A profile's sheet closes first; the camera doesn't take the same code again.
     BackHandler(enabled = profile != null) { profile = null }
 
@@ -284,10 +291,12 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
         ) {
             if (finder > 24.dp) Viewfinder(finder, if (open) 10f else 6f)
-            if (!open) {
+            // In a landscape strip without the frame, the words take less room, and none where there's none.
+            if (!open && sheetTop - barBottom >= 40.dp) {
                 Text(
                     notice ?: "Point at a payment code", color = Fob.onCamera, fontSize = 15.sp, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)).padding(horizontal = 24.dp, vertical = 16.dp),
+                    modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                        .padding(horizontal = 24.dp, vertical = if (finder > 24.dp) 16.dp else 8.dp),
                 )
             }
         }
@@ -318,8 +327,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         val threshold = with(density) { 40.dp.toPx() }
         val drag = rememberDraggableState { delta ->
             dragged += delta
-            if (dragged < -threshold && !open) { open = true; dragged = 0f }
-            if (dragged > threshold && open) { open = false; dragged = 0f }
+            if (dragged < -threshold && !open) { pull(true); dragged = 0f }
+            if (dragged > threshold && open) { pull(false); dragged = 0f }
         }
         if (profile == null) {
             Column(
@@ -336,7 +345,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                 Box(
                     Modifier.fillMaxWidth().height(28.dp)
                         .draggable(drag, Orientation.Vertical, onDragStopped = { dragged = 0f })
-                        .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { open = !open }
+                        .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { pull(!open) }
                         .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
                     contentAlignment = Alignment.Center,
                 ) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
@@ -403,7 +412,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
 
         // A profile scanned (Round 6 › "Another Fob scans the code"): Pay fills the form as its code would.
         profile?.let { (text, found) ->
-            Box(Modifier.align(Alignment.BottomCenter)) {
+            // Over the camera as the folded sheet is, the large frame above it.
+            Box(Modifier.align(Alignment.BottomCenter).onSizeChanged { sheetHeight = it.height }) {
                 ProfileFound(model, nav, text, found, onPay = { profile = null; take(text, asProfile = false) }, onClose = { profile = null })
             }
         }
