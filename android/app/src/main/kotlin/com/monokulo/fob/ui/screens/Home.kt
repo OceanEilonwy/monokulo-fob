@@ -145,7 +145,8 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
                 .padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(Modifier.weight(1f, fill = false).alignByBaseline(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Filling the line, so the other amount sits at its end.
+            Row(Modifier.weight(1f).alignByBaseline(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 BasicText(
                     if (fiatFirst) fiat!! else b?.totalText ?: "—",
                     style = display(48).copy(color = Fob.ink, lineHeight = 50.sp),
