@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::decoys::Decoys;
+use crate::fetch::{Adaptive, Pipeline, Tuning};
 use crate::transport::{Daemon, Transport};
 use monero_wallet::{
     OutputWithDecoys, Scanner, WalletOutput,
@@ -36,8 +37,9 @@ use crate::{
 };
 
 
-/// Blocks fetched per sync step: two rounds of parallel requests.
-const BATCH: u64 = 2 * crate::fetch::CHUNK * crate::fetch::PARALLEL as u64;
+/// The most blocks scanned per sync step: whatever the pipeline has ready,
+/// up to this, so progress shows often.
+const BATCH: u64 = 1_000;
 /// Subaddresses watched past the last one handed out.
 const LOOKAHEAD: u32 = 50;
 /// Recent block hashes kept to notice a reorganisation.
@@ -207,7 +209,9 @@ struct Inner {
     file_key: Zeroizing<[u8; 32]>,
     keys: Keys,
     state: Mutex<State>,
-    rpc: Mutex<Option<(String, Transport, Daemon, Decoys)>>,
+    rpc: Mutex<Option<(String, Transport, Daemon, Decoys, Arc<Adaptive>)>>,
+    /// Blocks being fetched ahead of the scanner.
+    pipeline: Mutex<Option<Pipeline>>,
     prepared: Mutex<HashMap<u64, PreparedTx>>,
     next_id: AtomicU64,
     status: std::sync::Mutex<SyncStatus>,
@@ -318,6 +322,7 @@ impl Wallet {
                 keys,
                 state: Mutex::new(state),
                 rpc: Mutex::new(None),
+                pipeline: Mutex::new(None),
                 prepared: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 status: std::sync::Mutex::new(status),
@@ -443,6 +448,7 @@ impl Wallet {
             self.save_state(&state)?;
         }
         *self.inner.rpc.lock().await = None;
+        *self.inner.pipeline.lock().await = None;
         Ok(())
     }
 
@@ -452,20 +458,21 @@ impl Wallet {
 
     /// The node: as a raw transport (for [`fetch`](crate::fetch)), as a
     /// daemon, and as a source of decoys with the output distribution cached.
-    async fn connection(&self) -> Result<(Transport, Daemon, Decoys)> {
+    async fn connection(&self) -> Result<(Transport, Daemon, Decoys, Arc<Adaptive>)> {
         let node = self.inner.state.lock().await.node.clone();
         let mut rpc = self.inner.rpc.lock().await;
-        if let Some((url, transport, daemon, decoys)) = rpc.as_ref() {
+        if let Some((url, transport, daemon, decoys, adaptive)) = rpc.as_ref() {
             if *url == node {
-                return Ok((transport.clone(), daemon.clone(), decoys.clone()));
+                return Ok((transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone()));
             }
         }
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let transport = Transport::new(&node).map_err(err)?;
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
         let decoys = Decoys::new(daemon.clone(), self.inner.path.with_extension("decoys"));
-        *rpc = Some((node, transport.clone(), daemon.clone(), decoys.clone()));
-        Ok((transport, daemon, decoys))
+        let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
+        *rpc = Some((node, transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone()));
+        Ok((transport, daemon, decoys, adaptive))
     }
 
     pub async fn balance(&self) -> Balance {
@@ -578,7 +585,7 @@ impl Wallet {
 
     /// Scans the next batch of blocks. Returns whether more are waiting.
     pub async fn sync_step(&self) -> Result<bool> {
-        let (transport, rpc, decoys) = self.connection().await?;
+        let (transport, rpc, decoys, adaptive) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
 
         let (mut start, mut tip, recent) = {
@@ -612,12 +619,29 @@ impl Wallet {
             return Ok(false);
         }
 
-        let end = (start + BATCH - 1).min(tip - 1);
         let blocks = if start == 0 {
             // get_blocks.bin can't start at the genesis block; fetch it alone.
             rpc.contiguous_scannable_blocks(0..=0).await.map_err(node_err)?
         } else {
-            crate::fetch::blocks(&transport, start, end).await.map_err(node_err)?
+            // Keep fetching ahead while this step scans: reuse the pipeline
+            // if it's where the wallet is, else start one to the tip.
+            let mut pipeline = self.inner.pipeline.lock().await;
+            if pipeline.as_ref().is_none_or(|p| p.next != start || p.next > p.end) {
+                *pipeline = Some(Pipeline::start(transport.clone(), adaptive.clone(), start, tip - 1));
+            }
+            let running = pipeline.as_mut().expect("just started");
+            match running.next_batch(BATCH as usize).await {
+                Ok(blocks) if !blocks.is_empty() => blocks,
+                Ok(_) => {
+                    // Ran out before the tip moved on: start again next step.
+                    *pipeline = None;
+                    return Ok(true);
+                }
+                Err(e) => {
+                    *pipeline = None;
+                    return Err(node_err(e));
+                }
+            }
         };
         // A reorganisation shows as a first block that doesn't follow the last
         // one scanned: forget the recent blocks and scan them again.
@@ -816,6 +840,7 @@ impl Wallet {
         }
         state.recent.clear();
         state.next_block = from;
+        *self.inner.pipeline.lock().await = None;
         self.save_state(&state)
     }
 
@@ -891,7 +916,7 @@ impl Wallet {
         if amount == 0 {
             return Err(FobError::BadAmount);
         }
-        let (_, rpc, decoys) = self.connection().await?;
+        let (_, rpc, decoys, _) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let fee_rate = rpc.fee_rate(FeePriority::Normal, MAX_FEE_PER_WEIGHT).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
         let latest = rpc.latest_block_number().await.map_err(node_err)?;

@@ -23,12 +23,8 @@ use monero_wallet::{
 
 use crate::transport::Transport;
 
-/// Blocks asked for per request.
-pub const CHUNK: u64 = 100;
-/// Requests in flight at once.
-pub const PARALLEL: usize = 3;
 /// Retries of one request before a sync step gives up.
-const RETRIES: u32 = 3;
+const RETRIES: u32 = 5;
 /// The most a node may send in one response.
 const MAX_RESPONSE: usize = 100 * 1024 * 1024;
 
@@ -171,23 +167,139 @@ fn parse(response: &[u8]) -> Result<Vec<ScannableBlock>, InterfaceError> {
     Ok(res)
 }
 
-/// Blocks `start..start + count`, from as many requests as the node needs.
-async fn chunk(transport: &Transport, start: u64, count: u64) -> Result<Vec<ScannableBlock>, InterfaceError> {
+/// How the fetcher sizes and spreads its requests. One set of values, used
+/// in the app and in tests alike.
+#[derive(Clone, Copy, Debug)]
+pub struct Tuning {
+    /// Response size to aim each request at. Blocks vary a lot: stagenet's
+    /// are a few kB, mainnet's 50-100 kB pruned.
+    pub target_bytes: usize,
+    pub min_chunk: u64,
+    pub max_chunk: u64,
+    /// Blocks per request before the first response says how big they are:
+    /// few, so a slow node with full mainnet blocks answers quickly.
+    pub first_chunk: u64,
+    /// Requests in flight at the start.
+    pub start_parallel: usize,
+    /// Never more than this many at once, however well the node keeps up.
+    /// Public nodes cap connections per IP (monerod resets the fourth or
+    /// fifth); a node of your own takes all of them.
+    pub max_parallel: usize,
+    /// Chunks fetched ahead of the scanner.
+    pub queue: usize,
+}
+
+impl Tuning {
+    pub const DEFAULT: Tuning = Tuning {
+        target_bytes: 2 * 1024 * 1024,
+        min_chunk: 10,
+        max_chunk: 500,
+        first_chunk: 20,
+        start_parallel: 3,
+        max_parallel: 8,
+        queue: 6,
+    };
+}
+
+/// What the fetcher has learned about a node: how big its blocks are and how
+/// many requests it takes at once. Shared by every fetch from that node.
+pub struct Adaptive {
+    tuning: Tuning,
+    state: std::sync::Mutex<Learned>,
+}
+
+struct Learned {
+    parallel: usize,
+    /// The level a node last refused: don't climb back up to it.
+    ceiling: usize,
+    bytes_per_block: Option<f64>,
+    good_in_a_row: usize,
+}
+
+impl Adaptive {
+    pub fn new(tuning: Tuning) -> Adaptive {
+        Adaptive {
+            tuning,
+            state: std::sync::Mutex::new(Learned {
+                parallel: tuning.start_parallel,
+                ceiling: tuning.max_parallel,
+                bytes_per_block: None,
+                good_in_a_row: 0,
+            }),
+        }
+    }
+
+    fn learned(&self) -> std::sync::MutexGuard<'_, Learned> {
+        self.state.lock().expect("fetch tuning lock")
+    }
+
+    pub fn parallel(&self) -> usize {
+        self.learned().parallel
+    }
+
+    /// Blocks to ask for next, so the response lands near `target_bytes`.
+    pub fn chunk(&self) -> u64 {
+        let t = self.tuning;
+        match self.learned().bytes_per_block {
+            Some(bpb) => ((t.target_bytes as f64 / bpb.max(1.0)) as u64).clamp(t.min_chunk, t.max_chunk),
+            None => t.first_chunk,
+        }
+    }
+
+    fn record_ok(&self, blocks: usize, bytes: usize) {
+        let mut l = self.learned();
+        if blocks > 0 {
+            let this = bytes as f64 / blocks as f64;
+            l.bytes_per_block = Some(match l.bytes_per_block {
+                Some(avg) => avg * 0.7 + this * 0.3,
+                None => this,
+            });
+        }
+        // A full window's worth of answers without trouble: try one more.
+        l.good_in_a_row += 1;
+        if l.good_in_a_row >= 2 * l.parallel && l.parallel < l.ceiling {
+            l.parallel += 1;
+            l.good_in_a_row = 0;
+        }
+    }
+
+    /// The node dropped or refused a connection: one request fewer, and stay below that.
+    fn record_refused(&self) {
+        let mut l = self.learned();
+        l.ceiling = l.parallel.saturating_sub(1).max(1);
+        l.parallel = l.ceiling;
+        l.good_in_a_row = 0;
+    }
+}
+
+/// Blocks `start..start + count`, from as many requests as the node needs,
+/// with the response's size in bytes.
+async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u64) -> Result<(Vec<ScannableBlock>, usize), InterfaceError> {
     let mut blocks: Vec<ScannableBlock> = Vec::with_capacity(count as usize);
+    let mut bytes = 0;
     while (blocks.len() as u64) < count {
         let from = start + blocks.len() as u64;
         let left = count - blocks.len() as u64;
         let mut attempt = 0;
         let got = loop {
             let result = match transport.post("get_blocks.bin", request(from, left), Some(MAX_RESPONSE)).await {
-                Ok(response) => parse(&response),
+                Ok(response) => {
+                    bytes += response.len();
+                    parse(&response)
+                }
                 Err(e) => Err(e),
             };
             match result {
-                // A busy public node drops connections now and then: try again.
-                Err(InterfaceError::InterfaceError(_)) if attempt < RETRIES => {
+                Err(InterfaceError::InterfaceError(e)) if attempt < RETRIES => {
                     attempt += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500 << attempt)).await;
+                    if stale(&e) {
+                        // A kept-alive connection the node had already closed:
+                        // not the node pushing back, so just try again.
+                        continue;
+                    }
+                    // A busy public node drops connections: fewer at once, and try again.
+                    adaptive.record_refused();
+                    tokio::time::sleep(std::time::Duration::from_millis(250 << attempt)).await;
                 }
                 other => break other?,
             }
@@ -198,43 +310,118 @@ async fn chunk(transport: &Transport, start: u64, count: u64) -> Result<Vec<Scan
         // Older nodes ignore max_block_count and send more: keep what was asked.
         blocks.extend(got.into_iter().take(left as usize));
     }
-    Ok(blocks)
+    Ok((blocks, bytes))
 }
 
-/// Blocks `start..=end` in order, checked to follow on from each other.
-/// `start` must be at least 1.
+/// An error from reusing a connection the node had closed while it sat idle.
+pub(crate) fn stale(error: &str) -> bool {
+    error.contains("connection closed before message completed") || error.contains("IncompleteMessage")
+}
+
+/// A spawned task that's aborted when dropped, so a dropped pipeline leaves
+/// no request running.
+struct Owned<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for Owned<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+type Chunk = Result<Vec<ScannableBlock>, InterfaceError>;
+
+/// Blocks fetched ahead of the scanner, in order.
+///
+/// A task keeps up to [`Adaptive::parallel`] requests in flight and hands
+/// finished chunks over in order through a short queue, so fetching goes on
+/// while the wallet scans and saves the previous blocks, and a slow request
+/// only holds up the ones after it.
+pub struct Pipeline {
+    /// The first block not yet handed over.
+    pub next: u64,
+    /// The last block this pipeline fetches.
+    pub end: u64,
+    rx: tokio::sync::mpsc::Receiver<Chunk>,
+    /// The last block handed over, to check the next one follows it.
+    last: Option<[u8; 32]>,
+    _task: Owned<()>,
+}
+
+impl Pipeline {
+    /// Fetches `start..=end` (`start` at least 1).
+    pub fn start(transport: Transport, adaptive: std::sync::Arc<Adaptive>, start: u64, end: u64) -> Pipeline {
+        let (tx, rx) = tokio::sync::mpsc::channel(adaptive.tuning.queue.max(1));
+        let task = tokio::spawn(async move {
+            let mut window: std::collections::VecDeque<Owned<Result<(Vec<ScannableBlock>, usize), InterfaceError>>> = Default::default();
+            let mut from = start;
+            loop {
+                while window.len() < adaptive.parallel() && from <= end {
+                    let count = adaptive.chunk().min(end - from + 1);
+                    let (transport, adaptive) = (transport.clone(), adaptive.clone());
+                    window.push_back(Owned(tokio::spawn(async move { chunk(&transport, &adaptive, from, count).await })));
+                    from += count;
+                }
+                let Some(mut next) = window.pop_front() else { break };
+                let done = match (&mut next.0).await {
+                    Ok(Ok((blocks, bytes))) => {
+                        adaptive.record_ok(blocks.len(), bytes);
+                        Ok(blocks)
+                    }
+                    Ok(Err(e)) => Err(e),
+                    Err(e) => Err(InterfaceError::InternalError(e.to_string())),
+                };
+                let failed = done.is_err();
+                if tx.send(done).await.is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Pipeline { next: start, end, rx, last: None, _task: Owned(task) }
+    }
+
+    /// The next blocks in order: at least one chunk, plus whatever else has
+    /// arrived, up to about `max` blocks. Empty once everything up to `end`
+    /// has been handed over.
+    pub async fn next_batch(&mut self, max: usize) -> Result<Vec<ScannableBlock>, InterfaceError> {
+        let mut blocks = match self.rx.recv().await {
+            Some(chunk) => chunk?,
+            None => return Ok(vec![]),
+        };
+        while blocks.len() < max {
+            match self.rx.try_recv() {
+                Ok(chunk) => blocks.extend(chunk?),
+                Err(_) => break,
+            }
+        }
+        for block in &blocks {
+            if block.block.number() as u64 != self.next {
+                return Err(invalid("the node sent blocks out of order"));
+            }
+            if self.last.is_some_and(|last| block.block.header.previous != last) {
+                return Err(invalid("the node sent blocks that don't follow on"));
+            }
+            self.last = Some(block.block.hash());
+            self.next += 1;
+        }
+        Ok(blocks)
+    }
+}
+
+/// Blocks `start..=end` in order: a [`Pipeline`] read to the end.
 pub async fn blocks(transport: &Transport, start: u64, end: u64) -> Result<Vec<ScannableBlock>, InterfaceError> {
     if start == 0 {
         return Err(InterfaceError::InternalError("get_blocks.bin can't start at block 0".into()));
     }
-    // Spawned all at once, but only PARALLEL run at a time: the rest wait, in
-    // order, for a permit, so a slow node isn't flooded.
-    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL));
-    let mut pending = vec![];
-    let mut from = start;
-    while from <= end {
-        let count = CHUNK.min(end - from + 1);
-        let transport = transport.clone();
-        let permits = permits.clone();
-        pending.push(tokio::spawn(async move {
-            let _permit = permits.acquire_owned().await.map_err(|e| InterfaceError::InternalError(e.to_string()))?;
-            chunk(&transport, from, count).await
-        }));
-        from += count;
-    }
+    let adaptive = std::sync::Arc::new(Adaptive::new(Tuning::DEFAULT));
+    let mut pipeline = Pipeline::start(transport.clone(), adaptive, start, end);
     let mut res = Vec::with_capacity((end - start + 1) as usize);
-    for handle in pending {
-        res.extend(handle.await.map_err(|e| InterfaceError::InternalError(e.to_string()))??);
-    }
-    for (i, block) in res.iter().enumerate() {
-        if block.block.number() as u64 != start + i as u64 {
-            return Err(invalid("the node sent blocks out of order"));
+    loop {
+        let batch = pipeline.next_batch(usize::MAX).await?;
+        if batch.is_empty() {
+            return Ok(res);
         }
-        if i > 0 && block.block.header.previous != res[i - 1].block.hash() {
-            return Err(invalid("the node sent blocks that don't follow on"));
-        }
+        res.extend(batch);
     }
-    Ok(res)
 }
 
 #[cfg(test)]
@@ -249,6 +436,33 @@ mod tests {
         assert_eq!(r.len(), HEADER.len() + 2 + (1 + 5 + 1 + 1) + (1 + 12 + 1 + 8) + (1 + 15 + 1 + 8));
         assert!(r.windows(15).any(|w| w == b"max_block_count"));
         assert!(r.windows(8).any(|w| w == 1_000u64.to_le_bytes()));
+    }
+
+    #[test]
+    fn chunks_aim_at_the_target_size_within_bounds() {
+        let a = Adaptive::new(Tuning::DEFAULT);
+        assert_eq!(a.chunk(), Tuning::DEFAULT.first_chunk);
+        a.record_ok(100, 100 * 80_000); // mainnet-sized blocks
+        assert_eq!(a.chunk(), (2 * 1024 * 1024 / 80_000) as u64);
+        let small = Adaptive::new(Tuning::DEFAULT);
+        small.record_ok(100, 100 * 500); // tiny stagenet blocks
+        assert_eq!(small.chunk(), Tuning::DEFAULT.max_chunk);
+    }
+
+    #[test]
+    fn parallelism_climbs_while_the_node_keeps_up_and_backs_off_for_good() {
+        let a = Adaptive::new(Tuning::DEFAULT);
+        assert_eq!(a.parallel(), 3);
+        for _ in 0..6 {
+            a.record_ok(10, 10);
+        }
+        assert_eq!(a.parallel(), 4);
+        a.record_refused();
+        assert_eq!(a.parallel(), 3);
+        for _ in 0..100 {
+            a.record_ok(10, 10);
+        }
+        assert_eq!(a.parallel(), 3, "never back up to a level the node refused");
     }
 
     #[test]
