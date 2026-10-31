@@ -173,10 +173,10 @@ Calls made while building the first version, with why. Newest last.
 
 ## Second round of designs
 
-36. **Amounts drop trailing zeros everywhere**: "0.5", "0.653", "1", never
+38. **Amounts drop trailing zeros everywhere**: "0.5", "0.653", "1", never
     "0.5000". Balances and lists are still cut (not rounded) to four
     decimals, as item 29; `amount::format` no longer pads.
-37. **Activity is grouped by day in Rust (`activity::by_day`).** The app
+39. **Activity is grouped by day in Rust (`activity::by_day`).** The app
     passes the phone's time, its UTC offset and whether it uses a 24-hour
     clock; Rust returns the day labels ("TODAY", "YESTERDAY", "27 OCT", the
     year when it isn't this one) and each row's title, one line of status,
@@ -187,11 +187,11 @@ Calls made while building the first version, with why. Newest last.
     Incoming money under 10 confirmations reads "Not ready · 3 of 10";
     outgoing "Confirming · 3 of 10"; a settled payment with a receipt says
     "Receipt, 3 items" rather than "Sent".
-38. **Pull to refresh calls `Wallet::sync_now`**: it wakes the sync loop
+40. **Pull to refresh calls `Wallet::sync_now`**: it wakes the sync loop
     from its 20 s wait (or its backoff after an error) and returns when a
     round ends caught up or failed, at most 20 s later. With no loop running
     it does one step itself.
-39. **Dark mode.** Colour roles are a `FobColors` per theme behind a
+41. **Dark mode.** Colour roles are a `FobColors` per theme behind a
     CompositionLocal; `Fob.ink` and the rest read the current one, so screens
     keep naming roles. The orange, the text on it and what's drawn over the
     camera are the same in both. QR codes are always dark on a white card.
@@ -199,11 +199,11 @@ Calls made while building the first version, with why. Newest last.
     beside the network, not in the wallet file: it is only how Fob looks,
     the same for every wallet, and is needed before any wallet opens.
     Dialogs use the card colour instead of Material's tinted default.
-40. **Seed words never wrap**: two columns numbered down (1–8, 9–16; 13 and
+42. **Seed words never wrap**: two columns numbered down (1–8, 9–16; 13 and
     12 for 25 words), one column from a font scale of 1.6.
-41. **"0.5 XMR ready to spend"** shows under the balance only while some of
+43. **"0.5 XMR ready to spend"** shows under the balance only while some of
     it can't be spent yet (`Balance::ready_text`).
-42. **Instant updates over ZMQ (`zmq`, `zmtp`).** Monokulo's ZMTP 3.0
+44. **Instant updates over ZMQ (`zmq`, `zmtp`).** Monokulo's ZMTP 3.0
     subscriber is copied into fob-core, not shared: Fob has no code ties to
     Monokulo, and the files say where they came from. Kept: bounded frames
     (64 MiB, read as they arrive, never allocated from a declared size), a
@@ -214,20 +214,20 @@ Calls made while building the first version, with why. Newest last.
     so tests run against a fake monerod in-process; the two proptest
     properties run as loops over a seeded generator rather than adding
     proptest as a dependency.
-43. **Off by default; the node's own host only.** The setting (on or off,
+45. **Off by default; the node's own host only.** The setting (on or off,
     and the address, kept while off) lives with the node in the wallet
     file. Rust checks the address: `tcp://host:port` (or `host:port`), no
     user, path or query, and the host must be the node's. Fob offers
     `tcp://<node host>:18083` (mainnet) or `:38083` (stagenet) and connects
     nowhere until it's turned on. Changing to a node on another host turns
     instant updates off rather than following somewhere not chosen.
-44. **What an announcement does.** `chain_main` wakes the sync loop at once
+46. **What an announcement does.** `chain_main` wakes the sync loop at once
     through the same wake `sync_now` uses; connecting does too, for blocks
     missed meanwhile. `txpool_add` has the waiting loop look at the pool
     (once caught up), 2 s after the announcement so a burst is one look,
     and the wait carries on. Polling stays as the fallback: every 20 s as
     before, every 2 minutes while the publisher is heard.
-45. **ZMQ status comes with the sync status**: Off, Connecting, Listening
+47. **ZMQ status comes with the sync status**: Off, Connecting, Listening
     or Can't connect with a few words of why, and Settings' subtitle as
     Rust writes it ("host:18083 · listening"). A change is reported to the
     app like any other sync step. On but not syncing reads "connecting":
@@ -236,7 +236,7 @@ Calls made while building the first version, with why. Newest last.
 
 ## Third round: money not ready, the address pattern, Receive
 
-46. **Money not ready yet is shown per output, not per payment
+48. **Money not ready yet is shown per output, not per payment
     (`not_ready`).** A piece is an unspent output short of its
     confirmations (10, or 60 for a mined reward), the change of a payment
     not yet mined (0 confirmations), or a payment to this wallet still in
@@ -252,12 +252,12 @@ Calls made while building the first version, with why. Newest last.
     Outputs locked to a time are still not kept: the phone's clock can't
     say when they unlock. Rewards already passed by an existing wallet only
     appear after a restore from an earlier height.
-47. **Where a piece came from**: "Received · 08:40" (when it arrived), or
+49. **Where a piece came from**: "Received · 08:40" (when it arrived), or
     "Change · Corner Café" / "Change · 86Ux … 7kQa" when it is change from
     one of this wallet's own payments, named as Activity titles it; change
     from a spend found on the chain that this phone didn't send (a restored
     wallet) is just "Change".
-48. **When it will be ready**: about 2 minutes a remaining block, counted
+50. **When it will be ready**: about 2 minutes a remaining block, counted
     from the last block scanned if it came within the last 2 minutes, else
     from now (the wallet is catching up, a block is late, or the phone's
     clock is behind the block's). "09:02" is the phone's time of day only,
@@ -265,20 +265,20 @@ Calls made while building the first version, with why. Newest last.
     "in 14 min", rounded up, at least "in 1 min", then "in 1 h 20 min".
     Pieces are listed soonest ready first. Home asks Rust again every 30 s
     while the card shows, so the times count down between blocks.
-49. **The summary**: "1.253 XMR not ready yet", "3 pieces · all ready about
+51. **The summary**: "1.253 XMR not ready yet", "3 pieces · all ready about
     09:07" ("1 piece · ready about …"), and progress weighted by amount,
     Σ(amount × confirmations ÷ needed) ÷ total, shown as a whole percent
     rounded down. The old "confirming" pill and `Balance::confirming` are
     gone.
-50. **The card**: folded by default under the balance; a button with
+52. **The card**: folded by default under the balance; a button with
     expanded/collapsed state for TalkBack; the bar and each ring report
     themselves as progress. Green is `Fob.green` (not the brighter
     `greenFill`), which keeps 3:1 against the line colour in light mode.
-51. **A payment's own screen takes its status from Rust**
+53. **A payment's own screen takes its status from Rust**
     (`activity::status`): Activity's words while it waits ("Sending",
     "On the way", "Confirming · 3 of 10", "Not ready · 3 of 10"), then
     "Confirmed · 24". The app's `settled` flag went with it.
-52. **The address pattern (`pattern`)**: dots on a 5 × 5 grid, mirrored
+54. **The address pattern (`pattern`)**: dots on a 5 × 5 grid, mirrored
     left to right, in one of eight colours, on a white badge; no words, and
     only Fob draws it. Shown beside the address on Receive, under the
     expanded QR, and on the confirm screen before sending, so payer and
@@ -286,7 +286,7 @@ Calls made while building the first version, with why. Newest last.
     8 × ~32,000 patterns a deliberately made look-alike address is cheap to
     find, so it catches mistakes and lazy swaps, and the confirm screen
     still shows the address.
-53. **Its derivation**, exactly, so another app could draw the same:
+55. **Its derivation**, exactly, so another app could draw the same:
     `h = Keccak-256(address as UTF-8 bytes)` (Monero's Keccak, from the
     `sha3` crate already in the tree through monero-oxide, 0.10.9; not
     SHA3-256); `cells = (h[0] | h[1] << 8) & 0x7FFF`, bit `3 × row +
@@ -299,12 +299,12 @@ Calls made while building the first version, with why. Newest last.
     `5AQmdbMiSRLJQqGGeVA2aMPoyRqR64sTb9BHKWdi8nBpTJTrRBsgffvPBsdm5JeSG6MRvG5SBPuNZtJjqDkJXapj5S6QWVc`
     gives cells 27718, colour 2; the empty string 0x52c5, colour 6;
     `fob-17` (2 cells at first) 28262, colour 2 after hashing again.
-54. **Drawn**: grid side 66% of the badge, centred, each dot 84% of its
+56. **Drawn**: grid side 66% of the badge, centred, each dot 84% of its
     cell, so the corner dots sit inside the circle; palette by index
     #B34700, #1F7A45, #2F5AA8, #7A3FA0, #A3324A, #1D6F7A, #5B5F17,
     #3D3A8C. The badge stays white in dark mode, with a 1 dp ring in the
     line colour so it doesn't vanish on a white card.
-55. **Receive, second version.** The code sits on a white card (20 dp
+57. **Receive, second version.** The code sits on a white card (20 dp
     padding, 14 dp corners, no icon in the middle, about 220 dp) with a
     round 32 dp button on its corner; it or the code opens the code full
     screen: white in both themes, the amount large with the note under it,
@@ -313,13 +313,13 @@ Calls made while building the first version, with why. Newest last.
     setting, put back after; no permission needed). The 32 dp button is
     below the 48 dp touch size, as drawn, since the whole code is a target
     too.
-56. **The address in full, in groups of five (`uri::address_groups`)**:
+58. **The address in full, in groups of five (`uri::address_groups`)**:
     19 groups for a 95-character address, an integrated one split the
     same way with its last group shorter; the first, middle (index
     count ÷ 2) and last are highlighted, in two new theme roles
     (`addressMark` #FBE3CC / #4A2A12, `onAddressMark` #7A2F00 / #FFC9A0),
     bold. The four-character grouping it replaces (`full`, `Mono`) is gone.
-57. **A note for the payer** goes into the code as `tx_description`, the
+59. **A note for the payer** goes into the code as `tx_description`, the
     name the Monero URI scheme and other wallets use. Rust builds the code
     (`uri::receive`, replacing `payment_code`): values percent-encoded
     except RFC 3986's unreserved characters, so a space is `%20` and a `+`
@@ -332,7 +332,7 @@ Calls made while building the first version, with why. Newest last.
 
 ## Fourth round: prices
 
-58. **Provider and transport are chosen apart (`price`).** A provider is a
+60. **Provider and transport are chosen apart (`price`).** A provider is a
     trait, `price::Source` (its name, the currencies it lists, the price
     now, daily prices over a range, how far back it reaches); the setting
     names one through `price::Provider`, an enum dispatching to it, so the
@@ -346,7 +346,7 @@ Calls made while building the first version, with why. Newest last.
     provider (asking the Monokulo app on the phone, through its app
     integration, for the price its till uses) has its marked place on
     `Provider`; it isn't built.
-59. **Kraken (`price::kraken`).** Public REST, no key: `Ticker` for now (the
+61. **Kraken (`price::kraken`).** Public REST, no key: `Ticker` for now (the
     last trade, `c[0]`), `OHLC` at 1440 minutes for history. Kraken lists
     XMR in two currencies of money, USD (`XMRUSD`, answered as `XXMRZUSD`)
     and EUR (`XMREUR`, `XXMRZEUR`), checked against `AssetPairs` on
@@ -356,7 +356,7 @@ Calls made while building the first version, with why. Newest last.
     without trades. OHLC returns at most 720 days; older is "not
     available". One live test, ignored like the node tests, asks Kraken
     once each way; it passed on 2026-10-31.
-60. **What a price request may say.** Nothing at all while "Show prices" is
+62. **What a price request may say.** Nothing at all while "Show prices" is
     off. Only the pair, never anything of the wallet, with
     `User-Agent: Fob` and reqwest's bare defaults (no cookies). Never a
     price for a payment's moment: history is always the provider's whole
@@ -366,10 +366,10 @@ Calls made while building the first version, with why. Newest last.
     price is asked at most every 5 minutes while Fob is on screen (a task
     started and stopped with the screen, woken at once by a price setting
     changing) and on pull to refresh, at most once a minute.
-61. **Prices are whole numbers**: millionths of the currency per XMR, from
+63. **Prices are whole numbers**: millionths of the currency per XMR, from
     the decimal text without going through floats. Values round half up to
     the cent. A current price older than an hour isn't shown or recorded.
-62. **A payment's price is recorded with it in the wallet file**
+64. **A payment's price is recorded with it in the wallet file**
     (`price_records`, by transaction, one record per currency: currency,
     price, provider, when the price is from, and whether it is a day's).
     When a payment is first seen (a sync step, the pool, sending) it takes
@@ -383,7 +383,7 @@ Calls made while building the first version, with why. Newest last.
     oldest asked dropped). A wallet file from before prices opens with them
     on, in dollars, from Kraken over the internet (serde defaults), as
     tested.
-63. **Money is written one way whatever the phone's language**: the symbol
+65. **Money is written one way whatever the phone's language**: the symbol
     before for the dollar and the euro ("$412.06", "€12.50"), otherwise the
     code after ("412.06 GBP"); a point before the cents, commas between
     thousands, always the cents. Typed money takes "12.5", "12,50" (a comma
@@ -391,7 +391,7 @@ Calls made while building the first version, with why. Newest last.
     separators, no more decimals than the currency has. Money to XMR uses
     as few decimals (at least 4) as still come to the same cents, so a
     code asks for "0.1204", not "0.120409391932".
-64. **Settings.** The "Theme" card became "Display": the three theme
+66. **Settings.** The "Theme" card became "Display": the three theme
     choices, then Currency (the provider's list, in a dialog; default USD)
     and "Show amounts in", XMR | USD. A new "Prices" card: "Show prices"
     (on by default; "Off: Fob never asks for a price") and "Price source"
@@ -400,11 +400,11 @@ Calls made while building the first version, with why. Newest last.
     available yet"; Rust refuses it as well. All of it lives in the wallet
     file with the rest of the wallet's settings, so each wallet (each
     network) has its own; Rust writes the source's words.
-65. **One segmented control (`Segmented`)** for every choice between XMR
+67. **One segmented control (`Segmented`)** for every choice between XMR
     and a currency: a sunken track, the chosen option filled orange
     (#FF6600) with #111111 text, the others clear with muted text, as asked.
     No outline.
-66. **Home's balance** shows what it's worth now under the XMR, or first
+68. **Home's balance** shows what it's worth now under the XMR, or first
     with the XMR under it when amounts show in the currency first; tapping
     it swaps them, saving the same setting. Nothing extra shows without a
     current price (prices off, none asked within the hour, a failed
@@ -414,16 +414,16 @@ Calls made while building the first version, with why. Newest last.
     not ready yet shows its value now beside the XMR. The price task runs
     while Fob is on screen and stops with it, so the background sync never
     asks for prices; pull to refresh asks for both blocks and the price.
-67. **Receive takes an amount in money.** With prices on and a current
+69. **Receive takes an amount in money.** With prices on and a current
     price, the field starts in the currency ("$" before what's typed) with
     a USD | XMR switch inside it at the right; under it Rust's "The code
     asks for 0.1204 XMR · 1 XMR = $166.10". Switching converts what's typed
     (Rust, at the current price). Without a price: XMR only, no switch, and
     an amount typed in money is cleared if the price goes. The code always
-    asks in XMR (`tx_amount`, item 63's rounding); the expanded code shows
+    asks in XMR (`tx_amount`, item 65's rounding); the expanded code shows
     "$20.00" large and "0.1204 XMR · note" under it. `receive_code` moved
     onto the wallet (it needs the price); the free function went.
-68. **A payment's own screen (`activity::detail`, `Wallet::payment`)** for
+70. **A payment's own screen (`activity::detail`, `Wallet::payment`)** for
     every row without a receipt: the signed amount with every digit and
     "XMR", "Today 08:40 · note" (sentence-case dates: "Yesterday", "27 Oct",
     "27 Oct 2025"); "Worth now" and "When received" / "When sent" side by
@@ -439,20 +439,20 @@ Calls made while building the first version, with why. Newest last.
     A receipt row still opens the receipt, now with the same boxes and
     details under it. The app's Activity record lost what only the old
     screen used (fee, to, time, confirmations, pending, status text).
-69. **Notes stay with payments.** The note typed on Receive is kept for
+71. **Notes stay with payments.** The note typed on Receive is kept for
     that address (by index) when the screen closes or a new address is
     taken, if not blank; a payment to the address shows it. A payment code's
     description is kept with the payment sent (`Sent::note`). Both are new
     optional fields in the wallet file. A note belongs to an address, not a
     payment: two payments to one address share it.
-70. **Sending shows money too.** The confirm screen shows the amount's
+72. **Sending shows money too.** The confirm screen shows the amount's
     value now under it (not for a receipt, whose total already leads), and
     the fee and total each with theirs, at the current price; nothing when
     there is none.
 
 ## Onion addresses
 
-71. **No `.onion` host is ever looked up.** Fob has no Tor transport, so a
+73. **No `.onion` host is ever looked up.** Fob has no Tor transport, so a
     node or ZMQ publisher on an onion service would have been resolved
     through the phone's DNS, telling the resolver which onion service the
     wallet uses (step 2's finding). Rust now refuses one with "Fob can't
@@ -469,7 +469,7 @@ Calls made while building the first version, with why. Newest last.
 
 ## Fifth round: splitting up, loose ends
 
-72. **Receive's note is cut to what a code holds (`uri::fit_note`)**: at
+74. **Receive's note is cut to what a code holds (`uri::fit_note`)**: at
     most 120 characters and 360 bytes once percent-encoded (120 characters
     that each need encoding), cut at a character's end, so emoji and other
     scripts that take more room stop sooner (34 of "☕😀" alternating). The
@@ -480,7 +480,7 @@ Calls made while building the first version, with why. Newest last.
     each change (`fit_receive_note`) and shows "That's as long as a note
     can be" when what was typed was cut; `payment_uri` and `receive` cut as
     well, whatever reaches them.
-73. **Activity's "Not ready" follows the not-ready card's rule.** Each row
+75. **Activity's "Not ready" follows the not-ready card's rule.** Each row
     carries the confirmations it needs (`Activity::needed`): for a payment
     in, the most any of its outputs needs to be spent (`Owned::needed`:
     10, 60 for a mined reward, more for an output locked to a later
@@ -488,7 +488,7 @@ Calls made while building the first version, with why. Newest last.
     at 24 confirmations reads "Not ready · 24 of 60" in Activity and on its
     own screen, whose bar is then confirmations ÷ 60, until it can be
     spent; no row says "Confirmed" while the card still lists its money.
-74. **Split up pays one subaddress of this wallet (`split`,
+76. **Split up pays one subaddress of this wallet (`split`,
     `Wallet::prepare_split`).** The pieces all go to one address kept for
     splits (`split_index` in the wallet file): the next unused index the
     first time a split is prepared, the same one after. Receive never hands
@@ -501,7 +501,7 @@ Calls made while building the first version, with why. Newest last.
     address. It reuses the payment flow: the confirm screen (title "Split
     up", To "This wallet", the pieces listed by note, no address pattern
     since there's no one to compare with), swipe and fingerprint.
-75. **At most 15 pieces**: Monero's 16 outputs a transaction, one of them
+77. **At most 15 pieces**: Monero's 16 outputs a transaction, one of them
     the change, which monero-oxide always adds (when nothing is left over it
     is a zero-amount change output, which also hides that it was exact).
     Rust refuses a 16th piece ("15 pieces is the most one split can make")
@@ -509,21 +509,21 @@ Calls made while building the first version, with why. Newest last.
     spend ("Not enough ready to spend for another $20 piece"); the screen
     shows the words for 3 s. Ready to spend means the outputs `Balance`
     counts as unlocked, spent largest first as `prepare` chooses them.
-76. **Notes.** With prices on and a current price: 5, 10, 20, 50, 100 and
+78. **Notes.** With prices on and a current price: 5, 10, 20, 50, 100 and
     200 of the currency ("$20", "20 GBP" for one without a symbol), each set
     in XMR at today's price with as few decimals as still come to the same
     cents (`price::to_atomic`), so the pieces are XMR and their value moves
     from then on, as the footer says. Without a price: 0.01, 0.05, 0.1,
     0.25, 0.5 and 1 XMR: the same six-tile grid, and roughly the same
     spread as the money notes at today's prices.
-77. **The fee shown is an estimate**: "Network fee about $0.03", from a
+79. **The fee shown is an estimate**: "Network fee about $0.03", from a
     weight formula (`split::weight`: CLSAG inputs, an additional key per
     output past two, a Bulletproof+ padded to a power of two with Monero's
     clawback) at the node's fee rate, asked when the screen opens and kept
     (also by every `prepare`), or Monero's usual 20,000 piconero per unit
     of weight until then. The confirm screen shows the real fee. Under a
     cent reads "less than $0.01".
-78. **The suggestion (`split::suggest`)**, deterministic: from 3 or more
+80. **The suggestion (`split::suggest`)**, deterministic: from 3 or more
     payments out in the last 30 days (splits not counted), each payment
     counts for the smallest note that covers it (the largest note for one
     bigger than all); pieces are then added one at a time to the note
@@ -535,7 +535,7 @@ Calls made while building the first version, with why. Newest last.
     largest three whose 12 fit, else as many as fit of the smallest three,
     with "Not enough payments yet to learn from, so here's an even mix.
     Change it to suit." Either way the rest stays as one piece.
-79. **The screen** keeps only the counts; every word, tile label, the
+81. **The screen** keeps only the counts; every word, tile label, the
     accessibility labels ("Add a $20 piece, 4 so far", "Remove a $20
     piece"), the bar (each piece's share of the width and the square root
     of its value for its height, what's left over drawn in the track
@@ -543,7 +543,7 @@ Calls made while building the first version, with why. Newest last.
     Entries: Activity's header ("Split up", orange text) and, while the
     not-ready card is open, "Split up your balance" under its pieces; only
     in a wallet that can spend. Clear empties the counts.
-80. **A split in Activity**: titled "Split up", its line "12 pieces · 10:15"
+82. **A split in Activity**: titled "Split up", its line "12 pieces · 10:15"
     (with "Confirming · 3 of 10" first while it confirms), and its amount
     the fee, since only the fee left the wallet; the pieces' total is in
     the wallet file (`Sent::pieces`, `Sent::amount`). While it isn't mined
