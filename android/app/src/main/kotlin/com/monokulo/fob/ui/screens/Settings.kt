@@ -158,7 +158,8 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 SectionLabel("Display")
                 Card {
                     ValueRow("Theme", theme.label) { choosing = Pick.THEME }
-                    prices?.let { p ->
+                    // Only while prices show: with them off there's no money to pick or put first.
+                    prices?.takeIf { it.on }?.let { p ->
                         val name = p.currencies.firstOrNull { it.code == p.currency }?.name
                         ValueRow("Currency", name?.ifEmpty { null } ?: p.currency) { choosing = Pick.CURRENCY }
                         Row(
