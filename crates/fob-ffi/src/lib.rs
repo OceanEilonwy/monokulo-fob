@@ -887,19 +887,12 @@ impl FobWallet {
 
     /// Builds a payment for the confirm screen. `amount` is text as typed
     /// in the amount field, in money when `in_fiat` (converted at the
-    /// current price) or XMR; `receipt_json` comes from the scanned
-    /// `PaymentRequest`. `note` (typed on Send, or the payment code's
-    /// description) is kept with the payment.
-    pub async fn prepare(
-        &self,
-        to: String,
-        amount: String,
-        in_fiat: bool,
-        receipt_json: Option<String>,
-        note: Option<String>,
-        recipient_name: Option<String>,
-    ) -> Result<Prepared> {
-        let p = self.inner.prepare_typed(&to, &amount, in_fiat, receipt_json, note, recipient_name).await?;
+    /// current price) or XMR. `note` (typed on Send, or the payment code's
+    /// description) is kept with the payment. `code` is the payment code
+    /// the form was filled from, as read: its name goes with the payment
+    /// while `to` is its address, its receipt while the amount is its too.
+    pub async fn prepare(&self, to: String, amount: String, in_fiat: bool, note: Option<String>, code: Option<String>) -> Result<Prepared> {
+        let p = self.inner.prepare_typed(&to, &amount, in_fiat, note, code.as_deref()).await?;
         Ok(prepared(&self.inner, p).await)
     }
 
@@ -968,6 +961,8 @@ impl FobWallet {
             label: f.label,
             switch_label: f.switch_label,
             sendable: f.sendable,
+            for_text: f.for_text,
+            for_in_fiat: f.for_in_fiat,
         }
     }
 
@@ -1574,6 +1569,11 @@ pub struct AmountEntry {
     pub switch_label: Option<String>,
     /// What's typed comes to more than nothing: Send can review it.
     pub sendable: bool,
+    /// The text and unit it was made for: it stands for the field only
+    /// while they're what the field holds. Nothing is sent, shared or
+    /// copied from one that's behind (the chip just tapped, say).
+    pub for_text: String,
+    pub for_in_fiat: bool,
 }
 
 /// Someone this wallet paid before, on Send's sheet.

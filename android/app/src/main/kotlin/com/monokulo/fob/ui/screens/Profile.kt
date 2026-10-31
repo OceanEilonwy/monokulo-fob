@@ -104,7 +104,6 @@ import uniffi.fob.ScannedProfile
 import uniffi.fob.ShareKind
 import uniffi.fob.ShareLine
 import uniffi.fob.contactInitial
-import uniffi.fob.parsePayment
 import uniffi.fob.profileCodeProblem
 import uniffi.fob.qrCode
 
@@ -422,7 +421,6 @@ private fun TouchView(profile: Profile?, onBack: () -> Unit) {
  */
 @Composable
 private fun SwappedView(model: WalletModel, nav: Nav, profile: Profile?, done: Swapped) {
-    val network by model.network.collectAsState()
     val scope = rememberCoroutineScope()
     val found = done.profile
     var asking by remember { mutableStateOf(false) }
@@ -477,7 +475,7 @@ private fun SwappedView(model: WalletModel, nav: Nav, profile: Profile?, done: S
             Box(Modifier.align(Alignment.BottomCenter)) {
                 ProfileFound(
                     model, nav, done.text, found,
-                    onPay = { nav.replace(Screen.Send(draft = SendDraft(found.address, request = parsePayment(network, done.text), read = done.text))) },
+                    onPay = { nav.replace(Screen.Send(draft = SendDraft(found.address, code = done.text, read = done.text))) },
                     onClose = { asking = false }, startAsking = true, openContact = { nav.replace(Screen.Contact(it)) },
                 )
             }
@@ -695,7 +693,7 @@ fun ProfileScanScreen(model: WalletModel, nav: Nav) {
                 ProfileFound(
                     model, nav, text, s,
                     // Send's form, filled with their address and the code's name, the camera not taking the code again.
-                    onPay = { nav.replace(Screen.Send(draft = SendDraft(s.address, request = parsePayment(network, text), read = text))) },
+                    onPay = { nav.replace(Screen.Send(draft = SendDraft(s.address, code = text, read = text))) },
                     onClose = { found = null },
                 )
             }

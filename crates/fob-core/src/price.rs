@@ -360,11 +360,17 @@ pub struct AmountField {
     pub switch_label: Option<String>,
     /// What's typed comes to more than nothing: Send can review it.
     pub sendable: bool,
+    /// The text and unit asked about: the field is only this while they're
+    /// still what it holds (a switch changes both before a new one comes),
+    /// so nothing is sent or shared from one that's behind.
+    pub for_text: String,
+    pub for_in_fiat: bool,
 }
 
 /// The field for `text` typed in money (`in_fiat`) or XMR, at `price` when
 /// there is one (without, it takes XMR only).
 pub fn amount_field(text: &str, in_fiat: bool, price: Option<(&Currency, u64)>) -> AmountField {
+    let (for_text, for_in_fiat) = (text.to_owned(), in_fiat);
     let text = text.trim();
     let in_fiat = in_fiat && price.is_some();
     // "US dollars", "XMR".
@@ -400,6 +406,8 @@ pub fn amount_field(text: &str, in_fiat: bool, price: Option<(&Currency, u64)>) 
         line: if valid { line } else { Some("That isn't an amount".into()) },
         label: format!("Amount in {}", unit_name(in_fiat)),
         switch_label: price.map(|_| format!("Amount in {}. Switch to {}", unit_name(in_fiat), unit_name(!in_fiat))),
+        for_text,
+        for_in_fiat,
     }
 }
 
@@ -631,6 +639,9 @@ mod tests {
         assert!(sendable("0.1204", false, Some((&usd, p))));
         // Typed in money without a price, it's read as XMR.
         assert!(sendable("20", true, None));
+        // It says what it was asked about, as asked.
+        let f = amount_field(" 20", true, None);
+        assert_eq!((f.for_text.as_str(), f.for_in_fiat, f.in_fiat), (" 20", true, false));
         for (text, in_fiat) in [("", true), (" ", false), ("0", false), ("0.00", true), ("20.123", true), ("abc", false)] {
             assert!(!sendable(text, in_fiat, Some((&usd, p))), "{text:?}");
         }
