@@ -570,9 +570,7 @@ mod tests {
     use crate::{contacts, keys::Keys};
 
     fn webp(len: usize) -> Vec<u8> {
-        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
-        bytes.resize(len, 9);
-        bytes
+        crate::contacts::test_webp(len, 96)
     }
 
     fn largest(keys: &Keys) -> String {
