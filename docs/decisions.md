@@ -414,3 +414,38 @@ Calls made while building the first version, with why. Newest last.
     not ready yet shows its value now beside the XMR. The price task runs
     while Fob is on screen and stops with it, so the background sync never
     asks for prices; pull to refresh asks for both blocks and the price.
+67. **Receive takes an amount in money.** With prices on and a current
+    price, the field starts in the currency ("$" before what's typed) with
+    a USD | XMR switch inside it at the right; under it Rust's "The code
+    asks for 0.1204 XMR · 1 XMR = $166.10". Switching converts what's typed
+    (Rust, at the current price). Without a price: XMR only, no switch, and
+    an amount typed in money is cleared if the price goes. The code always
+    asks in XMR (`tx_amount`, item 63's rounding); the expanded code shows
+    "$20.00" large and "0.1204 XMR · note" under it. `receive_code` moved
+    onto the wallet (it needs the price); the free function went.
+68. **A payment's own screen (`activity::detail`, `Wallet::payment`)** for
+    every row without a receipt: the signed amount with every digit and
+    "XMR", "Today 08:40 · note" (sentence-case dates: "Yesterday", "27 Oct",
+    "27 Oct 2025"); "Worth now" and "When received" / "When sent" side by
+    side, each its value and rate or "Not available"; "Up $3.63 (4.6%)
+    since then" in green, or "Down …" muted, when both are known in the
+    same currency (tenths of a percent, rounded half up); then Status with
+    a 4 dp green bar while under 10 confirmations, From ("Address 3 ·
+    note", "Main address") or To (the short address), Pieces ("2 · 0.3 +
+    0.2", largest first, "+ 2 more" past four; "Pieces spent" for a
+    payment out), the fee of a payment out, and the transaction id cut to
+    its ends with Copy. "Prices from Kraken." under it when a price shows.
+    With prices off the two boxes don't show at all. Every word is Rust's.
+    A receipt row still opens the receipt, now with the same boxes and
+    details under it. The app's Activity record lost what only the old
+    screen used (fee, to, time, confirmations, pending, status text).
+69. **Notes stay with payments.** The note typed on Receive is kept for
+    that address (by index) when the screen closes or a new address is
+    taken, if not blank; a payment to the address shows it. A payment code's
+    description is kept with the payment sent (`Sent::note`). Both are new
+    optional fields in the wallet file. A note belongs to an address, not a
+    payment: two payments to one address share it.
+70. **Sending shows money too.** The confirm screen shows the amount's
+    value now under it (not for a receipt, whose total already leads), and
+    the fee and total each with theirs, at the current price; nothing when
+    there is none.

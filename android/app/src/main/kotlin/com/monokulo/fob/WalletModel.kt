@@ -15,6 +15,7 @@ import uniffi.fob.Balance
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
 import uniffi.fob.NotReady
+import uniffi.fob.PaymentDetail
 import uniffi.fob.PriceSettings
 import uniffi.fob.PriceTransport
 import uniffi.fob.Prepared
@@ -131,10 +132,28 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return
         _prices.value = wallet.priceSettings()
         _balance.value = wallet.balance()
-        val now = System.currentTimeMillis()
-        val (seconds, offset, hours24) = Triple((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+        val (seconds, offset, hours24) = clock()
         _activity.value = wallet.activityDays(seconds, offset, hours24)
         _notReady.value = wallet.notReady(seconds, offset, hours24)
+    }
+
+    /** The phone's clock as Rust takes it: now, its UTC offset, and whether it shows 24 hours. */
+    private fun clock(): Triple<ULong, Int, Boolean> {
+        val now = System.currentTimeMillis()
+        return Triple((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+    }
+
+    /** A payment's own screen, every word from Rust; null if there's no such payment. */
+    suspend fun payment(tx: String): PaymentDetail? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.payment(tx, seconds, offset, hours24)
+    }
+
+    /** Keeps the note typed on Receive with the address it was for; outlives the screen. */
+    fun rememberReceiveNote(index: UInt, note: String) {
+        val wallet = _wallet.value ?: return
+        scope.launch { runCatching { wallet.rememberReceiveNote(index, note) } }
     }
 
     /** "Show prices"; off, Fob never asks for one. */
@@ -248,8 +267,9 @@ class WalletModel(private val app: Application) {
         File(path(network)).delete()
     }
 
-    suspend fun prepare(to: String, amount: String, receiptJson: String?): Prepared =
-        requireNotNull(_wallet.value).prepare(to, amount, receiptJson)
+    /** [note]: the payment code's description, kept with the payment. */
+    suspend fun prepare(to: String, amount: String, receiptJson: String?, note: String?): Prepared =
+        requireNotNull(_wallet.value).prepare(to, amount, receiptJson, note)
 
     suspend fun send(prepared: Prepared): String {
         val hash = requireNotNull(_wallet.value).send(prepared.id)

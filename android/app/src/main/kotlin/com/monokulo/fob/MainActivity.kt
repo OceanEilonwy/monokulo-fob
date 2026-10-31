@@ -32,6 +32,7 @@ import com.monokulo.fob.ui.screens.ConfirmScreen
 import com.monokulo.fob.ui.screens.HomeScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
+import com.monokulo.fob.ui.screens.PaymentScreen
 import com.monokulo.fob.ui.screens.ReceiptScreen
 import com.monokulo.fob.ui.screens.ReceiveScreen
 import com.monokulo.fob.ui.screens.RestoreChooseScreen
@@ -68,6 +69,8 @@ sealed interface Screen {
     data class Confirm(val prepared: Prepared, val note: String? = null) : Screen
     data class Paid(val prepared: Prepared, val tx: String) : Screen
     data class Receipt(val activity: Activity) : Screen
+    /** A payment without a receipt. */
+    data class Payment(val activity: Activity) : Screen
     data object Settings : Screen
     data object ShowSeed : Screen
     data object ShowWalletCode : Screen
@@ -193,6 +196,7 @@ class MainActivity : FragmentActivity() {
             is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity)
             is Screen.Paid -> PaidScreen(nav, screen.prepared)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
+            is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
             Screen.Settings -> SettingsScreen(model, nav)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
