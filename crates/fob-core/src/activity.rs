@@ -112,6 +112,14 @@ pub fn status(activity: &Activity) -> String {
     waiting(activity).unwrap_or_else(|| format!("Confirmed · {}", activity.confirmations))
 }
 
+/// A day that isn't today or yesterday: "27 Oct", "27 Oct 2025".
+fn date(day: i64, today: i64) -> String {
+    let (year, month, d) = civil(day);
+    let name = &MONTHS[month - 1];
+    let name = format!("{}{}", &name[..1], name[1..].to_lowercase());
+    if year == civil(today).0 { format!("{d} {name}") } else { format!("{d} {name} {year}") }
+}
+
 /// When, for a payment's own screen: "Today 08:40", "Yesterday 08:40",
 /// "27 Oct 08:40", "27 Oct 2025 08:40".
 pub fn when(time: u64, clock: Clock) -> String {
@@ -120,14 +128,17 @@ pub fn when(time: u64, clock: Clock) -> String {
     let date = match day {
         _ if day == today => "Today".to_owned(),
         _ if day == today - 1 => "Yesterday".to_owned(),
-        _ => {
-            let (year, month, d) = civil(day);
-            let name = &MONTHS[month - 1];
-            let name = format!("{}{}", &name[..1], name[1..].to_lowercase());
-            if year == civil(today).0 { format!("{d} {name}") } else { format!("{d} {name} {year}") }
-        }
+        _ => date(day, today),
     };
     format!("{date} {}", time_of_day(seconds, clock))
+}
+
+/// When, short, for a line under something else: the time today ("08:40"),
+/// the date before ("22 Oct", "22 Oct 2025").
+pub(crate) fn short_when(time: u64, clock: Clock) -> String {
+    let (day, seconds) = local(time, clock);
+    let (today, _) = local(clock.now, clock);
+    if day == today { time_of_day(seconds, clock) } else { date(day, today) }
 }
 
 /// The words for "Not available", where a price can't be had.

@@ -252,8 +252,10 @@ pub struct NotReadyPiece {
     pub needed: u64,
     /// `confirmations / needed`, for its ring.
     pub progress: f32,
-    /// "Received · 08:40", "Change · Corner Café".
+    /// "Received · 08:40", "Change · Corner Café", "Split up · 08:31".
     pub source: String,
+    /// "3 of 10"
+    pub confirmations_text: String,
     /// "09:02"
     pub ready: String,
     /// "in 14 min"
@@ -307,20 +309,75 @@ impl From<not_ready::NotReady> for NotReady {
             description: n.description,
             sums: n.sums.into_iter().map(|s| NotReadySum { label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
             progress: n.progress,
-            pieces: n
-                .pieces
-                .into_iter()
-                .map(|p| NotReadyPiece {
-                    amount_text: p.amount,
-                    fiat_text: p.fiat,
-                    confirmations: p.confirmations,
-                    needed: p.needed,
-                    progress: p.progress,
-                    source: p.source,
-                    ready: p.ready,
-                    eta: p.eta,
-                })
-                .collect(),
+            pieces: n.pieces.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<not_ready::PieceView> for NotReadyPiece {
+    fn from(p: not_ready::PieceView) -> Self {
+        NotReadyPiece {
+            amount_text: p.amount,
+            fiat_text: p.fiat,
+            confirmations: p.confirmations,
+            needed: p.needed,
+            progress: p.progress,
+            source: p.source,
+            confirmations_text: p.confirmations_text,
+            ready: p.ready,
+            eta: p.eta,
+        }
+    }
+}
+
+/// A coin ready to spend.
+#[derive(uniffi::Record)]
+pub struct Coin {
+    /// "1.2"
+    pub amount_text: String,
+    /// Worth now, with prices on: "$199.27".
+    pub fiat_text: Option<String>,
+    /// "Received · 22 Oct", "Split up · 08:31", "Change · Ridge Hardware".
+    pub source: String,
+}
+
+/// The Coins screen, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct Coins {
+    /// "Your 2.4813 XMR is held as 8 coins. A payment uses whole coins; …"
+    pub intro: String,
+    /// Ready and not ready, in atomic units: the bar's two parts.
+    pub ready: u64,
+    pub not_ready: u64,
+    /// The not-ready part's weighted progress, 0 to 1.
+    pub progress: f32,
+    /// "Ready · 5 coins"
+    pub ready_title: String,
+    /// "1.8592 · $308.70"
+    pub ready_sum: String,
+    /// Largest first.
+    pub ready_coins: Vec<Coin>,
+    /// "Not ready · 3 coins"
+    pub not_ready_title: String,
+    /// "all by 09:02"
+    pub not_ready_sum: String,
+    /// Soonest ready first.
+    pub not_ready_coins: Vec<NotReadyPiece>,
+}
+
+impl From<not_ready::Coins> for Coins {
+    fn from(c: not_ready::Coins) -> Self {
+        Coins {
+            intro: c.intro,
+            ready: c.ready,
+            not_ready: c.not_ready,
+            progress: c.progress,
+            ready_title: c.ready_title,
+            ready_sum: c.ready_sum,
+            ready_coins: c.ready_coins.into_iter().map(|c| Coin { amount_text: c.amount, fiat_text: c.fiat, source: c.source }).collect(),
+            not_ready_title: c.not_ready_title,
+            not_ready_sum: c.not_ready_sum,
+            not_ready_coins: c.not_ready_coins.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -728,6 +785,12 @@ impl FobWallet {
     /// it will be; `None` when all of it is. The clock as for `activity_days`.
     pub async fn not_ready(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<NotReady> {
         self.inner.not_ready(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
+    }
+
+    /// Every coin, ready to spend or not yet, for the Coins screen; the
+    /// clock as for `activity_days`.
+    pub async fn coins(&self, now: u64, utc_offset: i32, hours_24: bool) -> Coins {
+        self.inner.coins(activity::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
     pub fn status(&self) -> SyncStatus {

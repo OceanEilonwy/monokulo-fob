@@ -98,6 +98,10 @@ object Icons {
     const val warning = "M12 3l9.5 17h-19L12 3Z M12 10v4.5 M12 17.5v.5"
     const val check = "M5 12.5l4.5 4.5L19 7.5"
     const val expand = "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"
+    /** Two coins, one behind the other (drawn at stroke 1.8). */
+    const val coins = "M2.5 13a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z M6.5 13a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z M13.2 4.3A6.5 6.5 0 1 1 17.6 16.4"
+    /** One coin splitting into three (drawn at stroke 1.8). */
+    const val split = "M2.5 12a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0 -9 0Z M16.8 5a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 12a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 19a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M11.5 12h5.3 M10.6 9.6l6.5-3.6 M10.6 14.4l6.5 3.6"
 }
 
 @Composable
@@ -173,7 +177,7 @@ fun TopBar(title: String?, onBack: (() -> Unit)?, closeIcon: Boolean = false, ti
 }
 
 @Composable
-fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, height: Dp = 56.dp, leading: String? = null) {
+fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, height: Dp = 56.dp, leading: String? = null, iconWidth: Float = 2f) {
     Row(
         modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2))
             .background(if (enabled) Fob.orange else Fob.sunken)
@@ -182,7 +186,7 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (leading != null) {
-            StrokeIcon(leading, tint = Fob.onOrange)
+            StrokeIcon(leading, tint = Fob.onOrange, width = iconWidth)
             Spacer(Modifier.width(10.dp))
         }
         Text(text, color = if (enabled) Fob.onOrange else Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)

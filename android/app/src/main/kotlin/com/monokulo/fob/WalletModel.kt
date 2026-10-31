@@ -12,6 +12,7 @@ import android.text.format.DateFormat
 import com.monokulo.fob.ui.ThemeChoice
 import uniffi.fob.ActivityDay
 import uniffi.fob.Balance
+import uniffi.fob.Coins
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
 import uniffi.fob.NotReady
@@ -141,6 +142,13 @@ class WalletModel(private val app: Application) {
     private fun clock(): Triple<ULong, Int, Boolean> {
         val now = System.currentTimeMillis()
         return Triple((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
+    }
+
+    /** The Coins screen, every word from Rust; null without a wallet. */
+    suspend fun coins(): Coins? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.coins(seconds, offset, hours24)
     }
 
     /** A payment's own screen, every word from Rust; null if there's no such payment. */

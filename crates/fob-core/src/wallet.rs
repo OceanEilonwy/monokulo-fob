@@ -35,7 +35,7 @@ use crate::{
     error::{FobError, Result},
     keys::{Keys, SeedKind, StoredKeys},
     network::Network,
-    not_ready::{self, NotReady, Piece, Source},
+    not_ready::{self, Coins, NotReady, Piece, Source},
     price::{self, Source as _},
     receipt::ReceiptView,
     split, store,
@@ -754,49 +754,56 @@ impl Wallet {
         balance
     }
 
-    /// Each output not ready to spend yet, the same money
-    /// [`balance`](Wallet::balance) counts as not unlocked: outputs short of
-    /// their confirmations, change from payments not yet mined, and payments
-    /// to this wallet still in the pool (one piece per transaction there).
-    async fn not_ready_pieces(&self) -> (Vec<not_ready::Piece>, u64) {
+    /// Each coin the wallet owns, the same money [`balance`](Wallet::balance)
+    /// counts: those ready to spend (its unlocked outputs), then those not
+    /// ready yet (outputs short of their confirmations, change from payments
+    /// not yet mined, and payments to this wallet still in the pool, one
+    /// piece per transaction there), and the last block's time.
+    async fn coin_pieces(&self) -> (Vec<Piece>, Vec<Piece>, u64) {
         let state = self.inner.state.lock().await;
-        // A payment's name, as Activity titles it.
-        let name = |sent: &Sent| match sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok()) {
-            Some(receipt) => ReceiptView::from(&receipt).merchant,
-            None if sent.pieces.is_some() => split::TITLE.into(),
-            None => short_address(&sent.to),
+        // Where a payment's own outputs came from: a split, or change named
+        // as Activity titles the payment.
+        let source = |sent: &Sent| match sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok()) {
+            _ if sent.pieces.is_some() => Source::Split,
+            Some(receipt) => Source::Change(Some(ReceiptView::from(&receipt).merchant)),
+            None => Source::Change(Some(short_address(&sent.to))),
         };
-        let mut pieces = vec![];
+        let (mut ready, mut waiting) = (vec![], vec![]);
         for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
             let needed = output.needed();
             let confirmations = confirmations(&state, output.height);
-            if confirmations >= needed {
-                continue;
-            }
             let source = match state.sent.iter().find(|s| s.tx == output.tx) {
-                Some(sent) => Source::Change(Some(name(sent))),
+                Some(sent) => source(sent),
                 None if state.spends.iter().any(|s| s.tx == output.tx) => Source::Change(None),
                 None => Source::Received,
             };
-            pieces.push(Piece { amount: output.amount, confirmations, needed, source, time: output.time });
+            let piece = Piece { amount: output.amount, confirmations, needed, source, time: output.time };
+            if confirmations >= needed { ready.push(piece) } else { waiting.push(piece) }
         }
         for sent in state.sent.iter().filter(|s| s.height.is_none() && s.change > 0) {
             let back = if sent.back.is_empty() { std::slice::from_ref(&sent.change) } else { sent.back.as_slice() };
             for &amount in back {
-                pieces.push(Piece { amount, confirmations: 0, needed: UNLOCK, source: Source::Change(Some(name(sent))), time: sent.time });
+                waiting.push(Piece { amount, confirmations: 0, needed: UNLOCK, source: source(sent), time: sent.time });
             }
         }
         for (amount, seen) in self.inner.pool.lock().expect("pool lock").values() {
-            pieces.push(Piece { amount: *amount, confirmations: 0, needed: UNLOCK, source: Source::Received, time: *seen });
+            waiting.push(Piece { amount: *amount, confirmations: 0, needed: UNLOCK, source: Source::Received, time: *seen });
         }
-        (pieces, state.last_block_time)
+        (ready, waiting, state.last_block_time)
+    }
+
+    /// Every coin, ready or not, as the Coins screen shows it.
+    pub async fn coins(&self, clock: Clock) -> Coins {
+        let (ready, waiting, last_block_time) = self.coin_pieces().await;
+        let price = self.price_now().await;
+        not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), clock)
     }
 
     /// The money not ready yet as Home shows it, beside what's ready to
     /// spend, or `None` when all of it is.
     pub async fn not_ready(&self, clock: Clock) -> Option<NotReady> {
         let ready = self.balance().await.unlocked;
-        let (pieces, last_block_time) = self.not_ready_pieces().await;
+        let (_, pieces, last_block_time) = self.coin_pieces().await;
         let mut summary = not_ready::summarise(pieces, ready, last_block_time, clock)?;
         if let Some((currency, p)) = self.price_now().await {
             for piece in &mut summary.pieces {
@@ -1919,7 +1926,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn money_not_ready_is_found_piece_by_piece() {
+    async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
         let wallet = Wallet::create(&dir("not-ready"), [1; 32], Network::Stagenet).unwrap();
         let owned = |tx: &str, height: u64, amount: u64, coinbase: bool| Owned {
             output: String::new(),
@@ -1958,13 +1965,19 @@ mod tests {
                 owned("change", 99, 40, false),
                 owned("restored", 98, 50, false),
                 Owned { unlock_block: 200, ..owned("locked", 40, 80, false) },
+                owned("split", 60, 25, false),
             ];
-            state.sent = vec![sent("change", Some(99), 40), sent("pending", None, 60), sent("nothing-back", None, 0)];
+            state.sent = vec![
+                sent("change", Some(99), 40),
+                sent("pending", None, 60),
+                sent("nothing-back", None, 0),
+                Sent { pieces: Some(1), ..sent("split", Some(60), 25) },
+            ];
             state.spends = vec![ChainSpend { tx: "restored".into(), height: 98, time: 1_098, fee: 1 }];
         }
         wallet.inner.pool.lock().unwrap().insert("pool".into(), (70, 6_000));
 
-        let (pieces, last) = wallet.not_ready_pieces().await;
+        let (ready, pieces, last) = wallet.coin_pieces().await;
         let shown: Vec<_> = pieces.iter().map(|p| (p.amount, p.confirmations, p.needed, p.source.clone())).collect();
         let to = Some("86Ux … 7kQa".to_owned());
         assert_eq!(
@@ -1991,9 +2004,18 @@ mod tests {
         assert_eq!(lines["mined"], "Not ready · 20 of 60");
         assert_eq!(lines["locked"], "Not ready · 60 of 160");
         assert!(!lines["old"].starts_with("Not ready"), "{}", lines["old"]);
+        // Ready: what the balance counts as unlocked, a split's coin named as one.
+        let shown: Vec<_> = ready.iter().map(|p| (p.amount, p.source.clone())).collect();
+        assert_eq!(shown, [(20, Source::Received), (25, Source::Split)]);
         // The same money the balance counts as not unlocked.
         let balance = wallet.balance().await;
+        assert_eq!(balance.unlocked, ready.iter().map(|p| p.amount).sum::<u64>());
         assert_eq!(balance.total - balance.unlocked, pieces.iter().map(|p| p.amount).sum::<u64>());
+        // The Coins screen counts them all.
+        let coins = wallet.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
+        assert_eq!((coins.ready_coins.len(), coins.not_ready_coins.len()), (2, 7));
+        assert_eq!((coins.ready, coins.not_ready), (balance.unlocked, balance.total - balance.unlocked));
+        assert!(coins.intro.contains("is held as 9 coins"), "{}", coins.intro);
         // Home's sums: ready, not ready, and all of it, the balance.
         let summary = wallet.not_ready(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.unwrap();
         let sums: Vec<_> = summary.sums.iter().map(|s| (s.label.as_str(), s.atomic)).collect();
@@ -2413,7 +2435,7 @@ mod tests {
         assert_eq!(wallet.balance().await.total, 2 * XMR + 5 * XMR + 2 * XMR - 1);
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let pieces = wallet.not_ready(clock).await.unwrap().pieces;
-        assert!(pieces.iter().any(|p| p.source == "Change · Split up"));
+        assert!(pieces.iter().any(|p| p.source.starts_with("Split up · ")));
 
         // Sent with its outputs known: each one shows before it's mined,
         // the same count as after, not one lump.
@@ -2424,7 +2446,7 @@ mod tests {
             state.sent.push(Sent { change: 2 * XMR - 1, height: None, back, ..sent("split", 15 * XMR / 10, t, Some(15)) });
         }
         let summary = wallet.not_ready(clock).await.unwrap();
-        let split: Vec<_> = summary.pieces.iter().filter(|p| p.source == "Change · Split up").collect();
+        let split: Vec<_> = summary.pieces.iter().filter(|p| p.source.starts_with("Split up · ")).collect();
         assert_eq!(split.len(), 16);
         assert_eq!(split.iter().map(|p| p.atomic).sum::<u64>(), 2 * XMR - 1);
         let row = activity::by_day(wallet.activity().await, clock).into_iter().flat_map(|d| d.rows).find(|r| r.activity.tx == "split").unwrap();

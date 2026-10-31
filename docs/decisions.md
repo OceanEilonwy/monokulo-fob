@@ -582,3 +582,23 @@ Calls made while building the first version, with why. Newest last.
     old card's coin by coin list moves to the Coins screen (step 2). The
     Scan to pay camera screen stays in the code, reached by nothing until
     step 4 replaces it with Send's camera.
+87. **The Coins screen** (Round 4 › "Coins A"), from Activity's "Coins"
+    chip (a sunken pill, 40 dp drawn in a 48 dp touch area), for every
+    wallet, view-only ones too; its orange Split up button only in a wallet
+    that can spend. Rust (`not_ready::coins`, `Wallet::coins`) writes it
+    all: the intro ("Your 2.4813 XMR is held as 8 coins. A payment uses
+    whole coins; what's left comes back as a new coin, not ready for about
+    20 minutes.", the minutes from the 10-block lock; "No coins yet. Each
+    payment to this wallet arrives as a coin." when there are none), the
+    bar from Home, "Ready · 5 coins" with "1.8592 · $308.70" and each coin
+    largest first, and "Not ready · 3 coins" with "all by 09:02" and each
+    soonest first ("3 of 10" from Rust too). Its ready coins and Home's
+    "Ready to spend" are the same outputs `Balance` counts as unlocked
+    (`Wallet::coin_pieces` sorts every coin into the two). It refreshes with
+    the wallet and each half minute while some coins wait.
+88. **Where a coin came from**, one rule for ready and not ready:
+    "Received · 08:40" today, "Received · 22 Oct" before (the board's
+    "Received 22 Oct" given the same " · " as every other line, and a year
+    once it's another year's), "Split up · 08:31" for a split's coins and
+    its change (it was "Change · Split up"), "Change · Corner Café" for a
+    payment's change, "Change" when the payment isn't known.
