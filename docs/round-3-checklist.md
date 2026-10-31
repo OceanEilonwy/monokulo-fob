@@ -102,3 +102,11 @@ Form
 
 Dark mode
 - [ ] Sheet on the dark paper, fields on the dark card colour with the outline, text light, handle visible; Paste chip and icon circle sunken, not black; camera overlay text still light; Review orange with dark text.
+
+## Step 5 · Contacts, data
+
+Rust only; checked through the screens of step 6.
+- [ ] Add a contact, close Fob, open it again → the contact, its note, photo and send address are still there.
+- [ ] Pay a contact's send address → Activity's row is titled with the contact's name; the payment's screen says "To  Sam".
+- [ ] Delete that contact → the payment is still in Activity, titled "86Ux … 7kQa" again, and its address is under "Paid, not saved".
+- [ ] A wallet made before this build opens with no contacts and nothing else changed.

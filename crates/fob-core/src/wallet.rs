@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 use crate::{
     activity::{self, Clock, short_address},
     amount,
+    contacts::{self, Contact},
     error::{FobError, Result},
     keys::{Keys, SeedKind, StoredKeys},
     network::Network,
@@ -177,6 +178,9 @@ struct State {
     /// next unused one the first time, never handed out on Receive.
     #[serde(default)]
     split_index: Option<u32>,
+    /// The people this wallet pays.
+    #[serde(default)]
+    contacts: contacts::Book,
 }
 
 #[derive(Serialize)]
@@ -238,6 +242,9 @@ pub struct Activity {
     /// A split, with its number of pieces: money paid back to this wallet,
     /// so `amount` is only the fee, what left.
     pub split: Option<u32>,
+    /// The contact paid, by name, when this wallet sent it to one of a
+    /// contact's addresses.
+    pub contact: Option<String>,
 }
 
 /// Receive's payment code and the words around it.
@@ -452,6 +459,7 @@ impl Wallet {
             price_records: HashMap::new(),
             notes: HashMap::new(),
             split_index: None,
+            contacts: contacts::Book::default(),
         };
         let wallet = Wallet::from_parts(path, file_key, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
@@ -839,6 +847,7 @@ impl Wallet {
                 pieces: vec![],
                 note: None,
                 split: None,
+                contact: None,
             });
         }
         // Spends found on the chain that this wallet didn't send (a restored
@@ -866,6 +875,7 @@ impl Wallet {
                 pieces: vec![],
                 note: None,
                 split: None,
+                contact: None,
             });
         }
         let mut incoming: HashMap<&str, Activity> = HashMap::new();
@@ -887,6 +897,7 @@ impl Wallet {
                 pieces: vec![],
                 note: None,
                 split: None,
+                contact: None,
             });
             row.amount += output.amount;
         }
@@ -910,6 +921,7 @@ impl Wallet {
                     pieces: vec![],
                     note: None,
                     split: None,
+                    contact: None,
                 });
             }
         }
@@ -930,6 +942,9 @@ impl Wallet {
                     let sent = state.sent.iter().find(|s| s.tx == row.tx);
                     row.note = sent.and_then(|s| s.note.clone());
                     row.split = sent.and_then(|s| s.pieces);
+                    if row.split.is_none() {
+                        row.contact = row.to.as_deref().and_then(|to| state.contacts.owner(to)).map(|c| c.name.clone());
+                    }
                 }
             }
         }
@@ -1795,6 +1810,75 @@ impl Wallet {
         activity::paid_before(&self.activity().await, clock)
     }
 
+    /// Contacts by name, those whose name or note has `search` in it.
+    pub async fn contacts(&self, search: &str, clock: Clock) -> Vec<contacts::Row> {
+        let rows = self.activity().await;
+        contacts::list(&self.inner.state.lock().await.contacts, &rows, search, clock)
+    }
+
+    /// The contacts Send's sheet offers: with a send address, the most
+    /// recently paid first.
+    pub async fn contacts_on_send(&self, clock: Clock) -> Vec<contacts::Row> {
+        let rows = self.activity().await;
+        contacts::on_send(&self.inner.state.lock().await.contacts, &rows, clock)
+    }
+
+    /// Addresses paid that are no contact's, for "Paid, not saved".
+    pub async fn paid_not_saved(&self, clock: Clock) -> Vec<activity::PaidBefore> {
+        let rows = self.activity().await;
+        contacts::unsaved(&self.inner.state.lock().await.contacts, &rows, clock)
+    }
+
+    pub async fn contact(&self, id: u64) -> Option<Contact> {
+        self.inner.state.lock().await.contacts.get(id).cloned()
+    }
+
+    /// A contact's card, or `None` once it's deleted.
+    pub async fn contact_card(&self, id: u64, clock: Clock) -> Option<contacts::Card> {
+        let rows = self.activity().await;
+        let state = self.inner.state.lock().await;
+        state.contacts.get(id).map(|c| contacts::card(c, &rows, clock))
+    }
+
+    /// Changes the contacts and saves them, or leaves them as they were when
+    /// `change` refuses.
+    async fn change_contacts<T>(&self, change: impl FnOnce(&mut contacts::Book, Network) -> Result<T>) -> Result<T> {
+        let mut state = self.inner.state.lock().await;
+        let mut book = state.contacts.clone();
+        let done = change(&mut book, self.network())?;
+        state.contacts = book;
+        self.save_state(&state)?;
+        Ok(done)
+    }
+
+    pub async fn add_contact(&self, draft: contacts::Draft) -> Result<Contact> {
+        self.change_contacts(|book, network| book.add(network, draft, now())).await
+    }
+
+    pub async fn edit_contact(&self, id: u64, draft: contacts::Draft) -> Result<Contact> {
+        self.change_contacts(|book, network| book.edit(network, id, draft)).await
+    }
+
+    /// A contact's send address, scanned or pasted (a payment code's
+    /// address is taken).
+    pub async fn set_contact_send_address(&self, id: u64, text: &str) -> Result<Contact> {
+        self.change_contacts(|book, network| book.set_send_address(network, id, text)).await
+    }
+
+    /// Keeps an address paid (from a code named for the contact) with it.
+    pub async fn add_contact_paid_at(&self, id: u64, address: &str) -> Result<Contact> {
+        self.change_contacts(|book, network| book.add_paid_at(network, id, address)).await
+    }
+
+    /// Deletes a contact; payments to its addresses stay.
+    pub async fn delete_contact(&self, id: u64) -> Result<()> {
+        self.change_contacts(|book, _| {
+            book.delete(id);
+            Ok(())
+        })
+        .await
+    }
+
     /// Receive's payment code for `address`, with an amount typed in XMR or,
     /// when `in_fiat`, in money (the code still asks in XMR, converted at
     /// the current price), and a note for the payer.
@@ -2557,6 +2641,59 @@ mod tests {
         store::save(&path, &[1; 32], &file).unwrap();
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(old.price_settings().await, price::Settings::default());
+    }
+
+    #[tokio::test]
+    async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
+        let path = dir("contacts");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let clock = Clock { now: t, utc_offset: 0, hours_24: true };
+        let (sam_address, other) = (wallet.inner.keys.address(7), wallet.inner.keys.address(8));
+        let photo = { let mut p = b"RIFF\0\0\0\0WEBP".to_vec(); p.resize(400, 1); p };
+        let sam = wallet
+            .add_contact(contacts::Draft { name: "Sam".into(), note: Some("Lunch money".into()), photo: Some(photo.clone()), send_address: Some(sam_address.clone()), ..Default::default() })
+            .await
+            .unwrap();
+        // A refused change leaves the file as it was.
+        assert!(wallet.edit_contact(sam.id, contacts::Draft { name: String::new(), ..Default::default() }).await.is_err());
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.sent.push(Sent { tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch".into()), pieces: None, back: vec![] });
+            state.sent.push(Sent { tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, note: None, pieces: None, back: vec![] });
+            wallet.save_state(&state).unwrap();
+        }
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(reopened.contact(sam.id).await, Some(sam.clone()));
+        assert_eq!(reopened.contact(sam.id).await.unwrap().photo, Some(photo));
+        // Activity calls the payment to Sam's address "Sam".
+        let days = activity::by_day(reopened.activity().await, clock);
+        let titles: Vec<_> = days[0].rows.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["Sam", &activity::short_address(&other)]);
+        assert_eq!(reopened.payment("lunch", clock).await.unwrap().party.as_deref(), Some("Sam"));
+        assert_eq!(reopened.contacts("lunch", clock).await[0].line, "Lunch money · paid today");
+        assert_eq!(reopened.contacts_on_send(clock).await[0].line, "Lunch · Today");
+        assert_eq!(reopened.paid_not_saved(clock).await.iter().map(|p| p.address.as_str()).collect::<Vec<_>>(), [other.as_str()]);
+        assert_eq!(reopened.contact_card(sam.id, clock).await.unwrap().paid.len(), 1);
+        // Deleted, the payment stays, shown by its address again.
+        reopened.delete_contact(sam.id).await.unwrap();
+        assert!(reopened.contact_card(sam.id, clock).await.is_none());
+        let rows = Wallet::open(&path, [1; 32]).unwrap().activity().await;
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.contact.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_wallet_file_from_before_contacts_opens_with_none() {
+        let path = dir("contacts-old-file");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        assert!(file["state"].as_object_mut().unwrap().remove("contacts").is_some(), "contacts are saved");
+        store::save(&path, &[1; 32], &file).unwrap();
+        let old = Wallet::open(&path, [1; 32]).unwrap();
+        let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
+        assert!(old.contacts("", clock).await.is_empty());
+        assert_eq!(old.add_contact(contacts::Draft { name: "Mum".into(), ..Default::default() }).await.unwrap().id, 1);
     }
 
     /// Fob has no Tor: an onion node is refused when chosen, and one

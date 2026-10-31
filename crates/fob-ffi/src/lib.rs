@@ -5,7 +5,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use fob_core::{
-    activity, amount, not_ready, pattern,
+    activity, amount, contacts, not_ready, pattern,
     price::{self, Source as _},
     qr, receipt, split, uri,
 };
@@ -38,7 +38,7 @@ impl From<fob_core::FobError> for FobError {
         use fob_core::FobError as E;
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) => {
+            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) => {
                 FobError::Invalid { reason }
             }
             E::Node(_) => FobError::Node { reason },
@@ -995,6 +995,79 @@ impl FobWallet {
         })
     }
 
+    /// Contacts by name, those whose name or note has `search` in it (any
+    /// case; blank for all); the clock as for `activity_days`.
+    pub async fn contacts(&self, search: String, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ContactRow> {
+        self.inner.contacts(&search, activity::Clock { now, utc_offset, hours_24 }).await.into_iter().map(Into::into).collect()
+    }
+
+    /// The contacts Send's sheet offers (with a send address, the most
+    /// recently paid first, at most 3).
+    pub async fn contacts_on_send(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ContactRow> {
+        self.inner.contacts_on_send(activity::Clock { now, utc_offset, hours_24 }).await.into_iter().map(Into::into).collect()
+    }
+
+    /// Addresses paid that are no contact's, newest first, for "Paid, not
+    /// saved".
+    pub async fn paid_not_saved(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<PaidBefore> {
+        self.inner
+            .paid_not_saved(activity::Clock { now, utc_offset, hours_24 })
+            .await
+            .into_iter()
+            .map(|p| PaidBefore { address: p.address, name: p.name, line: p.line })
+            .collect()
+    }
+
+    pub async fn contact(&self, id: u64) -> Option<Contact> {
+        self.inner.contact(id).await.map(Into::into)
+    }
+
+    /// A contact's card, or none once it's deleted.
+    pub async fn contact_card(&self, id: u64, now: u64, utc_offset: i32, hours_24: bool) -> Option<ContactCard> {
+        let c = self.inner.contact_card(id, activity::Clock { now, utc_offset, hours_24 }).await?;
+        Some(ContactCard {
+            contact: c.contact.into(),
+            send_label: c.send_label,
+            send_short: c.send_short,
+            send_button: c.send_button,
+            also_paid_at: c.also_paid_at.into_iter().map(|a| ContactPaidAt { address: a.address, short: a.short, line: a.line }).collect(),
+            also_note: c.also_note,
+            paid_title: c.paid_title,
+            paid: c
+                .paid
+                .into_iter()
+                .map(|p| ContactPayment { activity: activity(p.activity), title: p.title, when: p.when, amount_text: p.amount, fiat_text: p.fiat })
+                .collect(),
+            paid_empty: c.paid_empty,
+        })
+    }
+
+    /// Saves a new contact; throws what's wrong with it.
+    pub async fn add_contact(&self, draft: ContactDraft) -> Result<Contact> {
+        Ok(self.inner.add_contact(draft.into()).await?.into())
+    }
+
+    /// Saves a contact's name, note, photo and send address.
+    pub async fn edit_contact(&self, id: u64, draft: ContactDraft) -> Result<Contact> {
+        Ok(self.inner.edit_contact(id, draft.into()).await?.into())
+    }
+
+    /// A contact's send address, scanned or pasted (an address or a
+    /// payment code).
+    pub async fn set_contact_send_address(&self, id: u64, text: String) -> Result<Contact> {
+        Ok(self.inner.set_contact_send_address(id, &text).await?.into())
+    }
+
+    /// Keeps an address paid, from a code named for the contact, with it.
+    pub async fn add_contact_paid_at(&self, id: u64, address: String) -> Result<Contact> {
+        Ok(self.inner.add_contact_paid_at(id, &address).await?.into())
+    }
+
+    /// Deletes a contact; payments to its addresses stay in Activity.
+    pub async fn delete_contact(&self, id: u64) -> Result<()> {
+        Ok(self.inner.delete_contact(id).await?)
+    }
+
     /// Signs and broadcasts; returns the transaction hash.
     pub async fn send(&self, id: u64) -> Result<String> {
         Ok(self.inner.send(id).await?)
@@ -1064,6 +1137,181 @@ pub struct PaidBefore {
     pub name: String,
     /// "Lunch money · 27 Oct", "Today · $24.50"
     pub line: String,
+}
+
+/// Someone this wallet pays, kept in the wallet file.
+#[derive(uniffi::Record)]
+pub struct Contact {
+    pub id: u64,
+    pub name: String,
+    /// The avatar's letter without a photo: "S".
+    pub initial: String,
+    pub note: Option<String>,
+    /// A small WebP.
+    pub photo: Option<Vec<u8>>,
+    /// Where you pay them.
+    pub send_address: Option<String>,
+    /// Addresses of codes named for them that were paid; never their send
+    /// address.
+    pub also_paid_at: Vec<String>,
+}
+
+impl From<contacts::Contact> for Contact {
+    fn from(c: contacts::Contact) -> Self {
+        Contact { initial: c.initial(), id: c.id, name: c.name, note: c.note, photo: c.photo, send_address: c.send_address, also_paid_at: c.also_paid_at }
+    }
+}
+
+/// A contact as the edit card saves it.
+#[derive(uniffi::Record)]
+pub struct ContactDraft {
+    pub name: String,
+    pub note: Option<String>,
+    /// A WebP that `contact_photo_fits`.
+    pub photo: Option<Vec<u8>>,
+    /// An address or a payment code, as scanned or pasted; blank for none.
+    pub send_address: Option<String>,
+    /// For a new contact saved after paying a code named for them.
+    pub also_paid_at: Vec<String>,
+}
+
+impl From<ContactDraft> for contacts::Draft {
+    fn from(d: ContactDraft) -> Self {
+        contacts::Draft { name: d.name, note: d.note, photo: d.photo, send_address: d.send_address, also_paid_at: d.also_paid_at }
+    }
+}
+
+/// A contact in a list.
+#[derive(uniffi::Record)]
+pub struct ContactRow {
+    pub id: u64,
+    pub name: String,
+    pub initial: String,
+    pub photo: Option<Vec<u8>>,
+    pub send_address: Option<String>,
+    /// "Lunch money · paid 27 Oct" on Contacts, "Lunch · 27 Oct" on Send.
+    pub line: String,
+}
+
+impl From<contacts::Row> for ContactRow {
+    fn from(r: contacts::Row) -> Self {
+        ContactRow { id: r.id, name: r.name, initial: r.initial, photo: r.photo, send_address: r.send_address, line: r.line }
+    }
+}
+
+/// An address a contact was also paid at, on their card.
+#[derive(uniffi::Record)]
+pub struct ContactPaidAt {
+    pub address: String,
+    /// "84Bv9 … 2kLmQ … 99fQ2"
+    pub short: String,
+    /// "Not their send address · paid once, 25 Oct"
+    pub line: String,
+}
+
+/// A payment to a contact, on their card.
+#[derive(uniffi::Record)]
+pub struct ContactPayment {
+    pub activity: Activity,
+    /// Its note, the shop, or "Sent".
+    pub title: String,
+    /// "Today", "27 Oct"
+    pub when: String,
+    /// "−0.1204"
+    pub amount_text: String,
+    pub fiat_text: Option<String>,
+}
+
+/// A contact's card, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct ContactCard {
+    pub contact: Contact,
+    /// "Send address · you pay here", "No send address yet"
+    pub send_label: String,
+    /// "86Uxm … 3EkYw … e7kQa"
+    pub send_short: Option<String>,
+    /// "Change", "Add"
+    pub send_button: String,
+    pub also_paid_at: Vec<ContactPaidAt>,
+    /// "codes named Sam"
+    pub also_note: String,
+    /// "Paid to Sam"
+    pub paid_title: String,
+    pub paid: Vec<ContactPayment>,
+    /// "Nothing paid to Sam yet."
+    pub paid_empty: Option<String>,
+}
+
+/// The edit card's words for the name typed so far.
+#[derive(uniffi::Record)]
+pub struct ContactEditTexts {
+    /// "New contact", "Edit contact"
+    pub title: String,
+    pub address_hint: String,
+    /// "Delete Sam?"
+    pub delete_title: String,
+    pub delete_body: String,
+}
+
+#[uniffi::export]
+pub fn contact_edit_texts(name: String, new: bool) -> ContactEditTexts {
+    let t = contacts::edit_texts(&name, new);
+    ContactEditTexts { title: t.title, address_hint: t.address_hint, delete_title: t.delete_title, delete_body: t.delete_body }
+}
+
+/// The send address scanner's title and hint.
+#[derive(uniffi::Record)]
+pub struct SendAddressScan {
+    /// "Sam's send address", "Their send address"
+    pub title: String,
+    pub hint: String,
+}
+
+#[uniffi::export]
+pub fn send_address_scan(name: Option<String>) -> SendAddressScan {
+    let t = contacts::scan_texts(name.as_deref());
+    SendAddressScan { title: t.title, hint: t.hint }
+}
+
+/// A send address found by the scanner or pasted.
+#[derive(uniffi::Record)]
+pub struct FoundAddress {
+    pub address: String,
+    /// "Found an address"
+    pub title: String,
+    /// "87Wq2 … Lm4Zx … 2bNcT"
+    pub short: String,
+    /// "This replaces Sam's current send address (…). Check the pattern
+    /// with Sam."
+    pub warning: Option<String>,
+}
+
+/// What `text` (an address or a payment code, scanned or pasted) gives as
+/// `name`'s send address, `current` being the one it has; throws when it
+/// isn't an address of this network.
+#[uniffi::export]
+pub fn found_send_address(network: Network, name: Option<String>, current: Option<String>, text: String) -> Result<FoundAddress> {
+    let f = contacts::found(network.into(), name.as_deref(), current.as_deref(), &text)?;
+    Ok(FoundAddress { address: f.address, title: f.title, short: f.short, warning: f.warning })
+}
+
+/// An address on a contact's card or edit card: "86Uxm … 3EkYw … e7kQa".
+#[uniffi::export]
+pub fn contact_address(address: String) -> String {
+    contacts::three_part(&address)
+}
+
+/// Whether a photo the app encoded is one Fob keeps (a WebP of at most
+/// 1536 bytes); the app lowers the quality, then the size, until it is.
+#[uniffi::export]
+pub fn contact_photo_fits(photo: Vec<u8>) -> bool {
+    contacts::photo_fits(&photo)
+}
+
+/// The avatar's letter for a name being typed: "S", "?" for none.
+#[uniffi::export]
+pub fn contact_initial(name: String) -> String {
+    contacts::initial(&name)
 }
 
 /// A payment's own screen, every word from Rust.

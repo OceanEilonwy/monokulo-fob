@@ -217,7 +217,7 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, prices_
     let party = if activity.split.is_some() {
         Some("This wallet".to_owned())
     } else if out {
-        activity.to.as_deref().map(short_address)
+        activity.contact.clone().or_else(|| activity.to.as_deref().map(short_address))
     } else {
         activity.subaddress.map(|i| {
             let address = if i == 0 { "Main address".to_owned() } else { format!("Address {i}") };
@@ -257,6 +257,8 @@ fn row(activity: Activity, time: i64, clock: Clock) -> Row {
     let out = activity.direction == Direction::Out;
     let title = match (&activity.receipt, &activity.to) {
         _ if activity.split.is_some() => split::TITLE.into(),
+        // The name this wallet gave whoever was paid comes first.
+        _ if out && activity.contact.is_some() => activity.contact.clone().unwrap_or_default(),
         (Some(r), _) => r.merchant.clone(),
         (None, Some(to)) if out => short_address(to),
         _ if out => "Sent".into(),
@@ -322,8 +324,28 @@ pub struct PaidBefore {
 /// How many people Send's sheet lists as paid before.
 pub const PAID_BEFORE: usize = 3;
 
+/// What a payment came to, for a line: the receipt's total, else its
+/// worth when sent, else the XMR: "$24.50", "0.1421 XMR".
+pub(crate) fn paid_amount(payment: &Activity) -> String {
+    match (&payment.receipt, &payment.price) {
+        (Some(r), _) => r.total.clone(),
+        (None, Some(p)) => price::value(payment.amount, p.price, &price::currency(&p.currency)),
+        (None, None) => format!("{} XMR", amount::format_short(payment.amount)),
+    }
+}
+
+/// One line about a payment out: its note and day ("Lunch money · 27
+/// Oct"), or its day and amount ("Today · $24.50").
+pub(crate) fn last_line(payment: &Activity, clock: Clock) -> String {
+    let day = day_name(payment.time, clock);
+    match &payment.note {
+        Some(note) => format!("{note} · {day}"),
+        None => format!("{day} · {}", paid_amount(payment)),
+    }
+}
+
 /// The day of `time`, for a line: "Today", "Yesterday", "27 Oct".
-fn day_name(time: u64, clock: Clock) -> String {
+pub(crate) fn day_name(time: u64, clock: Clock) -> String {
     let (day, _) = local(time, clock);
     let (today, _) = local(clock.now, clock);
     match day {
@@ -347,20 +369,8 @@ pub fn paid_before(rows: &[Activity], clock: Clock) -> Vec<PaidBefore> {
             continue;
         }
         seen.push(to);
-        let day = day_name(last.time, clock);
-        let line = match &last.note {
-            Some(note) => format!("{note} · {day}"),
-            None => {
-                let amount = match (&last.receipt, &last.price) {
-                    (Some(r), _) => r.total.clone(),
-                    (None, Some(p)) => price::value(last.amount, p.price, &price::currency(&p.currency)),
-                    (None, None) => format!("{} XMR", amount::format_short(last.amount)),
-                };
-                format!("{day} · {amount}")
-            }
-        };
-        let name = last.receipt.as_ref().map(|r| r.merchant.clone()).unwrap_or_else(|| short_address(to));
-        people.push(PaidBefore { address: to.to_owned(), name, line });
+        let name = last.contact.clone().or_else(|| last.receipt.as_ref().map(|r| r.merchant.clone())).unwrap_or_else(|| short_address(to));
+        people.push(PaidBefore { address: to.to_owned(), name, line: last_line(last, clock) });
         if people.len() == PAID_BEFORE {
             break;
         }
@@ -401,6 +411,7 @@ mod tests {
             pieces: vec![],
             note: None,
             split: None,
+            contact: None,
         }
     }
 
