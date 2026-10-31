@@ -73,6 +73,7 @@ import kotlinx.coroutines.launch
 import uniffi.fob.QrCode
 import kotlin.math.PI
 import kotlin.math.cos
+import uniffi.fob.addressPattern
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -290,6 +291,31 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
         for (y in 0 until n) for (x in 0 until n) {
             if (code.dark[y * n + x]) {
                 drawRect(Fob.qrDark, topLeft = Offset((x + quiet) * cell, (y + quiet) * cell), size = Size(cell + 0.5f, cell + 0.5f))
+            }
+        }
+    }
+}
+
+/**
+ * An address's pattern, as Rust derives it: a round white badge with dots
+ * on a 5 × 5 grid (66% of the badge, centred, so the corners stay inside),
+ * each dot 84% of its cell. Only Fob draws it; it has no words.
+ */
+@Composable
+fun AddressPattern(address: String, size: Dp, modifier: Modifier = Modifier) {
+    val pattern = remember(address) { addressPattern(address) }
+    val colour = Fob.patternColours[pattern.colour.toInt() % Fob.patternColours.size]
+    val (badge, edge) = Fob.patternBadge to Fob.line
+    Canvas(modifier.size(size).semantics { contentDescription = "Address pattern" }) {
+        val side = this.size.width
+        drawCircle(badge)
+        drawCircle(edge, style = Stroke(1.dp.toPx()), radius = side / 2 - 0.5.dp.toPx())
+        val grid = side * 0.66f
+        val cell = grid / 5
+        val start = (side - grid) / 2
+        for (row in 0 until 5) for (column in 0 until 5) {
+            if (pattern.dots[row * 5 + column]) {
+                drawCircle(colour, radius = cell * 0.84f / 2, center = Offset(start + (column + 0.5f) * cell, start + (row + 0.5f) * cell))
             }
         }
     }

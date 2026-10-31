@@ -278,3 +278,29 @@ Calls made while building the first version, with why. Newest last.
     (`activity::status`): Activity's words while it waits ("Sending",
     "On the way", "Confirming · 3 of 10", "Not ready · 3 of 10"), then
     "Confirmed · 24". The app's `settled` flag went with it.
+52. **The address pattern (`pattern`)**: dots on a 5 × 5 grid, mirrored
+    left to right, in one of eight colours, on a white badge; no words, and
+    only Fob draws it. Shown beside the address on Receive, under the
+    expanded QR, and on the confirm screen before sending, so payer and
+    payee can compare at a glance. It is a quick check, not a proof: with
+    8 × ~32,000 patterns a deliberately made look-alike address is cheap to
+    find, so it catches mistakes and lazy swaps, and the confirm screen
+    still shows the address.
+53. **Its derivation**, exactly, so another app could draw the same:
+    `h = Keccak-256(address as UTF-8 bytes)` (Monero's Keccak, from the
+    `sha3` crate already in the tree through monero-oxide, 0.10.9; not
+    SHA3-256); `cells = (h[0] | h[1] << 8) & 0x7FFF`, bit `3 × row +
+    column` for rows 0–4 top down and columns 0–2 from the outer left;
+    `colour = h[2] & 7`. If fewer than 3 or more than 12 cells are on,
+    `h = Keccak-256(h)` (the 32 bytes) and again from `cells`; about 0.7%
+    of addresses take a second round. Drawn column `c` (0–4) shows source
+    column `min(c, 4 − c)`. Rust returns the 15 bits, the colour index and
+    the 25 dots as drawn. Vectors: the address
+    `5AQmdbMiSRLJQqGGeVA2aMPoyRqR64sTb9BHKWdi8nBpTJTrRBsgffvPBsdm5JeSG6MRvG5SBPuNZtJjqDkJXapj5S6QWVc`
+    gives cells 27718, colour 2; the empty string 0x52c5, colour 6;
+    `fob-17` (2 cells at first) 28262, colour 2 after hashing again.
+54. **Drawn**: grid side 66% of the badge, centred, each dot 84% of its
+    cell, so the corner dots sit inside the circle; palette by index
+    #B34700, #1F7A45, #2F5AA8, #7A3FA0, #A3324A, #1D6F7A, #5B5F17,
+    #3D3A8C. The badge stays white in dark mode, with a 1 dp ring in the
+    line colour so it doesn't vanish on a white card.
