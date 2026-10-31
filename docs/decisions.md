@@ -551,3 +551,8 @@ Calls made while building the first version, with why. Newest last.
     not-ready card shows it as "Change · Split up". Its own screen says To
     "This wallet". No real split was sent in this round: there's no funded
     stagenet wallet among the tests.
+83. **A sent payment keeps each output coming back (`Sent::back`)**: a
+    split's pieces, then the change, recorded when it's sent. Before it's
+    mined the not-ready card lists them one by one, so a split of six reads
+    "7 pieces" from the start instead of "1 piece" until it's mined (found
+    on the phone, 2026-10-31). Files from before keep `change` as one piece.
