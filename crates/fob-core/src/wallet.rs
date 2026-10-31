@@ -572,10 +572,17 @@ impl Wallet {
         Wallet::new(path, file_key, Keys::view_only(network, address, view_hex)?, Some(restore_height.unwrap_or(0)))
     }
 
-    /// The wallet saved at `path`.
+    /// The wallet saved at `path`. A photo saved before Fob read photos'
+    /// headers that it wouldn't take now is dropped (the contact or profile
+    /// stays): it could claim a picture too big to draw.
     pub fn open(path: &Path, file_key: [u8; 32]) -> Result<Wallet> {
-        let file: FileIn = store::load(path, &file_key)?;
-        Ok(Wallet::from_parts(path, file_key, file.keys.into_keys()?, file.state))
+        let mut file: FileIn = store::load(path, &file_key)?;
+        let dropped = file.state.contacts.drop_bad_photos() | file.state.profile.drop_bad_photo();
+        let wallet = Wallet::from_parts(path, file_key, file.keys.into_keys()?, file.state);
+        if dropped {
+            wallet.save_state(&wallet.inner.state.try_lock().expect("an opened wallet is not shared yet"))?;
+        }
+        Ok(wallet)
     }
 
     fn save_state(&self, state: &State) -> Result<()> {
@@ -2982,7 +2989,7 @@ mod tests {
         let t = now();
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let (sam_address, other) = (wallet.inner.keys.address(7), wallet.inner.keys.address(8));
-        let photo = { let mut p = b"RIFF\0\0\0\0WEBP".to_vec(); p.resize(400, 1); p };
+        let photo = contacts::test_webp(400, 96);
         let sam = wallet
             .add_contact(contacts::Draft { name: "Sam".into(), note: Some("Lunch money".into()), photo: Some(photo.clone()), send_address: Some(sam_address.clone()), ..Default::default() })
             .await
@@ -3225,9 +3232,7 @@ mod tests {
     }
 
     fn webp(len: usize) -> Vec<u8> {
-        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
-        bytes.resize(len, 3);
-        bytes
+        crate::contacts::test_webp(len, 96)
     }
 
     #[tokio::test]
@@ -3407,5 +3412,28 @@ mod tests {
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert!(old.profile().await.is_none());
         assert!(old.profile_shares(Clock { now: now(), utc_offset: 0, hours_24: true }).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_photo_saved_before_headers_were_read_is_dropped_on_opening() {
+        let path = dir("bad-photo");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let good = contacts::test_webp(300, 96);
+        wallet.set_profile("Henry", Some(good.clone())).await.unwrap();
+        let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), photo: Some(good.clone()), ..Default::default() }).await.unwrap();
+        let jo = wallet.add_contact(contacts::Draft { name: "Jo".into(), photo: Some(good.clone()), ..Default::default() }).await.unwrap();
+        // As an older Fob kept them: a header claiming 16384 × 16384, for Jo and the profile.
+        let huge = contacts::test_webp(300, 16384);
+        let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        file["state"]["contacts"]["contacts"][1]["photo"] = hex::encode(&huge).into();
+        file["state"]["profile"]["profile"]["photo"] = hex::encode(&huge).into();
+        store::save(&path, &[1; 32], &file).unwrap();
+        let opened = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(opened.contact(sam.id).await.unwrap().photo, Some(good));
+        let jo = opened.contact(jo.id).await.unwrap();
+        assert_eq!((jo.name.as_str(), jo.photo), ("Jo", None));
+        assert_eq!(opened.profile().await.map(|p| (p.name, p.photo)), Some(("Henry".into(), None)));
+        // And saved so: opened again, it's still gone.
+        assert_eq!(Wallet::open(&path, [1; 32]).unwrap().contact(jo.id).await.unwrap().photo, None);
     }
 }

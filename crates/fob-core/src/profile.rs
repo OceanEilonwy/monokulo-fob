@@ -126,6 +126,18 @@ impl Book {
         Ok(profile)
     }
 
+    /// Drops the photo when [`contacts::check_photo`] refuses it (one saved
+    /// before it read headers). Returns whether it did.
+    pub fn drop_bad_photo(&mut self) -> bool {
+        match self.profile.as_mut() {
+            Some(p) if p.photo.as_deref().is_some_and(|photo| contacts::check_photo(photo).is_err()) => {
+                p.photo = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// "Name in payment requests", on or off.
     pub fn set_name_in_requests(&mut self, on: bool) -> Result<()> {
         let profile = self.profile.as_mut().ok_or_else(|| FobError::Profile("Set up your profile first.".into()))?;
@@ -459,9 +471,7 @@ mod tests {
     }
 
     fn webp(len: usize) -> Vec<u8> {
-        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
-        bytes.resize(len, 7);
-        bytes
+        crate::contacts::test_webp(len, 96)
     }
 
     fn paid_in(subaddress: u32, amount: u64, time: u64, price: Option<u64>) -> Activity {

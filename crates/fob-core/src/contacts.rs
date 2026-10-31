@@ -138,20 +138,92 @@ pub fn check_note(text: Option<&str>) -> Result<Option<String>> {
     Ok(Some(note.to_owned()))
 }
 
-/// Whether `bytes` is a WebP image (`RIFF`, its size, `WEBP`).
-fn is_webp(bytes: &[u8]) -> bool {
-    bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+/// The most pixels a side of a photo has: the app makes them 96 at most,
+/// and every avatar is drawn smaller than this.
+pub const PHOTO_SIDE_MAX: u32 = 128;
+
+/// A little-endian number in `bytes` (at most four of them).
+fn le(bytes: &[u8]) -> u32 {
+    bytes.iter().rev().fold(0, |n, b| n << 8 | u32::from(*b))
 }
 
-/// A photo Fob keeps: a WebP of at most [`PHOTO_MAX`] bytes.
-pub fn check_photo(bytes: &[u8]) -> Result<()> {
-    if !is_webp(bytes) {
-        return Err(FobError::Contact("That photo isn't a WebP image.".into()));
+/// The size a lossy (`VP8 `) image says it is: a key frame's, after its
+/// start code.
+fn vp8_size(body: &[u8]) -> Option<(u32, u32)> {
+    let key_frame = body.first()? & 1 == 0;
+    let start = body.get(3..6)? == [0x9d, 0x01, 0x2a];
+    let (width, height) = (le(body.get(6..8)?) & 0x3fff, le(body.get(8..10)?) & 0x3fff);
+    (key_frame && start).then_some((width, height))
+}
+
+/// The size a lossless (`VP8L`) image says it is: 14 bits each, less one.
+fn vp8l_size(body: &[u8]) -> Option<(u32, u32)> {
+    let bits = le(body.get(1..5)?);
+    // The signature, then version 0 in the top three bits.
+    (body[0] == 0x2f && bits >> 29 == 0).then_some(((bits & 0x3fff) + 1, (bits >> 14 & 0x3fff) + 1))
+}
+
+/// The pixel size of a WebP Fob keeps, from its headers: one still image,
+/// lossy or lossless, alone or after an extended header (`VP8X`) and its
+/// alpha. Anything else (animation, metadata, a chunk Fob doesn't know,
+/// sizes that don't add up) is `None`, so no decoder is handed it.
+fn webp_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.get(..4)? != b"RIFF" || bytes.get(8..12)? != b"WEBP" || le(&bytes[4..8]) as usize != bytes.len() - 8 {
+        return None;
     }
+    let (mut rest, mut canvas, mut image) = (&bytes[12..], None, None);
+    let mut first = true;
+    while !rest.is_empty() {
+        let tag = rest.get(..4)?;
+        let size = le(rest.get(4..8)?) as usize;
+        let body = rest.get(8..8 + size)?;
+        // A chunk of odd size is padded to even.
+        rest = rest.get(8 + size + (size & 1)..)?;
+        match tag {
+            // The extended header: flags (no animation), three bytes kept, then the canvas, 24 bits a side, less one.
+            b"VP8X" if first && size >= 10 && body[0] & 0x02 == 0 => canvas = Some((le(&body[4..7]) + 1, le(&body[7..10]) + 1)),
+            b"ALPH" if canvas.is_some() && image.is_none() => {}
+            b"VP8 " if image.is_none() => image = Some(vp8_size(body)?),
+            b"VP8L" if image.is_none() => image = Some(vp8l_size(body)?),
+            _ => return None,
+        }
+        first = false;
+    }
+    let image = image?;
+    canvas.is_none_or(|c| c == image).then_some(image)
+}
+
+/// A photo Fob keeps: a still WebP of at most [`PHOTO_MAX`] bytes and
+/// [`PHOTO_SIDE_MAX`] pixels a side, its headers read before anything
+/// decodes it (a few bytes can claim a picture that takes a gigabyte to
+/// draw).
+pub fn check_photo(bytes: &[u8]) -> Result<()> {
     if bytes.len() > PHOTO_MAX {
         return Err(FobError::Contact(format!("That photo is {} bytes; a contact's photo can be at most {PHOTO_MAX}.", bytes.len())));
     }
+    let Some((width, height)) = webp_size(bytes) else { return Err(FobError::Contact("That photo isn't a WebP image Fob can show.".into())) };
+    if width == 0 || height == 0 || width > PHOTO_SIDE_MAX || height > PHOTO_SIDE_MAX {
+        return Err(FobError::Contact(format!("That photo is {width} × {height}; a contact's photo can be at most {PHOTO_SIDE_MAX} × {PHOTO_SIDE_MAX}.")));
+    }
     Ok(())
+}
+
+/// A valid lossless WebP header of `side` pixels a side, padded to `len`
+/// bytes (even, at least 26; an odd length is never a valid WebP), for
+/// tests.
+#[cfg(test)]
+pub(crate) fn test_webp(len: usize, side: u32) -> Vec<u8> {
+    let size = (len - 20) & !1;
+    let bits = (side - 1) | (side - 1) << 14;
+    let mut bytes = b"RIFF".to_vec();
+    bytes.extend_from_slice(&(len as u32 - 8).to_le_bytes());
+    bytes.extend_from_slice(b"WEBPVP8L");
+    bytes.extend_from_slice(&(size as u32).to_le_bytes());
+    bytes.push(0x2f);
+    bytes.extend_from_slice(&bits.to_le_bytes());
+    let header = bytes.len();
+    bytes.extend((header..len).map(|i| (i * 37 % 251) as u8));
+    bytes
 }
 
 /// Whether the app's encoding of a photo is one Fob keeps, for its loop of
@@ -263,6 +335,19 @@ impl Book {
             contact.also_paid_at.push(address);
         }
         Ok(contact.clone())
+    }
+
+    /// Drops every photo [`check_photo`] refuses (one saved before it read
+    /// headers). Returns whether any was.
+    pub fn drop_bad_photos(&mut self) -> bool {
+        let mut dropped = false;
+        for contact in &mut self.contacts {
+            if contact.photo.as_deref().is_some_and(|p| check_photo(p).is_err()) {
+                contact.photo = None;
+                dropped = true;
+            }
+        }
+        dropped
     }
 
     /// Deletes a contact. Payments to its addresses stay, shown by address
@@ -685,9 +770,7 @@ mod tests {
     }
 
     fn webp(len: usize) -> Vec<u8> {
-        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
-        bytes.resize(len, 7);
-        bytes
+        crate::contacts::test_webp(len, 96)
     }
 
     fn draft(name: &str) -> Draft {
@@ -730,10 +813,70 @@ mod tests {
         assert!(check_note(Some(&"n".repeat(81))).is_err());
         assert!(photo_fits(&webp(PHOTO_MAX)));
         assert!(!photo_fits(&webp(PHOTO_MAX + 1)));
+        // Only a header, saying the old check let it through.
+        assert!(!photo_fits(b"RIFF\0\0\0\0WEBPVP8 \x07\x07\x07\x07"));
         let mut png = webp(100);
         png[..4].copy_from_slice(b"\x89PNG");
         assert!(!photo_fits(&png));
         assert!(!photo_fits(b"RIFF"));
+    }
+
+    /// Encoded by libwebp: 16 × 16, lossy, lossless, and lossy with alpha
+    /// (an extended header, then ALPH and VP8).
+    const LOSSY: &str = "524946463600000057454250565038202a000000f001009d012a1000100002c04c25a00274ba01f800044c0000fedf803fdf7a03793fff929aff1b71d800";
+    const LOSSLESS: &str = "524946461e000000574542505650384c110000002f0fc003000750a82297a2ff8188e87f0000";
+    const ALPHA: &str = "524946465a00000057454250565038580a000000100000000f00000f0000414c50480a000000010750c088084444ff03565038202a000000f001009d012a1000100002c04c25a00274ba01f800044c0000fedf803fdf7a03793fff929aff1b71d800";
+
+    #[test]
+    fn photos_are_checked_by_the_size_their_headers_claim() {
+        for real in [LOSSY, LOSSLESS, ALPHA] {
+            let bytes = hex::decode(real).unwrap();
+            assert_eq!(webp_size(&bytes), Some((16, 16)), "{real}");
+            assert!(photo_fits(&bytes));
+        }
+        // Each form claiming 16383 × 16383 in a few bytes (a gigabyte to decode): refused.
+        let forged = |real: &str, at: usize, side: &[u8]| {
+            let mut bytes = hex::decode(real).unwrap();
+            bytes[at..at + side.len()].copy_from_slice(side);
+            bytes
+        };
+        let lossy = forged(LOSSY, 26, &[0xff, 0x3f, 0xff, 0x3f]);
+        assert_eq!(webp_size(&lossy), Some((16383, 16383)));
+        assert!(!photo_fits(&lossy));
+        let lossless = forged(LOSSLESS, 21, &[0xff, 0xff, 0xff, 0x0f]);
+        assert_eq!(webp_size(&lossless), Some((16384, 16384)));
+        assert!(!photo_fits(&lossless));
+        // An extended header's canvas, and the image inside it, must agree, and both be small.
+        let canvas = forged(ALPHA, 24, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        assert!(webp_size(&canvas).is_none());
+        let both = forged(&hex::encode(&canvas), 58, &[0xff, 0x3f, 0xff, 0x3f]);
+        assert!(webp_size(&both).is_none(), "16383 against a 16777216 canvas");
+        // 129 a side is one too many; 128 is fine.
+        assert!(photo_fits(&test_webp(200, 128)));
+        assert!(!photo_fits(&test_webp(200, 129)));
+        // Animation, metadata, an unknown chunk, a second image, a chunk running past the end, a wrong RIFF size: refused.
+        let mut animated = hex::decode(ALPHA).unwrap();
+        animated[20] |= 0x02;
+        assert!(!photo_fits(&animated));
+        let mut exif = hex::decode(LOSSLESS).unwrap();
+        exif.extend_from_slice(b"EXIF\x02\0\0\0ab");
+        let riff = (exif.len() as u32 - 8).to_le_bytes();
+        exif[4..8].copy_from_slice(&riff);
+        assert!(!photo_fits(&exif));
+        let mut twice = hex::decode(LOSSLESS).unwrap();
+        twice.extend_from_slice(&hex::decode(LOSSLESS).unwrap()[12..]);
+        let riff = (twice.len() as u32 - 8).to_le_bytes();
+        twice[4..8].copy_from_slice(&riff);
+        assert!(!photo_fits(&twice));
+        let mut long = hex::decode(LOSSLESS).unwrap();
+        long[16] = 0x40;
+        assert!(!photo_fits(&long));
+        let mut riff = hex::decode(LOSSY).unwrap();
+        riff[4] += 2;
+        assert!(!photo_fits(&riff));
+        // A lossy frame that isn't a key frame, a lossless one of another version.
+        assert!(!photo_fits(&forged(LOSSY, 20, &[0x31])));
+        assert!(!photo_fits(&forged(LOSSLESS, 24, &[0x2f])));
     }
 
     #[test]
@@ -805,9 +948,9 @@ mod tests {
     #[test]
     fn the_book_round_trips_and_photos_are_hex() {
         let mut book = Book::default();
-        book.add(Network::Stagenet, Draft { photo: Some(webp(20)), note: Some("n".into()), ..draft("Sam") }, NOW).unwrap();
+        book.add(Network::Stagenet, Draft { photo: Some(webp(40)), note: Some("n".into()), ..draft("Sam") }, NOW).unwrap();
         let json = serde_json::to_string(&book).unwrap();
-        assert!(json.contains(&hex::encode(webp(20))), "{json}");
+        assert!(json.contains(&hex::encode(webp(40))), "{json}");
         assert_eq!(serde_json::from_str::<Book>(&json).unwrap(), book);
         // A contact saved before a field existed still reads.
         let old: Contact = serde_json::from_str(r#"{"id":4,"name":"Mum"}"#).unwrap();

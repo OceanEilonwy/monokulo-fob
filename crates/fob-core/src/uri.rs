@@ -547,9 +547,7 @@ mod tests {
     }
 
     fn webp(len: usize) -> Vec<u8> {
-        let mut bytes = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
-        bytes.extend((0..len.saturating_sub(16)).map(|i| (i * 37 % 251) as u8));
-        bytes
+        crate::contacts::test_webp(len, 96)
     }
 
     #[test]
@@ -569,9 +567,9 @@ mod tests {
         let bare = profile_uri(&address, "Henry", None);
         assert_eq!(bare, format!("monero:{address}?recipient_name=Henry"));
         assert_eq!(parse_profile(Network::Stagenet, &bare).unwrap().photo, None);
-        let padded = format!("{bare}&recipient_avatar={}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, webp(20)));
+        let padded = format!("{bare}&recipient_avatar={}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, webp(44)));
         assert!(padded.ends_with('='));
-        assert_eq!(parse_profile(Network::Stagenet, &padded).unwrap().photo, Some(webp(20)));
+        assert_eq!(parse_profile(Network::Stagenet, &padded).unwrap().photo, Some(webp(44)));
     }
 
     #[test]

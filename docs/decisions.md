@@ -1134,3 +1134,16 @@ Calls made while building the first version, with why. Newest last.
     desktop libwebp), so the ladder of decision 109 goes on to quality 10
     and 0 and a 48-pixel side before refusing. Each step is a 96-pixel or
     smaller encode, so the extra ones cost nothing noticeable.
+
+## Round 3: review fixes
+
+150. **A photo's pixels are checked before anything draws it**: Rust reads
+    a WebP's headers (a lossy or lossless image, alone or after an
+    extended header with its alpha) and refuses one claiming more than
+    128 pixels a side, an animation, metadata, a chunk it doesn't know, or
+    sizes that don't add up; a few bytes can otherwise claim a picture
+    that takes a gigabyte to decode. A photo kept by an older build that
+    fails this is dropped when the wallet opens (the contact or profile
+    stays). Android's Avatar reads the bounds again before decoding,
+    decodes off the main thread scaled to its size on screen, caches what
+    it decoded, and shows the initial for anything it can't.
