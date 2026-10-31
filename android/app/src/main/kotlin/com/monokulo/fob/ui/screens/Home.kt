@@ -88,7 +88,7 @@ import uniffi.fob.NotReady
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun HomeScreen(model: WalletModel, nav: Nav) {
+fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val wallet by model.wallet.collectAsState()
     val balance by model.balance.collectAsState()
     val activity by model.activity.collectAsState()
@@ -159,7 +159,8 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
         }
 
         Column(Modifier.padding(horizontal = 16.dp)) {
-            reminder?.let { BackupCard(it) { nav.go(Screen.ShowSeed) } }
+            // The words behind the phone's lock, as from Backup and keys.
+            reminder?.let { BackupCard(it) { openLocked(Screen.ShowSeed) } }
             notReady?.let { ReadyCard(it) }
         }
 
@@ -257,7 +258,7 @@ private fun ReadyCard(n: NotReady) {
     }
 }
 
-/** Rust's reminder that a new wallet's seed phrase isn't written down; it opens the words. */
+/** Rust's reminder that a new wallet's seed phrase isn't written down; it opens the words after the phone's lock. */
 @Composable
 private fun BackupCard(r: BackupReminder, onClick: () -> Unit) {
     Row(
