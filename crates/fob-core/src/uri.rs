@@ -106,9 +106,36 @@ pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>) -> St
         params.push(format!("tx_amount={}", amount::format(a)));
     }
     if let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) {
-        params.push(format!("tx_description={}", utf8_percent_encode(note, VALUE)));
+        // Cut here too, whatever the app let through: the code must encode.
+        params.push(format!("tx_description={}", utf8_percent_encode(&fit_note(note).0, VALUE)));
     }
     if params.is_empty() { format!("monero:{address}") } else { format!("monero:{address}?{}", params.join("&")) }
+}
+
+/// The most characters a note for the payer may have.
+pub const NOTE_MAX_CHARS: usize = 120;
+/// The most bytes a note may take in the code once percent-encoded: 120
+/// characters that each need encoding. Bounds the code whatever the script
+/// (an emoji is 12 bytes encoded), so the code stays at QR version 18 or
+/// below at medium error correction, which reads at Receive's 220 dp.
+pub const NOTE_MAX_ENCODED: usize = 360;
+
+/// A note cut to what a payment code holds: at most [`NOTE_MAX_CHARS`]
+/// characters and [`NOTE_MAX_ENCODED`] bytes encoded, at a character's end.
+/// Returns the note and whether it was cut.
+pub fn fit_note(note: &str) -> (String, bool) {
+    let mut fitted = String::new();
+    let mut encoded = 0;
+    for (i, c) in note.chars().enumerate() {
+        let mut buf = [0u8; 4];
+        let size = utf8_percent_encode(c.encode_utf8(&mut buf), VALUE).map(str::len).sum::<usize>();
+        if i >= NOTE_MAX_CHARS || encoded + size > NOTE_MAX_ENCODED {
+            return (fitted, true);
+        }
+        encoded += size;
+        fitted.push(c);
+    }
+    (fitted, false)
 }
 
 /// A request to be paid, as Receive shows it.
@@ -126,11 +153,11 @@ pub struct Receive {
 /// typed; a blank one is left out.
 pub fn receive(address: &str, amount: Option<&str>, note: Option<&str>) -> Result<Receive> {
     let amount = amount.map(str::trim).filter(|a| !a.is_empty()).map(amount::parse).transpose()?.filter(|a| *a > 0);
-    let note = note.map(str::trim).filter(|n| !n.is_empty());
+    let note = note.map(str::trim).filter(|n| !n.is_empty()).map(|n| fit_note(n).0);
     Ok(Receive {
-        uri: payment_uri(address, amount, note),
+        uri: payment_uri(address, amount, note.as_deref()),
         headline: amount.map(|a| format!("{} XMR", amount::format(a))),
-        detail: note.map(str::to_owned),
+        detail: note,
     })
 }
 
@@ -313,6 +340,42 @@ mod tests {
         let bare = receive(&address, Some(""), None).unwrap();
         assert_eq!((bare.uri, bare.headline, bare.detail), (format!("monero:{address}"), None, None));
         assert!(receive(&address, Some("lots"), None).is_err());
+    }
+
+    #[test]
+    fn a_note_is_cut_to_what_the_code_holds_and_the_code_always_encodes() {
+        let (plain, cut) = fit_note(&"a".repeat(NOTE_MAX_CHARS));
+        assert_eq!((plain.chars().count(), cut), (NOTE_MAX_CHARS, false));
+        let (long, cut) = fit_note(&"a".repeat(NOTE_MAX_CHARS + 5));
+        assert_eq!((long.chars().count(), cut), (NOTE_MAX_CHARS, true));
+        // An emoji is 4 bytes, 12 encoded: 30 of them fill the note.
+        let (emoji, cut) = fit_note(&"☕😀".repeat(40));
+        assert!(cut);
+        // 9 + 12 bytes a pair: 17 pairs are 357, and a ☕ more would be 366.
+        assert_eq!(emoji.chars().count(), 34);
+        assert!(emoji.ends_with('😀'), "cut at a character's end");
+
+        // The longest code Fob can make: an integrated address (106), the
+        // longest amount, and a note at either limit. It encodes at version
+        // 18 or below, so it reads on Receive's card.
+        let integrated = "5".repeat(106);
+        let amount = "18446744.073709551615";
+        let worst = [
+            "%".repeat(NOTE_MAX_CHARS + 50),
+            "😀".repeat(NOTE_MAX_CHARS),
+            "é".repeat(NOTE_MAX_CHARS),
+            "a".repeat(NOTE_MAX_CHARS * 2),
+        ];
+        for note in worst {
+            let code = receive(&integrated, Some(amount), Some(&note)).unwrap();
+            let encoded = code.uri.split("tx_description=").nth(1).unwrap();
+            assert!(encoded.len() <= NOTE_MAX_ENCODED);
+            assert_eq!(code.detail.as_deref(), Some(fit_note(&note).0.as_str()));
+            let qr = crate::qr::encode(&code.uri).unwrap();
+            assert!(qr.size <= 17 + 4 * 18, "version {} for {}", (qr.size - 17) / 4, code.uri.len());
+        }
+        // And whatever reaches `payment_uri` directly is cut too.
+        assert!(payment_uri(&integrated, None, Some(&"x".repeat(500))).len() < 300);
     }
 
     #[test]

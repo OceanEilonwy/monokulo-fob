@@ -821,6 +821,24 @@ pub struct PaymentDetail {
     pub footer: Option<String>,
 }
 
+/// Receive's note as typed, cut to what a payment code holds.
+#[derive(uniffi::Record)]
+pub struct ReceiveNote {
+    /// The note to keep in the field.
+    pub text: String,
+    /// "That's as long as a note can be", when what was typed was cut.
+    pub hint: Option<String>,
+}
+
+/// Receive's note cut to what a payment code holds (120 characters, fewer
+/// for emoji and other scripts that take more room in the code), so the
+/// code always encodes. Call it with each change to the field.
+#[uniffi::export]
+pub fn fit_receive_note(text: String) -> ReceiveNote {
+    let (text, cut) = uri::fit_note(&text);
+    ReceiveNote { text, hint: cut.then(|| "That's as long as a note can be".to_owned()) }
+}
+
 /// A piece of an address, as Receive shows it.
 #[derive(uniffi::Record)]
 pub struct AddressGroup {

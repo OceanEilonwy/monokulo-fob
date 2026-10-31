@@ -466,3 +466,17 @@ Calls made while building the first version, with why. Newest last.
     price source the same way ("Fob can't reach .onion price sources yet").
     Each is tested without the network. When a Tor transport exists, these
     checks are where it plugs in.
+
+## Fifth round: splitting up, loose ends
+
+72. **Receive's note is cut to what a code holds (`uri::fit_note`)**: at
+    most 120 characters and 360 bytes once percent-encoded (120 characters
+    that each need encoding), cut at a character's end, so emoji and other
+    scripts that take more room stop sooner (34 of "☕😀" alternating). The
+    longest code Fob can then make, an integrated address, the longest
+    amount and a full note, is QR version 18 or below at medium error
+    correction (89 modules, about 2.5 dp each on Receive's 220 dp card),
+    as a test checks for four kinds of note. The field asks Rust with
+    each change (`fit_receive_note`) and shows "That's as long as a note
+    can be" when what was typed was cut; `payment_uri` and `receive` cut as
+    well, whatever reaches them.
