@@ -155,7 +155,11 @@ sealed interface Screen {
     data class ProfileEdit(val step: String? = null) : Screen
     /** A share's code, full screen: just made by Share my profile, or again. */
     data class ProfileShare(val id: ULong, val fresh: Boolean = false) : Screen
-    data object ShowSeed : Screen
+    /**
+     * The seed phrase: from Backup and keys, which already warned; or with
+     * [warn] from Home's backup reminder, which keeps the warning.
+     */
+    data class ShowSeed(val warn: Boolean = false) : Screen
     data object ShowWalletCode : Screen
     data object Node : Screen
     data object Zmq : Screen
@@ -199,7 +203,8 @@ fun phoneLock(context: Context): Boolean =
     context.getSystemService(KeyguardManager::class.java)?.isDeviceSecure ?: true
 
 /** Backup and keys and what it leads to: shown only after the phone's lock, left when Fob leaves the screen. */
-private val LOCKED = setOf(Screen.BackupKeys, Screen.Keys, Screen.ShowSeed, Screen.ShowWalletCode)
+private fun locked(screen: Screen) =
+    screen is Screen.ShowSeed || screen == Screen.BackupKeys || screen == Screen.Keys || screen == Screen.ShowWalletCode
 
 class MainActivity : FragmentActivity() {
     private val model: WalletModel get() = (application as FobApp).model
@@ -295,7 +300,7 @@ class MainActivity : FragmentActivity() {
         // can open Price from over Keys), so Back can't lead to one.
         if (!isChangingConfigurations) {
             holder.nav?.stack?.let { stack ->
-                val first = stack.indexOfFirst { it in LOCKED }
+                val first = stack.indexOfFirst(::locked)
                 if (first >= 1) while (stack.size > first) stack.removeAt(stack.lastIndex)
             }
             // A secret key copied from Keys comes off the clipboard with it.
@@ -372,7 +377,7 @@ class MainActivity : FragmentActivity() {
     private fun Route(nav: Nav, screen: Screen, open: Boolean) {
         when (screen) {
             Screen.Welcome -> WelcomeScreen(model, nav)
-            Screen.Backup -> BackupScreen(model, nav, afterCreate = true)
+            Screen.Backup -> BackupScreen(model, nav, afterCreate = true, warn = true)
             Screen.RestoreChoose -> RestoreChooseScreen(nav)
             Screen.RestoreSeed -> RestoreSeedScreen(model, nav)
             Screen.RestoreViewOnly -> RestoreViewOnlyScreen(model, nav)
@@ -401,7 +406,7 @@ class MainActivity : FragmentActivity() {
             Screen.Profile -> ProfileScreen(model, nav)
             is Screen.ProfileEdit -> ProfileEditScreen(model, nav, screen.step)
             is Screen.ProfileShare -> ProfileShareScreen(model, nav, screen.id, screen.fresh)
-            Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
+            is Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false, warn = screen.warn)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)
             Screen.Zmq -> ZmqScreen(model, nav)

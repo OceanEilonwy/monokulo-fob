@@ -152,9 +152,13 @@ private fun Point(path: String, title: String, text: String) {
     }
 }
 
-/** The seed phrase: after creating a wallet, or from Settings. */
+/**
+ * The seed phrase: after creating a wallet, from Home's reminder, or from
+ * Backup and keys. [warn]: the warning above the words, left out from
+ * Backup and keys, which already showed one.
+ */
 @Composable
-fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
+fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean, warn: Boolean) {
     NoScreenshots()
     val wallet by model.wallet.collectAsState()
     val seed = remember(wallet) { wallet?.seedPhrase() }
@@ -178,7 +182,7 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
             if (seed == null) {
                 Text("This wallet only watches, so it has no seed phrase.", color = Fob.muted, fontSize = 16.sp, lineHeight = 22.sp)
             } else {
-                Warning("These ${seed.words.size} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored.")
+                if (warn) Warning("These ${seed.words.size} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored.")
                 Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed.words) }
             }
         }

@@ -168,7 +168,7 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
 
         Column(Modifier.padding(horizontal = 16.dp)) {
             // The words behind the phone's lock, as from Backup and keys.
-            reminder?.let { BackupCard(it) { openLocked(Screen.ShowSeed) } }
+            reminder?.let { BackupCard(it) { openLocked(Screen.ShowSeed(warn = true)) } }
             notReady?.let { ReadyCard(it) }
         }
 

@@ -66,7 +66,8 @@ import uniffi.fob.KeyRow
  * Backup and keys (board KeysHub), reached from Settings once the phone's
  * lock said it's you: the warning, Seed phrase and Wallet code under Back
  * up, Keys under For other wallets, every word from Rust. Its screens open
- * without asking again: the lock was asked on the way in.
+ * without asking again (the lock was asked on the way in) and without a
+ * warning or Show step of their own: this is the one place that warns.
  */
 @Composable
 fun BackupKeysScreen(model: WalletModel, nav: Nav) {
@@ -94,7 +95,7 @@ private fun HubCard(title: String, rows: List<HubRow>, nav: Nav) {
         Card {
             rows.forEach { row ->
                 val (icon, screen) = when (row.item) {
-                    HubItem.SEED_PHRASE -> Icons.seedWords to Screen.ShowSeed
+                    HubItem.SEED_PHRASE -> Icons.seedWords to Screen.ShowSeed()
                     HubItem.WALLET_CODE -> Icons.request to Screen.ShowWalletCode
                     HubItem.KEYS -> Icons.key to Screen.Keys
                 }

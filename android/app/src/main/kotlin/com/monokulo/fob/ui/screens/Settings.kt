@@ -59,7 +59,6 @@ import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.InfoRow
 import com.monokulo.fob.ui.NoScreenshots
-import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.QrImage
@@ -646,24 +645,22 @@ fun ZmqScreen(model: WalletModel, nav: Nav) {
     }
 }
 
+/**
+ * Wallet code, from Backup and keys only: the code straight away. The hub
+ * already warned and asked for the phone's lock, so no warning or Show
+ * step here.
+ */
 @Composable
 fun WalletCodeScreen(model: WalletModel, nav: Nav) {
     NoScreenshots()
     val wallet by model.wallet.collectAsState()
     var code by remember { mutableStateOf<String?>(null) }
-    var shown by remember { mutableStateOf(false) }
     LaunchedEffect(wallet) { code = wallet?.walletCode() }
-    Page(bottom = {
-        if (!shown) PrimaryButton("Show the code", { shown = true }) else OutlineButton("Hide", { shown = false }, Modifier.fillMaxWidth())
-    }) {
+    Page {
         TopBar("Wallet code", onBack = { nav.back() })
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            Warning(
-                if (wallet?.canSpend() != false) "This code holds the keys to spend your money. Show it only to restore this wallet, with no one watching."
-                else "This code lets anyone see this wallet's payments.",
-            )
             val c = code
-            if (shown && c != null) {
+            if (c != null) {
                 runCatching { qrCode(c) }.getOrNull()?.let { qr ->
                     Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Fob.qrLight).padding(16.dp)) { QrImage(qr, 280.dp, description = "Wallet code") }
                 }
