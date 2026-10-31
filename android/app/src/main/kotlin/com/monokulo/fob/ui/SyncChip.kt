@@ -5,6 +5,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -28,6 +33,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -75,7 +84,9 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
     val toggle: () -> Unit = {
         if (open) onOpen(false) else if (SystemClock.uptimeMillis() - closedAt > 300) onOpen(true)
     }
-    Box {
+    // Where the chip ends, so the card under it fits above the gesture bar.
+    var chipBottom by remember { mutableIntStateOf(0) }
+    Box(Modifier.onGloballyPositioned { chipBottom = (it.positionInWindow().y + it.size.height).toInt() }) {
         Box(
             Modifier.heightIn(min = 48.dp).widthIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).clickable(role = Role.Button, onClick = toggle)
                 .clearAndSetSemantics {
@@ -120,6 +131,11 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
         }
         if (open) {
             val d = remember(status) { details() }
+            // Measured here, in Home's window: inside the popup it's the popup's own.
+            val density = LocalDensity.current
+            val windowHeight = LocalView.current.rootView.height
+            val navBar = WindowInsets.navigationBars.getBottom(density)
+            val room = with(density) { (windowHeight - chipBottom - navBar).coerceAtLeast(0).toDp() }
             if (d != null) {
                 Popup(
                     popupPositionProvider = BelowAtEnd,
@@ -129,8 +145,10 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
                     },
                     properties = PopupProperties(focusable = true),
                 ) {
-                    // Room around the card for its shadow, and off the screen's edge.
-                    Box(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp)) {
+                    // Room around the card for its shadow, and off the screen's edge;
+                    // at a big font it scrolls within the room under the chip rather than
+                    // covering the chip or running under the gesture bar.
+                    Box(Modifier.heightIn(max = room).padding(start = 12.dp, end = 12.dp, bottom = 16.dp)) {
                         SyncCard(d, Modifier.widthIn(max = 300.dp).fillMaxWidth()) {
                             onOpen(false)
                             onNode()
@@ -150,12 +168,40 @@ private object BelowAtEnd : PopupPositionProvider {
     }
 }
 
+/**
+ * A row of the card: the label at the start, the value at the end. At a
+ * big font the value keeps room for its longest word ("2,240,749",
+ * "Today,") and the label wraps first, so nothing breaks inside a word.
+ */
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Layout(
+        content = {
+            Text(label, fontSize = 14.sp, color = Fob.muted)
+            Text(value, fontSize = 14.sp, textAlign = TextAlign.End)
+        },
+        modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+    ) { (l, v), c ->
+        val gap = 14.dp.roundToPx()
+        val width = c.maxWidth
+        val labelWidth = minOf(l.maxIntrinsicWidth(c.maxHeight), maxOf(width - gap - v.minIntrinsicWidth(c.maxHeight), width / 3))
+        val lp = l.measure(Constraints(maxWidth = labelWidth))
+        val vp = v.measure(Constraints(maxWidth = (width - gap - lp.width).coerceAtLeast(0)))
+        val height = maxOf(lp.height, vp.height)
+        layout(width, height) {
+            lp.placeRelative(0, 0)
+            vp.placeRelative(width - vp.width, 0)
+        }
+    }
+}
+
 /** The details card: Rust's title, percent, rows and line, a bar while catching up, and a way to Node. */
 @Composable
 private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     Column(
-        modifier.shadow(8.dp, shape).clip(shape).background(Fob.card).semantics { paneTitle = d.title }.padding(16.dp),
+        modifier.shadow(8.dp, shape).clip(shape).background(Fob.card).semantics { paneTitle = d.title }
+            .verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) { heading() }, verticalAlignment = Alignment.CenterVertically) {
@@ -165,12 +211,7 @@ private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
         d.progress?.let { ProgressBar(it) }
         if (d.rows.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                d.rows.forEach { row ->
-                    Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text(row.label, fontSize = 14.sp, color = Fob.muted)
-                        Text(row.amount, fontSize = 14.sp, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
-                    }
-                }
+                d.rows.forEach { row -> DetailRow(row.label, row.amount) }
             }
         }
         d.note?.let { Text(it, fontSize = 12.5.sp, color = Fob.muted) }
