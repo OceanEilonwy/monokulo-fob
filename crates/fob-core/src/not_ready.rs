@@ -37,8 +37,12 @@ pub struct Piece {
 /// One piece, ready to draw.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PieceView {
+    /// In atomic units.
+    pub atomic: u64,
     /// "0.653"
     pub amount: String,
+    /// What it's worth now, when prices are on: "$108.44".
+    pub fiat: Option<String>,
     pub confirmations: u64,
     pub needed: u64,
     /// `confirmations / needed`, for the ring.
@@ -104,7 +108,9 @@ pub fn summarise(pieces: Vec<Piece>, last_block_time: u64, clock: Clock) -> Opti
         .map(|p| {
             let ready_at = from + (p.needed - p.confirmations) * BLOCK_SECONDS;
             PieceView {
+                atomic: p.amount,
                 amount: amount::format_short(p.amount),
+                fiat: None,
                 confirmations: p.confirmations,
                 needed: p.needed,
                 progress: p.confirmations as f32 / p.needed as f32,

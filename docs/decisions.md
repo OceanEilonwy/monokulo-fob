@@ -391,3 +391,26 @@ Calls made while building the first version, with why. Newest last.
     separators, no more decimals than the currency has. Money to XMR uses
     as few decimals (at least 4) as still come to the same cents, so a
     code asks for "0.1204", not "0.120409391932".
+64. **Settings.** The "Theme" card became "Display": the three theme
+    choices, then Currency (the provider's list, in a dialog; default USD)
+    and "Show amounts in", XMR | USD. A new "Prices" card: "Show prices"
+    (on by default; "Off: Fob never asks for a price") and "Price source"
+    ("Kraken · over the internet", and the last request's error while it
+    lasts), whose dialog lists "Kraken · over Tor" muted with "Not
+    available yet"; Rust refuses it as well. All of it lives in the wallet
+    file with the rest of the wallet's settings, so each wallet (each
+    network) has its own; Rust writes the source's words.
+65. **One segmented control (`Segmented`)** for every choice between XMR
+    and a currency: a sunken track, the chosen option filled orange
+    (#FF6600) with #111111 text, the others clear with muted text, as asked.
+    No outline.
+66. **Home's balance** shows what it's worth now under the XMR, or first
+    with the XMR under it when amounts show in the currency first; tapping
+    it swaps them, saving the same setting. Nothing extra shows without a
+    current price (prices off, none asked within the hour, a failed
+    request). An Activity row's second line on the right is the payment's
+    recorded value (worth then); a receipt row keeps the receipt's total.
+    A row without a price shows nothing there, no dash. Each piece of money
+    not ready yet shows its value now beside the XMR. The price task runs
+    while Fob is on screen and stops with it, so the background sync never
+    asks for prices; pull to refresh asks for both blocks and the price.

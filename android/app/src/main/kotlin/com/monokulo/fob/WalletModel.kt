@@ -15,6 +15,8 @@ import uniffi.fob.Balance
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
 import uniffi.fob.NotReady
+import uniffi.fob.PriceSettings
+import uniffi.fob.PriceTransport
 import uniffi.fob.Prepared
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
@@ -50,6 +52,10 @@ class WalletModel(private val app: Application) {
     /** The money not ready to spend yet, piece by piece; null when all of it is. */
     private val _notReady = MutableStateFlow<NotReady?>(null)
     val notReady: StateFlow<NotReady?> = _notReady
+
+    /** How prices are shown, kept in the wallet file by Rust. */
+    private val _prices = MutableStateFlow<PriceSettings?>(null)
+    val prices: StateFlow<PriceSettings?> = _prices
 
     /**
      * Light, dark or as the phone is. Only how Fob looks, the same for every
@@ -107,15 +113,23 @@ class WalletModel(private val app: Application) {
     }
 
     private suspend fun use(wallet: FobWallet) {
-        _wallet.value?.let { it.stopSync(); it.close() }
+        _wallet.value?.let { close(it) }
         _wallet.value = wallet
         _status.value = wallet.status()
         refresh()
         if (syncing) wallet.startSync(observer)
+        if (visible) wallet.startPrices(observer)
+    }
+
+    private fun close(wallet: FobWallet) {
+        wallet.stopSync()
+        wallet.stopPrices()
+        wallet.close()
     }
 
     suspend fun refresh() {
         val wallet = _wallet.value ?: return
+        _prices.value = wallet.priceSettings()
         _balance.value = wallet.balance()
         val now = System.currentTimeMillis()
         val (seconds, offset, hours24) = Triple((now / 1000).toULong(), TimeZone.getDefault().getOffset(now) / 1000, DateFormat.is24HourFormat(app))
@@ -123,7 +137,24 @@ class WalletModel(private val app: Application) {
         _notReady.value = wallet.notReady(seconds, offset, hours24)
     }
 
-    /** Pull to refresh: asks the node now, and returns once that round is over. */
+    /** "Show prices"; off, Fob never asks for one. */
+    suspend fun setPricesOn(on: Boolean) = changePrices { it.setPricesOn(on) }
+
+    suspend fun setCurrency(code: String) = changePrices { it.setCurrency(code) }
+
+    /** Throws what Rust refused (Tor, for now). */
+    suspend fun setPriceTransport(transport: PriceTransport) = changePrices { it.setPriceTransport(transport) }
+
+    /** "Show amounts in": the currency first, or XMR. */
+    suspend fun setFiatFirst(fiatFirst: Boolean) = changePrices { it.setFiatFirst(fiatFirst) }
+
+    private suspend fun changePrices(change: suspend (FobWallet) -> Unit) {
+        val wallet = _wallet.value ?: return
+        change(wallet)
+        refresh()
+    }
+
+    /** Pull to refresh: asks the node now (and the price), and returns once that round is over. */
     suspend fun syncNow() {
         val wallet = _wallet.value ?: return
         wallet.syncNow()
@@ -151,6 +182,8 @@ class WalletModel(private val app: Application) {
     fun setVisible(visible: Boolean) {
         this.visible = visible
         if (visible) startSync() else if (_status.value?.synced != false) stopSync()
+        // Prices are asked only while Fob is on screen.
+        _wallet.value?.let { if (visible) it.startPrices(observer) else it.stopPrices() }
     }
 
     /** Told when Fob falls more than a day behind while on screen. */
@@ -190,11 +223,12 @@ class WalletModel(private val app: Application) {
     /** Moves to the other network's wallet, if there is one. */
     fun switchNetwork(network: Network) {
         if (network == _network.value) return
-        _wallet.value?.let { it.stopSync(); it.close() }
+        _wallet.value?.let { close(it) }
         _wallet.value = null
         _balance.value = null
         _activity.value = emptyList()
         _notReady.value = null
+        _prices.value = null
         _status.value = null
         prefs.edit().putString("network", network.name.lowercase()).apply()
         _network.value = network
@@ -204,11 +238,12 @@ class WalletModel(private val app: Application) {
     /** Removes this network's wallet from the phone. Its seed restores it. */
     fun forget() {
         val network = _network.value
-        _wallet.value?.let { it.stopSync(); it.close() }
+        _wallet.value?.let { close(it) }
         _wallet.value = null
         _balance.value = null
         _activity.value = emptyList()
         _notReady.value = null
+        _prices.value = null
         _status.value = null
         File(path(network)).delete()
     }

@@ -713,7 +713,13 @@ impl Wallet {
     /// The money not ready yet as Home shows it, or `None` when all of it is.
     pub async fn not_ready(&self, clock: Clock) -> Option<NotReady> {
         let (pieces, last_block_time) = self.not_ready_pieces().await;
-        not_ready::summarise(pieces, last_block_time, clock)
+        let mut summary = not_ready::summarise(pieces, last_block_time, clock)?;
+        if let Some((currency, p)) = self.price_now().await {
+            for piece in &mut summary.pieces {
+                piece.fiat = Some(price::value(piece.atomic, p, &currency));
+            }
+        }
+        Some(summary)
     }
 
     /// Every payment in and out, newest first, unconfirmed ones on top.
