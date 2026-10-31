@@ -358,6 +358,8 @@ pub struct AmountField {
     pub label: String,
     /// The chip for TalkBack: "Amount in XMR. Switch to US dollars".
     pub switch_label: Option<String>,
+    /// What's typed comes to more than nothing: Send can review it.
+    pub sendable: bool,
 }
 
 /// The field for `text` typed in money (`in_fiat`) or XMR, at `price` when
@@ -377,9 +379,15 @@ pub fn amount_field(text: &str, in_fiat: bool, price: Option<(&Currency, u64)>) 
         Some((c, p)) => amount::parse(text).ok().map(|a| format!("≈ {} · {}", value(a, p, c), rate(p, c))),
         None => None,
     };
-    let valid = text.is_empty() || if in_fiat { line.is_some() } else { amount::parse(text).is_ok() };
+    // What it comes to in XMR, the way Send converts it.
+    let atomic = match price {
+        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)),
+        _ => amount::parse(text).ok(),
+    };
+    let valid = text.is_empty() || atomic.is_some();
     AmountField {
         in_fiat,
+        sendable: atomic.is_some_and(|a| a > 0),
         sign: match price {
             Some((c, _)) if in_fiat => c.symbol.map(str::to_owned),
             _ => Some(amount::SIGN.to_owned()),
@@ -612,6 +620,20 @@ mod tests {
         let f = amount_field("20", true, None);
         assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch, f.line, f.switch_label), (Some("ɱ"), "XMR", false, false, None, None));
         assert_eq!(amount_field("x", false, None).line.as_deref(), Some("That isn't an amount"));
+    }
+
+    #[test]
+    fn the_amount_field_says_when_send_can_review_it() {
+        let usd = usd();
+        let p = 166_100_000;
+        let sendable = |text: &str, in_fiat: bool, price: Option<(&Currency, u64)>| amount_field(text, in_fiat, price).sendable;
+        assert!(sendable("20", true, Some((&usd, p))));
+        assert!(sendable("0.1204", false, Some((&usd, p))));
+        // Typed in money without a price, it's read as XMR.
+        assert!(sendable("20", true, None));
+        for (text, in_fiat) in [("", true), (" ", false), ("0", false), ("0.00", true), ("20.123", true), ("abc", false)] {
+            assert!(!sendable(text, in_fiat, Some((&usd, p))), "{text:?}");
+        }
     }
 
     #[test]

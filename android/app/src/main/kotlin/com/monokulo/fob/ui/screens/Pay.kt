@@ -78,17 +78,13 @@ import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.short
 import kotlinx.coroutines.launch
 import uniffi.fob.AddressGroup
-import uniffi.fob.CodeKind
 import uniffi.fob.Prepared
 import uniffi.fob.QrCode
 import uniffi.fob.Receipt
 import uniffi.fob.ReceiveCode
 import uniffi.fob.AmountEntry
 import uniffi.fob.addressGroups
-import uniffi.fob.classifyCode
 import uniffi.fob.fitReceiveNote
-import uniffi.fob.isAmount
-import uniffi.fob.parsePayment
 import uniffi.fob.qrCode
 
 @Composable
@@ -254,39 +250,6 @@ private fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: 
     }
 }
 
-@Composable
-fun ScanPayScreen(model: WalletModel, nav: Nav) {
-    val network by model.network.collectAsState()
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-    var notice by remember { mutableStateOf<String?>(null) }
-    fun read(text: String) {
-        when (classifyCode(network, text)) {
-            CodeKind.PAYMENT -> if (nav.current == Screen.ScanPay) { nav.back(); nav.go(Screen.Send(text)) }
-            CodeKind.WALLET -> notice = "That's a wallet code, not a payment code."
-            CodeKind.UNKNOWN -> notice = runCatching { parsePayment(network, text) }.exceptionOrNull()?.reason() ?: "That isn't a payment code."
-        }
-    }
-    Box(Modifier.fillMaxSize().background(Fob.camera)) {
-        CameraOrAsk(Modifier.fillMaxSize(), ::read)
-        Column(Modifier.fillMaxSize().padding(top = 32.dp)) {
-            TopBar("Scan to pay", onBack = { nav.back() }, closeIcon = true, tint = Fob.onCamera) {
-                OutlineButton("Paste", {
-                    scope.launch {
-                        val text = clipboard.getClipEntry()?.clipData?.getItemAt(0)?.text?.toString()
-                        if (text != null) read(text) else notice = "Nothing to paste."
-                    }
-                }, height = 40.dp, tint = Fob.onCamera)
-            }
-            Spacer(Modifier.weight(1f))
-            Text(
-                notice ?: "Point at a Monero payment code", color = Fob.onCamera, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(32.dp),
-            )
-        }
-    }
-}
-
 /** The receipt's lines, folded into a card. */
 @Composable
 fun ReceiptLines(receipt: Receipt) {
@@ -295,53 +258,6 @@ fun ReceiptLines(receipt: Receipt) {
             Row { Text(line.label, fontSize = 15.sp, modifier = Modifier.weight(1f)); Text(line.amount, fontSize = 15.sp) }
         }
         receipt.tax?.let { Row { Text("Includes tax", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f)); Text(it, color = Fob.muted, fontSize = 15.sp) } }
-    }
-}
-
-@Composable
-fun SendScreen(model: WalletModel, nav: Nav, code: String?) {
-    val network by model.network.collectAsState()
-    val balance by model.balance.collectAsState()
-    val scope = rememberCoroutineScope()
-    val request = remember(code) { code?.let { runCatching { parsePayment(network, it) } } }
-    var to by remember { mutableStateOf(request?.getOrNull()?.address ?: "") }
-    var amount by remember { mutableStateOf(request?.getOrNull()?.amountText ?: "") }
-    var error by remember { mutableStateOf(request?.exceptionOrNull()?.reason()) }
-    var busy by remember { mutableStateOf(false) }
-    val r = request?.getOrNull()
-    val fixed = r?.amount != null
-    Page(bottom = {
-        ErrorText(error)
-        PrimaryButton(if (busy) "Getting the fee…" else "Review payment", enabled = !busy && to.isNotBlank() && isAmount(amount), onClick = {
-            busy = true
-            error = null
-            scope.launch {
-                runCatching { model.prepare(to.trim(), amount, r?.receiptJson, r?.description) }
-                    .onSuccess { nav.back(); nav.go(Screen.Confirm(it, r?.description)) }
-                    .onFailure { error = it.reason() }
-                busy = false
-            }
-        })
-    }) {
-        TopBar(r?.receipt?.merchant?.let { "Pay $it" } ?: r?.recipientName?.let { "Pay $it" } ?: "Send", onBack = { nav.back() })
-        Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (r?.receipt != null) {
-                Card {
-                    Row(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        StrokeIcon(Icons.receipt, tint = Fob.orangeText, width = 1.8f)
-                        Column { Text(r.receipt!!.merchant, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Text("Receipt included · ${r.receipt!!.itemCount} items · ${r.receipt!!.total}", color = Fob.muted, fontSize = 14.sp) }
-                    }
-                    Divider()
-                    ReceiptLines(r.receipt!!)
-                }
-            }
-            r?.description?.let { Text(it, color = Fob.muted, fontSize = 15.sp) }
-            Field(to, { to = it }, "To", mono = true, lines = 2)
-            Field(amount, { if (!fixed) amount = it }, "Amount in XMR", hint = when {
-                fixed -> "Set by the payment code"
-                else -> balance?.let { "${it.unlockedText} XMR ready to send" }
-            })
-        }
     }
 }
 

@@ -5,12 +5,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
@@ -297,7 +299,8 @@ fun RestoreScanScreen(model: WalletModel, nav: Nav) {
                 CodeKind.UNKNOWN -> notice = "That isn't a wallet code."
             }
         }
-        Column(Modifier.fillMaxSize().padding(top = 32.dp)) {
+        // Clear of the status bar, cutout and gesture bar, though the camera fills the screen.
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             TopBar("Scan a wallet code", onBack = { nav.back() }, tint = Fob.onCamera)
             Spacer(Modifier.weight(1f))
             Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -350,9 +353,16 @@ fun RestoreFoundScreen(model: WalletModel, nav: Nav, code: String) {
     }
 }
 
-/** The camera, once allowed; until then, a button to allow it. */
+/**
+ * The camera, once allowed; until then, a button to allow it, centred in
+ * what [askPadding] leaves (clear of what's drawn over the camera). The
+ * light as for [QrScanner].
+ */
 @Composable
-fun CameraOrAsk(modifier: Modifier, onText: (String) -> Unit) {
+fun CameraOrAsk(
+    modifier: Modifier, torch: Boolean = false, onHasTorch: (Boolean) -> Unit = {}, askPadding: PaddingValues = PaddingValues(),
+    onText: (String) -> Unit,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var granted by remember {
         mutableStateOf(androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -360,9 +370,9 @@ fun CameraOrAsk(modifier: Modifier, onText: (String) -> Unit) {
     val ask = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) { if (!granted) ask.launch(android.Manifest.permission.CAMERA) }
     if (granted) {
-        QrScanner(onText, modifier)
+        QrScanner(onText, modifier, torch, onHasTorch)
     } else {
-        Box(modifier, contentAlignment = Alignment.Center) {
+        Box(modifier.padding(askPadding), contentAlignment = Alignment.Center) {
             OutlineButton("Allow the camera", { ask.launch(android.Manifest.permission.CAMERA) }, tint = Fob.onCamera)
         }
     }

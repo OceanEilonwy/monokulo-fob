@@ -306,6 +306,68 @@ pub fn by_day(rows: Vec<Activity>, clock: Clock) -> Vec<Day> {
     days.into_iter().map(|(_, day)| day).collect()
 }
 
+/// Someone this wallet paid before, for Send's sheet until contacts come:
+/// their address, a name and one line about the last payment to them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaidBefore {
+    pub address: String,
+    /// The shop on the last payment's receipt, else the address cut to its
+    /// ends: "Corner Café", "86Ux … 7kQa".
+    pub name: String,
+    /// The last payment: its note and day ("Lunch money · 27 Oct"), or its
+    /// day and amount ("Today · $24.50", "3 Oct · 0.1421 XMR").
+    pub line: String,
+}
+
+/// How many people Send's sheet lists as paid before.
+pub const PAID_BEFORE: usize = 3;
+
+/// The day of `time`, for a line: "Today", "Yesterday", "27 Oct".
+fn day_name(time: u64, clock: Clock) -> String {
+    let (day, _) = local(time, clock);
+    let (today, _) = local(clock.now, clock);
+    match day {
+        _ if day == today => "Today".to_owned(),
+        _ if day == today - 1 => "Yesterday".to_owned(),
+        _ => date(day, today),
+    }
+}
+
+/// The people `rows` (as [`Wallet::activity`](crate::Wallet::activity)
+/// gives them) paid, each address once, the most recently paid first, at
+/// most [`PAID_BEFORE`]. Splits pay this wallet, so they're left out.
+pub fn paid_before(rows: &[Activity], clock: Clock) -> Vec<PaidBefore> {
+    let mut sent: Vec<(&Activity, &str)> =
+        rows.iter().filter(|a| a.direction == Direction::Out && a.split.is_none()).filter_map(|a| Some((a, a.to.as_deref()?))).collect();
+    sent.sort_by_key(|(a, _)| std::cmp::Reverse(a.time));
+    let mut seen: Vec<&str> = vec![];
+    let mut people = vec![];
+    for (last, to) in sent {
+        if seen.contains(&to) {
+            continue;
+        }
+        seen.push(to);
+        let day = day_name(last.time, clock);
+        let line = match &last.note {
+            Some(note) => format!("{note} · {day}"),
+            None => {
+                let amount = match (&last.receipt, &last.price) {
+                    (Some(r), _) => r.total.clone(),
+                    (None, Some(p)) => price::value(last.amount, p.price, &price::currency(&p.currency)),
+                    (None, None) => format!("{} XMR", amount::format_short(last.amount)),
+                };
+                format!("{day} · {amount}")
+            }
+        };
+        let name = last.receipt.as_ref().map(|r| r.merchant.clone()).unwrap_or_else(|| short_address(to));
+        people.push(PaidBefore { address: to.to_owned(), name, line });
+        if people.len() == PAID_BEFORE {
+            break;
+        }
+    }
+    people
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +599,42 @@ mod tests {
         assert_eq!(time_of_day(9 * 3600 + 12 * 60, c), "9:12 am");
         assert_eq!(time_of_day(12 * 3600, c), "12:00 pm");
         assert_eq!(time_of_day(22 * 3600 + 5 * 60, c), "10:05 pm");
+    }
+
+    #[test]
+    fn paid_before_lists_each_address_once_newest_first() {
+        let c = clock(0);
+        let address = |end: char| format!("86Ux{}7kQ{end}", "q".repeat(87));
+        let paid = |to: String, amount: u64, time: u64| Activity { to: Some(to), ..activity(Direction::Out, amount, time, 20) };
+        let mut cafe = paid(address('a'), 142_100_000_000, NOW - HOUR);
+        cafe.receipt = Some(receipt(3));
+        let mut sam = paid(address('b'), 100_000_000_000, NOW - 4 * DAY);
+        sam.note = Some("Lunch money".into());
+        let mut mum = paid(address('c'), 300_000_000_000, NOW - 28 * DAY);
+        mum.price = Some(crate::price::Record { currency: "USD".into(), price: 166_666_666, provider: "Kraken".into(), at: NOW, daily: false });
+        // Sam again, earlier: only the last payment to Sam shows.
+        let sam_before = paid(address('b'), 1, NOW - 9 * DAY);
+        let split = Activity { split: Some(4), ..paid(address('d'), 1, NOW) };
+        let received = activity(Direction::In, 1, NOW, 20);
+        // A restored wallet's send: no address known.
+        let unknown = activity(Direction::Out, 1, NOW, 20);
+        let fourth = paid(address('e'), 1_000_000_000, NOW - 400 * DAY);
+        let rows = [sam_before, received, mum.clone(), split, sam, unknown, cafe, fourth];
+        let shown: Vec<_> = paid_before(&rows, c).into_iter().map(|p| (p.name, p.line)).collect();
+        assert_eq!(
+            shown,
+            [
+                ("Kiosk Café".to_owned(), "Today · $13.50".to_owned()),
+                ("86Ux … 7kQb".to_owned(), "Lunch money · 27 Oct".to_owned()),
+                ("86Ux … 7kQc".to_owned(), "3 Oct · $50.00".to_owned()),
+            ]
+        );
+        // Without a price, the XMR.
+        mum.price = None;
+        let yesterday = paid(address('e'), 1_000_000_000, NOW - DAY);
+        let p = paid_before(&[mum, yesterday], c);
+        assert_eq!((p[0].line.as_str(), p[0].address.as_str()), ("Yesterday · 0.001 XMR", address('e').as_str()));
+        assert_eq!(p[1].line, "3 Oct · 0.3 XMR");
+        assert!(paid_before(&[], c).is_empty());
     }
 }

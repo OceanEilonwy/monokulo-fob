@@ -1756,19 +1756,55 @@ impl Wallet {
         }
     }
 
+    /// An amount field's text as XMR (atomic units): typed in XMR, or in
+    /// money (`in_fiat`) converted at the current price, with the money as
+    /// written ("$20.00"). Throws when it isn't an amount, or there's no
+    /// price to convert with.
+    pub async fn typed_amount(&self, text: &str, in_fiat: bool) -> Result<(u64, Option<String>)> {
+        let text = text.trim();
+        if !in_fiat {
+            return Ok((amount::parse(text)?, None));
+        }
+        let (currency, p) = self.price_now().await.ok_or_else(|| FobError::Price("no price to convert with".into()))?;
+        let minor = price::parse(text, &currency)?;
+        Ok((price::to_atomic(minor, p, &currency).ok_or(FobError::BadAmount)?, Some(price::format(minor, &currency))))
+    }
+
+    /// Builds a payment of an amount as Send's field took it: typed in
+    /// XMR, or in money (`in_fiat`) converted at the current price, the
+    /// conversion the field's line showed. Otherwise as
+    /// [`prepare`](Wallet::prepare).
+    pub async fn prepare_typed(&self, to: &str, amount_text: &str, in_fiat: bool, receipt_json: Option<String>, note: Option<String>) -> Result<Prepared> {
+        let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
+        self.prepare(to, atomic, receipt_json, note).await
+    }
+
+    /// Under Send's sheet: "1.8592 XMR ready to spend · $308.70", the money
+    /// only with a current price.
+    pub async fn ready_line(&self) -> String {
+        let ready = self.balance().await.unlocked;
+        let xmr = format!("{} XMR ready to spend", amount::format_short(ready));
+        match self.worth_now(ready).await {
+            Some(worth) => format!("{xmr} · {worth}"),
+            None => xmr,
+        }
+    }
+
+    /// The people this wallet paid before, for Send's sheet.
+    pub async fn paid_before(&self, clock: Clock) -> Vec<activity::PaidBefore> {
+        activity::paid_before(&self.activity().await, clock)
+    }
+
     /// Receive's payment code for `address`, with an amount typed in XMR or,
     /// when `in_fiat`, in money (the code still asks in XMR, converted at
     /// the current price), and a note for the payer.
     pub async fn receive_code(&self, address: &str, amount_text: Option<&str>, in_fiat: bool, note: Option<&str>) -> Result<ReceiveCode> {
         let typed = amount_text.map(str::trim).filter(|a| !a.is_empty());
-        let price = self.price_now().await;
-        let (xmr, fiat) = match (typed, in_fiat) {
-            (None, _) => (None, None),
-            (Some(t), false) => (Some(amount::parse(t)?), None),
-            (Some(t), true) => {
-                let (currency, p) = price.as_ref().ok_or_else(|| FobError::Price("no price to convert with".into()))?;
-                let minor = price::parse(t, currency)?;
-                (Some(price::to_atomic(minor, *p, currency).ok_or(FobError::BadAmount)?), Some(price::format(minor, currency)))
+        let (xmr, fiat) = match typed {
+            None => (None, None),
+            Some(t) => {
+                let (xmr, fiat) = self.typed_amount(t, in_fiat).await?;
+                (Some(xmr), fiat)
             }
         };
         let xmr = xmr.filter(|a| *a > 0);
@@ -2346,6 +2382,49 @@ mod tests {
         wallet.set_prices_on(false).await.unwrap();
         assert_eq!(wallet.amount_field("20", true).await.unit, "XMR");
         assert_eq!(wallet.convert_amount("20", false).await, "");
+    }
+
+    #[tokio::test]
+    async fn send_takes_an_amount_in_money_at_the_current_price() {
+        let wallet = Wallet::create(&dir("send-fiat"), [1; 32], Network::Stagenet).unwrap();
+        let address = wallet.receive_address().await.unwrap();
+        // No price: XMR only.
+        assert_eq!(wallet.typed_amount(" 0.5 ", false).await.unwrap(), (XMR / 2, None));
+        assert!(matches!(wallet.typed_amount("20", true).await, Err(FobError::Price(_))));
+        assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Price(_))));
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, now()).await.unwrap();
+        // The XMR the field's line showed for it.
+        assert_eq!(wallet.amount_field("20", true).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+        assert_eq!(wallet.typed_amount("20", true).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
+        assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::BadAmount)));
+        // Converted before the address and amount are checked, as prepare checks them.
+        assert!(matches!(wallet.prepare_typed("86Ux", "20", true, None, None).await, Err(FobError::BadAddress(_))));
+        assert!(matches!(wallet.prepare_typed(&address, "0", true, None, None).await, Err(FobError::BadAmount)));
+        assert!(matches!(wallet.prepare_typed(&address, "abc", false, None, None).await, Err(FobError::BadAmount)));
+    }
+
+    #[tokio::test]
+    async fn send_s_sheet_says_what_s_ready_and_who_was_paid() {
+        let wallet = Wallet::create(&dir("send-sheet"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let clock = Clock { now: t, utc_offset: 0, hours_24: true };
+        assert_eq!(wallet.ready_line().await, "0 XMR ready to spend");
+        assert!(wallet.paid_before(clock).await.is_empty());
+        let to = "5".repeat(95);
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.tip = 100;
+            state.outputs.push(Owned { height: 20, ..received("in", t, 2 * XMR) });
+            // Not ready: not counted.
+            state.outputs.push(Owned { height: 95, key: "late".into(), ..received("late", t, XMR) });
+            state.sent.push(Sent { tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![] });
+        }
+        assert_eq!(wallet.ready_line().await, "2 XMR ready to spend");
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), false, t).await.unwrap();
+        assert_eq!(wallet.ready_line().await, "2 XMR ready to spend · $332.20");
+        let paid = wallet.paid_before(clock).await;
+        assert_eq!(paid.len(), 1);
+        assert_eq!((paid[0].address.as_str(), paid[0].name.as_str(), paid[0].line.as_str()), (to.as_str(), "5555 … 5555", "Lunch money · Today"));
     }
 
     #[tokio::test]

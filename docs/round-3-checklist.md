@@ -51,4 +51,54 @@ every step is in. Each item: what to do, what should happen.
 - [ ] Decimal keyboard opens; a comma works as the point.
 - [ ] Dark mode → field on the card colour with the outline, typed text light, chip orange with dark text.
 - [ ] Settings › Show amounts in → still the segmented control.
-- [ ] Send → still the XMR-only amount field (moves to toggle B in step 4).
+- [ ] Send's form → the same field (step 4 moved it there; see below).
+
+## Step 4 · Send B
+
+Camera and permission
+- [ ] Fresh install, Home › Send → Android asks for the camera; allow → full-screen camera, top bar (✕, "Send", torch), large viewfinder, "Point at a payment code", folded sheet below.
+- [ ] Deny the camera → dark screen, "Allow the camera" centred between the top bar and the sheet (not under the sheet); Paste and the paid-before rows still work; tapping Allow asks again (after "Don't ask again" nothing happens, as before).
+- [ ] Allow it from Android's settings, come back to Send → the camera shows.
+- [ ] Torch → light on, the button's circle filled and the lamp orange; tap again → off; close Send with it on → light goes off. TalkBack: "Torch, switch, on/off".
+- [ ] A phone or emulator without a flash → no torch button.
+
+Safe areas
+- [ ] Phone with a punch-hole or notch → ✕, "Send" and the torch sit fully below the status bar and clear of the cutout; nothing clipped; the camera still fills behind the status bar.
+- [ ] Gesture navigation and 3-button navigation → the folded sheet's ready line and the pulled-up Review button sit above the navigation bar; the sheet's paper reaches the bottom edge.
+- [ ] Landscape (rotate on Send) → top bar clear of the cutout on the side; folded sheet leaves a strip of camera at the top, scrolls if it must; pulled up, no small frame, the form scrolls, Review reachable. (Rotating restarts at Home, as every screen does today: Nav lives in the activity.)
+- [ ] Restore › Scan a wallet code → title and back clear of the status bar and cutout too.
+
+Folded sheet
+- [ ] "Paste an address" with an address copied → To filled (pattern + "84Bv9 … 99fQ2"), sheet pulls up. Android shows its paste notice only after the tap, never on opening Send.
+- [ ] Paste with an empty clipboard → "Nothing to paste." over the camera.
+- [ ] Paste with text that isn't an address ("hello") → Rust's reason over the camera; with a mainnet address on stagenet → the wrong-network message.
+- [ ] Paid before (after sending to 2–3 addresses) → "PAID BEFORE", up to 3 rows, newest first, each address once: pattern, shop name (receipt) or "86Ux … 7kQa", line "Today · $24.50" / "Lunch money · 27 Oct" / "3 Oct · 0.3 XMR". No split rows. Tap one → To filled, sheet up.
+- [ ] New wallet that never sent → no PAID BEFORE section, just Paste and the ready line.
+- [ ] Ready line "1.8592 XMR ready to spend · $308.70" matches Home's Ready to spend; prices off → XMR only.
+- [ ] Long shop name → ellipsised on one line.
+
+Pulling up and back
+- [ ] Drag the handle up → sheet rises smoothly to under a small live frame (camera still moving in it); drag down → folds. Tap the handle → toggles. TalkBack on the handle: "Type the payment instead" / "Back to the camera", collapsed/expanded.
+- [ ] Pulled up, Back → folds; Back again → Home. ✕ → Home from either.
+- [ ] Pulled up, point the small frame at a payment code → the form fills (or confirm opens for one with an amount).
+
+Scanning
+- [ ] Plain address QR → To filled, sheet up, amount empty in money ($ sign, USD chip), Review disabled until an amount.
+- [ ] `monero:` code with tx_description, no amount → To filled, Note prefilled with the description, sheet up.
+- [ ] `monero:` code with tx_amount → straight to Confirm with that XMR; Back from Confirm → Home.
+- [ ] Code with an ORF receipt (and amount) → straight to Confirm with the shop's title and the receipt card, as before; after sending, the receipt is on the payment.
+- [ ] Code with an amount more than is ready → form opens filled (amount in XMR), the "not enough" reason above Review.
+- [ ] Wallet code → "That's a wallet code, not a payment code."
+- [ ] Holding a code in view doesn't keep re-filling or re-opening confirm.
+- [ ] A `monero:` link from another app → Send opens and reads it as a scan.
+
+Form
+- [ ] To: tap the short address → the whole address editable; type a wrong character → pattern disappears, Review disabled; Paste button in the field replaces it from the clipboard.
+- [ ] Amount in USD: type 20 → "≈ 0.1204 XMR · 1 XMR = $…"; Review → Confirm shows that XMR (and ≈ $20.00 worth now).
+- [ ] Amount in XMR (tap the chip): 0.05 → Confirm shows 0.05 XMR. "abc" or "0" → "That isn't an amount" / Review disabled.
+- [ ] Note "Lunch money" → shown on Confirm under the amount; after sending, the payment's screen shows "Today 12:30 · Lunch money"; PAID BEFORE line becomes "Lunch money · Today".
+- [ ] Keyboard up on Amount or Note → the form scrolls so the field stays visible; Review not under the keyboard.
+- [ ] View-only wallet via a link → Review gives Rust's "can't spend" reason.
+
+Dark mode
+- [ ] Sheet on the dark paper, fields on the dark card colour with the outline, text light, handle visible; Paste chip and icon circle sunken, not black; camera overlay text still light; Review orange with dark text.
