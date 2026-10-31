@@ -43,7 +43,9 @@ impl Transport {
         let client = reqwest::Client::builder()
             .read_timeout(QUIET)
             .connect_timeout(Duration::from_secs(15))
-            .pool_idle_timeout(Duration::from_secs(90))
+            // monerod closes idle keep-alive connections; reusing one it has
+            // dropped fails the request, so idle ones go after a few seconds.
+            .pool_idle_timeout(Duration::from_secs(8))
             .pool_max_idle_per_host(16)
             .tcp_keepalive(Duration::from_secs(30))
             .build()
@@ -64,36 +66,54 @@ impl HttpTransport for Transport {
         body: Vec<u8>,
         response_size_limit: Option<usize>,
     ) -> impl Send + Future<Output = Result<Vec<u8>, InterfaceError>> {
-        let request = self.client.post(format!("{}/{route}", self.base)).body(body);
-        let request = if route.ends_with(".bin") { request } else { request.header("Content-Type", "application/json") };
+        let url = format!("{}/{route}", self.base);
+        let json = !route.ends_with(".bin");
+        let client = self.client.clone();
         let requests = self.requests.clone();
         async move {
-            requests.fetch_add(1, Ordering::Relaxed);
-            let err = |e: reqwest::Error| {
-                // reqwest's own message is only "error sending request"; the cause is below it.
-                let e = e.without_url();
-                let mut text = e.to_string();
-                let mut source = std::error::Error::source(&e);
-                while let Some(cause) = source {
-                    text.push_str(": ");
-                    text.push_str(&cause.to_string());
-                    source = cause.source();
-                }
-                InterfaceError::InterfaceError(text)
-            };
-            let mut response = request.send().await.map_err(err)?;
-            if !response.status().is_success() {
-                return Err(InterfaceError::InterfaceError(format!("node answered {}", response.status())));
-            }
-            // Read it all before the connection goes back to the pool.
-            let mut body = Vec::with_capacity(response.content_length().unwrap_or(1024) as usize);
-            while let Some(chunk) = response.chunk().await.map_err(err)? {
-                body.extend_from_slice(&chunk);
-                if response_size_limit.is_some_and(|limit| body.len() > limit) {
-                    return Err(InterfaceError::InvalidInterface("node's response was too large".into()));
+            // A pooled connection the node closed while idle fails before the
+            // node sees the request; Monero's RPC calls are safe to repeat
+            // (re-relaying a transaction included), so send it again.
+            let mut attempt = 0;
+            loop {
+                let request = client.post(&url).body(body.clone());
+                let request = if json { request.header("Content-Type", "application/json") } else { request };
+                match Self::send(request, &requests, response_size_limit).await {
+                    Err(InterfaceError::InterfaceError(e)) if attempt < 2 && crate::fetch::stale(&e) => attempt += 1,
+                    other => return other,
                 }
             }
-            Ok(body)
         }
+    }
+}
+
+impl Transport {
+    async fn send(request: reqwest::RequestBuilder, requests: &AtomicU64, response_size_limit: Option<usize>) -> Result<Vec<u8>, InterfaceError> {
+        requests.fetch_add(1, Ordering::Relaxed);
+        let err = |e: reqwest::Error| {
+            // reqwest's own message is only "error sending request"; the cause is below it.
+            let e = e.without_url();
+            let mut text = e.to_string();
+            let mut source = std::error::Error::source(&e);
+            while let Some(cause) = source {
+                text.push_str(": ");
+                text.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            InterfaceError::InterfaceError(text)
+        };
+        let mut response = request.send().await.map_err(err)?;
+        if !response.status().is_success() {
+            return Err(InterfaceError::InterfaceError(format!("node answered {}", response.status())));
+        }
+        // Read it all before the connection goes back to the pool.
+        let mut body = Vec::with_capacity(response.content_length().unwrap_or(1024) as usize);
+        while let Some(chunk) = response.chunk().await.map_err(err)? {
+            body.extend_from_slice(&chunk);
+            if response_size_limit.is_some_and(|limit| body.len() > limit) {
+                return Err(InterfaceError::InvalidInterface("node's response was too large".into()));
+            }
+        }
+        Ok(body)
     }
 }
