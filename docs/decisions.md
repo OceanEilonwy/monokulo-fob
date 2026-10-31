@@ -1885,3 +1885,19 @@ Calls made while building the first version, with why. Newest last.
     (Retry over a background lookup hanging on its timeout) changes
     nothing, price or toast. Retry that finds a day's price names the day:
     "29 Oct's USD price found", that day's rate.
+249. **Every amount at an old price says how old** (review R3, plan
+    decision 9): beside Home's balance and Send's ready line, the confirm
+    screen's total ("0.1204 XMR · $20.03 · 23 h old"), Coins' ready sum,
+    Home's opened not-ready card ("All ready about 09:02 · in 14 min ·
+    price 23 h old"), a payment's Now rate, and Split up's footer ("coins
+    are set in XMR at yesterday's 09:00 price · 23 h old"; "today's price"
+    only while it's fresh) all carry the age once a refresh is missed.
+250. **Receive's code follows the price** (review R2): Price settings
+    carry when the shown price was asked (`price_at`), and Receive makes
+    its code again when it changes, so the QR, its XMR line, Share and Copy
+    all convert at the same price.
+251. **No price asks for one** (decision 191's "or none", review R2):
+    while a currency is chosen and no price is shown, the amount field
+    (then in XMR) has the price task ask as typing, once a minute, when it
+    opens or anything is typed, so its failure shows and a price that
+    comes back lets money be typed again.

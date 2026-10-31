@@ -85,7 +85,7 @@ fun SplitScreen(model: WalletModel, nav: Nav) {
         feeTick++
     }
     LaunchedEffect(wallet, counts, balance, prices, feeTick) {
-        view = wallet?.splitView(counts)
+        view = model.splitView(counts)
     }
     // Why a piece couldn't be added shows for a moment.
     LaunchedEffect(error) {

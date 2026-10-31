@@ -16,6 +16,7 @@ import com.monokulo.fob.ui.ThemeChoice
 import uniffi.fob.ActivityDay
 import uniffi.fob.AmountEntry
 import uniffi.fob.Balance
+import uniffi.fob.SplitView
 import uniffi.fob.Coins
 import uniffi.fob.ContactCard
 import uniffi.fob.ContactRow
@@ -276,6 +277,13 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
         return wallet.syncDetails(seconds, offset, hours24)
+    }
+
+    /** Split up's screen for [counts], every word from Rust (its price's age by the phone's clock); null without a wallet. */
+    suspend fun splitView(counts: List<UInt>): SplitView? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.splitView(counts, seconds, offset, hours24)
     }
 
     /** The Coins screen, every word from Rust; null without a wallet. */

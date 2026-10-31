@@ -183,7 +183,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     val asked = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }?.let { Asked(forId, amount, it.inFiat, note) }
     // The request's code while the form is as it was made from; Receive's own otherwise.
     val request = made?.takeIf { it.first == asked }?.second
-    LaunchedEffect(wallet, address, asked, request) {
+    // Keyed on the price too: a new one makes the code again, so it asks what the field and Share say.
+    LaunchedEffect(wallet, address, asked, request, prices?.priceAt) {
         if (request != null) { code = request.code; return@LaunchedEffect }
         val w = wallet ?: return@LaunchedEffect
         val a = address ?: return@LaunchedEffect
