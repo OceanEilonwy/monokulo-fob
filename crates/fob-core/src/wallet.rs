@@ -128,6 +128,11 @@ struct Sent {
     /// everything that comes back, pieces and change.
     #[serde(default)]
     pieces: Option<u32>,
+    /// Each output coming back to this wallet (a split's pieces, then the
+    /// change), as sent, so they show one by one before the payment is
+    /// mined, as they will after. Empty in older files: `change` as one.
+    #[serde(default)]
+    back: Vec<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -307,6 +312,8 @@ struct PreparedTx {
     note: Option<String>,
     /// How many pieces, for a split.
     pieces: Option<u32>,
+    /// A split's pieces, paid back to this wallet; empty for a payment.
+    back: Vec<u64>,
 }
 
 struct Inner {
@@ -782,7 +789,10 @@ impl Wallet {
             pieces.push(Piece { amount: output.amount, confirmations, needed, source, time: output.time });
         }
         for sent in state.sent.iter().filter(|s| s.height.is_none() && s.change > 0) {
-            pieces.push(Piece { amount: sent.change, confirmations: 0, needed: UNLOCK, source: Source::Change(Some(name(sent))), time: sent.time });
+            let back = if sent.back.is_empty() { std::slice::from_ref(&sent.change) } else { sent.back.as_slice() };
+            for &amount in back {
+                pieces.push(Piece { amount, confirmations: 0, needed: UNLOCK, source: Source::Change(Some(name(sent))), time: sent.time });
+            }
         }
         for (amount, seen) in self.inner.pool.lock().expect("pool lock").values() {
             pieces.push(Piece { amount: *amount, confirmations: 0, needed: UNLOCK, source: Source::Received, time: *seen });
@@ -1460,6 +1470,7 @@ impl Wallet {
                 receipt: receipt.is_some().then_some(receipt_json).flatten(),
                 note: note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
                 pieces,
+                back: if pieces.is_some() { payments.iter().map(|p| p.1).collect() } else { vec![] },
             },
         );
         Ok(Prepared { id, to: to.to_owned(), amount, fee, receipt: receipt.as_ref().map(ReceiptView::from), split: vec![], pieces })
@@ -1570,6 +1581,8 @@ impl Wallet {
         }
         // A split's pieces come back to this wallet with the change.
         let back = if prepared.pieces.is_some() { prepared.input_total } else { prepared.input_total.saturating_sub(prepared.amount) };
+        let change = prepared.input_total.saturating_sub(prepared.amount).saturating_sub(fee);
+        let outputs = prepared.back.iter().copied().chain((change > 0).then_some(change)).collect();
         state.sent.push(Sent {
             tx: hash.clone(),
             to: prepared.to,
@@ -1581,6 +1594,7 @@ impl Wallet {
             receipt: prepared.receipt,
             note: prepared.note,
             pieces: prepared.pieces,
+            back: outputs,
         });
         self.record_prices(&mut state);
         self.save_state(&state)?;
@@ -1934,6 +1948,7 @@ mod tests {
             receipt: None,
             note: None,
             pieces: None,
+            back: vec![],
         };
         {
             let mut state = wallet.inner.state.lock().await;
@@ -2207,7 +2222,7 @@ mod tests {
         {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t - 120, XMR / 2));
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None });
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![] });
             assert!(wallet.record_prices(&mut state));
             wallet.save_state(&state).unwrap();
         }
@@ -2330,7 +2345,7 @@ mod tests {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t, XMR / 2));
             state.outputs.push(Owned { key: "in-2".into(), output: "2".into(), ..received("in", t, XMR / 4) });
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None });
+            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![] });
         }
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let shown = wallet.payment("in", clock).await.unwrap();
@@ -2358,6 +2373,7 @@ mod tests {
             receipt: None,
             note: None,
             pieces,
+            back: vec![],
         };
         {
             let mut state = wallet.inner.state.lock().await;
@@ -2405,6 +2421,19 @@ mod tests {
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let pieces = wallet.not_ready(clock).await.unwrap().pieces;
         assert!(pieces.iter().any(|p| p.source == "Change · Split up"));
+
+        // Sent with its outputs known: each one shows before it's mined,
+        // the same count as after, not one lump.
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.sent.retain(|s| s.tx != "split");
+            let back = vec![XMR / 10; 15].into_iter().chain([XMR / 2 - 1]).collect::<Vec<_>>();
+            state.sent.push(Sent { change: 2 * XMR - 1, height: None, back, ..sent("split", 15 * XMR / 10, t, Some(15)) });
+        }
+        let summary = wallet.not_ready(clock).await.unwrap();
+        let split: Vec<_> = summary.pieces.iter().filter(|p| p.source == "Change · Split up").collect();
+        assert_eq!(split.len(), 16);
+        assert_eq!(split.iter().map(|p| p.atomic).sum::<u64>(), 2 * XMR - 1);
         let row = activity::by_day(wallet.activity().await, clock).into_iter().flat_map(|d| d.rows).find(|r| r.activity.tx == "split").unwrap();
         assert_eq!((row.title.as_str(), row.amount.as_str()), ("Split up", "−0.000000000001"));
         assert!(row.line.starts_with("Sending · 15 pieces · "), "{}", row.line);
