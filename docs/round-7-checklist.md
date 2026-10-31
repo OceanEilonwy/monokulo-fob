@@ -88,3 +88,23 @@ through step 1's stopgap dialogs in Settings.
 - [ ] Dark mode → chip on the dark sunken colour, ring track and arc readable, card on the dark card colour with its shadow, Node settings in the orange text colour
 - [ ] Font size 200% → chip text on one line; card rows wrap their values rather than overlapping the labels
 - [ ] Phone in landscape → the card stays under the chip and on screen
+
+## Step 5 · Send sheet
+
+- [ ] Tall phone (e.g. 6.7"), Send, pull the sheet up → it is just as tall as To, Amount, Note, the ready line and Review, no gap under Review; the camera fills the rest with a 200 dp frame centred in it
+- [ ] Small phone (or display size largest) → the sheet stops under the top bar; the form scrolls, Review stays at the bottom; the frame hides when the room above is too small
+- [ ] Landscape → folded sheet keeps a strip of camera with "Point at a payment code"; pulled up, the form scrolls under the top bar with Review visible; no frame
+- [ ] Font size 200% → both stops fit their content; pulled up, the form scrolls and Review stays visible
+- [ ] Pulled up, tap Amount → the keyboard rises, Review sits just above it, the field scrolls into view; tap Note → it scrolls into view too
+- [ ] Drag the handle slowly up and down → the sheet's top edge stays under the finger the whole way; the form appears as soon as it rises above folded; the camera frame grows and shrinks with it
+- [ ] Slow drag to just under halfway and let go → it eases back to folded in about 300 ms; just over halfway → it eases up
+- [ ] Quick flick up from a little above folded → it opens; quick flick down from a little under open → it folds
+- [ ] Tap the handle → the same 300 ms move both ways
+- [ ] Back with the sheet up → it folds with the same move; Back again → Send closes
+- [ ] Scan an address while folded → the sheet rises with the form filled; scan a different code with To filled → "Use this code instead?" appears and the sheet grows to fit it
+- [ ] Review with too little ready → the error shows above Review and the sheet grows to show it
+- [ ] Scan another Fob's profile → its sheet with the large frame over it; Pay → the form rises filled
+- [ ] Review → Confirm → Back → the form as it was, pulled up, sheet fitting it
+- [ ] Price toast showing while pulled up → it sits above Review, not over it
+- [ ] TalkBack on the handle → "Type the payment instead, collapsed" / "Back to the camera, expanded"; double tap moves the sheet
+- [ ] Dark mode → the sheet's paper and handle in dark colours, no light gap below Review while it moves

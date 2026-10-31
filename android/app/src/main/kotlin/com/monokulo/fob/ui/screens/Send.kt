@@ -1,7 +1,6 @@
 package com.monokulo.fob.ui.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -31,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
@@ -49,9 +49,11 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,6 +84,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
@@ -97,6 +100,7 @@ import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.reason
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import uniffi.fob.AmountEntry
 import uniffi.fob.CodeKind
@@ -107,6 +111,7 @@ import uniffi.fob.classifyCode
 import uniffi.fob.isProfileCode
 import uniffi.fob.parsePayment
 import uniffi.fob.shortAddress
+import kotlin.math.abs
 
 /** A torch: the lamp's head and its handle. */
 private const val TORCH = "M8 3h8l-2 6h-4L8 3Z M10 9v11h4V9"
@@ -290,11 +295,60 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     BoxWithConstraints(Modifier.fillMaxSize().background(Fob.camera)) {
         val safe = WindowInsets.safeDrawing.asPaddingValues()
         val barBottom = safe.calculateTopPadding() + 64.dp
-        // The small live frame only where there's room for it (not in landscape on most phones).
-        val roomy = maxHeight >= 560.dp
-        val openTop = barBottom + if (roomy) 128.dp else 8.dp
-        var sheetHeight by remember { mutableIntStateOf(0) }
-        val sheetTop = maxHeight - with(density) { sheetHeight.toDp() }
+        val screenPx = constraints.maxHeight.toFloat()
+        val barPx = with(density) { barBottom.toPx() }
+        // Folded, at most 62% of the screen, so a landscape phone keeps a strip of camera to aim with; pulled up, at
+        // most up to the top bar, the form scrolling above Review only then.
+        val foldCap = minOf(maxHeight - barBottom - 16.dp, maxHeight * 0.62f).coerceAtLeast(0.dp)
+        val openCap = (maxHeight - barBottom).coerceAtLeast(0.dp)
+
+        // Each stop's height as last measured (px): the sheet is exactly as tall as what it holds there.
+        var foldMeasured by remember { mutableStateOf<Float?>(null) }
+        var openMeasured by remember { mutableStateOf<Float?>(null) }
+        val openStop = openMeasured ?: with(density) { openCap.toPx() }
+        // Not measured yet (Send opened on the form): a guess the settle corrects once the folded sheet is drawn.
+        val foldStop = foldMeasured ?: (minOf(with(density) { foldCap.toPx() }, openStop) * 0.5f)
+        // Read when used, so a settle under way eases to a stop measured after it began.
+        val openNow by rememberUpdatedState(openStop)
+        val foldNow by rememberUpdatedState(foldStop)
+        fun stop(up: Boolean) = if (up) openNow else foldNow
+
+        // While dragged or settling the sheet is [live] tall (px); at rest, its stop's height, following its content.
+        var live by remember { mutableFloatStateOf(0f) }
+        var moving by remember { mutableStateOf(false) }
+        var dragging by remember { mutableStateOf(false) }
+        var settle by remember { mutableStateOf<Job?>(null) }
+        // A scanned profile's sheet, in place of Send's: the camera's room is above it.
+        var profileHeight by remember { mutableIntStateOf(0) }
+        val height = if (moving) live else stop(open)
+
+        /** From [from] to the stop [open] names, eased over 300 ms; a stop measured meanwhile is eased to. */
+        fun settleFrom(from: Float) {
+            settle?.cancel()
+            live = from
+            moving = true
+            settle = scope.launch {
+                val start = withFrameNanos { it }
+                do {
+                    val t = ((withFrameNanos { it } - start) / 300_000_000f).coerceIn(0f, 1f)
+                    live = from + (stop(open) - from) * SHEET_EASING.transform(t)
+                } while (t < 1f)
+                moving = false
+            }
+        }
+        // However the sheet is pulled up or folded (the handle, Back, a scan, a contact), it moves to its stop.
+        var shownOpen by remember { mutableStateOf(open) }
+        LaunchedEffect(open) {
+            if (open == shownOpen) return@LaunchedEffect
+            val from = if (moving) live else stop(shownOpen)
+            shownOpen = open
+            if (!dragging) settleFrom(from)
+        }
+        // Dragged above its folded height the sheet shows the form, so what it reveals is what it opens to.
+        val form = open || (dragging && live > foldStop + 0.5f)
+
+        val sheetPx = if (profile != null) profileHeight.toFloat() else height
+        val sheetTop = maxHeight - with(density) { sheetPx.toDp() }
 
         CameraOrAsk(
             Modifier.fillMaxSize(), torch = torch, onHasTorch = { hasTorch = it },
@@ -302,18 +356,23 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             onText = ::read,
         )
 
-        // The viewfinder: large over the camera while folded, small above the form.
-        val finder by animateDpAsState(
-            if (open) (if (roomy) 100.dp else 0.dp) else (sheetTop - barBottom - 76.dp).coerceIn(0.dp, 260.dp),
-            tween(280, easing = SHEET_EASING), label = "finder",
-        )
+        // The viewfinder: large over the camera while folded, centred in the room above the form pulled up, and
+        // between the two as the sheet moves; none where there's too little room (landscape, the keyboard up).
+        fun foldedFrame(room: Dp) = (room - 76.dp).coerceIn(0.dp, 260.dp)
+        fun openFrame(room: Dp) = (room - 32.dp).coerceAtMost(200.dp).let { if (it < 64.dp) 0.dp else it }
+        val foldRoom = with(density) { (screenPx - foldStop - barPx).toDp() }
+        val openRoom = with(density) { (screenPx - openStop - barPx).toDp() }
+        val toward = if (openStop - foldStop > 1f) ((height - foldStop) / (openStop - foldStop)).coerceIn(0f, 1f) else if (open) 1f else 0f
+        // Over a scanned profile's sheet, the large frame, eased as its sheet comes.
+        val profileFinder by animateDpAsState(foldedFrame(sheetTop - barBottom), tween(280, easing = SHEET_EASING), label = "finder")
+        val finder = if (profile != null) profileFinder else lerp(foldedFrame(foldRoom), openFrame(openRoom), toward)
         Column(
             Modifier.fillMaxWidth().padding(top = barBottom).height((sheetTop - barBottom).coerceAtLeast(0.dp)),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
         ) {
-            if (finder > 24.dp) Viewfinder(finder, if (open) 10f else 6f)
+            if (finder > 24.dp) Viewfinder(finder, if (profile != null) 6f else 6f + 4f * toward)
             // In a landscape strip without the frame, the words take less room, and none where there's none.
-            if (!open && sheetTop - barBottom >= 40.dp) {
+            if (!form && sheetTop - barBottom >= 40.dp) {
                 Text(
                     notice ?: "Point at a payment code", color = Fob.onCamera, fontSize = 15.sp, textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
@@ -343,103 +402,120 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             }
         }
 
-        // The sheet: folded to what it holds, or pulled up to under the small frame.
-        var dragged by remember { mutableFloatStateOf(0f) }
-        val threshold = with(density) { 40.dp.toPx() }
+        // The sheet follows the finger on its handle, between its folded and pulled-up heights; let go, it settles
+        // to the nearer, or the way it was flung.
+        val fling = with(density) { 125.dp.toPx() }
         val drag = rememberDraggableState { delta ->
-            dragged += delta
-            if (dragged < -threshold && !open) { pull(true); dragged = 0f }
-            if (dragged > threshold && open) { pull(false); dragged = 0f }
+            if (dragging) live = (live - delta).coerceIn(minOf(foldNow, openNow), maxOf(foldNow, openNow))
         }
         if (profile == null) {
-            Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                    // Folded, at most 62% of the screen, so a landscape phone keeps a strip of camera to aim with.
-                    .then(if (open) Modifier.height(maxHeight - openTop) else Modifier.heightIn(max = minOf(maxHeight - barBottom - 16.dp, maxHeight * 0.62f)))
-                    .animateContentSize(tween(280, easing = SHEET_EASING))
-                    .onSizeChanged { sheetHeight = it.height }
-                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(Fob.paper)
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
-                    .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+            // Its height is the stop's or the finger's; what it holds keeps its own height, top first, clipped below.
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(with(density) { height.toDp() })
+                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(Fob.paper),
             ) {
-                // The handle: drag it, or tap it; 48 dp to touch, its bar small.
-                Box(
-                    Modifier.fillMaxWidth().height(48.dp)
-                        .draggable(drag, Orientation.Vertical, onDragStopped = { dragged = 0f })
-                        .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { pull(!open) }
-                        .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
-                    contentAlignment = Alignment.Center,
-                ) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
-                if (open) {
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Labelled("To") {
-                            ToField(to, toValid, onChange = { typed ->
-                                // A whole payment code typed or pasted in is read as one.
-                                if (typed.trim().startsWith("monero:", ignoreCase = true)) take(typed.trim())
-                                // A code still in view isn't taken again for an edit; cleared, To takes the next one read.
-                                else { to = typed; pending = null; notice = null; if (typed.isBlank()) lastRead = null }
-                            }, onPaste = ::paste)
-                            ErrorText(notice)
-                            pending?.let { (seen, address) -> OtherCode(address, onUse = { take(seen) }, onKeep = { pending = null }) }
-                        }
-                        Labelled("Amount") {
-                            AmountField(
-                                amount, { amount = it }, entry,
-                                onSwitch = {
-                                    // The text, unit and Rust's word on them change together.
-                                    scope.launch {
-                                        val w = wallet ?: return@launch
-                                        val toFiat = !inFiat
-                                        val switched = w.convertAmount(amount, toFiat)
-                                        val e = model.amountEntry(switched, toFiat) ?: return@launch
-                                        amount = switched; inFiat = toFiat; entry = e
-                                    }
+                Column(
+                    Modifier.fillMaxWidth().wrapContentHeight(Alignment.Top, unbounded = true)
+                        .heightIn(max = if (form) openCap else foldCap)
+                        .onSizeChanged { if (form) openMeasured = it.height.toFloat() else foldMeasured = it.height.toFloat() }
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                        .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+                ) {
+                    // The handle: drag it, or tap it; 48 dp to touch, its bar small.
+                    Box(
+                        Modifier.fillMaxWidth().height(48.dp)
+                            .draggable(
+                                drag, Orientation.Vertical,
+                                onDragStarted = {
+                                    settle?.cancel()
+                                    live = if (moving) live else stop(open)
+                                    moving = true
+                                    dragging = true
+                                },
+                                onDragStopped = { velocity ->
+                                    dragging = false
+                                    val up = if (abs(velocity) > fling) velocity < 0f else live > (foldNow + openNow) / 2f
+                                    shownOpen = up
+                                    if (up != open) pull(up)
+                                    settleFrom(live)
                                 },
                             )
-                        }
-                        Labelled("Note (optional)") { NoteField(note) { note = it } }
-                        balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp)) }
-                    }
-                    // The price toast rises above Review (and the sheet's 16 dp under it).
-                    Column(Modifier.bottomSpace(16.dp).padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        ErrorText(error)
-                        PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
-                            val e = current ?: return@PrimaryButton
-                            review(to.trim(), amount, e.inFiat, note.trim().ifEmpty { null })
-                        })
-                    }
-                } else {
-                    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        // No room over the camera for what a scan found (a short landscape window): it shows here.
-                        if (sheetTop - barBottom < 40.dp) ErrorText(notice)
-                        PasteRow(::paste)
-                        if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
-                        ErrorText(error)
-                        // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
-                        if (hasContacts) {
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        "CONTACTS", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
-                                        modifier = Modifier.weight(1f).semantics { heading() },
-                                    )
-                                    TextButton("All", { nav.go(Screen.Contacts) })
-                                }
-                                if (contacts.isEmpty()) {
-                                    Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
-                                }
-                                contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; filledFrom = null; pending = null; notice = null; open = true } }
+                            .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { pull(!open) }
+                            .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
+                        contentAlignment = Alignment.Center,
+                    ) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
+                    if (form) {
+                        // As tall as the form, Review straight under it; scrolling only where it doesn't fit, Review kept.
+                        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Labelled("To") {
+                                ToField(to, toValid, onChange = { typed ->
+                                    // A whole payment code typed or pasted in is read as one.
+                                    if (typed.trim().startsWith("monero:", ignoreCase = true)) take(typed.trim())
+                                    // A code still in view isn't taken again for an edit; cleared, To takes the next one read.
+                                    else { to = typed; pending = null; notice = null; if (typed.isBlank()) lastRead = null }
+                                }, onPaste = ::paste)
+                                ErrorText(notice)
+                                pending?.let { (seen, address) -> OtherCode(address, onUse = { take(seen) }, onKeep = { pending = null }) }
                             }
-                        } else if (paid.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    "PAID BEFORE", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
-                                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).semantics { heading() },
+                            Labelled("Amount") {
+                                AmountField(
+                                    amount, { amount = it }, entry,
+                                    onSwitch = {
+                                        // The text, unit and Rust's word on them change together.
+                                        scope.launch {
+                                            val w = wallet ?: return@launch
+                                            val toFiat = !inFiat
+                                            val switched = w.convertAmount(amount, toFiat)
+                                            val e = model.amountEntry(switched, toFiat) ?: return@launch
+                                            amount = switched; inFiat = toFiat; entry = e
+                                        }
+                                    },
                                 )
-                                paid.forEach { p -> PaidRow(p) { to = p.address; filledFrom = null; pending = null; notice = null; open = true } }
                             }
+                            Labelled("Note (optional)") { NoteField(note) { note = it } }
+                            balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp)) }
                         }
-                        balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+                        // The price toast rises above Review (and the sheet's 16 dp under it).
+                        Column(Modifier.bottomSpace(16.dp).padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            ErrorText(error)
+                            PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
+                                val e = current ?: return@PrimaryButton
+                                review(to.trim(), amount, e.inFiat, note.trim().ifEmpty { null })
+                            })
+                        }
+                    } else {
+                        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            // No room over the camera for what a scan found (a short landscape window): it shows here.
+                            if (sheetTop - barBottom < 40.dp) ErrorText(notice)
+                            PasteRow(::paste)
+                            if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
+                            ErrorText(error)
+                            // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
+                            if (hasContacts) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "CONTACTS", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
+                                            modifier = Modifier.weight(1f).semantics { heading() },
+                                        )
+                                        TextButton("All", { nav.go(Screen.Contacts) })
+                                    }
+                                    if (contacts.isEmpty()) {
+                                        Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
+                                    }
+                                    contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; filledFrom = null; pending = null; notice = null; open = true } }
+                                }
+                            } else if (paid.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        "PAID BEFORE", color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp,
+                                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp).semantics { heading() },
+                                    )
+                                    paid.forEach { p -> PaidRow(p) { to = p.address; filledFrom = null; pending = null; notice = null; open = true } }
+                                }
+                            }
+                            balance?.let { Text(it.readyLine, color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+                        }
                     }
                 }
             }
@@ -448,7 +524,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         // A profile scanned (Round 6 › "Another Fob scans the code"): Pay fills the form as its code would.
         profile?.let { (text, found) ->
             // Over the camera as the folded sheet is, the large frame above it.
-            Box(Modifier.align(Alignment.BottomCenter).onSizeChanged { sheetHeight = it.height }) {
+            Box(Modifier.align(Alignment.BottomCenter).onSizeChanged { profileHeight = it.height }) {
                 ProfileFound(model, nav, text, found, onPay = { profile = null; take(text, asProfile = false) }, onClose = { profile = null })
             }
         }

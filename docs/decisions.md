@@ -1572,3 +1572,26 @@ Calls made while building the first version, with why. Newest last.
     drops `seconds_left` and `up_to` (only Home's sync line read them) for
     `chip_look`, `chip_text` and `chip_label`; `sync_details` gives the
     card for the phone's clock.
+209. **Send's sheet fits its form** (decision 3): pulled up it is the
+    form's own height, Review straight under the ready line, up to the
+    screen under the top bar; only past that (a small phone, big font,
+    the keyboard up) does the form scroll, Review kept below it. The
+    keyboard's height counts as part of the sheet, so Review stays above
+    it. The small frame is up to 200 dp, centred in the camera's room
+    above the sheet, and hidden when that room leaves it under 64 dp.
+210. **The sheet follows the finger** with a plain height state of
+    its own (not `AnchoredDraggable`, whose anchors would have to be
+    rebuilt each time a stop's measured height changes): dragging the
+    handle sets the height, clamped between the two stops; let go, a
+    fling over 125 dp/s (Material's sheet threshold) picks its way,
+    otherwise the nearer stop, and a 300 ms ease on the board's curve
+    takes it there. Every other open or fold (tapping the handle, Back,
+    a scan, a contact, a failed Review) makes the same move. Dragged above
+    its folded height the sheet already shows the form (clipped to the
+    height), so the form is measured before the finger reaches the top;
+    the camera's frame and words follow the live height.
+211. **At rest the sheet follows its content at once**: a line appearing
+    (an error, "Use this code instead?") or the keyboard rising resizes it
+    without the old 280 ms content animation, which would trail the
+    keyboard. The handle alone is the drag area; the form and the folded
+    list scroll as before.
