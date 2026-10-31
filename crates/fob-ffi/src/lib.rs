@@ -74,7 +74,13 @@ fn file_key(key: Vec<u8>) -> Result<[u8; 32]> {
     key.try_into().map_err(|_| FobError::Other { reason: "the wallet key must be 32 bytes".into() })
 }
 
+/// Balances and lists: four decimals.
 fn xmr(atomic: u64) -> String {
+    amount::format_short(atomic)
+}
+
+/// What's about to be paid: every digit.
+fn exact(atomic: u64) -> String {
     amount::format(atomic, 4)
 }
 
@@ -391,7 +397,7 @@ impl FobWallet {
         Ok(Prepared {
             id: p.id,
             to: p.to,
-            amount_text: xmr(p.amount),
+            amount_text: exact(p.amount),
             fee_text: amount::format(p.fee, 5),
             total_text: amount::format(p.amount + p.fee, 5),
             receipt: p.receipt.map(Into::into),
@@ -413,7 +419,7 @@ impl FobWallet {
 pub fn parse_payment(network: Network, text: String) -> Result<PaymentRequest> {
     let r = uri::parse_payment(network.into(), &text)?;
     Ok(PaymentRequest {
-        amount_text: r.amount.map(xmr),
+        amount_text: r.amount.map(exact),
         receipt_json: r.receipt.as_ref().and_then(receipt::to_json),
         receipt: r.receipt.as_ref().map(|receipt| receipt::ReceiptView::from(receipt).into()),
         address: r.address,

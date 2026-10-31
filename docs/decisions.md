@@ -106,8 +106,13 @@ Calls made while building the first version, with why. Newest last.
 20. **ABIs**: arm64-v8a (phones) and x86_64 (emulator) only.
 21. **Pipelining across sync steps**: each step waits for its slowest
     request. Keeping requests in flight between steps would add 20–30 %.
-22. **Untested on chain**: sending needs coins. Scanning, restore and the
-    whole app run against real stagenet nodes; a send has not been made yet.
+22. **Tested on stagenet, 2026-10-31**: a faucet payment received by
+    fob-core; 0.03 XMR sent from fob-core to the app's wallet (tx `41e7a708…`)
+    and seen by the app in the pool before it was mined; 0.01 XMR with an ORF
+    receipt sent from the app with swipe to send (tx `425cec27…`, prepared in
+    4 s, sent in 4 s) and seen by the other wallet in the pool. Not tried yet:
+    restoring in the app from a wallet code another wallet made, the camera
+    on a real phone, mainnet.
 
 ## Dependencies
 
@@ -116,3 +121,5 @@ Calls made while building the first version, with why. Newest last.
     RUSTSEC-2026-0382) and `webpki-roots` 1.0.10 (the oldest without
     RUSTSEC-2026-0381). Android libraries are Monokular's vetted versions plus
     `androidx.biometric` 1.1.0 (2021).
+29. **Balances and lists show four decimals, cut not rounded**; what's about
+    to be paid (confirm screen, payment codes) shows every digit.

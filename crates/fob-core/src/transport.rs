@@ -93,12 +93,6 @@ impl HttpTransport for Transport {
                     return Err(InterfaceError::InvalidInterface("node's response was too large".into()));
                 }
             }
-            if let Ok(dir) = std::env::var("FOB_DUMP_BIN") {
-                if route.ends_with(".bin") {
-                    let n = requests.load(Ordering::Relaxed);
-                    let _ = std::fs::write(format!("{dir}/{n}-{route}"), &body);
-                }
-            }
             Ok(body)
         }
     }

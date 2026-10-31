@@ -742,7 +742,17 @@ impl Wallet {
         if new.is_empty() {
             return Ok(());
         }
-        let Some(mut block) = self.inner.last_block.lock().expect("block lock").clone() else { return Ok(()) };
+        let last = self.inner.last_block.lock().expect("block lock").clone();
+        let mut block = match last {
+            Some(block) => block,
+            // Opened already synced: nothing scanned yet this run.
+            None => {
+                let latest = rpc.latest_block_number().await.map_err(node_err)?;
+                let block = rpc.block_by_number(latest).await.map_err(node_err)?;
+                *self.inner.last_block.lock().expect("block lock") = Some(block.clone());
+                block
+            }
+        };
         let txs = rpc.transactions(&new).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
         let miner = block.miner_transaction().hash();
         block.transactions = new.clone();

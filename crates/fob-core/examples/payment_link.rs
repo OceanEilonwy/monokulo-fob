@@ -1,5 +1,6 @@
 //! A stagenet payment link carrying an ORF receipt, as a Monokular till makes
-//! one, for trying the app: `cargo run -p fob-core --example payment_link`.
+//! one, for trying the app: `cargo run -p fob-core --example payment_link [address] [xmr]`.
+//! Without an address it pays a new, throwaway wallet.
 
 use fob_core::{Network, keys::Keys, uri};
 
@@ -18,8 +19,10 @@ const RECEIPT: &str = r##"{
 }"##;
 
 fn main() {
-    let shop = Keys::generate(Network::Stagenet).keys;
+    let mut args = std::env::args().skip(1);
+    let address = args.next().unwrap_or_else(|| Keys::generate(Network::Stagenet).keys.address(1));
+    let amount = args.next().map(|a| fob_core::amount::parse(&a).unwrap()).unwrap_or(142_100_000_000);
     let receipt: orf_codec::Receipt = serde_json::from_str(RECEIPT).unwrap();
-    let uri = orf_codec::query::append(&uri::payment_uri(&shop.address(1), Some(142_100_000_000)), &receipt).unwrap();
+    let uri = orf_codec::query::append(&uri::payment_uri(&address, Some(amount)), &receipt).unwrap();
     println!("{uri}");
 }
