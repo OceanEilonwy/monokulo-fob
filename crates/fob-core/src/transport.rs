@@ -17,8 +17,10 @@ use std::{
 use monero_daemon_rpc::{HttpTransport, MoneroDaemon};
 use monero_wallet::interface::InterfaceError;
 
-/// How long one request may take, including reading a large batch of blocks.
-const TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a node may go quiet mid-request. There's no limit on a whole
+/// request: decoy selection downloads the chain's output distribution,
+/// megabytes from a slow public node.
+const QUIET: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct Transport {
@@ -39,7 +41,7 @@ impl Transport {
     /// The transport alone, to keep a handle on it (see [`requests`](Self::requests)).
     pub fn new(url: &str) -> Result<Transport, InterfaceError> {
         let client = reqwest::Client::builder()
-            .timeout(TIMEOUT)
+            .read_timeout(QUIET)
             .connect_timeout(Duration::from_secs(15))
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(16)

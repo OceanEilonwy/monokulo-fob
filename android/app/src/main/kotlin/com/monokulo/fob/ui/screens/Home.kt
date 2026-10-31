@@ -152,7 +152,8 @@ fun HomeScreen(model: WalletModel, nav: Nav) {
 fun ActivityRow(row: Activity, onClick: () -> Unit) {
     val title = row.receipt?.merchant ?: if (row.outgoing) row.to?.let { short(it, 1) } ?: "Sent" else "Received"
     val state = when {
-        row.pending -> "Sending"
+        row.pending && row.outgoing -> "Sending"
+        row.pending -> "On the way"
         !row.settled -> "Confirming · ${row.confirmations} of 10"
         row.outgoing -> "Sent"
         else -> null

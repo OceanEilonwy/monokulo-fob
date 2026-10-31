@@ -7,6 +7,7 @@
 //! - [`amount`], [`receipt`], [`qr`]: text and pictures ready for the screen.
 
 pub mod amount;
+mod decoys;
 pub mod error;
 pub mod fetch;
 pub mod keys;

@@ -69,6 +69,15 @@ Calls made while building the first version, with why. Newest last.
     neither set up the swipe alone sends.
 14. A sent payment's inputs are marked spent at once and its change counted
     in the balance until the transaction is mined.
+27. **The output distribution is cached (`decoys.rs`).** Choosing decoys needs
+    the cumulative RingCT output count at every block: about 18 MB on
+    stagenet, 30 MB on mainnet, uncompressed. monero-oxide fetched it on each
+    payment, which took almost 3 minutes from a public node. Fob keeps it in
+    `<wallet>.decoys` beside the wallet (public data), tops it up while idle
+    (re-fetching the last 30 blocks in case of a reorg), so preparing a
+    payment only fetches its ring members.
+28. **No overall request timeout, a 30 s idle one instead**: a large response
+    from a slow node is fine as long as it keeps arriving.
 
 ## Safety
 

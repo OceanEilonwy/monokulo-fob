@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::decoys::Decoys;
 use crate::transport::{Daemon, Transport};
 use monero_wallet::{
     OutputWithDecoys, Scanner, WalletOutput,
@@ -206,7 +207,7 @@ struct Inner {
     file_key: Zeroizing<[u8; 32]>,
     keys: Keys,
     state: Mutex<State>,
-    rpc: Mutex<Option<(String, Transport, Daemon)>>,
+    rpc: Mutex<Option<(String, Transport, Daemon, Decoys)>>,
     prepared: Mutex<HashMap<u64, PreparedTx>>,
     next_id: AtomicU64,
     status: std::sync::Mutex<SyncStatus>,
@@ -449,20 +450,22 @@ impl Wallet {
         Ok(self.connection().await?.1)
     }
 
-    /// The node, as a raw transport (for [`fetch`](crate::fetch)) and as a daemon.
-    async fn connection(&self) -> Result<(Transport, Daemon)> {
+    /// The node: as a raw transport (for [`fetch`](crate::fetch)), as a
+    /// daemon, and as a source of decoys with the output distribution cached.
+    async fn connection(&self) -> Result<(Transport, Daemon, Decoys)> {
         let node = self.inner.state.lock().await.node.clone();
         let mut rpc = self.inner.rpc.lock().await;
-        if let Some((url, transport, daemon)) = rpc.as_ref() {
+        if let Some((url, transport, daemon, decoys)) = rpc.as_ref() {
             if *url == node {
-                return Ok((transport.clone(), daemon.clone()));
+                return Ok((transport.clone(), daemon.clone(), decoys.clone()));
             }
         }
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let transport = Transport::new(&node).map_err(err)?;
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
-        *rpc = Some((node, transport.clone(), daemon.clone()));
-        Ok((transport, daemon))
+        let decoys = Decoys::new(daemon.clone(), self.inner.path.with_extension("decoys"));
+        *rpc = Some((node, transport.clone(), daemon.clone(), decoys.clone()));
+        Ok((transport, daemon, decoys))
     }
 
     pub async fn balance(&self) -> Balance {
@@ -575,7 +578,7 @@ impl Wallet {
 
     /// Scans the next batch of blocks. Returns whether more are waiting.
     pub async fn sync_step(&self) -> Result<bool> {
-        let (transport, rpc) = self.connection().await?;
+        let (transport, rpc, decoys) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
 
         let (mut start, mut tip, recent) = {
@@ -602,6 +605,10 @@ impl Wallet {
             // Caught up: show payments on their way before they're mined. The
             // pool is a nicety: a node that won't share it doesn't stop syncing.
             let _ = self.scan_pool(&rpc).await;
+            // And keep the decoy data current, so a payment is quick to prepare.
+            if self.can_spend() {
+                let _ = decoys.update(tip as usize - 1).await;
+            }
             return Ok(false);
         }
 
@@ -874,7 +881,7 @@ impl Wallet {
         if amount == 0 {
             return Err(FobError::BadAmount);
         }
-        let rpc = self.rpc().await?;
+        let (_, rpc, decoys) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let fee_rate = rpc.fee_rate(FeePriority::Normal, MAX_FEE_PER_WEIGHT).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
         let latest = rpc.latest_block_number().await.map_err(node_err)?;
@@ -915,7 +922,7 @@ impl Wallet {
         }
         let mut with_decoys = vec![];
         for c in &chosen {
-            with_decoys.push(OutputWithDecoys::new(&mut OsRng, &rpc, RING_LEN, latest, c.2.clone()).await.map_err(|e| FobError::Node(format!("{e:?}")))?);
+            with_decoys.push(OutputWithDecoys::new(&mut OsRng, &decoys, RING_LEN, latest, c.2.clone()).await.map_err(|e| FobError::Node(format!("{e:?}")))?);
         }
         let change = Change::new(self.inner.keys.view_pair(), None);
         let signable = loop {
@@ -937,7 +944,7 @@ impl Wallet {
                     }
                     let c = candidates.remove(0);
                     total += c.1;
-                    with_decoys.push(OutputWithDecoys::new(&mut OsRng, &rpc, RING_LEN, latest, c.2.clone()).await.map_err(|e| FobError::Node(format!("{e:?}")))?);
+                    with_decoys.push(OutputWithDecoys::new(&mut OsRng, &decoys, RING_LEN, latest, c.2.clone()).await.map_err(|e| FobError::Node(format!("{e:?}")))?);
                     chosen.push(c);
                 }
                 Err(e) => return Err(FobError::Send(format!("{e:?}"))),
