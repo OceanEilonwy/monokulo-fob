@@ -171,6 +171,51 @@ impl Keys {
         Zeroizing::new(hex::encode(*scalar_bytes(&self.view)))
     }
 
+    /// The public spend key, as the wallet's address carries it.
+    pub fn public_spend_key_hex(&self) -> String {
+        hex::encode(self.spend_pub.compress().to_bytes())
+    }
+
+    /// The public view key, as the wallet's address carries it.
+    pub fn public_view_key_hex(&self) -> String {
+        hex::encode(public(&self.view).compress().to_bytes())
+    }
+
+    /// Keys' page (board KeysDetail): the secret keys first, each saying
+    /// what it lets someone do, then the public ones. The restore height
+    /// shows its `date` when there is one ("1690400 · 2 Sep 2026"), and
+    /// copies as the number alone. A view-only wallet has no secret spend
+    /// key row.
+    pub fn page(&self, restore_height: u64, date: Option<String>) -> Vec<KeyGroup> {
+        let row = |title: &str, badge: KeyBadge, line: Option<&str>, value: Zeroizing<String>| KeyRow {
+            title: title.to_owned(),
+            badge,
+            badge_text: badge.text().to_owned(),
+            line: line.map(str::to_owned),
+            clip: value.clone(),
+            value,
+            copy: format!("Copy the {}", title.to_lowercase()),
+        };
+        let restore = match date {
+            Some(date) => format!("{restore_height} · {date}"),
+            None => restore_height.to_string(),
+        };
+        let mut height = row("Restore height", KeyBadge::Public, Some("Where a restore starts looking."), Zeroizing::new(restore));
+        height.clip = Zeroizing::new(restore_height.to_string());
+        let mut secret = Vec::new();
+        if let Some(spend) = self.spend_key_hex() {
+            secret.push(row("Secret spend key", KeyBadge::SpendsMoney, Some("With the view key, restores this wallet anywhere."), spend));
+        }
+        secret.push(row("Secret view key", KeyBadge::SeesPayments, Some("Lets a watch-only wallet see what arrives."), self.view_key_hex()));
+        let public = vec![
+            row("Main address", KeyBadge::Public, Some("Your first address; Fob gives out new ones each time."), Zeroizing::new(self.primary_address())),
+            height,
+            row("Public view key", KeyBadge::Public, None, Zeroizing::new(self.public_view_key_hex())),
+            row("Public spend key", KeyBadge::Public, None, Zeroizing::new(self.public_spend_key_hex())),
+        ];
+        vec![KeyGroup { title: "Secret: keep to yourself".into(), keys: secret }, KeyGroup { title: "Public".into(), keys: public }]
+    }
+
     /// The key image an output with this one-time `key` and `key_offset`
     /// shows when spent; `None` for a view-only wallet.
     pub(crate) fn key_image(&self, key: Point, key_offset: Scalar) -> Option<[u8; 32]> {
@@ -178,6 +223,126 @@ impl Keys {
         let secret = Zeroizing::new((**spend).into() + key_offset.into());
         let image = Point::from(*secret * Point::biased_hash(key.compress().to_bytes()).into());
         Some(image.compress().to_bytes())
+    }
+}
+
+/// What a key's badge says it lets someone do, which also sets its colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyBadge {
+    SpendsMoney,
+    SeesPayments,
+    Public,
+}
+
+impl KeyBadge {
+    fn text(self) -> &'static str {
+        match self {
+            KeyBadge::SpendsMoney => "Spends money",
+            KeyBadge::SeesPayments => "Sees payments",
+            KeyBadge::Public => "Public",
+        }
+    }
+}
+
+/// One key on Keys' page, ready to draw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyRow {
+    /// "Secret spend key", "Main address"
+    pub title: String,
+    pub badge: KeyBadge,
+    /// "Spends money", "Sees payments", "Public"
+    pub badge_text: String,
+    /// What it's for; none for the public keys.
+    pub line: Option<String>,
+    /// In full: 64 hex digits, the whole address, "1690400 · 2 Sep 2026".
+    pub value: Zeroizing<String>,
+    /// What Copy puts on the clipboard: the value, but the restore height
+    /// without its date, as other wallets take it.
+    pub clip: Zeroizing<String>,
+    /// The Copy button's label: "Copy the secret spend key".
+    pub copy: String,
+}
+
+/// A card of keys under its heading: "Secret: keep to yourself", "Public".
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyGroup {
+    pub title: String,
+    pub keys: Vec<KeyRow>,
+}
+
+/// Where a wallet's seed phrase stands, for Backup and keys' Seed phrase
+/// row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backed {
+    /// Made here and said to be written down.
+    Up,
+    /// Made here and not written down yet: Home reminds.
+    Pending,
+    /// Restored: the words were already somewhere, so nothing is said.
+    Restored,
+}
+
+/// What a row of Backup and keys opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HubItem {
+    SeedPhrase,
+    WalletCode,
+    Keys,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HubRow {
+    pub item: HubItem,
+    pub title: String,
+    pub line: String,
+}
+
+/// Backup and keys (board KeysHub), every word ready to draw, and the line
+/// for its row in Settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hub {
+    pub warning: String,
+    /// Under "Back up": Seed phrase (not on a view-only wallet), Wallet code.
+    pub backup: Vec<HubRow>,
+    /// Under "For other wallets": Keys.
+    pub other: Vec<HubRow>,
+    pub footer: String,
+    /// Settings' Backup and keys row: "Seed phrase, wallet code, keys".
+    pub settings_line: String,
+}
+
+/// Backup and keys for a wallet whose seed phrase has `words` words (none
+/// for a view-only wallet), written down or not as `backed` says.
+pub fn hub(words: Option<usize>, backed: Backed) -> Hub {
+    let row = |item, title: &str, line: String| HubRow { item, title: title.to_owned(), line };
+    let mut backup = Vec::new();
+    if let Some(n) = words {
+        let state = match backed {
+            Backed::Up => " · backed up",
+            Backed::Pending => " · not written down yet",
+            Backed::Restored => "",
+        };
+        backup.push(row(HubItem::SeedPhrase, "Seed phrase", format!("{n} words that restore everything{state}")));
+    }
+    backup.push(row(HubItem::WalletCode, "Wallet code", "A QR code another phone can scan".into()));
+    let other = vec![row(HubItem::Keys, "Keys", "View and spend keys, address, restore height".into())];
+    let spends = words.is_some();
+    Hub {
+        warning: if spends {
+            "Anyone who sees these can take or watch your money. Fob hides them from screenshots and asks for your fingerprint first."
+        } else {
+            "Anyone who sees these can watch your money. Fob hides them from screenshots and asks for your fingerprint first."
+        }
+        .into(),
+        backup,
+        other,
+        footer: if spends {
+            "The seed phrase is all you need. The code and keys are for moving this wallet to another app."
+        } else {
+            "This wallet only watches. The code and keys are for moving it to another app."
+        }
+        .into(),
+        settings_line: if spends { "Seed phrase, wallet code, keys" } else { "Wallet code, keys" }.into(),
     }
 }
 
@@ -197,7 +362,7 @@ impl From<&Keys> for StoredKeys {
             network: keys.network,
             spend: keys.spend_key_hex().map(|s| s.to_string()),
             view: keys.view_key_hex().to_string(),
-            spend_pub: hex::encode(keys.spend_pub.compress().to_bytes()),
+            spend_pub: keys.public_spend_key_hex(),
             seed: keys.seed.as_ref().map(|(kind, words)| (*kind, words.to_string())),
         }
     }
@@ -301,6 +466,109 @@ mod tests {
         assert_eq!(keys.address(0), keys.primary_address());
         assert_ne!(keys.address(1), keys.primary_address());
         assert_ne!(keys.address(1), keys.address(2));
+    }
+
+    #[test]
+    fn keys_page_shows_monero_s_keys_in_full() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let page = keys.page(1_690_400, Some("2 Sep 2026".into()));
+        let titles: Vec<Vec<&str>> = page.iter().map(|g| g.keys.iter().map(|k| k.title.as_str()).collect()).collect();
+        assert_eq!(page[0].title, "Secret: keep to yourself");
+        assert_eq!(page[1].title, "Public");
+        assert_eq!(
+            titles,
+            [vec!["Secret spend key", "Secret view key"], vec!["Main address", "Restore height", "Public view key", "Public spend key"]]
+        );
+        let value = |g: usize, k: usize| page[g].keys[k].value.to_string();
+        // Monero's own test vector for these words.
+        assert_eq!(value(0, 0), "c0af65c0dd837e666b9d0dfed62745f4df35aed7ea619b2798a709f0fe545403");
+        assert_eq!(value(0, 1), "513ba91c538a5a9069e0094de90e927c0cd147fa10428ce3ac1afd49f63e3b01");
+        // The public keys are the ones monero-oxide puts in the address,
+        // and the secret keys times the base point.
+        let address = MoneroAddress::from_str(Network::Mainnet.monero(), &value(1, 0)).unwrap();
+        assert_eq!(value(1, 0), keys.primary_address());
+        assert_eq!(value(1, 2), hex::encode(address.view().compress().to_bytes()));
+        assert_eq!(value(1, 3), hex::encode(address.spend().compress().to_bytes()));
+        let times_base = |hex_key: &str| hex::encode(public(&parse_scalar(hex_key).unwrap()).compress().to_bytes());
+        assert_eq!(value(1, 2), times_base(&value(0, 1)));
+        assert_eq!(value(1, 3), times_base(&value(0, 0)));
+        assert_eq!(value(1, 1), "1690400 · 2 Sep 2026");
+        assert_eq!(*page[1].keys[1].clip, "1690400", "copied as other wallets take it");
+        for key in [value(0, 0), value(0, 1), value(1, 2), value(1, 3)] {
+            assert_eq!(key.len(), 64);
+        }
+        for (g, k) in [(0, 0), (0, 1), (1, 0), (1, 2), (1, 3)] {
+            assert_eq!(page[g].keys[k].clip, page[g].keys[k].value);
+        }
+        assert_eq!(*keys.page(1_690_400, None)[1].keys[1].value, "1690400");
+        assert_eq!(value(1, 0).len(), 95, "the whole address, not cut");
+    }
+
+    #[test]
+    fn keys_page_words() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let page = keys.page(0, None);
+        let spend = &page[0].keys[0];
+        assert_eq!((spend.badge, spend.badge_text.as_str()), (KeyBadge::SpendsMoney, "Spends money"));
+        assert_eq!(spend.line.as_deref(), Some("With the view key, restores this wallet anywhere."));
+        assert_eq!(spend.copy, "Copy the secret spend key");
+        let view = &page[0].keys[1];
+        assert_eq!((view.badge, view.badge_text.as_str()), (KeyBadge::SeesPayments, "Sees payments"));
+        assert_eq!(view.line.as_deref(), Some("Lets a watch-only wallet see what arrives."));
+        let main = &page[1].keys[0];
+        assert_eq!((main.badge, main.badge_text.as_str()), (KeyBadge::Public, "Public"));
+        assert_eq!(main.line.as_deref(), Some("Your first address; Fob gives out new ones each time."));
+        assert_eq!(main.copy, "Copy the main address");
+        assert_eq!(page[1].keys[1].line.as_deref(), Some("Where a restore starts looking."));
+        assert_eq!(page[1].keys[2].line, None);
+        assert_eq!(page[1].keys[3].copy, "Copy the public spend key");
+    }
+
+    #[test]
+    fn a_view_only_wallet_s_page_has_no_secret_spend_key() {
+        let full = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let watch = Keys::view_only(Network::Mainnet, &full.primary_address(), &full.view_key_hex()).unwrap();
+        let page = watch.page(3_000_000, None);
+        assert_eq!(page[0].keys.len(), 1);
+        assert_eq!(page[0].keys[0].title, "Secret view key");
+        assert_eq!(page[0].keys[0].value, full.view_key_hex());
+        // It still knows both public keys, from the address it was given.
+        let full_page = full.page(3_000_000, None);
+        assert_eq!(page[1], full_page[1]);
+        // And its file keeps no spend key or seed, so none comes back.
+        let stored = serde_json::to_value(StoredKeys::from(&watch)).unwrap();
+        assert!(stored["spend"].is_null() && stored["seed"].is_null());
+        let back = serde_json::from_value::<StoredKeys>(stored).unwrap().into_keys().unwrap();
+        assert_eq!(back.page(3_000_000, None), page);
+    }
+
+    #[test]
+    fn the_hub_says_how_many_words_and_whether_they_are_written_down() {
+        let made = hub(Some(16), Backed::Up);
+        assert_eq!(made.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [HubItem::SeedPhrase, HubItem::WalletCode]);
+        assert_eq!(made.backup[0].title, "Seed phrase");
+        assert_eq!(made.backup[0].line, "16 words that restore everything · backed up");
+        assert_eq!(made.backup[1].line, "A QR code another phone can scan");
+        assert_eq!(made.other[0].item, HubItem::Keys);
+        assert_eq!(made.other[0].line, "View and spend keys, address, restore height");
+        assert_eq!(
+            made.warning,
+            "Anyone who sees these can take or watch your money. Fob hides them from screenshots and asks for your fingerprint first."
+        );
+        assert_eq!(made.footer, "The seed phrase is all you need. The code and keys are for moving this wallet to another app.");
+        assert_eq!(made.settings_line, "Seed phrase, wallet code, keys");
+        assert_eq!(hub(Some(16), Backed::Pending).backup[0].line, "16 words that restore everything · not written down yet");
+        assert_eq!(hub(Some(25), Backed::Restored).backup[0].line, "25 words that restore everything");
+    }
+
+    #[test]
+    fn a_view_only_wallet_s_hub_has_no_seed_phrase() {
+        let watch = hub(None, Backed::Restored);
+        assert_eq!(watch.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [HubItem::WalletCode]);
+        assert_eq!(watch.other.len(), 1);
+        assert!(watch.warning.starts_with("Anyone who sees these can watch your money."));
+        assert_eq!(watch.footer, "This wallet only watches. The code and keys are for moving it to another app.");
+        assert_eq!(watch.settings_line, "Wallet code, keys");
     }
 
     #[test]

@@ -124,3 +124,23 @@ through step 1's stopgap dialogs in Settings.
 - [ ] Dark mode → the outline circle, chips and badge in dark colours; avatar initial readable
 - [ ] RTL language (e.g. Arabic) → the bar mirrors: mark at the right, cog at the left
 - [ ] Sync chip tapped with the avatar beside it → details card still opens under the chip
+
+## Step 7 · Backup and keys
+- [ ] Settings → Wallet card → "Backup and keys" reads "Seed phrase, wallet code, keys" (view-only wallet: "Wallet code, keys")
+- [ ] Tap it → fingerprint / screen lock prompt titled "Backup and keys"; succeed → the hub as the board: warning card, Back up (Seed phrase, Wallet code), For other wallets (Keys), footer line
+- [ ] Cancel the prompt (Back or Cancel) → still on Settings, nothing opened; tap again → asked again
+- [ ] Phone with no screen lock → the hub opens straight away
+- [ ] Change font size while the prompt is up, then succeed → the hub opens once, not twice
+- [ ] Double-tap the row quickly → one prompt, one hub
+- [ ] Hub → Keys → Back → Seed phrase → Back → Wallet code → no prompt in between; Back to Settings, open again → asked again
+- [ ] New wallet before "I've written them down" → Seed phrase line "16 words that restore everything · not written down yet"; after → "· backed up"; restored from 25 words → "25 words that restore everything"
+- [ ] Keys: Secret card (Secret spend key with orange "Spends money", Secret view key "Sees payments"), Public card (Main address, Restore height "<height> · <date>", Public view key, Public spend key), every value in full
+- [ ] Copy each key, paste into a notes app → exactly the value shown; Restore height pastes the number alone
+- [ ] After Copy → tick icon and "Copied" under the value for about 2 s; TalkBack says "Copied"
+- [ ] Android 13+: the system's clipboard notice hides the copied key; the keyboard's clipboard suggestion doesn't show it
+- [ ] Screenshot on the hub, Keys, Seed phrase and Wallet code → blocked; recents thumbnail blank
+- [ ] Watch-only wallet → hub has Wallet code and Keys only, its own warning and footer; Keys has no Secret spend key row and all four public values
+- [ ] Old restore height (a wallet restored from 0 or an old block) → the number alone, no date
+- [ ] Dark mode → warning card, sunken icon circles and badges in dark colours; orange "Spends money" readable
+- [ ] TalkBack → each hub row read as one ("Seed phrase, 16 words …"); Copy buttons read "Copy the secret spend key", "Copy the main address" …
+- [ ] Small phone, font size 200% → keys wrap inside the card at any character, Copy stays 48 dp at the right, badge beside the title not clipped

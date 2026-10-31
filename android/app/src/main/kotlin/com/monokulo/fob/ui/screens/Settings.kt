@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
@@ -126,7 +127,7 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
 }
 
 @Composable
-fun SettingsScreen(model: WalletModel, nav: Nav) {
+fun SettingsScreen(model: WalletModel, nav: Nav, confirmIdentity: suspend (String) -> Boolean, identityPending: () -> Boolean) {
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
     val theme by model.theme.collectAsState()
@@ -140,12 +141,27 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
     // Your profile's row, its words from Rust ("Add a shareable Fob contact" before there's a name).
     var profile by remember { mutableStateOf<Profile?>(null) }
     var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
+    // Backup and keys' line, from Rust: "Seed phrase, wallet code, keys".
+    var backupLine by remember { mutableStateOf("") }
     LaunchedEffect(wallet) {
         node = wallet?.node() ?: ""
         profile = wallet?.profile()
         profileRow = wallet?.profileRow()
+        backupLine = wallet?.backupHub()?.settingsLine ?: ""
     }
-    val canSpend = wallet?.canSpend() != false
+    // Backup and keys opens only once the phone's lock says it's you;
+    // cancelling stays here. The screens it leads to don't ask again.
+    var asking by remember { mutableStateOf(false) }
+    fun openBackup() {
+        if (asking) return
+        asking = true
+        scope.launch {
+            if (confirmIdentity("Backup and keys")) nav.go(Screen.BackupKeys)
+            asking = false
+        }
+    }
+    // Made again while the phone's lock was asked for: its answer comes here.
+    LaunchedEffect(Unit) { if (identityPending()) openBackup() }
     Page {
         TopBar("Settings", onBack = { nav.back() })
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -154,8 +170,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav) {
                 Card {
                     profileRow?.let { row -> ProfileSettingRow(row, profile) { nav.go(Screen.Profile) } }
                     LeadRow(Icons.people, "Contacts", "Who you pay, kept on this phone") { nav.go(Screen.Contacts) }
-                    // Step 7 adds the keys; until then the two backups it gathers.
-                    LeadRow(Icons.key, "Backup and keys", if (canSpend) "Seed phrase, wallet code" else "Wallet code") { nav.go(Screen.BackupKeys) }
+                    LeadRow(Icons.key, "Backup and keys", backupLine) { openBackup() }
                 }
             }
             Column {
@@ -265,13 +280,17 @@ private fun ProfileSettingRow(row: ProfileRow, profile: Profile?, onClick: () ->
     }
 }
 
-/** A row with its icon in a sunken circle, as the Wallet card has them: Contacts, Backup and keys. */
+/**
+ * A row with its icon in a sunken circle, as the Wallet card has them
+ * (Contacts, Backup and keys) and Backup and keys' own rows, taller
+ * ([minHeight] 72, [gap] 14).
+ */
 @Composable
-private fun LeadRow(icon: String, title: String, line: String, onClick: () -> Unit) {
+internal fun LeadRow(icon: String, title: String, line: String, minHeight: Dp = 60.dp, gap: Dp = 12.dp, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button, onClick = onClick)
+        Modifier.fillMaxWidth().heightIn(min = minHeight).clickable(role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {}.padding(start = 20.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gap),
     ) {
         Box(Modifier.size(40.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(icon, size = 20.dp, width = 1.8f) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -511,29 +530,6 @@ private fun ProviderLine(c: PriceCheck, chosen: Boolean, onClick: () -> Unit) {
 @Composable
 private fun WayIcon(path: String, tint: Color, width: Float) {
     Box(Modifier.size(24.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(path, tint = tint, size = 14.dp, width = width) }
-}
-
-/**
- * Backup and keys: for now the two backups it gathers, Seed phrase (not
- * on a watch-only wallet) and Wallet code, each opening its screen as
- * before. Step 7 adds the fingerprint, the keys and their layout.
- */
-@Composable
-fun BackupKeysScreen(model: WalletModel, nav: Nav) {
-    val wallet by model.wallet.collectAsState()
-    val canSpend = wallet?.canSpend() != false
-    Page {
-        TopBar("Backup and keys", onBack = { nav.back() })
-        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Column {
-                SectionLabel("Back up")
-                Card {
-                    if (canSpend) SettingRow("Seed phrase", "The words that restore this wallet", onClick = { nav.go(Screen.ShowSeed) })
-                    SettingRow("Wallet code", "Restore this wallet on another phone", onClick = { nav.go(Screen.ShowWalletCode) })
-                }
-            }
-        }
-    }
 }
 
 /** A setting whose value shows at the row's end ("Theme · Same as the phone"), opening a choice. */

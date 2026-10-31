@@ -35,7 +35,7 @@ use crate::{
     amount,
     contacts::{self, Contact},
     error::{FobError, Result},
-    keys::{Keys, SeedKind, StoredKeys},
+    keys::{self, Keys, SeedKind, StoredKeys},
     network::Network,
     not_ready::{self, Coins, NotReady, Piece, Source},
     price::{self, Source as _},
@@ -554,6 +554,12 @@ pub fn restore_point(network: Network, text: &str) -> Result<u64> {
     Ok(network.restore_height_for(u64::try_from(days * 86_400).unwrap_or(0)))
 }
 
+/// The day a restore height was mined, as Keys shows it beside the height
+/// ("2 Sep 2026"); none when it would be a guess.
+fn restore_date(network: Network, height: u64) -> Option<String> {
+    network.dated(height).map(|time| activity::full_date((time / 86_400) as i64))
+}
+
 /// What a wallet code holds, shown before restoring from it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CodePreview {
@@ -759,14 +765,38 @@ impl Wallet {
         Ok(())
     }
 
+    /// Where a restore elsewhere should start: the wallet code's and Keys'
+    /// restore height.
+    async fn restore_from(&self) -> u64 {
+        let state = self.inner.state.lock().await;
+        state.restore_height.unwrap_or(state.next_block)
+    }
+
     /// A wallet code for restoring this wallet elsewhere.
     pub async fn wallet_code(&self) -> Zeroizing<String> {
         let keys = &self.inner.keys;
-        let height = {
-            let state = self.inner.state.lock().await;
-            state.restore_height.unwrap_or(state.next_block)
-        };
+        let height = self.restore_from().await;
         uri::wallet_code(&keys.primary_address(), keys.spend_key_hex().as_deref().map(|s| s.as_str()), &keys.view_key_hex(), height)
+    }
+
+    /// Backup and keys' words, and its line in Settings: the seed phrase's
+    /// word count and whether it was written down (said only of a wallet
+    /// made here).
+    pub async fn backup_hub(&self) -> keys::Hub {
+        let state = self.inner.state.lock().await;
+        let backed = match () {
+            _ if state.restored => keys::Backed::Restored,
+            _ if state.backup_pending => keys::Backed::Pending,
+            _ => keys::Backed::Up,
+        };
+        keys::hub(self.seed_words().map(|(_, words)| words.split_whitespace().count()), backed)
+    }
+
+    /// Keys' page: every key in full, the restore height with its date
+    /// when it can be named.
+    pub async fn keys_page(&self) -> Vec<keys::KeyGroup> {
+        let height = self.restore_from().await;
+        self.inner.keys.page(height, restore_date(self.network(), height))
     }
 
     pub fn primary_address(&self) -> String {
@@ -3896,6 +3926,45 @@ mod tests {
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         file["state"].as_object_mut().unwrap().remove("backup_pending");
         assert!(!serde_json::from_value::<FileIn>(file).unwrap().state.backup_pending);
+    }
+
+    #[tokio::test]
+    async fn backup_and_keys_says_whether_the_words_are_written_down_and_shows_the_restore_height() {
+        let path = dir("hub");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        assert_eq!(wallet.backup_hub().await.backup[0].line, "16 words that restore everything · not written down yet");
+        wallet.backup_done().await.unwrap();
+        let hub = Wallet::open(&path, [1; 32]).unwrap().backup_hub().await;
+        assert_eq!(hub.backup[0].line, "16 words that restore everything · backed up");
+        assert_eq!(hub.settings_line, "Seed phrase, wallet code, keys");
+        // Restored from 25 words: no word on whether they're written down.
+        let classic = keys::Keys::from_spend_key(Network::Stagenet, &wallet.inner.keys.spend_key_hex().unwrap(), None).unwrap();
+        let words = classic.seed_words().unwrap().1;
+        let restored = Wallet::restore_words(&dir("hub-restored"), [1; 32], Network::Stagenet, &words, Some(2_200_000)).unwrap();
+        assert_eq!(restored.backup_hub().await.backup[0].line, "25 words that restore everything");
+        let page = restored.keys_page().await;
+        let height = &page[1].keys[1];
+        assert_eq!(height.title, "Restore height");
+        assert_eq!(*height.value, format!("2200000 · {}", restore_date(Network::Stagenet, 2_200_000).unwrap()));
+        assert_eq!(page[0].keys[0].value, wallet.inner.keys.spend_key_hex().unwrap());
+        assert_eq!(*page[1].keys[0].value, wallet.primary_address());
+        // A view-only wallet: Wallet code and Keys, and Keys without the
+        // secret spend key.
+        let watch = Wallet::restore_view_only(&dir("hub-watch"), [1; 32], Network::Stagenet, &wallet.primary_address(), &wallet.inner.keys.view_key_hex(), Some(0)).unwrap();
+        let hub = watch.backup_hub().await;
+        assert_eq!(hub.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [keys::HubItem::WalletCode]);
+        assert_eq!(hub.settings_line, "Wallet code, keys");
+        let page = watch.keys_page().await;
+        assert_eq!(page[0].keys.iter().map(|k| k.title.as_str()).collect::<Vec<_>>(), ["Secret view key"]);
+        assert_eq!(*page[1].keys[1].value, "0");
+    }
+
+    #[test]
+    fn the_restore_height_is_dated_only_when_the_date_can_be_named() {
+        let near = Network::Mainnet.height_at(1_788_307_200); // 2 Sep 2026, 00:00 UTC
+        assert_eq!(restore_date(Network::Mainnet, near).as_deref(), Some("2 Sep 2026"));
+        assert_eq!(restore_date(Network::Mainnet, 1_009_827), None);
+        assert_eq!(restore_date(Network::Stagenet, 0), None);
     }
 
     #[tokio::test]
