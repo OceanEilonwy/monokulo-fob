@@ -99,3 +99,11 @@ Calls made while building the first version, with why. Newest last.
     request. Keeping requests in flight between steps would add 20–30 %.
 22. **Untested on chain**: sending needs coins. Scanning, restore and the
     whole app run against real stagenet nodes; a send has not been made yet.
+
+## Dependencies
+
+26. **Two weeks old, except security fixes.** Every crate in `Cargo.lock` was
+    released by 2026-10-17, except `rustls-webpki` 0.103.16 (fixes
+    RUSTSEC-2026-0382) and `webpki-roots` 1.0.10 (the oldest without
+    RUSTSEC-2026-0381). Android libraries are Monokular's vetted versions plus
+    `androidx.biometric` 1.1.0 (2021).
