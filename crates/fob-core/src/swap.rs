@@ -47,7 +47,8 @@ pub const AID: [u8; 8] = [0xF0, b'F', b'O', b'B', b'S', b'W', b'A', b'P'];
 /// The frame's first byte; another means another Fob.
 pub const VERSION: u8 = 1;
 /// The longest profile code a frame carries. The largest Fob makes (a
-/// 95-character subaddress, 40 emoji, a 1536-byte photo) is 2664 bytes.
+/// 95-character subaddress, a 120-byte name, a 1536-byte photo) is 2544
+/// bytes.
 pub const CODE_MAX: usize = 3000;
 /// The most bytes of a frame in one command or one answer.
 pub const CHUNK: usize = 240;
@@ -677,7 +678,7 @@ mod tests {
     fn one_touch_gives_each_phone_the_other_s_profile() {
         let (henry, sam) = (Keys::generate(Network::Stagenet).keys, Keys::generate(Network::Stagenet).keys);
         let big = largest(&henry);
-        assert_eq!(big.len(), 2664);
+        assert_eq!(big.len(), 2544);
         let small = uri::profile_uri(&sam.address(3), "Sam", None);
         // Largest each way, and one much shorter than the other both ways.
         for (a, b) in [(big.clone(), big.clone()), (big.clone(), small.clone()), (small.clone(), big.clone()), (small.clone(), small.clone())] {

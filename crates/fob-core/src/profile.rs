@@ -17,7 +17,7 @@ use crate::{
     contacts::{self, Contact},
     error::{FobError, Result},
     price, uri,
-    wallet::{Activity, Direction},
+    wallet::Activity,
 };
 
 /// Your name and photo, kept in the wallet file.
@@ -223,7 +223,7 @@ pub fn code(profile: &Profile, share: &Share) -> String {
 /// in when every payment has a price, else "+0.03 XMR"; `None` while
 /// nothing has.
 pub fn received(share: &Share, rows: &[Activity]) -> Option<String> {
-    let paid: Vec<&Activity> = rows.iter().filter(|a| a.direction == Direction::In && a.subaddress == Some(share.subaddress)).collect();
+    let paid: Vec<Activity> = rows.iter().filter_map(|a| a.part(share.subaddress)).collect();
     let first = paid.first()?;
     let atomic: u64 = paid.iter().map(|a| a.amount).sum();
     let unit = first.price.as_ref().map(|p| p.currency.clone());
@@ -479,7 +479,7 @@ pub fn updated(contact: &Contact, code: &uri::ProfileCode) -> contacts::Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{keys::Keys, network::Network, price::Record, wallet::UNLOCK};
+    use crate::{keys::Keys, network::Network, price::Record, wallet::{Direction, UNLOCK}};
 
     /// 2026-10-31 12:00 UTC.
     const NOW: u64 = 1_793_448_000;
@@ -514,6 +514,7 @@ mod tests {
             contact: None,
             contact_id: None,
             shared: None,
+            parts: vec![],
         }
     }
 

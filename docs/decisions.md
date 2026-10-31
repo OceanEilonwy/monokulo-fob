@@ -941,10 +941,13 @@ Calls made while building the first version, with why. Newest last.
     pay (no amount, note or receipt); a photo that isn't base64
     ("damaged"), is over 1536 bytes (measured before decoding) or isn't a
     WebP refuses the whole profile. The largest (95-character subaddress,
-    40 emoji, a 1536-byte photo) is 2664 bytes.
+    a name of 120 bytes, decision 166, and a 1536-byte photo) is 2544
+    bytes.
 129. **Dense codes at low error correction** (`qr::encode`): a code that
     would be past version 20 at medium is made at low instead, a lower
-    version; payment codes (version 18 or below) don't change. Version 40
+    version; a usual payment or request code stays at medium (corrected
+    in decision 166: a request with a long name and note can pass version
+    20 and go to low). Version 40
     at low holds 2953 bytes, so every profile encodes (tested); a usual
     one (a short name, a photo near the budget) is version 33 or below.
     `QrImage` now draws each module a whole number of pixels, centred, so
@@ -1034,7 +1037,7 @@ Calls made while building the first version, with why. Newest last.
     `index` and answered with the card's chunk `index`, at most 240 bytes
     each way in short APDUs (extended ones aren't on every phone), then
     `80 E2` done. Each profile code travels as a frame: version 1, its
-    length (two bytes, at most 3000; the largest code is 2664), the first
+    length (two bytes, at most 3000; the largest code is 2544), the first
     four bytes of its SHA3-256 (already a dependency), the code. Indexes
     run with no gaps. A frame cut short, longer than it says or the cap, of
     another version, or not matching its checksum ends the touch on both
@@ -1246,3 +1249,29 @@ Calls made while building the first version, with why. Newest last.
     never turned round on screen. A typed note going with a payment is
     cleaned the same way. Change on a card that can't be saved says why
     and stays on the scanner's sheet.
+166. **A name in a code is cut to 120 bytes as well as 40 characters**: 40
+    letters of most scripts, 30 emoji. With the note's 360 encoded bytes,
+    the most a request's code holds is 886 bytes: past version 20 at
+    medium, so it's made at low, version 21 (tested). A usual request
+    (a name, a short note) stays at medium, version 10 or below. The
+    largest profile code drops from 2664 bytes to 2544.
+167. **The same ask again gives the same request**: Share or Copy pressed
+    for what the newest request already asks (the same contact, amount as
+    typed and its unit, note, and name in the code), while nothing has
+    come to it, gives that request again rather than a new address; the
+    rule is Rust's now, and Receive also ignores a second tap while one is
+    being made. Any change, or a payment to it, makes the next one new.
+    Only the newest is reused: an older alike request stays as it went.
+168. **A deleted request names exactly what was in when it went**: delete
+    keeps the transactions already paid to its address (the pool's too),
+    and only those still say who it was from; a payment seen in the pool
+    and mined later, in a block whose time is after the delete, stays
+    theirs. A request deleted before this was kept goes by time as before.
+169. **One payment to several of this wallet's addresses credits each its
+    own part**: Activity keeps what came to each address of a payment in
+    (and the pool's, kept per address as the pool scan finds them), and a
+    request or share counts its part only. The payment's own line is
+    still one, titled by its first address.
+170. **A request's code again is the one that went out**: the name put in
+    it is kept on the request, so renaming yourself or turning the switch
+    off later doesn't change an old request's code.

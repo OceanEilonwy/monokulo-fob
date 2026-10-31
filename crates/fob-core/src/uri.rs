@@ -129,7 +129,7 @@ pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>, name:
         params.push(format!("tx_amount={}", amount::format(a)));
     }
     if let Some(name) = name.and_then(crate::contacts::clean_name) {
-        params.push(format!("recipient_name={}", utf8_percent_encode(&name, VALUE)));
+        params.push(format!("recipient_name={}", utf8_percent_encode(fit_name(&name), VALUE)));
     }
     if let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) {
         // Cut here too, whatever the app let through: the code must encode.
@@ -202,6 +202,17 @@ pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
         }
     };
     Ok(ProfileCode { address: payment.address, name, photo })
+}
+
+/// The most bytes a name takes in a code before it's encoded: 40 letters
+/// of most scripts, 30 emoji. With the note's own cap it bounds a request's
+/// code (see [`crate::qr`]).
+pub const NAME_MAX_BYTES: usize = 120;
+
+/// `name` cut, at a character's end, to [`NAME_MAX_BYTES`].
+fn fit_name(name: &str) -> &str {
+    let end = name.char_indices().map(|(i, c)| i + c.len_utf8()).take_while(|end| *end <= NAME_MAX_BYTES).last().unwrap_or(0);
+    name[..end].trim_end()
 }
 
 /// The most characters a note for the payer may have.
@@ -408,6 +419,17 @@ mod tests {
                 .unwrap();
         assert_eq!(named.recipient_name.as_deref(), Some("Corner Café"));
         assert_eq!(named.description.as_deref(), Some("Two coffees"));
+    }
+
+    #[test]
+    fn a_name_goes_into_a_code_cut_to_its_bytes() {
+        let address = wallet().address(1);
+        let named = |name: &str| parse_payment(Network::Stagenet, &payment_uri(&address, None, None, Some(name))).unwrap().recipient_name.unwrap();
+        assert_eq!(named(&"é".repeat(40)), "é".repeat(40), "80 bytes: whole");
+        assert_eq!(named(&"日".repeat(40)), "日".repeat(40), "120 bytes: whole");
+        assert_eq!(named(&"😀".repeat(40)), "😀".repeat(30), "160 bytes: cut to 120");
+        assert_eq!(fit_name("ab 😀"), "ab 😀");
+        assert_eq!(fit_name(&format!("{} 😀", "a".repeat(118))), "a".repeat(118));
     }
 
     #[test]
@@ -640,17 +662,33 @@ mod tests {
 
     #[test]
     fn the_largest_profile_code_still_encodes_as_a_qr_code() {
-        // A 95-character subaddress, 40 emoji (12 bytes each encoded) and
-        // the largest photo: within version 40 at low error correction.
+        // A 95-character subaddress, a name of 120 bytes (30 emoji, 12
+        // bytes each encoded) and the largest photo: within version 40 at
+        // low error correction.
         let address = wallet().address(1_000_000);
         let code = profile_uri(&address, &"😀".repeat(crate::contacts::NAME_MAX), Some(&webp(crate::contacts::PHOTO_MAX)));
-        assert_eq!(code.len(), 7 + 95 + 16 + 480 + 18 + 2048);
+        assert_eq!(code.len(), 7 + 95 + 16 + 360 + 18 + 2048);
         assert!(code.len() <= 2953, "version 40 at L holds 2953 bytes");
         let qr = crate::qr::encode(&code).unwrap();
         assert!(qr.size <= 177);
-        assert_eq!(parse_profile(Network::Stagenet, &code).unwrap().name.chars().count(), crate::contacts::NAME_MAX);
+        assert_eq!(parse_profile(Network::Stagenet, &code).unwrap().name.chars().count(), 30);
         // A usual one, a short name and a photo near the budget, is version 33 or below.
         let usual = profile_uri(&address, "Henry", Some(&webp(1400)));
         assert!(crate::qr::encode(&usual).unwrap().size <= 17 + 4 * 33);
+    }
+
+    #[test]
+    fn the_largest_request_code_encodes_at_low_correction_and_most_at_medium() {
+        let version = |text: &str| (crate::qr::encode(text).unwrap().size - 17) / 4;
+        // The most a request's code holds: a subaddress, the largest amount, a 120-byte name and a 360-byte note,
+        // each byte of them percent-encoded.
+        let address = wallet().address(1_000_000);
+        let worst = payment_uri(&address, Some(u64::MAX), Some(&"😀".repeat(NOTE_MAX_CHARS)), Some(&"😀".repeat(40)));
+        assert_eq!(worst.len(), 7 + 95 + 11 + 21 + 16 + 360 + 16 + 360);
+        // 886 bytes: past version 20 at medium (666), so low, where version 21 holds 929.
+        assert_eq!(version(&worst), 21);
+        // A usual one, a name and a short note: medium, version 10 or below.
+        let usual = payment_uri(&address, Some(481_700_000_000), Some("Concert tickets"), Some("Henry Hollingworth"));
+        assert!(version(&usual) <= 10, "{}", version(&usual));
     }
 }

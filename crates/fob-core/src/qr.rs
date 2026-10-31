@@ -13,8 +13,11 @@ pub struct QrMatrix {
 
 /// Past this version at medium error correction, a code is made at low
 /// instead: a screen isn't scratched or dirty, and fewer, larger modules
-/// read better than more correction. Every payment code stays at medium
-/// (they're version 18 or below); a profile's photo makes it dense.
+/// read better than more correction. A usual payment or request code stays
+/// at medium (version 10 or below); a profile's photo makes one dense, and
+/// so can a request with a long name and note in a script that needs
+/// encoding throughout (at most 886 bytes, version 21 at low; tested in
+/// `uri`).
 const DENSE: i16 = 20;
 
 /// The QR code for `text`, at medium error correction, or low for a code

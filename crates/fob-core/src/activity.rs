@@ -456,6 +456,7 @@ mod tests {
             contact: None,
             contact_id: None,
             shared: None,
+            parts: vec![],
         }
     }
 
