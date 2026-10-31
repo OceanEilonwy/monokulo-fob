@@ -556,3 +556,29 @@ Calls made while building the first version, with why. Newest last.
     mined the not-ready card lists them one by one, so a split of six reads
     "7 pieces" from the start instead of "1 piece" until it's mined (found
     on the phone, 2026-10-31). Files from before keep `change` as one piece.
+
+## Round 3: Home, coins, the amount field
+
+84. **Home's balance is one line** (Round 4 › "Home · balance C2"): what
+    "Show amounts in" puts first, large, on the left (the XMR with "XMR"
+    beside it, or the money), the other at the line's end; tapping still
+    swaps them. The large figure shrinks to fit (down to 24 sp) rather than
+    wrap, for big balances on narrow phones. The "Balance" label goes, but
+    "Balance so far" stays above the line while Fob is catching up, since
+    the figure isn't the whole story yet.
+85. **Ready and not yet, folded** (Rust: `not_ready::summarise`, now given
+    what's ready): only while some money isn't ready, a card reading
+    "1.8592 ready · 0.6221 not yet", the time the last of it should be
+    ready, and a 6 dp bar: the ready part in ink, the not-ready part on the
+    track, each as wide as its share, the not-ready part filled green by
+    the weighted progress. Opened (animated, the chevron turning): "Ready
+    to spend", "Not ready · 3 coins" and "All of it", each in XMR and money,
+    then "All ready about 09:02 · in 14 min". The old card's title, line
+    and percent, and `Balance::ready_text` ("0.5 XMR ready to spend" under
+    the balance), went with it. TalkBack reads the folded card as one
+    sentence from Rust.
+86. **Home's buttons are Receive (outline) and Send (orange)**. Scan to pay
+    and both Split up links (Activity's header, the old card) are gone; the
+    old card's coin by coin list moves to the Coins screen (step 2). The
+    Scan to pay camera screen stays in the code, reached by nothing until
+    step 4 replaces it with Send's camera.

@@ -199,14 +199,6 @@ pub struct Balance {
     pub unlocked: u64,
 }
 
-impl Balance {
-    /// "0.5 XMR ready to spend", under the balance while some of it can't be
-    /// spent yet; nothing once all of it can.
-    pub fn ready_text(&self) -> Option<String> {
-        (self.unlocked < self.total).then(|| format!("{} XMR ready to spend", amount::format_short(self.unlocked)))
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     In,
@@ -800,13 +792,18 @@ impl Wallet {
         (pieces, state.last_block_time)
     }
 
-    /// The money not ready yet as Home shows it, or `None` when all of it is.
+    /// The money not ready yet as Home shows it, beside what's ready to
+    /// spend, or `None` when all of it is.
     pub async fn not_ready(&self, clock: Clock) -> Option<NotReady> {
+        let ready = self.balance().await.unlocked;
         let (pieces, last_block_time) = self.not_ready_pieces().await;
-        let mut summary = not_ready::summarise(pieces, last_block_time, clock)?;
+        let mut summary = not_ready::summarise(pieces, ready, last_block_time, clock)?;
         if let Some((currency, p)) = self.price_now().await {
             for piece in &mut summary.pieces {
                 piece.fiat = Some(price::value(piece.atomic, p, &currency));
+            }
+            for sum in &mut summary.sums {
+                sum.fiat = Some(price::value(sum.atomic, p, &currency));
             }
         }
         Some(summary)
@@ -1997,6 +1994,10 @@ mod tests {
         // The same money the balance counts as not unlocked.
         let balance = wallet.balance().await;
         assert_eq!(balance.total - balance.unlocked, pieces.iter().map(|p| p.amount).sum::<u64>());
+        // Home's sums: ready, not ready, and all of it, the balance.
+        let summary = wallet.not_ready(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.unwrap();
+        let sums: Vec<_> = summary.sums.iter().map(|s| (s.label.as_str(), s.atomic)).collect();
+        assert_eq!(sums, [("Ready to spend", balance.unlocked), ("Not ready · 7 coins", balance.total - balance.unlocked), ("All of it", balance.total)]);
     }
 
     #[tokio::test]
@@ -2037,14 +2038,6 @@ mod tests {
         let wallet = Wallet::create(&dir("empty"), [1; 32], Network::Stagenet).unwrap();
         assert_eq!(wallet.balance().await, Balance::default());
         assert!(wallet.activity().await.is_empty());
-    }
-
-    #[test]
-    fn the_ready_line_shows_only_while_some_money_is_waiting() {
-        let all = Balance { total: 2_500_000_000_000, unlocked: 2_500_000_000_000 };
-        assert_eq!(all.ready_text(), None);
-        let some = Balance { total: 2_500_000_000_000, unlocked: 500_000_000_000 };
-        assert_eq!(some.ready_text().as_deref(), Some("0.5 XMR ready to spend"));
     }
 
     struct Quiet;

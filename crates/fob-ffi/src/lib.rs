@@ -128,8 +128,6 @@ pub struct Balance {
     /// "2.4813"
     pub total_text: String,
     pub unlocked_text: String,
-    /// "0.5 XMR ready to spend", only while some money can't be spent yet.
-    pub ready_text: Option<String>,
     /// What the balance is worth now, "$412.06"; only with prices on and a
     /// current price.
     pub fiat_text: Option<String>,
@@ -262,17 +260,37 @@ pub struct NotReadyPiece {
     pub eta: String,
 }
 
-/// The money not ready yet, for Home's card.
+/// A line of Home's opened card.
+#[derive(uniffi::Record)]
+pub struct NotReadySum {
+    /// "Ready to spend", "Not ready · 3 coins", "All of it".
+    pub label: String,
+    /// "1.8592"
+    pub amount_text: String,
+    /// Worth now, with prices on: "$308.70".
+    pub fiat_text: Option<String>,
+}
+
+/// The money not ready yet beside what is, for Home's card.
 #[derive(uniffi::Record)]
 pub struct NotReady {
-    /// "0.653 XMR not ready yet"
-    pub title: String,
-    /// "3 pieces · all ready about 09:02"
-    pub line: String,
-    /// Weighted by amount, 0 to 1.
+    /// Ready to spend and not ready, in atomic units: the bar's two parts.
+    pub ready: u64,
+    pub not_ready: u64,
+    /// "1.8592 ready", in bold.
+    pub ready_text: String,
+    /// "0.6221 not yet"
+    pub not_yet_text: String,
+    /// "09:02"
+    pub all_ready: String,
+    /// "All ready about 09:02 · in 14 min"
+    pub all_ready_line: String,
+    /// The folded card for TalkBack.
+    pub description: String,
+    /// Ready to spend, not ready, all of it.
+    pub sums: Vec<NotReadySum>,
+    /// Weighted by amount, 0 to 1: how much of the not-ready part is green.
     pub progress: f32,
-    /// "42%"
-    pub percent: String,
     /// Soonest ready first.
     pub pieces: Vec<NotReadyPiece>,
 }
@@ -280,10 +298,15 @@ pub struct NotReady {
 impl From<not_ready::NotReady> for NotReady {
     fn from(n: not_ready::NotReady) -> Self {
         NotReady {
-            title: n.title,
-            line: n.line,
+            ready: n.ready,
+            not_ready: n.total,
+            ready_text: n.ready_text,
+            not_yet_text: n.not_yet_text,
+            all_ready: n.all_ready,
+            all_ready_line: n.all_ready_line,
+            description: n.description,
+            sums: n.sums.into_iter().map(|s| NotReadySum { label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
             progress: n.progress,
-            percent: n.percent,
             pieces: n
                 .pieces
                 .into_iter()
@@ -678,7 +701,6 @@ impl FobWallet {
             unlocked: b.unlocked,
             total_text: xmr(b.total),
             unlocked_text: xmr(b.unlocked),
-            ready_text: b.ready_text(),
             fiat_text: self.inner.worth_now(b.total).await,
             fiat_first: self.inner.price_settings().await.fiat_first,
         }
