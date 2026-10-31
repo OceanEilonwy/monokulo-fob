@@ -3,6 +3,8 @@
 use crate::error::{FobError, Result};
 
 pub const ATOMIC_PER_XMR: u64 = 1_000_000_000_000;
+/// The Monero sign in common use, before an amount typed in XMR.
+pub const SIGN: &str = "ɱ";
 const DECIMALS: usize = 12;
 
 /// `amount` as XMR, every digit but no trailing zeros: "0.1421", "0.5",
