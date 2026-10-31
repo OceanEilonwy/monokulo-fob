@@ -743,3 +743,46 @@ Calls made while building the first version, with why. Newest last.
     `Screen.Send(draft)` under Confirm, which opens pulled up and filled,
     and doesn't take the code it came from again while the camera still
     sees it. Once sent, both go from the stack, so Back from Paid is Home.
+106. **Where contacts are** (Round 4 › "Contacts"): Send's sheet's "All"
+    and a "Contacts" row at the top of Settings' Wallet card (step 11 may
+    move it). The search shows once there's a contact; saved contacts
+    (avatar, name, Rust's line, chevron), then "Paid, not saved" with a
+    Save on each, which opens New contact with that address as the send
+    address. Empty: "No contacts yet. Tap + to add someone you pay." (with
+    ", or save someone you paid below." when there's something below); a
+    search that finds nothing says so. The board's footnote lost its last
+    clause ("a received payment can be named by hand"): Fob has no way to
+    do that yet.
+107. **A contact's card** (Round 5 › "Sam"): Send opens Send pulled up
+    with To filled by the send address (and Send's camera when there's
+    none); Request opens Receive as it is until step 8 (marked in
+    `Contacts.kt`, as is the requests section's spot). The send address
+    row's Change (Add without one) opens the scanner, and Use it keeps the
+    address at once. "Also paid at" shows only when there's one. Each
+    payment in "Paid to Sam" opens its own screen.
+108. **The edit card** (Round 5 › "Edit"): Save, an ink pill in the top
+    bar, is off until an edited contact has loaded; a new contact then
+    opens its card, an edited one goes back to it. Rust's refusal shows
+    above Delete contact. The send address is scanned (full-screen camera,
+    title and close below the status bar, the found sheet above the
+    gesture bar, `SendAddressScanner`) or pasted; a payment code gives its
+    address. Pasting over an address asks first with the same sheet
+    (Cancel / Use it). There's no way to empty a send address once set:
+    the board has none, and scanning or pasting replaces it. Delete asks
+    on a sheet (Delete in red, Keep), then goes back past the card.
+109. **The photo** (Round 5 › "Contact photo"): Take a photo uses the
+    system camera's preview picture (`TakePicturePreview`: no file, no
+    FileProvider, only the camera permission Fob already asks for, which
+    the system camera then needs granted); Choose from your photos uses
+    Android's Photo Picker (no storage permission). The picture is cropped
+    to a centred square, scaled to 96, 72 then 64 pixels and encoded with
+    Android's WebP encoder at quality 80 down to 20 in steps of 10 until
+    Rust says it fits (`contact_photo_fits`); one that never fits is
+    refused with a line. Remove photo shows only with a photo.
+110. **Avatars wherever a contact is**: the photo in a circle or Rust's
+    initial on the sunken colour (`Avatar`), on Contacts, the card, the
+    edit card and Send's sheet, where contacts take the place of the
+    board's address patterns; patterns stay for addresses. Send's sheet
+    shows CONTACTS with "All" once there's any contact (a line asks for a
+    send address when none has one), PAID BEFORE until then. Two theme
+    roles came with the sheets: `scrim` and `onRed`.

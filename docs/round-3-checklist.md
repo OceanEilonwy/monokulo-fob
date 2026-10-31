@@ -116,3 +116,56 @@ Rust only; checked through the screens of step 6.
 - [ ] Send, type To, an amount in USD and a note, Review → Confirm; Back (arrow or system) → Send with the sheet pulled up, To, the amount (still in USD) and the note as typed; Review again works.
 - [ ] Scan a code with an amount (and a receipt) → Confirm; Back → the form filled with the code's address, amount in XMR and description; holding the same code in view doesn't jump back to Confirm; Review keeps the receipt.
 - [ ] Swipe to send → Paid; system Back from Paid → Home, never the filled form.
+
+## Step 6 · Contacts, screens
+
+Getting there
+- [ ] Settings → "Contacts" row at the top of Wallet → Contacts. Send's sheet (after a contact exists) → "All" → Contacts. Back returns to where you came from.
+- [ ] No contacts, never paid anyone → Contacts shows "No contacts yet. Tap + to add someone you pay.", no search, no "Paid, not saved".
+
+Contacts list
+- [ ] After paying 2 addresses → "Paid, not saved" lists both, newest first, pattern + "84Bv … 9fQ2" + "Paid 25 Oct · $33.21"; Save → New contact with that send address shown (pattern + "84Bv9 … 2kLmQ … 99fQ2").
+- [ ] Saved contacts in name order (any case); lines "Lunch money · paid 27 Oct", "Paid today", the note, "Not paid yet".
+- [ ] Search "lunch" → contacts with it in name or note; "zzz" → "No contact has that in its name or note."
+- [ ] A 40-character name → one line, ellipsised, chevron still visible.
+- [ ] + (TalkBack: "Add a contact") → New contact.
+
+New / edit card
+- [ ] New contact: title "New contact", ✕ (TalkBack "Close"), Save pill; photo circle with "?" and the camera badge on its corner; hint "Add a photo"; send address "None yet, optional" with Scan and Paste; hint "Scan their code or paste it. Leave it empty if they only pay you."
+- [ ] Save with no name → "A contact needs a name."; 41 characters → "A name can be up to 40 characters."; note over 80 → its line.
+- [ ] Typing a name updates the initial in the circle.
+- [ ] Paste an address of the other network → "the wallet code is for mainnet…" style reason; paste a `monero:` code → its address is used.
+- [ ] Paste over an existing address → sheet "Found an address", warning "This replaces Sam's current send address (86Uxm … e7kQa). Check the pattern with Sam.", Cancel / Use it.
+- [ ] Save → the new contact's card opens; Back → Contacts with it listed.
+- [ ] Edit (from the card) → title "Edit contact", fields filled, hint "Scan or paste to change it. Payments already sent stay with Sam.", "Delete contact" red outline at the bottom.
+- [ ] Delete contact → sheet "Delete Sam?", the body text, red Delete (white words; dark red words in dark mode), Keep. Keep → closes. Delete → back to Contacts, Sam gone; their payments still in Activity, titled by address, and in "Paid, not saved".
+- [ ] Tapping the scrim or Back closes the sheets.
+
+Photo
+- [ ] Tap the circle → sheet "Photo": Take a photo, Choose from your photos (Remove photo only once there's one), the footnote.
+- [ ] Take a photo, first time → camera permission asked (if not given before), then the system camera; the photo appears cropped to a circle.
+- [ ] Choose from your photos → Android's Photo Picker (no storage permission asked); a tall or wide photo is cropped to its centre; a phone photo turned sideways in its EXIF shows upright (Android 9+).
+- [ ] A detailed, colourful photo still saves (made smaller until it fits); close Fob and reopen → photo still there.
+- [ ] Remove photo → the initial again.
+
+Scanning the send address
+- [ ] Scan from the edit card → full-screen camera, ✕ and "Sam's send address" (or "Their send address" for a new unnamed contact) below the status bar, not under a cutout; the hint under the frame.
+- [ ] Point at a Receive code → sheet "Found an address" with its pattern and "87Wq2 … Lm4Zx … 2bNcT"; replacing → the warning naming the old one; same address → "That's already Sam's send address."
+- [ ] Scan again → camera again; Use it → back on the edit card with the address.
+- [ ] A wallet code or a QR that isn't an address → the reason under the hint, nothing found.
+- [ ] Landscape → frame shrinks, nothing under the status bar or gesture bar; the sheet's buttons above the gesture bar.
+
+Contact card
+- [ ] Avatar 56, name, note; orange Send, outline Request; "Send address · you pay here" with pattern, three-part address and Change; "Also paid at" only when there is one; "Paid to Sam" with each payment (note, day, −XMR, money) newest first; "Nothing paid to Sam yet." when none.
+- [ ] Send → Send pulled up with To filled (short address and pattern), amount empty in money. Contact without a send address: label "No send address yet", button "Add", Send opens Send's camera.
+- [ ] Request → Receive (requests come in step 8).
+- [ ] Change → scanner titled "Sam's send address"; Use it → back on the card with the new address.
+- [ ] A payment row → its own screen (receipt screen for a receipt).
+
+Send's sheet
+- [ ] With contacts → "CONTACTS" and "All" (orange); up to 3 with a send address, most recently paid first, avatar 30 + name + last payment line ("Lunch · 27 Oct", "Today · $24.50") or note / "Not paid yet". Tap → To filled with their send address, sheet up.
+- [ ] Contacts but none with a send address → "Give a contact a send address to pay them from here."
+- [ ] No contacts → "PAID BEFORE" as before.
+
+Dark mode
+- [ ] Contacts, card, edit card, sheets: cards on the dark card colour, search and chips sunken, Save pill light on dark (ink role), scrim darkens without going black-on-black, avatar initials readable, warning box on the highlight colour, Delete's red readable.

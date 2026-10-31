@@ -30,6 +30,10 @@ import com.monokulo.fob.ui.LocalFobColors
 import com.monokulo.fob.ui.screens.BackupScreen
 import com.monokulo.fob.ui.screens.CoinsScreen
 import com.monokulo.fob.ui.screens.ConfirmScreen
+import com.monokulo.fob.ui.screens.ContactEditScreen
+import com.monokulo.fob.ui.screens.ContactScanScreen
+import com.monokulo.fob.ui.screens.ContactScreen
+import com.monokulo.fob.ui.screens.ContactsScreen
 import com.monokulo.fob.ui.screens.HomeScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
@@ -50,6 +54,7 @@ import com.monokulo.fob.ui.screens.ZmqScreen
 import kotlinx.coroutines.suspendCancellableCoroutine
 import com.monokulo.fob.ui.screens.SendDraft
 import uniffi.fob.Activity
+import uniffi.fob.ContactDraft
 import uniffi.fob.Prepared
 import kotlin.coroutines.resume
 
@@ -81,6 +86,14 @@ sealed interface Screen {
     /** Split up: what's ready to spend paid back to this wallet as pieces. */
     data object Split : Screen
     data object Settings : Screen
+    /** Everyone this wallet pays, and who was paid but isn't saved. */
+    data object Contacts : Screen
+    /** A contact's card. */
+    data class Contact(val id: ULong) : Screen
+    /** The edit card: contact [id], or a new one; [prefill] fills a new one. */
+    data class ContactEdit(val id: ULong? = null, val prefill: ContactDraft? = null) : Screen
+    /** Scanning a contact's send address, from its card's Change. */
+    data class ContactScan(val id: ULong) : Screen
     data object ShowSeed : Screen
     data object ShowWalletCode : Screen
     data object Node : Screen
@@ -208,6 +221,10 @@ class MainActivity : FragmentActivity() {
             Screen.Coins -> CoinsScreen(model, nav)
             Screen.Split -> SplitScreen(model, nav)
             Screen.Settings -> SettingsScreen(model, nav)
+            Screen.Contacts -> ContactsScreen(model, nav)
+            is Screen.Contact -> ContactScreen(model, nav, screen.id)
+            is Screen.ContactEdit -> ContactEditScreen(model, nav, screen.id, screen.prefill)
+            is Screen.ContactScan -> ContactScanScreen(model, nav, screen.id)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)
