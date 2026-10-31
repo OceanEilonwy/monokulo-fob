@@ -1,17 +1,21 @@
 package com.monokulo.fob
 
 import android.Manifest
+import android.app.KeyguardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Box
@@ -187,6 +191,13 @@ class NavHolder : ViewModel() {
     var lockedTarget: Screen? = null
 }
 
+/**
+ * A screen lock (PIN, pattern, password) is set on this phone: Backup and
+ * keys and sending ask for it (or a fingerprint or face) only then.
+ */
+fun phoneLock(context: Context): Boolean =
+    context.getSystemService(KeyguardManager::class.java)?.isDeviceSecure ?: true
+
 /** Backup and keys and what it leads to: shown only after the phone's lock, left when Fob leaves the screen. */
 private val LOCKED = setOf(Screen.BackupKeys, Screen.Keys, Screen.ShowSeed, Screen.ShowWalletCode)
 
@@ -280,8 +291,15 @@ class MainActivity : FragmentActivity() {
         // Leaving Fob (home, another app, the screen off) closes Backup and
         // keys, so coming back asks for the phone's lock again; turning the
         // phone or a font change doesn't.
-        if (!isChangingConfigurations) holder.nav?.stack?.let { stack ->
-            while (stack.size > 1 && stack.last() in LOCKED) stack.removeAt(stack.lastIndex)
+        // Everything above the first of them goes too (the price toast's cog
+        // can open Price from over Keys), so Back can't lead to one.
+        if (!isChangingConfigurations) {
+            holder.nav?.stack?.let { stack ->
+                val first = stack.indexOfFirst { it in LOCKED }
+                if (first >= 1) while (stack.size > first) stack.removeAt(stack.lastIndex)
+            }
+            // A secret key copied from Keys comes off the clipboard with it.
+            SecretClip.clear()
         }
         super.onStop()
     }
@@ -303,14 +321,22 @@ class MainActivity : FragmentActivity() {
 
     /**
      * Fingerprint, face or screen lock before money leaves or Backup and
-     * keys opens; passes on a
-     * phone with none set up. A prompt already up (the activity made again
-     * under it) is waited for, not asked twice.
+     * keys opens; passes only on a phone with no screen lock set. A prompt
+     * already up (the activity made again under it) is waited for, not
+     * asked twice. Anything else that stops the prompt (the sensor busy, a
+     * security update needed) refuses, with a word why.
      */
     suspend fun confirmIdentity(title: String): Boolean {
-        val allowed = BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+        // androidx.biometric 1.1.0 takes a strong biometric with the screen
+        // lock everywhere but Android 9 and 10, which take only a weak one
+        // with it (their prompt has no strength classes).
+        val allowed = (if (Build.VERSION.SDK_INT in 28..29) BIOMETRIC_WEAK else BIOMETRIC_STRONG) or DEVICE_CREDENTIAL
         holder.identity?.takeIf { it.isActive }?.let { return it.await() }
-        if (BiometricManager.from(this).canAuthenticate(allowed) != BiometricManager.BIOMETRIC_SUCCESS) return true
+        if (!phoneLock(this)) return true
+        if (BiometricManager.from(this).canAuthenticate(allowed) != BiometricManager.BIOMETRIC_SUCCESS) {
+            Toast.makeText(this, "Fob couldn't ask for your phone's lock just now, so it stopped. Try again in a moment.", Toast.LENGTH_LONG).show()
+            return false
+        }
         val asked = CompletableDeferred<Boolean>().also { holder.identity = it }
         prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(title).setAllowedAuthenticators(allowed).build())
         return asked.await()

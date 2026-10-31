@@ -1923,3 +1923,31 @@ Calls made while building the first version, with why. Newest last.
     day) is kept aside, never read as XMR, the field empty in XMR; it comes
     back as typed when a price does (and Back from the cog keeps it in the
     draft).
+254. **The phone's lock is skipped only when no screen lock is set**
+    (review R6): "no lock" is `KeyguardManager.isDeviceSecure` alone, for
+    Backup and keys, Home's seed reminder and Confirm alike. The prompt
+    takes a strong biometric or the screen lock, except on Android 9 and
+    10, where androidx.biometric 1.1.0 takes only a weak biometric with
+    the screen lock (their prompt has no strength classes; on 8 to 8.1 and
+    11 on the strong pair works). Any other failure to ask on a phone with
+    a lock (sensor busy, security update needed) refuses, with a system
+    toast: "Fob couldn't ask for your phone's lock just now, so it
+    stopped. Try again in a moment." Confirm adds its own "Not sent.".
+255. **Leaving Fob cuts the back stack at the first locked screen**, it
+    and everything above it (Price from opened over Keys by the price
+    toast's cog), so Back never leads to one without the lock.
+256. **A copied secret key leaves the clipboard** after 60 s, or when Fob
+    leaves the screen, whichever comes first, if the clip is still Fob's
+    (a mark in the clip's extras; when Android 10 and later won't let Fob
+    read the clipboard after losing focus, a clip-changed listener that
+    ran while Fob was in front decides). Only the secret spend and view
+    keys: the address, public keys and restore height copy as before and
+    stay, since they're for pasting elsewhere. A secret key is still
+    marked sensitive. Pasting a secret key into another app therefore
+    needs split screen or a paste within Fob's own session (switching
+    apps clears it), which is the price of not leaving it behind.
+257. **Backup and keys' warning names the phone's lock, not a
+    fingerprint**, and only when a screen lock is set (the app tells Rust
+    through `backup_hub(phone_lock)`): "Fob hides them from screenshots
+    and asks for your phone's lock first." or, with no lock, "Fob hides
+    them from screenshots."

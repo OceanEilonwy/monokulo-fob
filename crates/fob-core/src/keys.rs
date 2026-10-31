@@ -312,8 +312,10 @@ pub struct Hub {
 }
 
 /// Backup and keys for a wallet whose seed phrase has `words` words (none
-/// for a view-only wallet), written down or not as `backed` says.
-pub fn hub(words: Option<usize>, backed: Backed) -> Hub {
+/// for a view-only wallet), written down or not as `backed` says, on a
+/// phone with a screen lock set or not (`phone_lock`: without one, Backup
+/// and keys opens straight away, so the warning doesn't promise a lock).
+pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
     let row = |item, title: &str, line: String| HubRow { item, title: title.to_owned(), line };
     let mut backup = Vec::new();
     if let Some(n) = words {
@@ -327,13 +329,14 @@ pub fn hub(words: Option<usize>, backed: Backed) -> Hub {
     backup.push(row(HubItem::WalletCode, "Wallet code", "A QR code another phone can scan".into()));
     let other = vec![row(HubItem::Keys, "Keys", "View and spend keys, address, restore height".into())];
     let spends = words.is_some();
+    let who = if spends { "Anyone who sees these can take or watch your money." } else { "Anyone who sees these can watch your money." };
+    let hides = if phone_lock {
+        "Fob hides them from screenshots and asks for your phone's lock first."
+    } else {
+        "Fob hides them from screenshots."
+    };
     Hub {
-        warning: if spends {
-            "Anyone who sees these can take or watch your money. Fob hides them from screenshots and asks for your fingerprint first."
-        } else {
-            "Anyone who sees these can watch your money. Fob hides them from screenshots and asks for your fingerprint first."
-        }
-        .into(),
+        warning: format!("{who} {hides}"),
         backup,
         other,
         footer: if spends {
@@ -544,26 +547,42 @@ mod tests {
 
     #[test]
     fn the_hub_says_how_many_words_and_whether_they_are_written_down() {
-        let made = hub(Some(16), Backed::Up);
+        let made = hub(Some(16), Backed::Up, true);
         assert_eq!(made.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [HubItem::SeedPhrase, HubItem::WalletCode]);
         assert_eq!(made.backup[0].title, "Seed phrase");
         assert_eq!(made.backup[0].line, "16 words that restore everything · backed up");
         assert_eq!(made.backup[1].line, "A QR code another phone can scan");
         assert_eq!(made.other[0].item, HubItem::Keys);
         assert_eq!(made.other[0].line, "View and spend keys, address, restore height");
-        assert_eq!(
-            made.warning,
-            "Anyone who sees these can take or watch your money. Fob hides them from screenshots and asks for your fingerprint first."
-        );
         assert_eq!(made.footer, "The seed phrase is all you need. The code and keys are for moving this wallet to another app.");
         assert_eq!(made.settings_line, "Seed phrase, wallet code, keys");
-        assert_eq!(hub(Some(16), Backed::Pending).backup[0].line, "16 words that restore everything · not written down yet");
-        assert_eq!(hub(Some(25), Backed::Restored).backup[0].line, "25 words that restore everything");
+        assert_eq!(hub(Some(16), Backed::Pending, true).backup[0].line, "16 words that restore everything · not written down yet");
+        assert_eq!(hub(Some(25), Backed::Restored, true).backup[0].line, "25 words that restore everything");
+    }
+
+    #[test]
+    fn the_hub_s_warning_promises_the_phone_s_lock_only_when_one_is_set() {
+        // Any lock (PIN, pattern, fingerprint, face) is asked for, so the
+        // words name none in particular.
+        assert_eq!(
+            hub(Some(16), Backed::Up, true).warning,
+            "Anyone who sees these can take or watch your money. Fob hides them from screenshots and asks for your phone's lock first."
+        );
+        assert_eq!(
+            hub(None, Backed::Restored, true).warning,
+            "Anyone who sees these can watch your money. Fob hides them from screenshots and asks for your phone's lock first."
+        );
+        // No lock set: Backup and keys opens straight away, so nothing is promised.
+        assert_eq!(
+            hub(Some(16), Backed::Up, false).warning,
+            "Anyone who sees these can take or watch your money. Fob hides them from screenshots."
+        );
+        assert_eq!(hub(None, Backed::Restored, false).warning, "Anyone who sees these can watch your money. Fob hides them from screenshots.");
     }
 
     #[test]
     fn a_view_only_wallet_s_hub_has_no_seed_phrase() {
-        let watch = hub(None, Backed::Restored);
+        let watch = hub(None, Backed::Restored, true);
         assert_eq!(watch.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [HubItem::WalletCode]);
         assert_eq!(watch.other.len(), 1);
         assert!(watch.warning.starts_with("Anyone who sees these can watch your money."));

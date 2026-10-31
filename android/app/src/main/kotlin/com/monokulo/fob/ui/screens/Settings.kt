@@ -44,6 +44,8 @@ import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
+import com.monokulo.fob.phoneLock
+import androidx.compose.ui.platform.LocalContext
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
@@ -142,12 +144,13 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
     // Backup and keys' line, from Rust: "Seed phrase, wallet code, keys".
     var backupLine by remember { mutableStateOf("") }
+    val context = LocalContext.current
     // Rust's Node line, again as syncing starts or stops failing.
     LaunchedEffect(wallet, status?.error != null) { node = wallet?.nodeLine() ?: "" }
     LaunchedEffect(wallet) {
         profile = wallet?.profile()
         profileRow = wallet?.profileRow()
-        backupLine = wallet?.backupHub()?.settingsLine ?: ""
+        backupLine = wallet?.backupHub(phoneLock(context))?.settingsLine ?: ""
     }
     // Backup and keys opens only once the phone's lock says it's you;
     // cancelling stays here. The screens it leads to don't ask again while

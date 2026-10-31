@@ -1060,9 +1060,11 @@ impl FobWallet {
         self.inner.wallet_code().await.to_string()
     }
 
-    /// Backup and keys' words (no secrets), and Settings' line for its row.
-    pub async fn backup_hub(&self) -> BackupHub {
-        let hub = self.inner.backup_hub().await;
+    /// Backup and keys' words (no secrets), and Settings' line for its row;
+    /// `phone_lock`: the phone has a screen lock set (its warning promises
+    /// the lock only then).
+    pub async fn backup_hub(&self, phone_lock: bool) -> BackupHub {
+        let hub = self.inner.backup_hub(phone_lock).await;
         BackupHub {
             warning: hub.warning,
             backup: hub.backup.into_iter().map(Into::into).collect(),
