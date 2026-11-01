@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -257,44 +258,47 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                 }, Modifier.weight(1f), enabled = ready)
             }
         }) {
-            TopBar("Receive", onBack = { nav.back() })
+            TopBar("Receive", onBack = { nav.back() }) {
+                // A new address, as the refresh icon alone (Round 9).
+                EdgeIconButton(Icons.refresh, "New address", {
+                    scope.launch { runCatching { model.newReceiveAddress() }.onSuccess { made = null }.onFailure { error = it.reason() } }
+                })
+            }
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                // Opened for a contact, the chip's room is kept while Rust reads them, so the code doesn't move down.
-                forContact?.let { ForChip(it) { choosing = true } } ?: run { if (forId != null) Spacer(Modifier.height(48.dp)) }
-                // The code on a white card; the round button on its corner, or the code itself, opens it full screen.
-                // The address's pattern sits across the card's bottom edge. With the code's own 2-module quiet zone,
-                // 12 dp leaves 4 modules or more of white beside it; below, the badge reaches into that quiet zone
-                // and stops one module short of the code's last row, whatever the code's module size (a bare
-                // address's, version 6, until the code comes, so nothing moves as it does).
-                val module = qrModule(qr?.size?.toInt() ?: 41, 220.dp)
-                Box(Modifier.padding(top = 4.dp, bottom = PatternBadgeSize / 2)) {
-                    Box(
-                        Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
-                            .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
-                            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 - module),
-                    ) {
-                        if (qr != null) QrImage(qr, 220.dp) else Spacer(Modifier.size(220.dp))
+                // The code on a white card as wide as the page (at most 360 dp of code); the round button on its
+                // corner, or the code itself, opens it full screen. With the code's own 2-module quiet zone, 12 dp
+                // leaves 4 modules or more of white beside it. The address's pattern sits across the card's bottom
+                // edge and who it's for across its top, each reaching into the quiet zone and stopping one module
+                // short of the code, whatever its module size (a bare address's, version 6, until the code comes, so
+                // nothing moves as it does). Opened for a contact, the top's room is kept while Rust reads them.
+                BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    val side = (maxWidth - 24.dp).coerceAtMost(360.dp)
+                    val module = qrModule(qr?.size?.toInt() ?: 41, side)
+                    val forWho = forId != null
+                    Box(Modifier.padding(top = if (forWho) PatternBadgeSize / 2 else 4.dp, bottom = PatternBadgeSize / 2)) {
+                        Box(
+                            Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
+                                .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
+                                .padding(
+                                    start = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 - module,
+                                    top = if (forWho) PatternBadgeSize / 2 - module else 12.dp,
+                                ),
+                        ) {
+                            if (qr != null) QrImage(qr, side) else Spacer(Modifier.size(side))
+                        }
+                        forContact?.let { ForChip(it, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2)) { choosing = true } }
+                        if (qr != null && shownAddress != null) PatternBadge(shownAddress, Modifier.align(Alignment.BottomCenter).offset(y = PatternBadgeSize / 2))
+                        Box(
+                            Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
+                                .clickable(enabled = qr != null, role = Role.Button) { expanded = true }
+                                .semantics { contentDescription = "Show larger" },
+                            contentAlignment = Alignment.Center,
+                        ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
                     }
-                    if (qr != null && shownAddress != null) PatternBadge(shownAddress, Modifier.align(Alignment.BottomCenter).offset(y = PatternBadgeSize / 2))
-                    Box(
-                        Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
-                            .clickable(enabled = qr != null, role = Role.Button) { expanded = true }
-                            .semantics { contentDescription = "Show larger" },
-                        contentAlignment = Alignment.Center,
-                    ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
                 }
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                        TextButton("New address", {
-                            scope.launch {
-                                runCatching { model.newReceiveAddress() }.onSuccess { made = null }.onFailure { error = it.reason() }
-                            }
-                        })
-                    }
-                    AddressGroups(groups ?: standIn, shown = groups != null)
-                }
+                AddressGroups(groups ?: standIn, shown = groups != null)
                 AmountField(
-                    amount, { amount = it }, entry, placeholder = "Amount (optional)",
+                    amount, { amount = it }, entry, placeholder = "Amount",
                     onSwitch = {
                         // The text, unit and Rust's word on them change together.
                         scope.launch {
@@ -306,7 +310,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         }
                     },
                 )
-                Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note (optional)", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
+                Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
             }
         }
         if (choosing) {
@@ -327,18 +331,24 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     }
 }
 
-/** Who a request is for, over the code: their avatar and name, as wide as the name; tapping chooses again. */
+/**
+ * Who a request is for, across the top edge of the code's card as the
+ * pattern is across its bottom (Round 9): their avatar and name on the
+ * card's white, ringed in the page's colour, [PatternBadgeSize] tall and as
+ * wide as the name; tapping chooses again.
+ */
 @Composable
-private fun ForChip(contact: Contact, onClick: () -> Unit) {
+private fun ForChip(contact: Contact, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Row(
-        Modifier.widthIn(max = 600.dp).heightIn(min = 48.dp).clip(RoundedCornerShape(14.dp)).background(Fob.card)
+        modifier.widthIn(max = 320.dp).height(PatternBadgeSize).clip(CircleShape).background(Fob.paper).padding(3.dp)
+            .clip(CircleShape).background(Fob.qrLight)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) { contentDescription = "For ${contact.name}. Change who it's for" }
-            .padding(start = 8.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 4.dp, end = 16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Avatar(contact.name, contact.initial, contact.photo, 32.dp)
-        Text(contact.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Avatar(contact.name, contact.initial, contact.photo, 36.dp)
+        Text(contact.name, color = Fob.qrDark, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
