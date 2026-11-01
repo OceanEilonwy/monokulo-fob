@@ -2287,7 +2287,8 @@ pushed what was under them.
     amount field's line under it is always laid out, empty when Rust has
     nothing to say. Receive opened for a contact keeps the chip's 48 dp
     while Rust reads them. The synced Home is ~15 dp taller at the top
-    than before, the label's empty room.
+    than before, the label's empty room. (Home's two lines replaced by 298: the
+    empty room was a band an owner sees.)
 282. **Amount fields open whole, from Rust.** `PriceSettings.blank_entry`
     is the blank field as a form opens (`price::blank_field`: in money at
     the shown price, else XMR; `Wallet::blank_amount_field`, which asks
@@ -2355,7 +2356,7 @@ pushed what was under them.
     state, its card and TalkBack keep the words), then "Fob", then the
     badge; the gap between the mark, "Fob" and the badge is 8 dp, not 10,
     so all three and the dot fit at 360 dp. At 200 % font on 360 dp only
-    the mark and the dot are left, as before.
+    the mark and the dot are left, as before. (The order replaced by 297.)
 290. **A label and value row wraps the label first.** At 200 % font on
     360 dp Node's "Sends blocks to Fob" broke its value as "57 /
     blocks/ / s": the label kept all but the value's narrowest word
@@ -2469,3 +2470,14 @@ Review fixes.
     `Wallet::balance_worth` reads the worth (with its age) and the order
     under one lock, so `can_swap` is never true with no worth drawn, nor
     a worth there that can't swap; `balance_order` went.
+297. **What gives way in Home's top bar, again** (M5, replacing 289's
+    order). The chip's words ("6 min left") give way last: first the word
+    "Fob", then the Stagenet badge, each only when that lets the chip keep
+    its words; where nothing would, the chip's words go and "Fob" and the
+    badge stay as far as they fit (289's case, "Can't reach node" at 360
+    dp). The chip's full width is its words' intrinsic width.
+298. **No empty bands on a synced Home** (M6, replacing 281's Home
+    lines). "Balance so far" is gone (the sync chip already says it's
+    catching up), so the balance sits under the top bar whether synced
+    or not; "Still finding older ones" is the last row of Activity while
+    syncing, so its going moves nothing above it.
