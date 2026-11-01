@@ -154,3 +154,49 @@ Fixes: 7929f98 (Home's top bar gives way chip words, then "Fob", then the
 badge), afa340a (label and value rows wrap the label first), 2cbde51 (the
 orange button's label padded inside its pill), e530da7 (Wallet code's scan
 line centred).
+
+## Review fixes
+
+Six reviewers' findings and the emulator pass's (job folder `review8/`),
+each fixed in:
+
+| Id | What | Commit |
+|---|---|---|
+| H1 | Receive's address handed out only as Receive opens; a refresh reads it without handing out | 2607405 |
+| H2 | Payment codes v11 at least, H to v20 then Q, the square holds at most one alignment pattern, dots placed by Rust | e01fdaf |
+| M1 | One read of the screens at a time; New address and the hand-out under it; later asks share the waiting read | 2607405 |
+| M2 | A read of a wallet closed meanwhile is dropped, not a crash | 2607405 |
+| M3 | One `screens` call, the activity built once, the word count from the keys | 2607405 |
+| M4 | The seed phrase warns until written down, from every way in; the words from Rust | 2607405 |
+| M5 | Home's top bar: "Fob", then the badge, then the chip's words | e4ff4b9 |
+| M6 | No bands on a synced Home: "Balance so far" gone, "Still finding older ones" last in Activity | e4ff4b9 |
+| L1 | PhotoSheet's doc | 319752d |
+| L2 | Unused imports and Kotlin warnings in round 8's files | 319752d |
+| L3 | Scan a profile's title on one line | 319752d |
+| L4 | Balance's worth and swap from one look | 2607405 |
+| L5 | A price asked while the balance swaps is kept | 319752d |
+| L6 | Split up's Auto payments read straight from the wallet | 319752d |
+| L7 | A label takes the whole line once its value goes under | 319752d |
+| L8 | Split up's footer empty with no coin chosen | 319752d |
+| L9 | A dark starting window at night | 319752d |
+| L10 | Receive shows Rust's words when it can't hand out an address | 2607405 |
+| L11 | The code's dots from the address in the code itself; the encode remembered | e01fdaf |
+| L12 | A new wallet's words close when Fob leaves | 2607405 |
+
+Checked on emulator-5562 (Android 16, the stagenet wallet with no coins,
+and a mainnet wallet made for the backup checks and removed after):
+
+- [x] Receive, light: the code reads in zbarimg; New address 4 times, each new code reads (light) → done, 5 of 5
+- [x] The same in dark → 4 of 4 read
+- [x] A new wallet's Receive, recorded: the code's square and the address's lines are kept from the first frame, the address comes with nothing moving → done
+- [x] Home synced at 360, 393 and 412 dp, 100 % and 130 % light, 200 % dark → no band under the top bar or over TODAY; "Synced" keeps its word everywhere, "Fob" shows at 412 dp/100 %, the badge goes at 360 dp/130 %
+- [x] Cold start in dark, recorded frame by frame → the starting window is dark (the splash on the dark paper), Home's first frame whole, "Still finding older ones" at Activity's end while starting, nothing above it moves
+- [x] Backup and keys › Seed phrase on a backed-up wallet → no warning
+- [x] A new wallet's backup skipped: Backup and keys says "not written down yet" and Seed phrase has the warning with "I've written them down"; tapping it → the line says "backed up" and Seed phrase opens with no warning
+- [x] Back up your wallet, Home key, Fob again → Home with its reminder, not the words
+- [x] Switching network 5 times while mainnet catches up (each within 2 s) → no crash, same process
+- [ ] Split up with no coin chosen → no fee line (needs a coin ready: this wallet has none; Rust tests cover it)
+- [ ] Receive's code from a real phone camera with a ZBar-based app (Linux, F-Droid scanners) and with Google Lens → reads first time, several addresses
+- [ ] Mainnet wallet catching up at 393 dp with "6 min left" → the time stays, "Fob" goes
+- [ ] TalkBack on Receive while the address comes → the unseen stand-in isn't read
+- [ ] Dark mode with Fob's theme set to Light, cold start → a dark window for a moment (the window follows the phone's mode), then light Home
