@@ -37,7 +37,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.Layout
@@ -135,14 +134,9 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
         val fiat = b?.fiatText
         val canSwap = b?.canSwap == true
         val fiatFirst = fiat != null && b.fiatFirst
-        // Always laid out, faded out once synced: the balance never moves as syncing ends.
-        val soFar by animateFloatAsState(if (synced) 0f else 1f, label = "so far")
-        Text(
-            "Balance so far", color = Fob.muted, fontSize = 14.sp,
-            modifier = Modifier.padding(start = 20.dp, top = 12.dp).alpha(soFar).then(if (synced) Modifier.clearAndSetSemantics {} else Modifier),
-        )
+        // Nothing over it while syncing (the chip says it's catching up), so it never moves as syncing ends.
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 12.dp).clip(RoundedCornerShape(12.dp))
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp, bottom = 12.dp).clip(RoundedCornerShape(12.dp))
                 .then(
                     if (canSwap) {
                         Modifier.clickable(role = Role.Button, onClickLabel = "Swap XMR and ${prices?.currency ?: "the default currency"}") {
@@ -196,14 +190,6 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 Chip(Icons.people, "Contacts") { nav.go(Screen.Contacts) }
                 Chip(Icons.coins, "Coins") { nav.go(Screen.Coins) }
             }
-            // Its line kept while there's activity, faded out once synced, so the payments don't move up as syncing ends.
-            if (activity.isNotEmpty()) {
-                val older by animateFloatAsState(if (synced) 0f else 1f, label = "older")
-                Text(
-                    "Still finding older ones", color = Fob.muted, fontSize = 13.sp,
-                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp).alpha(older).then(if (synced) Modifier.clearAndSetSemantics {} else Modifier),
-                )
-            }
             if (activity.isEmpty()) {
                 Text(
                     if (synced) "Nothing yet. Tap Receive to get your address." else "Payments appear here as Fob finds them.",
@@ -215,6 +201,10 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 day.rows.forEach { row ->
                     PaymentRow(row) { open(nav, row) }
                 }
+            }
+            // The list's last row while syncing: going as syncing ends moves nothing above it.
+            if (activity.isNotEmpty() && !synced) {
+                Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             }
         }
     }
@@ -301,10 +291,12 @@ private fun Chip(icon: String, label: String, onClick: () -> Unit) {
 /**
  * Home's top bar (board HomePeople): the mark, "Fob" and on stagenet its
  * badge at the start; the sync [chip], your photo and Settings at the end.
- * The end's three always fit whole: where the row is too narrow (a 360dp
- * phone with the badge and "Can't reach node", a big font) the chip's words
- * go first (its ring or dot stays, its card and TalkBack keep the words),
- * then the word "Fob", then the badge.
+ * The end's three always fit whole. Where the row is too narrow (a 360dp
+ * phone with the badge and "6 min left", a big font) the word "Fob" goes
+ * first, then the badge, then the chip's words (its ring or dot stays, its
+ * card and TalkBack keep the words), each only when that lets the chip
+ * keep its words; where even that won't, the chip's words go and "Fob" and
+ * the badge stay as far as they fit.
  */
 @Composable
 private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
@@ -331,10 +323,16 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
         val badge = part("badge")
         val wordWidth = word.maxIntrinsicWidth(Constraints.Infinity) + gap
         val badgeWidth = badge?.let { it.maxIntrinsicWidth(Constraints.Infinity) + gap } ?: 0
-        // A chip without its words is the 48dp of its target; it keeps its words only in the room left over.
+        // A chip without its words is the 48dp of its target; with them, as wide as they make it.
         val ring = 48.dp.roundToPx()
-        val showWord = wordWidth + badgeWidth + ring <= room
-        val showBadge = badge != null && badgeWidth + ring <= room
+        val full = part("chip")!!.maxIntrinsicWidth(c.maxHeight)
+        val (showWord, showBadge) = when {
+            wordWidth + badgeWidth + full <= room -> true to true
+            badgeWidth + full <= room -> false to true
+            full <= room -> false to false
+            // The chip's words can't stay whatever goes: they go, and the rest stays as far as it fits.
+            else -> (wordWidth + badgeWidth + ring <= room) to (badgeWidth + ring <= room)
+        }.let { (word, shown) -> word to (badge != null && shown) }
         val chipRoom = room - (if (showWord) wordWidth else 0) - (if (showBadge) badgeWidth else 0)
         val chip = part("chip")!!.measure(loose.copy(maxWidth = chipRoom.coerceAtLeast(0)))
         val start = listOfNotNull(mark, if (showWord) word.measure(loose) else null, if (showBadge) badge!!.measure(loose) else null)
