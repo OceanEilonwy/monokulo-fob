@@ -511,6 +511,17 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
     }
 }
 
+/**
+ * One module of a code [side] modules wide as [QrImage] draws it [size] wide with [quiet] modules round it: whole
+ * pixels when it can.
+ */
+@Composable
+fun qrModule(side: Int, size: Dp, quiet: Int = 2): Dp = with(LocalDensity.current) {
+    val modules = side + quiet * 2
+    val whole = kotlin.math.floor(size.toPx() / modules)
+    (if (whole >= 1f) whole else size.toPx() / modules).toDp()
+}
+
 /** A [PatternBadge] across, its 3 dp ring in. */
 val PatternBadgeSize = 50.dp
 

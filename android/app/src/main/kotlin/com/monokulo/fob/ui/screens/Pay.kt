@@ -77,6 +77,7 @@ import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.PatternBadge
 import com.monokulo.fob.ui.PatternBadgeSize
 import com.monokulo.fob.ui.QrImage
+import com.monokulo.fob.ui.qrModule
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.TextButton
@@ -261,14 +262,16 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                 // Opened for a contact, the chip's room is kept while Rust reads them, so the code doesn't move down.
                 forContact?.let { ForChip(it) { choosing = true } } ?: run { if (forId != null) Spacer(Modifier.height(48.dp)) }
                 // The code on a white card; the round button on its corner, or the code itself, opens it full screen.
-                // The address's pattern sits across the card's bottom edge, the card longer by the half on it. With the
-                // code's own 2-module quiet zone, 12 dp leaves 4 modules or more of white beside it, and the badge
-                // stays 2 modules and 4 dp clear of its last row.
+                // The address's pattern sits across the card's bottom edge. With the code's own 2-module quiet zone,
+                // 12 dp leaves 4 modules or more of white beside it; below, the badge reaches into that quiet zone
+                // and stops one module short of the code's last row, whatever the code's module size (a bare
+                // address's, version 6, until the code comes, so nothing moves as it does).
+                val module = qrModule(qr?.size?.toInt() ?: 41, 220.dp)
                 Box(Modifier.padding(top = 4.dp, bottom = PatternBadgeSize / 2)) {
                     Box(
                         Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
                             .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
-                            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 + 4.dp),
+                            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 - module),
                     ) {
                         if (qr != null) QrImage(qr, 220.dp) else Spacer(Modifier.size(220.dp))
                     }
