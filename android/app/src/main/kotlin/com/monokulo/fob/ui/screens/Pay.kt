@@ -42,12 +42,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -124,7 +126,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
-    // The model's, read with the wallet, so the address is there on the first frame.
+    // The model's, read with the wallet, so the address is there on the first frame; none while Rust has none to
+    // show (a new wallet's first, say), when opening has Rust hand one out, its room kept meanwhile.
     val own by model.receive.collectAsState()
     val address = own?.address
     val index = own?.index ?: 0u
@@ -160,6 +163,9 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         forContact = forId?.let { w.contact(it) }
         // Deleted meanwhile: no one.
         if (forContact == null) forId = null
+    }
+    LaunchedEffect(wallet, own == null) {
+        if (wallet != null && own == null) runCatching { model.openReceive() }.onFailure { error = it.reason() }
     }
     LaunchedEffect(choosing) { if (choosing) people = model.requestContacts() }
     // The price toast's cog opens Price from over this: Back finds the form as typed.
@@ -228,7 +234,9 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
 
     // The code and its pattern from the same text: the pattern is of the address in the code itself.
     val qr = remember(code) { code?.let { runCatching { paymentQrCode(it.uri) }.getOrNull() } }
-    val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } ?: emptyList() }
+    val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } }
+    // While the address comes, an unseen stand-in of the same length keeps its lines' room.
+    val standIn = remember(wallet) { wallet?.let { addressGroups(it.primaryAddress()) } ?: emptyList() }
     val shownCode = code
     if (expanded && shownCode != null && qr != null) {
         ExpandedQr(shownCode, qr) { expanded = false }
@@ -275,7 +283,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                             }
                         })
                     }
-                    AddressGroups(groups)
+                    AddressGroups(groups ?: standIn, shown = groups != null)
                 }
                 AmountField(
                     amount, { amount = it }, entry, placeholder = "Amount (optional)",
@@ -360,12 +368,15 @@ private fun ColumnScope.WhoFor(people: List<ContactRow>, onPick: (ContactRow) ->
     OutlineButton("Share without a name", onNoName, Modifier.fillMaxWidth().padding(top = 4.dp), height = 52.dp)
 }
 
-/** The address in full, in Rust's groups of five; the first, middle and last stand out. */
+/**
+ * The address in full, in Rust's groups of five; the first, middle and last
+ * stand out. Not [shown]: laid out unseen and unheard, keeping its room.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AddressGroups(groups: List<AddressGroup>) {
+private fun AddressGroups(groups: List<AddressGroup>, shown: Boolean = true) {
     FlowRow(
-        Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+        Modifier.fillMaxWidth().then(if (shown) Modifier.semantics(mergeDescendants = true) {} else Modifier.alpha(0f).clearAndSetSemantics {}),
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

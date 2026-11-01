@@ -2,6 +2,8 @@ package com.monokulo.fob
 
 import android.app.Application
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -9,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import android.text.format.DateFormat
 import com.monokulo.fob.ui.PriceToastState
@@ -33,9 +37,11 @@ import uniffi.fob.PriceChecks
 import uniffi.fob.PriceProvider
 import uniffi.fob.PriceRetry
 import uniffi.fob.PriceSettings
+import uniffi.fob.PriceToast
 import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
 import uniffi.fob.Prepared
+import uniffi.fob.ReceiveAddress
 import uniffi.fob.Profile
 import uniffi.fob.ProfileRow
 import uniffi.fob.ProfileShare
@@ -176,7 +182,11 @@ class WalletModel(private val app: Application) {
     private val _backupLine = MutableStateFlow("")
     val backupLine: StateFlow<String> = _backupLine
 
-    /** Receive's own address and its index, as Receive opens with it. */
+    /**
+     * Receive's own address and its index, as Receive opens with it; null
+     * while Rust has none to show (none yet, or the last went to a request),
+     * when Receive opening has Rust hand one out ([openReceive]).
+     */
     private val _receive = MutableStateFlow<ReceiveAddress?>(null)
     val receive: StateFlow<ReceiveAddress?> = _receive
 
@@ -242,69 +252,96 @@ class WalletModel(private val app: Application) {
     }
 
     /**
+     * One read of the screens at a time, and every change made straight to
+     * what it sets (Receive's address) under it too: an older read never
+     * lands over a newer answer (New address's, a send's balance).
+     */
+    private val reading = Mutex()
+
+    /** A refresh waiting for [reading]: whoever asks meanwhile shares it, as it reads after what they did. */
+    private var queued: Deferred<Unit>? = null
+
+    /**
      * Reads everything the screens show, then sets it all at once: a
      * screen never draws one answer new and the next still old (or none),
-     * so nothing moves twice.
+     * so nothing moves twice. Asked again while one is reading (a sync
+     * step each, catching up), it runs once more after it, however many
+     * asked; returns once a read begun after the call is set.
      */
     suspend fun refresh() {
+        val next = queued ?: scope.async(start = CoroutineStart.LAZY) {
+            reading.withLock {
+                queued = null
+                readScreens()
+            }
+        }.also { queued = it }
+        next.await()
+    }
+
+    private suspend fun readScreens() {
         val wallet = _wallet.value ?: return
         val (seconds, offset, hours24) = clock()
-        val prices = wallet.priceSettings(seconds, offset, hours24)
-        val balance = wallet.balance(seconds)
-        val activity = wallet.activityDays(seconds, offset, hours24)
-        val notReady = wallet.notReady(seconds, offset, hours24)
-        val reminder = wallet.backupReminder()
-        val nodeLine = wallet.nodeLine()
-        val backupLine = wallet.backupHub(phoneLock(app)).settingsLine
-        // Rust hands out a new one when the last went to a request, a split or a share.
-        val receive = runCatching { ReceiveAddress(wallet.receiveAddress(), wallet.receiveIndex()) }.getOrNull()
-        val contacts = wallet.contacts("", seconds, offset, hours24)
-        val unsaved = wallet.paidNotSaved(seconds, offset, hours24)
-        val sendPeople = SendPeople(
-            wallet.contactsOnSend(seconds, offset, hours24),
-            contacts.isNotEmpty(),
-            if (contacts.isEmpty()) wallet.paidBefore(seconds, offset, hours24) else emptyList(),
-        )
-        val coins = wallet.coins(seconds, offset, hours24)
+        // Closed meanwhile (another network, or forgotten): Rust refuses a closed wallet, and there's nothing of it to show.
+        val s = try {
+            wallet.screens(seconds, offset, hours24, phoneLock(app))
+        } catch (closed: IllegalStateException) {
+            return
+        }
         // Another wallet opened meanwhile: these answers are the last one's.
         if (_wallet.value !== wallet) return
-        _prices.value = prices
-        _balance.value = balance
-        _activity.value = activity
-        _notReady.value = notReady
-        _reminder.value = reminder
-        _nodeLine.value = nodeLine
-        _backupLine.value = backupLine
-        receive?.let { _receive.value = it }
-        _contactList.value = contacts
-        _unsaved.value = unsaved
-        _sendPeople.value = sendPeople
-        _coins.value = coins
-        refreshToast(wallet)
+        _prices.value = s.prices
+        _balance.value = s.balance
+        _activity.value = s.activity
+        _notReady.value = s.notReady
+        _reminder.value = s.reminder
+        _nodeLine.value = s.nodeLine
+        _backupLine.value = s.backupLine
+        _receive.value = s.receive
+        _contactList.value = s.contacts
+        _unsaved.value = s.unsaved
+        _sendPeople.value = SendPeople(s.sendContacts, s.contacts.isNotEmpty(), if (s.contacts.isEmpty()) s.paidBefore else emptyList())
+        _coins.value = s.coins
+        showToast(s.priceToast)
+    }
+
+    /**
+     * Receive opening with no address to show: Rust hands one out (and
+     * keeps it), only now, never on a refresh, so a restored wallet hands
+     * none out before its scan has found what the other phone gave out.
+     * Throws what Rust refused.
+     */
+    suspend fun openReceive() {
+        reading.withLock {
+            if (_receive.value != null) return
+            val wallet = _wallet.value ?: return
+            val address = wallet.receiveAddress()
+            if (_wallet.value === wallet) _receive.value = address
+        }
     }
 
     /** Receive's New address: a fresh one nobody has seen. Throws what Rust refused. */
     suspend fun newReceiveAddress() {
-        val wallet = _wallet.value ?: return
-        val address = wallet.newReceiveAddress()
-        _receive.value = ReceiveAddress(address, wallet.receiveIndex())
+        reading.withLock {
+            val wallet = _wallet.value ?: return
+            val address = wallet.newReceiveAddress()
+            if (_wallet.value === wallet) _receive.value = address
+        }
     }
 
     /** "I've written them down": Home's reminder goes. */
     suspend fun backupDone() {
         val wallet = _wallet.value ?: return
         runCatching { wallet.backupDone() }
-        _reminder.value = wallet.backupReminder()
+        refresh()
     }
 
     /**
-     * The toast as Rust has it now: a new id shows (or comes back after a
-     * swipe), the same id only takes newer words, none takes it down (a
-     * lookup worked). Retry's own words aren't cut short.
+     * The toast as Rust has it now ([rustToast]): a new id shows (or comes back
+     * after a swipe), the same id only takes newer words, none takes it
+     * down (a lookup worked). Retry's own words aren't cut short.
      */
-    private suspend fun refreshToast(wallet: FobWallet) {
-        val (seconds, offset, hours24) = clock()
-        val toast = wallet.priceToast(seconds, offset, hours24)?.takeIf { it.id > toastDone }
+    private fun showToast(rustToast: PriceToast?) {
+        val toast = rustToast?.takeIf { it.id > toastDone }
         when (_priceToast.value) {
             is PriceToastState.Retrying -> return
             is PriceToastState.Updated -> if (toast == null) return
@@ -449,20 +486,7 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return
         wallet.setNode(url, selfSigned)
         _status.value = wallet.status()
-        readSettingsLines()
-    }
-
-    /**
-     * Settings' Node and Backup and keys lines again: the Node screen's
-     * checks (Rust keeps a verdict) or a screen lock set change them.
-     */
-    suspend fun readSettingsLines() {
-        val wallet = _wallet.value ?: return
-        val node = wallet.nodeLine()
-        val backup = wallet.backupHub(phoneLock(app)).settingsLine
-        if (_wallet.value !== wallet) return
-        _nodeLine.value = node
-        _backupLine.value = backup
+        refresh()
     }
 
     /** Instant updates (ZMQ) on or off; [endpoint], if given, replaces the one set. Throws what Rust refused. */
@@ -691,9 +715,6 @@ class WalletModel(private val app: Application) {
 
 /** Your profile (null before it's set up) and its row's words: "Your profile", or "Add a shareable Fob contact". */
 data class You(val profile: Profile?, val row: ProfileRow)
-
-/** Receive's own address and its index (a note typed on Receive is kept with it). */
-data class ReceiveAddress(val address: String, val index: UInt)
 
 /**
  * Send's folded sheet: the contacts with a send address, whether there's

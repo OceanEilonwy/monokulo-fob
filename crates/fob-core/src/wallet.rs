@@ -311,6 +311,20 @@ impl Activity {
     }
 }
 
+/// What the screens list, read together by [`Wallet::lists`].
+pub struct Lists {
+    /// Home's Activity.
+    pub days: Vec<activity::Day>,
+    /// Every contact by name.
+    pub contacts: Vec<contacts::Row>,
+    /// Addresses paid that are no contact's.
+    pub unsaved: Vec<activity::PaidBefore>,
+    /// The contacts Send's sheet offers.
+    pub on_send: Vec<contacts::Row>,
+    /// Who this wallet paid before, for Send's sheet while there's no contact.
+    pub paid_before: Vec<activity::PaidBefore>,
+}
+
 /// Receive's payment code and the words around it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReceiveCode {
@@ -767,13 +781,11 @@ impl Wallet {
     }
 
     /// Home's reminder while a wallet made here hasn't had its seed phrase
-    /// written down: a title and a line; `None` once it has (or for a
-    /// restored or view-only wallet).
-    pub async fn backup_reminder(&self) -> Option<(String, String)> {
+    /// written down, with the warning over the words meanwhile; `None` once
+    /// it has (or for a restored or view-only wallet).
+    pub async fn backup_reminder(&self) -> Option<keys::Reminder> {
         let pending = self.inner.state.lock().await.backup_pending;
-        let (_, words) = self.seed_words().filter(|_| pending)?;
-        let count = words.split_whitespace().count();
-        Some(("Back up your seed phrase".into(), format!("Your {count} words aren't written down yet. Without them, this wallet can't be restored.")))
+        self.inner.keys.seed_word_count().filter(|_| pending).map(keys::reminder)
     }
 
     /// "I've written them down": no more reminders.
@@ -815,7 +827,7 @@ impl Wallet {
             _ if state.backup_pending => keys::Backed::Pending,
             _ => keys::Backed::Up,
         };
-        keys::hub(self.seed_words().map(|(_, words)| words.split_whitespace().count()), backed, phone_lock)
+        keys::hub(self.inner.keys.seed_word_count(), backed, phone_lock)
     }
 
     /// Keys' page: every key in full, the restore height with its date
@@ -876,12 +888,33 @@ impl Wallet {
         state.receive_own.unwrap_or(state.receive_index)
     }
 
-    /// The address to give out now: the last one Receive showed, or a first
-    /// one; never one a request or splits have.
+    /// Whether Receive's address must be a new one before it's shown: none
+    /// yet (in a restored wallet, the highest the scan found is the other
+    /// phone's), or the last went to a request, a split or a share.
+    fn must_hand_out(state: &State) -> bool {
+        let own = Self::own_index(state);
+        own == 0 || state.restored && state.receive_own.is_none() || Some(own) == state.split_index || state.requests.at(own).is_some() || state.profile.at(own).is_some()
+    }
+
+    /// Receive's address and its index as it would open now, handing
+    /// nothing out and saving nothing: `None` while
+    /// [`receive_address`](Wallet::receive_address) would hand out a new
+    /// one. A screen reads this before Receive opens; in a restored wallet,
+    /// handing one out before the scan finds the other phone's payments
+    /// would give out addresses it already did.
+    pub async fn shown_receive_address(&self) -> Option<(String, u32)> {
+        let state = self.inner.state.lock().await;
+        (!Self::must_hand_out(&state)).then(|| {
+            let own = Self::own_index(&state);
+            (self.inner.keys.address(own), own)
+        })
+    }
+
+    /// The address to give out now, as Receive opens: the last one it
+    /// showed, or a first one; never one a request or splits have.
     pub async fn receive_address(&self) -> Result<String> {
         let mut state = self.inner.state.lock().await;
-        let own = Self::own_index(&state);
-        if own == 0 || Some(own) == state.split_index || state.requests.at(own).is_some() || state.profile.at(own).is_some() {
+        if Self::must_hand_out(&state) {
             let index = Self::hand_out(&mut state);
             state.receive_own = Some(index);
             self.save_state(&state)?;
@@ -2201,13 +2234,18 @@ impl Wallet {
         .await
     }
 
-    /// Home's balance at `now` (seconds since the epoch): whether tapping
-    /// it swaps XMR and the default currency (one besides XMR, with a
-    /// price from within the day), and which leads.
-    pub async fn balance_order(&self, now: u64) -> price::BalanceOrder {
+    /// Home's balance of `atomic` XMR at `now` (seconds since the epoch),
+    /// from one look at the price, so the two always agree: what it's worth
+    /// with the price's age once it's missed a refresh (as
+    /// [`worth_aged`](Wallet::worth_aged)), and whether tapping it swaps XMR
+    /// and the default currency (one besides XMR, with that worth) and
+    /// which leads.
+    pub async fn balance_worth(&self, atomic: u64, now: u64) -> (Option<(String, Option<String>)>, price::BalanceOrder) {
         let state = self.inner.state.lock().await;
-        let priced = state.price_cache.shown(&state.prices, now).is_some();
-        price::balance_order(&state.prices, priced)
+        let shown = state.price_cache.shown(&state.prices, now);
+        let worth = shown.map(|c| (price::value(atomic, c.price, &price::currency(&c.currency)), price::alert::old(c.at, now)));
+        let order = price::balance_order(&state.prices, worth.is_some());
+        (worth, order)
     }
 
     /// The current price shown now, when amounts are also shown in a
@@ -2371,28 +2409,10 @@ impl Wallet {
         }
     }
 
-    /// The people this wallet paid before, for Send's sheet.
-    pub async fn paid_before(&self, clock: Clock) -> Vec<activity::PaidBefore> {
-        activity::paid_before(&self.activity().await, clock)
-    }
-
     /// Contacts by name, those whose name or note has `search` in it.
     pub async fn contacts(&self, search: &str, clock: Clock) -> Vec<contacts::Row> {
         let rows = self.activity().await;
         contacts::list(&self.inner.state.lock().await.contacts, &rows, search, clock)
-    }
-
-    /// The contacts Send's sheet offers: with a send address, the most
-    /// recently paid first.
-    pub async fn contacts_on_send(&self, clock: Clock) -> Vec<contacts::Row> {
-        let rows = self.activity().await;
-        contacts::on_send(&self.inner.state.lock().await.contacts, &rows, clock)
-    }
-
-    /// Addresses paid that are no contact's, for "Paid, not saved".
-    pub async fn paid_not_saved(&self, clock: Clock) -> Vec<activity::PaidBefore> {
-        let rows = self.activity().await;
-        contacts::unsaved(&self.inner.state.lock().await.contacts, &rows, clock)
     }
 
     pub async fn contact(&self, id: u64) -> Option<Contact> {
@@ -2406,18 +2426,26 @@ impl Wallet {
         state.contacts.get(id).map(|c| contacts::card(c, &state.requests, &rows, clock))
     }
 
-    /// Activity as Home shows it: every payment, request and share of your
-    /// profile, by day.
-    pub async fn activity_days(&self, clock: Clock) -> Vec<activity::Day> {
+    /// What the screens list, from one look at the activity (it parses
+    /// every receipt): Home's Activity, by day, with every payment, request
+    /// and share of your profile; Contacts and its "Paid, not saved"; Send's
+    /// sheet's contacts (with a send address, the most recently paid first)
+    /// and the people paid before.
+    pub async fn lists(&self, clock: Clock) -> Lists {
         let rows = self.activity().await;
-        let lines = {
-            let state = self.inner.state.lock().await;
-            let mut lines = requests::activity_rows(&state.requests, &state.contacts, &rows, clock);
-            lines.extend(profile::activity_rows(&state.profile, clock));
-            lines.sort_by_key(|l| std::cmp::Reverse(l.time));
-            lines
+        let state = self.inner.state.lock().await;
+        let mut lines = requests::activity_rows(&state.requests, &state.contacts, &rows, clock);
+        lines.extend(profile::activity_rows(&state.profile, clock));
+        lines.sort_by_key(|l| std::cmp::Reverse(l.time));
+        let lists = Lists {
+            contacts: contacts::list(&state.contacts, &rows, "", clock),
+            unsaved: contacts::unsaved(&state.contacts, &rows, clock),
+            on_send: contacts::on_send(&state.contacts, &rows, clock),
+            paid_before: activity::paid_before(&rows, clock),
+            days: vec![],
         };
-        activity::by_day(rows, lines, clock)
+        drop(state);
+        Lists { days: activity::by_day(rows, lines, clock), ..lists }
     }
 
     /// The name a request's code carries (`recipient_name`): the profile's,
@@ -3050,7 +3078,7 @@ mod tests {
         assert_eq!(last, 4_000);
         // Activity holds each payment in to the same rule: "Not ready"
         // until its outputs can be spent, not at 10 for every one.
-        let lines: HashMap<String, String> = wallet.activity_days(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await
+        let lines: HashMap<String, String> = wallet.lists(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.days
             .into_iter()
             .flat_map(|d| d.rows)
             .map(|r| (r.activity.unwrap().tx, r.line.split(" · ").take(2).collect::<Vec<_>>().join(" · ")))
@@ -3752,7 +3780,7 @@ mod tests {
         let t = now();
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         assert_eq!(wallet.ready_line(t).await, "0 XMR ready to spend");
-        assert!(wallet.paid_before(clock).await.is_empty());
+        assert!(wallet.lists(clock).await.paid_before.is_empty());
         let to = "5".repeat(95);
         {
             let mut state = wallet.inner.state.lock().await;
@@ -3771,7 +3799,7 @@ mod tests {
         assert_eq!(wallet.worth_aged(XMR, t + price::AGED).await, Some(("$166.10".into(), Some("10 min old".into()))));
         assert_eq!(wallet.worth_aged(XMR, t + 60).await, Some(("$166.10".into(), None)));
         assert_eq!(wallet.ready_line(t + price::SHOWN).await, "2 XMR ready to spend");
-        let paid = wallet.paid_before(clock).await;
+        let paid = wallet.lists(clock).await.paid_before;
         assert_eq!(paid.len(), 1);
         assert_eq!((paid[0].address.as_str(), paid[0].name.as_str(), paid[0].line.as_str()), (to.as_str(), "5555 … 5555", "Lunch money · Today"));
     }
@@ -3878,7 +3906,7 @@ mod tests {
         let split: Vec<_> = summary.pieces.iter().filter(|p| p.source.starts_with("Split up · ")).collect();
         assert_eq!(split.len(), 16);
         assert_eq!(split.iter().map(|p| p.atomic).sum::<u64>(), 2 * XMR - 1);
-        let row = wallet.activity_days(clock).await.into_iter().flat_map(|d| d.rows).find(|r| r.activity.as_ref().is_some_and(|a| a.tx == "split")).unwrap();
+        let row = wallet.lists(clock).await.days.into_iter().flat_map(|d| d.rows).find(|r| r.activity.as_ref().is_some_and(|a| a.tx == "split")).unwrap();
         assert_eq!((row.title.as_str(), row.amount.as_str()), ("Split up", "−0.000000000001"));
         assert!(row.line.starts_with("Sending · 15 coins · "), "{}", row.line);
     }
@@ -3976,15 +4004,17 @@ mod tests {
         let old = Wallet::open(&path, [1; 32]).unwrap();
         let t = now();
         let order = |can_swap, fiat_first| price::BalanceOrder { can_swap, fiat_first };
-        assert_eq!(old.balance_order(t).await, order(false, false), "no price yet: nothing to swap to");
+        let balance = async |w: &Wallet| w.balance_worth(XMR, t).await;
+        assert_eq!(balance(&old).await, (None, order(false, false)), "no price yet: nothing to swap to");
         old.refresh_prices_from(&FakePrices::new(166_000_000, vec![]), Asked::Background, t).await.unwrap();
-        assert_eq!(old.balance_order(t).await, order(true, true));
+        let worth = Some(("€166.00".to_string(), None));
+        assert_eq!(balance(&old).await, (worth.clone(), order(true, true)), "a worth whenever it swaps");
         old.set_fiat_first(false).await.unwrap();
-        assert_eq!(old.balance_order(t).await, order(true, false));
+        assert_eq!(balance(&old).await, (worth, order(true, false)));
         old.set_fiat_first(true).await.unwrap();
         // XMR: no swap, and tapping is refused.
         old.set_currency(None).await.unwrap();
-        assert_eq!(old.balance_order(t).await, order(false, false));
+        assert_eq!(balance(&old).await, (None, order(false, false)));
         assert!(matches!(old.set_fiat_first(false).await, Err(FobError::Price(_))));
         // A currency again: its order as it was.
         old.set_currency(Some("EUR")).await.unwrap();
@@ -4015,13 +4045,14 @@ mod tests {
         assert_eq!(reopened.contact(sam.id).await, Some(sam.clone()));
         assert_eq!(reopened.contact(sam.id).await.unwrap().photo, Some(photo));
         // Activity calls the payment to Sam's address "Sam".
-        let days = reopened.activity_days(clock).await;
+        let lists = reopened.lists(clock).await;
+        let days = lists.days;
         let titles: Vec<_> = days[0].rows.iter().map(|r| r.title.as_str()).collect();
         assert_eq!(titles, ["Sam", &activity::short_address(&other)]);
         assert_eq!(reopened.payment("lunch", clock).await.unwrap().party.as_deref(), Some("Sam"));
         assert_eq!(reopened.contacts("lunch", clock).await[0].line, "Lunch money · paid today");
-        assert_eq!(reopened.contacts_on_send(clock).await[0].line, "Lunch · Today");
-        assert_eq!(reopened.paid_not_saved(clock).await.iter().map(|p| p.address.as_str()).collect::<Vec<_>>(), [other.as_str()]);
+        assert_eq!(lists.on_send[0].line, "Lunch · Today");
+        assert_eq!(lists.unsaved.iter().map(|p| p.address.as_str()).collect::<Vec<_>>(), [other.as_str()]);
         assert_eq!(reopened.contact_card(sam.id, clock).await.unwrap().paid.len(), 1);
         // Deleted, the payment stays, shown by its address again.
         reopened.delete_contact(sam.id).await.unwrap();
@@ -4161,7 +4192,7 @@ mod tests {
         assert_eq!((detail.received.as_str(), detail.payments.len()), ("0.35 XMR", 2));
         assert!(detail.payments.iter().all(|p| p.title == "From Sam"), "{:?}", detail.payments);
         assert_eq!(wallet.request_contacts().await[0].line, "1 request paid, 1 waiting");
-        let days = wallet.activity_days(clock).await;
+        let days = wallet.lists(clock).await.days;
         let today: Vec<_> = days[0].rows.iter().map(|r| (r.title.clone(), r.request)).collect();
         assert!(today.contains(&("Request to Sam".into(), Some(request.id))), "{today:?}");
         assert!(today.contains(&("From Sam".into(), None)), "{today:?}");
@@ -4184,7 +4215,7 @@ mod tests {
         let from = |tx: &str| rows.iter().find(|r| r.tx == tx).map(|r| (r.contact.clone(), r.note.clone()));
         assert_eq!(from("first"), Some((Some("Sam".into()), Some("Pizza".into()))));
         assert_eq!(from("later"), Some((None, Some("Pizza".into()))));
-        let days = reopened.activity_days(Clock { now: t + 3600, ..clock }).await;
+        let days = reopened.lists(Clock { now: t + 3600, ..clock }).await.days;
         assert!(days.iter().flat_map(|d| &d.rows).all(|r| r.request != Some(request.id)));
         let card = reopened.contact_card(sam.id, clock).await.unwrap();
         assert_eq!(card.requests.iter().map(|r| r.id).collect::<Vec<_>>(), [other.id]);
@@ -4271,6 +4302,41 @@ mod tests {
         assert!(!serde_json::from_value::<FileIn>(file).unwrap().state.restored);
     }
 
+    /// Reading Receive's address before Receive opens (the screens' refresh,
+    /// as a restore starts and before any block is scanned) hands nothing
+    /// out and saves nothing: the scan still finds the other phone's
+    /// payments past the skip as its own, and the address Receive then
+    /// hands out goes past them.
+    #[tokio::test]
+    async fn reading_a_restored_wallet_s_receive_address_hands_nothing_out() {
+        let words = Wallet::create(&dir("restore-read-from"), [1; 32], Network::Stagenet).unwrap().seed_words().unwrap().1;
+        let path = dir("restore-read-to");
+        let restored = Wallet::restore_words(&path, [1; 32], Network::Stagenet, &words, Some(0)).unwrap();
+        let marks = |s: &State| (s.receive_index, s.receive_own, s.fresh_from);
+        let before = marks(&*restored.inner.state.lock().await);
+        let file = std::fs::read(&path).unwrap();
+        assert_eq!(restored.shown_receive_address().await, None, "Receive hands one out as it opens");
+        assert_eq!(marks(&*restored.inner.state.lock().await), before);
+        assert_eq!(std::fs::read(&path).unwrap(), file, "nothing saved");
+        // The scan finds the other phone's payment at 60 (past the skip of 50): still not one to show.
+        {
+            let mut state = restored.inner.state.lock().await;
+            state.outputs.push(Owned { subaddress: 60, ..received("theirs", 1, XMR) });
+            state.receive_index = 60;
+        }
+        assert_eq!(restored.shown_receive_address().await, None, "60 is the other phone's");
+        // Receive opens: past what they handed out after it.
+        let own = 60 + RESTORE_SKIP + 1;
+        assert_eq!(restored.receive_address().await.unwrap(), restored.inner.keys.address(own));
+        assert_eq!(restored.shown_receive_address().await, Some((restored.inner.keys.address(own), own)));
+        assert_eq!(restored.make_request(None, None, false, None).await.unwrap().0.subaddress, own + 1);
+        // A wallet made here reads none until Receive first opens, then that one.
+        let made = Wallet::create(&dir("restore-read-made"), [1; 32], Network::Stagenet).unwrap();
+        assert_eq!(made.shown_receive_address().await, None);
+        let first = made.receive_address().await.unwrap();
+        assert_eq!(made.shown_receive_address().await, Some((first, 1)));
+    }
+
     fn outgoing(to: &str, inputs: Vec<usize>) -> Outgoing {
         Outgoing {
             to: to.into(),
@@ -4341,9 +4407,7 @@ mod tests {
     async fn a_new_wallet_asks_to_be_backed_up_until_its_words_are_written_down() {
         let path = dir("backup");
         let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
-        let (title, line) = wallet.backup_reminder().await.unwrap();
-        assert_eq!(title, "Back up your seed phrase");
-        assert_eq!(line, "Your 16 words aren't written down yet. Without them, this wallet can't be restored.");
+        assert_eq!(wallet.backup_reminder().await, Some(keys::reminder(16)));
         // Fob closed during the backup step: opened again, it still asks.
         let reopened = Wallet::open(&path, [1; 32]).unwrap();
         assert!(reopened.backup_reminder().await.is_some());
@@ -4588,7 +4652,7 @@ mod tests {
 
         // A payment to a share's address comes "Via your profile".
         wallet.inner.state.lock().await.outputs.push(Owned { subaddress: 2, ..received("via", t - 60, XMR / 4) });
-        let days = wallet.activity_days(clock).await;
+        let days = wallet.lists(clock).await.days;
         let rows: Vec<_> = days[0].rows.iter().map(|r| (r.title.as_str(), r.share, r.amount.as_str())).collect();
         assert_eq!(rows.iter().filter(|r| r.0 == "Shared your profile").count(), 2, "{rows:?}");
         let via = days[0].rows.iter().find(|r| r.title == "Via your profile").unwrap();
