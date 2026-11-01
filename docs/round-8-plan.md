@@ -24,6 +24,7 @@ fixes. Their numbering is kept below as "item N"; the steps group them.
 7. Split up: remove "Not enough payments yet …". Only when there's enough
    to learn from, an "Auto" button fills the learned mix. Designs on the
    canvas, page Round 8; built once the owner picks.
+   Picked A: Auto in the top bar beside Clear; the page as drawn.
 8. Opening Settings or Receive shifts the layout: fix it.
 9. "Also show amounts in" becomes "Default currency"; "Show first" goes. With
    XMR selected, no swap button anywhere. With a currency selected, the swap
