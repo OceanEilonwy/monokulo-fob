@@ -302,8 +302,9 @@ private fun Chip(icon: String, label: String, onClick: () -> Unit) {
  * Home's top bar (board HomePeople): the mark, "Fob" and on stagenet its
  * badge at the start; the sync [chip], your photo and Settings at the end.
  * The end's three always fit whole: where the row is too narrow (a 360dp
- * phone with the badge and "6 min left", a big font) the word "Fob" goes
- * first, then the chip's words (its ring or dot stays), then the badge.
+ * phone with the badge and "Can't reach node", a big font) the chip's words
+ * go first (its ring or dot stays, its card and TalkBack keep the words),
+ * then the word "Fob", then the badge.
  */
 @Composable
 private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
@@ -320,7 +321,7 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
     ) { parts, c ->
         fun part(id: String) = parts.firstOrNull { it.layoutId == id }
         val loose = c.copy(minWidth = 0, minHeight = 0)
-        val gap = 10.dp.roundToPx()
+        val gap = 8.dp.roundToPx()
         val mark = part("mark")!!.measure(loose)
         val you = part("you")!!.measure(loose)
         val cog = part("cog")!!.measure(loose)
@@ -330,9 +331,10 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
         val badge = part("badge")
         val wordWidth = word.maxIntrinsicWidth(Constraints.Infinity) + gap
         val badgeWidth = badge?.let { it.maxIntrinsicWidth(Constraints.Infinity) + gap } ?: 0
-        val showWord = wordWidth + badgeWidth + part("chip")!!.maxIntrinsicWidth(Constraints.Infinity) <= room
-        // A chip without its words is the 48dp of its target.
-        val showBadge = badge != null && badgeWidth + 48.dp.roundToPx() <= room
+        // A chip without its words is the 48dp of its target; it keeps its words only in the room left over.
+        val ring = 48.dp.roundToPx()
+        val showWord = wordWidth + badgeWidth + ring <= room
+        val showBadge = badge != null && badgeWidth + ring <= room
         val chipRoom = room - (if (showWord) wordWidth else 0) - (if (showBadge) badgeWidth else 0)
         val chip = part("chip")!!.measure(loose.copy(maxWidth = chipRoom.coerceAtLeast(0)))
         val start = listOfNotNull(mark, if (showWord) word.measure(loose) else null, if (showBadge) badge!!.measure(loose) else null)
