@@ -2339,3 +2339,14 @@ pushed what was under them.
 288. **Clear shows only with a coin chosen.** It comes in beside Auto as
     the first coin is added and goes when cleared; Auto moves left by
     Clear's width then, as the board draws it.
+
+## Round 8: the emulator pass
+
+289. **What gives way in Home's top bar.** At 360 dp with the Stagenet
+    badge and a wide chip ("Can't reach node") the word "Fob" went while
+    room was left over, since it went whenever the chip's words didn't
+    fit too. Now the chip's words go first (its ring or dot keeps the
+    state, its card and TalkBack keep the words), then "Fob", then the
+    badge; the gap between the mark, "Fob" and the badge is 8 dp, not 10,
+    so all three and the dot fit at 360 dp. At 200 % font on 360 dp only
+    the mark and the dot are left, as before.
