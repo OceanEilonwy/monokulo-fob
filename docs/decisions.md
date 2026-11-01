@@ -2350,3 +2350,11 @@ pushed what was under them.
     badge; the gap between the mark, "Fob" and the badge is 8 dp, not 10,
     so all three and the dot fit at 360 dp. At 200 % font on 360 dp only
     the mark and the dot are left, as before.
+290. **A label and value row wraps the label first.** At 200 % font on
+    360 dp Node's "Sends blocks to Fob" broke its value as "57 /
+    blocks/ / s": the label kept all but the value's narrowest word
+    (and Android breaks after a slash). `LabelAndValue` now gives the
+    value its whole line where the label can wrap down to its longest
+    word, wraps the value between words next, and puts the value under
+    the label at the end where even its longest word wouldn't fit. The
+    old floor of a third for the label went.

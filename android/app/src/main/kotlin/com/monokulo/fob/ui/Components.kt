@@ -735,9 +735,11 @@ fun SheetHandle() {
 
 /**
  * A label at the start and a value at the end of a row (the sync card's
- * rows, Node's checks). At a big font the value keeps room for its
- * longest word ("2,240,749", "stagenet") and the label wraps first, so
- * nothing breaks inside a word; the label keeps at least a third.
+ * rows, Node's checks). At a big font the label wraps first, down to its
+ * longest word, so the value keeps its whole line ("57 blocks/s") where
+ * it can; then the value wraps between words; where even its longest word
+ * ("2,240,749", "blocks/s") wouldn't fit beside the label, it goes under
+ * it at the end. Nothing breaks inside a word.
  * [centred] puts both on the row's middle, else on its top.
  */
 @Composable
@@ -745,13 +747,24 @@ fun LabelAndValue(modifier: Modifier = Modifier, gap: Dp = 14.dp, centred: Boole
     Layout(content = { Box { label() }; Box { value() } }, modifier = modifier.fillMaxWidth()) { (l, v), c ->
         val space = gap.roundToPx()
         val width = c.maxWidth
-        val labelWidth = minOf(l.maxIntrinsicWidth(Constraints.Infinity), maxOf(width - space - v.minIntrinsicWidth(Constraints.Infinity), width / 3))
+        val labelMin = minOf(l.minIntrinsicWidth(Constraints.Infinity), width)
+        val labelMax = maxOf(labelMin, l.maxIntrinsicWidth(Constraints.Infinity))
+        // The value's whole line if the label can wrap to make room for it, else as much as the label's longest word leaves.
+        val labelWidth = (width - space - v.maxIntrinsicWidth(Constraints.Infinity)).coerceIn(labelMin, labelMax)
         val lp = l.measure(Constraints(maxWidth = labelWidth))
-        val vp = v.measure(Constraints(maxWidth = (width - space - lp.width).coerceAtLeast(0)))
-        val height = maxOf(lp.height, vp.height, c.minHeight)
+        val room = width - space - lp.width
+        // Where even that would break the value's longest word, it goes under the label at the end.
+        val under = room < v.minIntrinsicWidth(Constraints.Infinity)
+        val vp = v.measure(Constraints(maxWidth = if (under) width else room.coerceAtLeast(0)))
+        val height = if (under) maxOf(lp.height + vp.height, c.minHeight) else maxOf(lp.height, vp.height, c.minHeight)
         layout(width, height) {
-            lp.placeRelative(0, if (centred) (height - lp.height) / 2 else 0)
-            vp.placeRelative(width - vp.width, if (centred) (height - vp.height) / 2 else 0)
+            if (under) {
+                lp.placeRelative(0, 0)
+                vp.placeRelative(width - vp.width, lp.height)
+            } else {
+                lp.placeRelative(0, if (centred) (height - lp.height) / 2 else 0)
+                vp.placeRelative(width - vp.width, if (centred) (height - vp.height) / 2 else 0)
+            }
         }
     }
 }
