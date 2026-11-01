@@ -286,10 +286,10 @@ fun TopBar(title: String?, onBack: (() -> Unit)?, closeIcon: Boolean = false, ti
 }
 
 @Composable
-fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, height: Dp = 56.dp, leading: String? = null, iconWidth: Float = 2f) {
+fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, dim: Boolean = false, height: Dp = 56.dp, leading: String? = null, iconWidth: Float = 2f) {
     Row(
         modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2))
-            .background(if (enabled) Fob.orange else Fob.sunken)
+            .background(if (enabled && !dim) Fob.orange else Fob.sunken)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             // A long label ("Share with Alexandria …") ellipsizes inside the pill's curve, as OutlineButton's does.
             .padding(horizontal = 16.dp),
@@ -297,10 +297,10 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (leading != null) {
-            StrokeIcon(leading, tint = if (enabled) Fob.onOrange else Fob.muted, width = iconWidth)
+            StrokeIcon(leading, tint = if (enabled && !dim) Fob.onOrange else Fob.muted, width = iconWidth)
             Spacer(Modifier.width(10.dp))
         }
-        Text(text, color = if (enabled) Fob.onOrange else Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(text, color = if (enabled && !dim) Fob.onOrange else Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

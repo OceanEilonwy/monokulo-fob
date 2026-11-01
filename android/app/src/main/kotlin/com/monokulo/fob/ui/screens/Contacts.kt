@@ -247,9 +247,10 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 val sendTo = contact.sendAddress
                 // Without a send address Send is grey but still tappable: it points at Add instead of opening Send.
-                Box(Modifier.weight(1f).then(if (sendTo == null) Modifier.clickable(onClickLabel = "Add a send address first", role = Role.Button) { pointAtAdd = true } else Modifier)) {
-                    PrimaryButton("Send", { sendTo?.let { nav.go(Screen.Send(draft = SendDraft(to = it))) } }, height = 52.dp, enabled = sendTo != null, leading = Icons.up)
-                }
+                PrimaryButton(
+                    "Send", { if (sendTo != null) nav.go(Screen.Send(draft = SendDraft(to = sendTo))) else pointAtAdd = true },
+                    Modifier.weight(1f), dim = sendTo == null, height = 52.dp, leading = Icons.up,
+                )
                 // Receive with them chosen; the request is made only on Share.
                 OutlineButton("Request", { nav.go(Screen.Receive(contact = id)) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
             }
