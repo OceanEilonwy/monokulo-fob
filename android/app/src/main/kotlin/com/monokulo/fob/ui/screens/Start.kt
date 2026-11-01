@@ -164,10 +164,9 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean, warn: Boole
     val seed = remember(wallet) { wallet?.seedPhrase() }
     val scope = rememberCoroutineScope()
     // Home's reminder brings you here until the words are said to be written down.
-    var pending by remember { mutableStateOf(false) }
-    LaunchedEffect(wallet) { pending = wallet?.backupReminder() != null }
+    val pending = model.reminder.collectAsState().value != null
     fun written(then: () -> Unit) {
-        scope.launch { runCatching { wallet?.backupDone() }; then() }
+        scope.launch { model.backupDone(); then() }
     }
     Page(bottom = {
         // A new wallet's last step is its profile (optional, with Skip).

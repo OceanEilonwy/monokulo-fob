@@ -16,6 +16,7 @@ import com.monokulo.fob.ui.ThemeChoice
 import uniffi.fob.ActivityDay
 import uniffi.fob.AmountEntry
 import uniffi.fob.Balance
+import uniffi.fob.BackupReminder
 import uniffi.fob.SplitView
 import uniffi.fob.Coins
 import uniffi.fob.ContactCard
@@ -150,10 +151,6 @@ class WalletModel(private val app: Application) {
         }
     }
 
-    init {
-        open()
-    }
-
     /**
      * Your profile and Settings' words for it, for Home's top bar: read
      * when a wallet opens and again whenever it's saved, so Home has it at
@@ -161,6 +158,55 @@ class WalletModel(private val app: Application) {
      */
     private val _you = MutableStateFlow<You?>(null)
     val you: StateFlow<You?> = _you
+
+    // What the other screens open with, read with everything else in
+    // refresh(): each screen has its words on its first frame, rather than
+    // asking Rust as it opens and drawing them (and moving what's under
+    // them) a frame later.
+
+    /** Home's backup reminder while a new wallet's words aren't written down; null once they are. */
+    private val _reminder = MutableStateFlow<BackupReminder?>(null)
+    val reminder: StateFlow<BackupReminder?> = _reminder
+
+    /** Settings' Node line: "Working · node.example:38081". */
+    private val _nodeLine = MutableStateFlow("")
+    val nodeLine: StateFlow<String> = _nodeLine
+
+    /** Settings' line for Backup and keys: "Seed phrase, wallet code, keys". */
+    private val _backupLine = MutableStateFlow("")
+    val backupLine: StateFlow<String> = _backupLine
+
+    /** Receive's own address and its index, as Receive opens with it. */
+    private val _receive = MutableStateFlow<ReceiveAddress?>(null)
+    val receive: StateFlow<ReceiveAddress?> = _receive
+
+    /** Every contact by name, as Contacts opens; null before the wallet's read. */
+    private val _contactList = MutableStateFlow<List<ContactRow>?>(null)
+    val contactList: StateFlow<List<ContactRow>?> = _contactList
+
+    /** Contacts' "Paid, not saved". */
+    private val _unsaved = MutableStateFlow<List<PaidBefore>>(emptyList())
+    val unsaved: StateFlow<List<PaidBefore>> = _unsaved
+
+    /** Send's folded sheet: the contacts it offers, or, with no contacts yet, who was paid before. */
+    private val _sendPeople = MutableStateFlow(SendPeople.NONE)
+    val sendPeople: StateFlow<SendPeople> = _sendPeople
+
+    /** The Coins screen. */
+    private val _coins = MutableStateFlow<Coins?>(null)
+    val coins: StateFlow<Coins?> = _coins
+
+    /**
+     * The wallet saved on this phone is still being opened and read: Home
+     * would draw a dash for the balance and fill in a moment later, so the
+     * launch screen stays up meanwhile.
+     */
+    val opening: Boolean
+        get() = hasWallet() && _balance.value == null && _openError.value == null
+
+    init {
+        open()
+    }
 
     private fun path(network: Network) = File(app.filesDir, "wallet-${network.name.lowercase()}.fob").absolutePath
 
@@ -195,14 +241,60 @@ class WalletModel(private val app: Application) {
         wallet.close()
     }
 
+    /**
+     * Reads everything the screens show, then sets it all at once: a
+     * screen never draws one answer new and the next still old (or none),
+     * so nothing moves twice.
+     */
     suspend fun refresh() {
         val wallet = _wallet.value ?: return
         val (seconds, offset, hours24) = clock()
-        _prices.value = wallet.priceSettings(seconds, offset, hours24)
-        _balance.value = wallet.balance(seconds)
-        _activity.value = wallet.activityDays(seconds, offset, hours24)
-        _notReady.value = wallet.notReady(seconds, offset, hours24)
+        val prices = wallet.priceSettings(seconds, offset, hours24)
+        val balance = wallet.balance(seconds)
+        val activity = wallet.activityDays(seconds, offset, hours24)
+        val notReady = wallet.notReady(seconds, offset, hours24)
+        val reminder = wallet.backupReminder()
+        val nodeLine = wallet.nodeLine()
+        val backupLine = wallet.backupHub(phoneLock(app)).settingsLine
+        // Rust hands out a new one when the last went to a request, a split or a share.
+        val receive = runCatching { ReceiveAddress(wallet.receiveAddress(), wallet.receiveIndex()) }.getOrNull()
+        val contacts = wallet.contacts("", seconds, offset, hours24)
+        val unsaved = wallet.paidNotSaved(seconds, offset, hours24)
+        val sendPeople = SendPeople(
+            wallet.contactsOnSend(seconds, offset, hours24),
+            contacts.isNotEmpty(),
+            if (contacts.isEmpty()) wallet.paidBefore(seconds, offset, hours24) else emptyList(),
+        )
+        val coins = wallet.coins(seconds, offset, hours24)
+        // Another wallet opened meanwhile: these answers are the last one's.
+        if (_wallet.value !== wallet) return
+        _prices.value = prices
+        _balance.value = balance
+        _activity.value = activity
+        _notReady.value = notReady
+        _reminder.value = reminder
+        _nodeLine.value = nodeLine
+        _backupLine.value = backupLine
+        receive?.let { _receive.value = it }
+        _contactList.value = contacts
+        _unsaved.value = unsaved
+        _sendPeople.value = sendPeople
+        _coins.value = coins
         refreshToast(wallet)
+    }
+
+    /** Receive's New address: a fresh one nobody has seen. Throws what Rust refused. */
+    suspend fun newReceiveAddress() {
+        val wallet = _wallet.value ?: return
+        val address = wallet.newReceiveAddress()
+        _receive.value = ReceiveAddress(address, wallet.receiveIndex())
+    }
+
+    /** "I've written them down": Home's reminder goes. */
+    suspend fun backupDone() {
+        val wallet = _wallet.value ?: return
+        runCatching { wallet.backupDone() }
+        _reminder.value = wallet.backupReminder()
     }
 
     /**
@@ -290,13 +382,6 @@ class WalletModel(private val app: Application) {
         return wallet.splitView(counts, seconds, offset, hours24)
     }
 
-    /** The Coins screen, every word from Rust; null without a wallet. */
-    suspend fun coins(): Coins? {
-        val wallet = _wallet.value ?: return null
-        val (seconds, offset, hours24) = clock()
-        return wallet.coins(seconds, offset, hours24)
-    }
-
     /** A payment's own screen, every word from Rust; null if there's no such payment. */
     suspend fun payment(tx: String): PaymentDetail? {
         val wallet = _wallet.value ?: return null
@@ -364,6 +449,20 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return
         wallet.setNode(url, selfSigned)
         _status.value = wallet.status()
+        readSettingsLines()
+    }
+
+    /**
+     * Settings' Node and Backup and keys lines again: the Node screen's
+     * checks (Rust keeps a verdict) or a screen lock set change them.
+     */
+    suspend fun readSettingsLines() {
+        val wallet = _wallet.value ?: return
+        val node = wallet.nodeLine()
+        val backup = wallet.backupHub(phoneLock(app)).settingsLine
+        if (_wallet.value !== wallet) return
+        _nodeLine.value = node
+        _backupLine.value = backup
     }
 
     /** Instant updates (ZMQ) on or off; [endpoint], if given, replaces the one set. Throws what Rust refused. */
@@ -430,6 +529,7 @@ class WalletModel(private val app: Application) {
         _priceToast.value = null
         _status.value = null
         _you.value = null
+        clearScreens()
         prefs.edit().putString("network", network.name.lowercase()).apply()
         _network.value = network
         open()
@@ -447,7 +547,20 @@ class WalletModel(private val app: Application) {
         _priceToast.value = null
         _status.value = null
         _you.value = null
+        clearScreens()
         File(path(network)).delete()
+    }
+
+    /** No wallet open: what the other screens open with goes too. */
+    private fun clearScreens() {
+        _reminder.value = null
+        _nodeLine.value = ""
+        _backupLine.value = ""
+        _receive.value = null
+        _contactList.value = null
+        _unsaved.value = emptyList()
+        _sendPeople.value = SendPeople.NONE
+        _coins.value = null
     }
 
     /**
@@ -462,32 +575,11 @@ class WalletModel(private val app: Application) {
     /** What the Paid screen offers for payment [tx]; null for a split or an address that's already a contact's. */
     suspend fun saveOffer(tx: String): SaveOffer? = _wallet.value?.saveOffer(tx)
 
-    /** Who this wallet paid before, for Send's sheet; empty without a wallet. */
-    suspend fun paidBefore(): List<PaidBefore> {
-        val wallet = _wallet.value ?: return emptyList()
-        val (seconds, offset, hours24) = clock()
-        return wallet.paidBefore(seconds, offset, hours24)
-    }
-
     /** Contacts by name, those whose name or note has [search] in it; empty without a wallet. */
-    suspend fun contacts(search: String = ""): List<ContactRow> {
+    suspend fun contacts(search: String): List<ContactRow> {
         val wallet = _wallet.value ?: return emptyList()
         val (seconds, offset, hours24) = clock()
         return wallet.contacts(search, seconds, offset, hours24)
-    }
-
-    /** The contacts Send's sheet offers: with a send address, the most recently paid first. */
-    suspend fun contactsOnSend(): List<ContactRow> {
-        val wallet = _wallet.value ?: return emptyList()
-        val (seconds, offset, hours24) = clock()
-        return wallet.contactsOnSend(seconds, offset, hours24)
-    }
-
-    /** Addresses paid that are no contact's, for "Paid, not saved". */
-    suspend fun paidNotSaved(): List<PaidBefore> {
-        val wallet = _wallet.value ?: return emptyList()
-        val (seconds, offset, hours24) = clock()
-        return wallet.paidNotSaved(seconds, offset, hours24)
     }
 
     /** A contact's card, every word from Rust; null once it's deleted. */
@@ -599,3 +691,16 @@ class WalletModel(private val app: Application) {
 
 /** Your profile (null before it's set up) and its row's words: "Your profile", or "Add a shareable Fob contact". */
 data class You(val profile: Profile?, val row: ProfileRow)
+
+/** Receive's own address and its index (a note typed on Receive is kept with it). */
+data class ReceiveAddress(val address: String, val index: UInt)
+
+/**
+ * Send's folded sheet: the contacts with a send address, whether there's
+ * any contact at all, and, while there's none, who was paid before.
+ */
+data class SendPeople(val contacts: List<ContactRow>, val anyContact: Boolean, val paid: List<PaidBefore>) {
+    companion object {
+        val NONE = SendPeople(emptyList(), false, emptyList())
+    }
+}

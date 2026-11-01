@@ -888,6 +888,12 @@ pub enum FieldPrice<'a> {
     At(&'a Currency, u64, Option<&'a str>),
 }
 
+/// The field as a form opens it, nothing typed: in money while there's a
+/// `price`, else XMR, so a screen draws it whole on its first frame.
+pub fn blank_field(price: FieldPrice) -> AmountField {
+    amount_field("", matches!(price, FieldPrice::At(..)), price)
+}
+
 /// The field for `text` typed in money (`in_fiat`) or XMR, at `price` when
 /// there is one (without, it takes XMR only).
 pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField {
@@ -1175,6 +1181,23 @@ mod tests {
         assert_eq!(amount_field("20", true, aged).line.as_deref(), Some("≈ 0.1204 XMR · price from 14:02"));
         assert_eq!(amount_field("0.1204", false, aged).line.as_deref(), Some("≈ $20.00 · price from 14:02"));
         assert!(amount_field("20", true, aged).can_switch);
+    }
+
+    /// A form opens blank, in money while there's a price: the whole field
+    /// (sign, chip, rate) is there to draw on the first frame.
+    #[test]
+    fn a_blank_field_opens_in_money_only_with_a_price() {
+        let usd = usd();
+        let f = blank_field(FieldPrice::At(&usd, 166_100_000, None));
+        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch), (Some("$"), "USD", true, true));
+        assert_eq!(f.line.as_deref(), Some("1 XMR = $166.10"));
+        assert_eq!((f.for_text.as_str(), f.for_in_fiat, f.sendable), ("", true, false));
+        // No price yet: XMR, saying why; XMR chosen: XMR, nothing under it.
+        let f = blank_field(FieldPrice::Missing(&usd));
+        assert_eq!((f.unit.as_str(), f.in_fiat, f.can_switch, f.for_in_fiat), ("XMR", false, false, false));
+        assert_eq!(f.line.as_deref(), Some("No USD price now · type the amount in XMR"));
+        let f = blank_field(FieldPrice::None);
+        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.line), (Some("ɱ"), "XMR", false, None));
     }
 
     #[test]

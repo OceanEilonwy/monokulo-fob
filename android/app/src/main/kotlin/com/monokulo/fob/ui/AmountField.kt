@@ -104,6 +104,9 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
                 }
             }
         }
-        entry?.line?.let { Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp)) }
+        // Its line always laid out, empty when Rust has nothing to say, so what's under the field never moves as one
+        // comes or goes ("That isn't an amount", a price coming).
+        val line = entry?.line
+        Text(line ?: "", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp).then(if (line == null) Modifier.clearAndSetSemantics {} else Modifier))
     }
 }

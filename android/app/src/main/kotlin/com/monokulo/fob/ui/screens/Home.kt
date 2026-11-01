@@ -37,6 +37,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.Layout
@@ -104,8 +105,7 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     // A new wallet's words not yet written down (Fob closed during the backup step, say): asked again here.
-    var reminder by remember { mutableStateOf<BackupReminder?>(null) }
-    LaunchedEffect(wallet) { reminder = wallet?.backupReminder() }
+    val reminder by model.reminder.collectAsState()
     // Ready times count down between blocks: Rust writes them again each half minute.
     LaunchedEffect(notReady != null) {
         while (notReady != null) {
@@ -135,9 +135,14 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
         val fiat = b?.fiatText
         val canSwap = b?.canSwap == true
         val fiatFirst = fiat != null && b.fiatFirst
-        if (!synced) Text("Balance so far", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(start = 20.dp, top = 12.dp))
+        // Always laid out, faded out once synced: the balance never moves as syncing ends.
+        val soFar by animateFloatAsState(if (synced) 0f else 1f, label = "so far")
+        Text(
+            "Balance so far", color = Fob.muted, fontSize = 14.sp,
+            modifier = Modifier.padding(start = 20.dp, top = 12.dp).alpha(soFar).then(if (synced) Modifier.clearAndSetSemantics {} else Modifier),
+        )
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = if (synced) 16.dp else 0.dp, bottom = 12.dp).clip(RoundedCornerShape(12.dp))
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 12.dp).clip(RoundedCornerShape(12.dp))
                 .then(
                     if (canSwap) {
                         Modifier.clickable(role = Role.Button, onClickLabel = "Swap XMR and ${prices?.currency ?: "the default currency"}") {
@@ -191,7 +196,14 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 Chip(Icons.people, "Contacts") { nav.go(Screen.Contacts) }
                 Chip(Icons.coins, "Coins") { nav.go(Screen.Coins) }
             }
-            if (!synced && activity.isNotEmpty()) Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp))
+            // Its line kept while there's activity, faded out once synced, so the payments don't move up as syncing ends.
+            if (activity.isNotEmpty()) {
+                val older by animateFloatAsState(if (synced) 0f else 1f, label = "older")
+                Text(
+                    "Still finding older ones", color = Fob.muted, fontSize = 13.sp,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp).alpha(older).then(if (synced) Modifier.clearAndSetSemantics {} else Modifier),
+                )
+            }
             if (activity.isEmpty()) {
                 Text(
                     if (synced) "Nothing yet. Tap Receive to get your address." else "Payments appear here as Fob finds them.",

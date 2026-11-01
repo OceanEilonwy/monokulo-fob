@@ -105,3 +105,20 @@ every step is in. Each item: what to do, what should happen.
 - [ ] On Wallet code, Seed phrase and Keys, try a screenshot → blocked; the recents thumbnail is blank.
 - [ ] On Wallet code (and on Seed phrase from the hub, and from Home's reminder) press Home, reopen Fob → back on Settings (or Home), not on the secret; opening the hub asks for the lock again. Turning the phone keeps the code on screen.
 - [ ] Light and dark, 200 % font → the code stays centred and fits; TalkBack reads "Wallet code" on the QR, then the scan line.
+
+## Step 7 · Layout shifts
+
+- [ ] Force-stop Fob, open it (a saved wallet) → the launch screen, then Home whole: balance, XMR line, photo, Receive/Send, Activity; nothing fills in after. As the chip turns Synced, "Balance so far" fades out and nothing moves.
+- [ ] Same with a funded wallet still catching up → "Still finding older ones" fades once synced; the payments don't move up.
+- [ ] A new wallet with the backup pending, cold start → the reminder card is there on Home's first frame; open Settings and come back → it doesn't pop in again. "I've written them down" → it's gone on Home.
+- [ ] Home › Settings (screen record, frame by frame) → the profile row, Backup and keys' line and the Node line are on the first frame; nothing moves.
+- [ ] Node › change or check the node, Back → Settings' Node line shows the new verdict.
+- [ ] Home › Receive → the address, the field's sign, USD chip and "1 XMR = …" on the first frame; the code fills its square without moving anything. New address → the address and code change in place.
+- [ ] A contact's card › Request → Receive keeps the chip's room; the chip fills it, the code doesn't move down.
+- [ ] Receive and Send with XMR as the default currency → no chip, an empty line's room under the field; type "x" → "That isn't an amount" appears without moving Note.
+- [ ] Settings › Default currency with no price yet (offline) → Receive opens in XMR saying why; once a price comes it switches to money in one step.
+- [ ] Home › Send → the viewfinder and Allow the camera appear once, in place; tap the handle → the sheet rises from its folded height, no flash of the form at full height.
+- [ ] Send with contacts or paid-before rows → the folded sheet is full height on the first frame; the viewfinder doesn't jump.
+- [ ] Home › Contacts and Home › Coins → the list (or empty card) is on the first frame; Coins' Split up greyed out with no coins.
+- [ ] Light and dark, 200 % font → none of the above moves; TalkBack doesn't read the faded "Balance so far" once synced.
+- [ ] A slow phone (or a large wallet) → the launch screen waits at most 2.5 s, then Home fills in.

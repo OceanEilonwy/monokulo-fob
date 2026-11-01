@@ -57,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
@@ -107,7 +108,6 @@ import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import uniffi.fob.AmountEntry
 import uniffi.fob.CodeKind
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
@@ -181,27 +181,27 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     var lastRead by rememberSaveable { mutableStateOf(draft?.read) }
     // A scanned profile, with the code it came from: shown on its own sheet in place of Send's.
     var profile by remember { mutableStateOf<Pair<String, ScannedProfile>?>(null) }
-    var paid by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
-    // Contacts with a send address once there are any contacts; until then, who was paid before.
-    var contacts by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
-    var hasContacts by remember { mutableStateOf(false) }
-    LaunchedEffect(wallet, balance) {
-        hasContacts = model.contacts().isNotEmpty()
-        contacts = model.contactsOnSend()
-        paid = if (hasContacts) emptyList() else model.paidBefore()
-    }
+    // Contacts with a send address once there are any contacts; until then, who was paid before. The model's, read
+    // with the wallet, so the folded sheet is its full height on the first frame.
+    val people by model.sendPeople.collectAsState()
+    val contacts = people.contacts
+    val paid = people.paid
+    val hasContacts = people.anyContact
 
-    // The amount in money (Rust converts it to XMR) while there's a price, as on Receive.
-    var entry by remember { mutableStateOf<AmountEntry?>(null) }
-    // A form filled before keeps its unit; an empty one opens in money while there's a price.
-    var inFiat by remember { mutableStateOf(draft?.inFiat ?: false) }
-    var defaulted by remember { mutableStateOf(draft != null && draft.amount.isNotBlank()) }
+    // The amount in money (Rust converts it to XMR) while there's a price, as on Receive. A form filled before keeps
+    // its unit; an empty one opens as Rust has it already (in money while there's a price), drawn whole at once.
+    val blank = prices?.blankEntry
+    val filled = draft != null && draft.amount.isNotBlank()
+    var inFiat by remember { mutableStateOf(if (filled) draft.inFiat else blank?.inFiat ?: false) }
+    var entry by remember { mutableStateOf(blank?.takeIf { it.inFiat == inFiat }) }
+    var defaulted by remember { mutableStateOf(filled || blank?.canSwitch == true) }
     // Money typed when the price went, kept aside until one comes.
     var heldMoney by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
         if (wallet == null) return@LaunchedEffect
         val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
-        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
+        // A price come since it opened: in money, the field's words with it at once rather than a round later.
+        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; entry = model.amountEntry(amount, true); inFiat = true; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
         // The price gone (another provider not answered yet, or over a day old): the money typed is kept
         // aside, never read as XMR, and put back once a price comes.
@@ -344,7 +344,10 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         var settle by remember { mutableStateOf<Job?>(null) }
         // A scanned profile's sheet, in place of Send's: the camera's room is above it.
         var profileHeight by remember { mutableIntStateOf(0) }
-        val height = if (moving) live else stop(open)
+        // However the sheet is pulled up or folded (the handle, Back, a scan, a contact), it moves to its stop: until
+        // the move begins, it stays at the one it was shown at.
+        var shownOpen by remember { mutableStateOf(open) }
+        val height = if (moving) live else stop(shownOpen)
 
         /**
          * From [from] to the stop [open] names, eased over 300 ms (as Android's animator duration scale stretches it,
@@ -367,8 +370,6 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                 moving = false
             }
         }
-        // However the sheet is pulled up or folded (the handle, Back, a scan, a contact), it moves to its stop.
-        var shownOpen by remember { mutableStateOf(open) }
         LaunchedEffect(open) {
             if (open == shownOpen) return@LaunchedEffect
             val from = if (moving) live else stop(shownOpen)
@@ -381,8 +382,13 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         val sheetPx = if (profile != null) profileHeight.toFloat() else height
         val sheetTop = maxHeight - with(density) { sheetPx.toDp() }
 
+        // What sits over the camera (the viewfinder, its words, Allow the camera) is placed by the sheet's height,
+        // measured only once the sheet is drawn: until then it's left undrawn rather than drawn at a guess and
+        // jumping a frame later.
+        val placed = profile != null || (if (shownOpen) openMeasured else foldMeasured) != null
+        val overCamera = Modifier.alpha(if (placed) 1f else 0f)
         CameraOrAsk(
-            Modifier.fillMaxSize(), torch = torch, onHasTorch = { hasTorch = it },
+            Modifier.fillMaxSize().then(overCamera), torch = torch, onHasTorch = { hasTorch = it },
             askPadding = PaddingValues(top = barBottom, bottom = maxHeight - sheetTop.coerceAtLeast(barBottom)),
             onText = ::read,
         )
@@ -398,7 +404,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         val profileFinder by animateDpAsState(foldedFrame(sheetTop - barBottom), tween(280, easing = SHEET_EASING), label = "finder")
         val finder = if (profile != null) profileFinder else lerp(foldedFrame(foldRoom), openFrame(openRoom), toward)
         Column(
-            Modifier.fillMaxWidth().padding(top = barBottom).height((sheetTop - barBottom).coerceAtLeast(0.dp)),
+            Modifier.fillMaxWidth().padding(top = barBottom).height((sheetTop - barBottom).coerceAtLeast(0.dp)).then(overCamera),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
         ) {
             if (finder > 24.dp) Viewfinder(finder, if (profile != null) 6f else 6f + 4f * toward)
@@ -551,7 +557,9 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                 },
             ) { measurables, constraints ->
                 val content = measurables.single().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
-                val sheet = if (moving) live.roundToInt() else content.height
+                // Just pulled up or folded, before the settle's first frame: still the stop it's leaving, not a flash
+                // of the other one.
+                val sheet = if (moving) live.roundToInt() else if (open != shownOpen) stop(shownOpen).roundToInt() else content.height
                 layout(constraints.maxWidth, sheet.coerceIn(constraints.minHeight, constraints.maxHeight)) { content.place(0, 0) }
             }
         }

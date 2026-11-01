@@ -90,7 +90,6 @@ import uniffi.fob.SaveOffer
 import uniffi.fob.Contact
 import com.monokulo.fob.ui.Avatar
 import androidx.compose.ui.text.style.TextOverflow
-import uniffi.fob.AmountEntry
 import uniffi.fob.ContactRow
 import uniffi.fob.MadeRequest
 import com.monokulo.fob.ui.BottomSheet
@@ -125,8 +124,10 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
-    var address by remember { mutableStateOf<String?>(null) }
-    var index by remember { mutableStateOf(0u) }
+    // The model's, read with the wallet, so the address is there on the first frame.
+    val own by model.receive.collectAsState()
+    val address = own?.address
+    val index = own?.index ?: 0u
     var amount by remember { mutableStateOf(screen.draft?.amount ?: "") }
     var note by remember { mutableStateOf(screen.draft?.note ?: "") }
     // Rust cuts the note to what a code holds, and says so when it does.
@@ -135,9 +136,12 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     // The amount in money (Rust converts it to XMR for the code) while there's a price; XMR otherwise.
     val prices by model.prices.collectAsState()
     val balance by model.balance.collectAsState()
-    var entry by remember { mutableStateOf<AmountEntry?>(null) }
-    var inFiat by remember { mutableStateOf(screen.draft?.inFiat ?: false) }
-    var defaulted by remember { mutableStateOf(screen.draft != null) }
+    // Opened blank as Rust has it already (in money while there's a price), so the field's sign, chip and line are
+    // there on the first frame; a form filled before keeps its unit.
+    val blank = prices?.blankEntry
+    var inFiat by remember { mutableStateOf(screen.draft?.inFiat ?: blank?.inFiat ?: false) }
+    var entry by remember { mutableStateOf(blank?.takeIf { it.inFiat == inFiat }) }
+    var defaulted by remember { mutableStateOf(screen.draft != null || blank?.canSwitch == true) }
     // Money typed when the price went, kept aside until one comes.
     var heldMoney by remember { mutableStateOf<String?>(null) }
     var code by remember { mutableStateOf<ReceiveCode?>(null) }
@@ -151,11 +155,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     // A request on its way: a second tap waits for it, not another (Rust gives the same one again anyway).
     var making by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(wallet) {
-        val w = wallet ?: return@LaunchedEffect
-        address = w.receiveAddress()
-        index = w.receiveIndex()
-    }
     LaunchedEffect(wallet, forId) {
         val w = wallet ?: return@LaunchedEffect
         forContact = forId?.let { w.contact(it) }
@@ -173,7 +172,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     LaunchedEffect(wallet, prices, balance, amount, inFiat) {
         if (wallet == null) return@LaunchedEffect
         val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
-        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; inFiat = true; return@LaunchedEffect }
+        // A price come since it opened: in money, the field's words with it at once rather than a round later.
+        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; entry = model.amountEntry(amount, true); inFiat = true; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
         // The price gone (another provider not answered yet, or over a day old): the money typed is kept
         // aside, never read as XMR, and put back once a price comes.
@@ -248,7 +248,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         }) {
             TopBar("Receive", onBack = { nav.back() })
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                forContact?.let { ForChip(it) { choosing = true } }
+                // Opened for a contact, the chip's room is kept while Rust reads them, so the code doesn't move down.
+                forContact?.let { ForChip(it) { choosing = true } } ?: run { if (forId != null) Spacer(Modifier.height(48.dp)) }
                 // The code on a white card; the round button on its corner, or the code itself, opens it full screen.
                 Box(Modifier.padding(top = 4.dp)) {
                     Box(
@@ -269,10 +270,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         TextButton("New address", {
                             scope.launch {
-                                val w = wallet ?: return@launch
-                                address = w.newReceiveAddress()
-                                index = w.receiveIndex()
-                                made = null
+                                runCatching { model.newReceiveAddress() }.onSuccess { made = null }.onFailure { error = it.reason() }
                             }
                         })
                     }

@@ -8,6 +8,9 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.view.View
+import android.view.ViewTreeObserver
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.SystemBarStyle
@@ -206,6 +209,9 @@ fun phoneLock(context: Context): Boolean =
 private fun locked(screen: Screen) =
     screen is Screen.ShowSeed || screen == Screen.BackupKeys || screen == Screen.Keys || screen == Screen.ShowWalletCode
 
+/** The longest the launch screen waits for the saved wallet to open. */
+private const val HOLD_MS = 2_500L
+
 class MainActivity : FragmentActivity() {
     private val model: WalletModel get() = (application as FobApp).model
     private val link = mutableStateOf<String?>(null)
@@ -241,6 +247,7 @@ class MainActivity : FragmentActivity() {
             holder.lockedTarget = null
             if (identityPending()) openLocked(target)
         }
+        holdWhileOpening()
         setContent {
             val theme by model.theme.collectAsState()
             FobTheme(theme) {
@@ -275,6 +282,25 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Keeps the launch screen up while the saved wallet opens, so Home's
+     * first frame has its balance, photo and reminder rather than a dash
+     * that fills in and pushes what's under it a moment later. Android's
+     * own way (a first draw held back), so no splash library; never longer
+     * than [HOLD_MS], a slow phone then seeing Home fill in.
+     */
+    private fun holdWhileOpening() {
+        val content = findViewById<View>(android.R.id.content)
+        val started = SystemClock.uptimeMillis()
+        content.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (model.opening && SystemClock.uptimeMillis() - started < HOLD_MS) return false
+                content.viewTreeObserver.removeOnPreDrawListener(this)
+                return true
+            }
+        })
     }
 
     override fun onNewIntent(intent: Intent) {
