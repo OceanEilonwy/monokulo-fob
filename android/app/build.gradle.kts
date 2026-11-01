@@ -27,8 +27,22 @@ android {
         applicationId = "com.monokulo.fob"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        // A release build is given these by CI (.github/workflows/release.yml).
+        versionCode = (project.findProperty("fobVersionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.0"
+    }
+
+    // Only a build given the keystore (CI's release secrets) is signed; any
+    // other release build stays unsigned.
+    signingConfigs {
+        System.getenv("FOB_KEYSTORE")?.let { keystore ->
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("FOB_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("FOB_KEY_ALIAS")
+                keyPassword = System.getenv("FOB_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -39,6 +53,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
