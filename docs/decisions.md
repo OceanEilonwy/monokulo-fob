@@ -2517,10 +2517,12 @@ Review fixes.
     (canvas r9, pick A; replaces 268). It is a badge across the bottom
     edge of Receive's white card, ringed in the page colour. The card is
     12 dp of padding round the code's own 2-module quiet zone (4 modules
-    or more of white), and at the bottom the badge's half plus 4 dp, so
-    the badge stays 2 modules and 4 dp clear of the code (the owner found
-    20 dp all round too much). On the full-screen code it sits under the
-    code. Payment codes are plain codes again, made like any other
+    or more of white). At the bottom the badge reaches into the code's
+    quiet zone and stops one module short of its last row: the padding is
+    the badge's half less one module as drawn, so a denser code (smaller
+    modules) gets a little more and the badge never nears the code (the
+    owner found 20 dp all round, then a 4 dp margin under it, too much).
+    On the full-screen code it sits under the code. Payment codes are plain codes again, made like any other
     (medium correction, low past version 20): a bare address is version
     6, not 11, with larger modules. `qr::encode_payment`,
     `payment_qr_code`, the `QrPattern` records and `uri::code_address`
