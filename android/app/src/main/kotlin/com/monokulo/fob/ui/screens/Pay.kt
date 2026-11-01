@@ -47,6 +47,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.semantics.Role
@@ -265,14 +266,15 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                 })
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                // The code on a white card as wide as the page (at most 360 dp of code); the round button on its
+                // The code on a white card as wide as the page (at most 360 dp of code, and a third of the screen's height); the round button on its
                 // corner, or the code itself, opens it full screen. With the code's own 2-module quiet zone, 12 dp
                 // leaves 4 modules or more of white beside it. The address's pattern sits across the card's bottom
                 // edge and who it's for across its top, each reaching into the quiet zone and stopping one module
                 // short of the code, whatever its module size (a bare address's, version 6, until the code comes, so
                 // nothing moves as it does). Opened for a contact, the top's room is kept while Rust reads them.
                 BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val side = (maxWidth - 24.dp).coerceAtMost(360.dp)
+                    // On a short screen the code gives way so Note and the buttons stay in view; it opens larger on tap.
+                    val side = (maxWidth - 24.dp).coerceAtMost(360.dp).coerceAtMost((LocalConfiguration.current.screenHeightDp * 0.32f).dp)
                     val module = qrModule(qr?.size?.toInt() ?: 41, side)
                     val forWho = forId != null
                     Box(Modifier.padding(top = if (forWho) PatternBadgeSize / 2 else 4.dp, bottom = PatternBadgeSize / 2)) {
@@ -434,7 +436,10 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String?, onClose: () -> U
                     code.detail?.let { Text(it, color = Fob.qrMuted, fontSize = 16.sp, textAlign = TextAlign.Center) }
                 }
             }
-            QrImage(qr, 320.dp, quiet = 4)
+            // As wide as the page lets it be: this is the view for scanning, so it is never smaller than Receive's.
+            BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                QrImage(qr, maxWidth.coerceAtMost(560.dp), quiet = 4)
+            }
             // Under the code's own quiet zone, as on Receive's card: never over it.
             address?.let { AddressPattern(it, PatternBadgeSize) }
         }
