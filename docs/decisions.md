@@ -2539,3 +2539,13 @@ Review fixes.
     "Can't send". A payment prepared after Confirm has gone is
     cancelled, and one never claimed expires as before. Review on the
     typed form goes the same way. "Then confirm it's you" is gone.
+308. **Receive's code fills the page's width** (owner, after 306). New
+    address is the refresh icon alone at the top right, so its line goes
+    and the code grows from 220 dp to the page's width less the card's
+    padding (348 dp on a 412 dp phone, at most 360). Who a request is for
+    sits across the card's top edge as a pill (avatar and name on the
+    card's white, ringed in the page colour, the badge's height),
+    stopping one module short of the code as the pattern does below; the
+    room is kept from the moment it's for someone, so the code doesn't
+    move down when Rust reads them. Amount and Note drop "(optional)":
+    the code works without them.
