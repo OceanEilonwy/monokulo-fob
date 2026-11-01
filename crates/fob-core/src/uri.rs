@@ -74,13 +74,6 @@ fn check_address(network: Network, address: &str) -> Result<()> {
     Err(FobError::BadAddress(network.name()))
 }
 
-/// The address a payment code (`monero:<address>?…`, or a bare address)
-/// pays, as written in it, unchecked: what its pattern is drawn from.
-pub fn code_address(text: &str) -> &str {
-    let text = text.trim();
-    split_query(split_scheme(text, &["monero"]).unwrap_or(text)).0
-}
-
 /// A scanned or pasted payment code: `monero:<address>?tx_amount=…&orf=…`,
 /// or just an address.
 pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
@@ -539,7 +532,7 @@ mod tests {
 
         // The longest code Fob can make: an integrated address (106), the
         // longest amount, and a note at either limit. It encodes at version
-        // 25 or below at high error correction, the pattern in its middle.
+        // 20 or below at medium error correction.
         let integrated = "5".repeat(106);
         let amount = "18446744.073709551615";
         let worst = [
@@ -553,8 +546,8 @@ mod tests {
             let encoded = code.uri.split("tx_description=").nth(1).unwrap();
             assert!(encoded.len() <= NOTE_MAX_ENCODED);
             assert_eq!(code.detail.as_deref(), Some(fit_note(&note).0.as_str()));
-            let qr = crate::qr::encode_payment(&code.uri).unwrap();
-            assert!(qr.size <= 17 + 4 * 25 && qr.centre > 0, "version {} for {}", (qr.size - 17) / 4, code.uri.len());
+            let qr = crate::qr::encode(&code.uri).unwrap();
+            assert!(qr.size <= 17 + 4 * 20, "version {} for {}", (qr.size - 17) / 4, code.uri.len());
         }
         // And whatever reaches `payment_uri` directly is cut too.
         assert!(payment_uri(&integrated, None, Some(&"x".repeat(500)), None).len() < 300);
@@ -686,19 +679,17 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_request_code_encodes_at_quartile_and_most_at_high() {
-        let made = |text: &str| crate::qr::encode_payment(text).unwrap();
-        let version = |text: &str| (made(text).size - 17) / 4;
+    fn the_largest_request_code_encodes_at_low_and_a_usual_one_at_medium() {
+        let version = |text: &str| (crate::qr::encode(text).unwrap().size - 17) / 4;
         // The most a request's code holds: a subaddress, the largest amount, a 120-byte name and a 360-byte note,
         // each byte of them percent-encoded.
         let address = wallet().address(1_000_000);
         let worst = payment_uri(&address, Some(u64::MAX), Some(&"😀".repeat(NOTE_MAX_CHARS)), Some(&"😀".repeat(40)));
         assert_eq!(worst.len(), 7 + 95 + 11 + 21 + 16 + 360 + 16 + 360);
-        // 886 bytes: past version 25 at high (535), so quartile, where version 29 holds 911; the pattern still fits.
-        assert_eq!(version(&worst), 29);
-        assert!(made(&worst).centre > 0);
-        // A usual one, a name and a short note: high, version 14 or below.
+        // 886 bytes: past version 20 at medium (666), so low, where version 21 holds 929.
+        assert_eq!(version(&worst), 21);
+        // A usual one, a name and a short note: medium, version 11 or below.
         let usual = payment_uri(&address, Some(481_700_000_000), Some("Concert tickets"), Some("Henry Hollingworth"));
-        assert!(version(&usual) <= 14, "{}", version(&usual));
+        assert!(version(&usual) <= 11, "{}", version(&usual));
     }
 }

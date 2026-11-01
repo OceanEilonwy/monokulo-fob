@@ -81,6 +81,7 @@ import com.monokulo.fob.ui.screens.WalletCodeScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
 import com.monokulo.fob.ui.screens.ZmqScreen
 import kotlinx.coroutines.CompletableDeferred
+import com.monokulo.fob.ui.screens.PendingSend
 import com.monokulo.fob.ui.screens.SendDraft
 import uniffi.fob.Activity
 import uniffi.fob.ContactDraft
@@ -112,8 +113,12 @@ sealed interface Screen {
      * (back from Confirm).
      */
     data class Send(val code: String? = null, val draft: SendDraft? = null) : Screen
-    /** [note]: typed on Send, or the payment code's description, shown again before sending. */
-    data class Confirm(val prepared: Prepared, val note: String? = null) : Screen
+    /**
+     * [note]: typed on Send, or the payment code's description, shown again before sending. Opened from Send with
+     * [pending] and no [prepared]: what Rust checked shows at once, and the screen becomes the prepared one when the
+     * fee is in.
+     */
+    data class Confirm(val prepared: Prepared? = null, val note: String? = null, val pending: PendingSend? = null) : Screen
     data class Paid(val prepared: Prepared, val tx: String) : Screen
     data class Receipt(val activity: Activity) : Screen
     /** A payment without a receipt. */
@@ -417,7 +422,7 @@ class MainActivity : FragmentActivity() {
             is Screen.Receive -> ReceiveScreen(model, nav, screen)
             is Screen.Request -> RequestScreen(model, nav, screen.id)
             is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
-            is Screen.Confirm -> ConfirmScreen(model, nav, screen.prepared, screen.note, ::confirmIdentity, ::identityPending)
+            is Screen.Confirm -> ConfirmScreen(model, nav, screen, ::confirmIdentity, ::identityPending)
             is Screen.Paid -> PaidScreen(model, nav, screen.prepared, screen.tx)
             is Screen.Receipt -> ReceiptScreen(model, nav, screen.activity)
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)

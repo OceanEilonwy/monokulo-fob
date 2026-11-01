@@ -841,6 +841,17 @@ pub struct Prepared {
     pub split: Option<SplitSummary>,
 }
 
+/// What the confirm screen shows while the fee is worked out: a
+/// [`Prepared`] without its fee, total or id.
+#[derive(uniffi::Record)]
+pub struct PaymentPreview {
+    pub to: String,
+    pub amount_text: String,
+    /// What it's worth now, with a currency besides XMR: "$20.00".
+    pub amount_fiat: Option<String>,
+    pub receipt: Option<Receipt>,
+}
+
 /// A split on the confirm screen, every word from Rust.
 #[derive(uniffi::Record)]
 pub struct SplitSummary {
@@ -984,31 +995,6 @@ pub struct QrCode {
     pub size: u32,
     /// Row by row, `true` for dark.
     pub dark: Vec<bool>,
-    /// Modules per side of the light square in the middle, 0 for none: the
-    /// address's pattern goes in the `centre - 2` inside its one-module
-    /// margin.
-    pub centre: u32,
-    /// A payment code's pattern, of the address in the code itself, placed
-    /// in that square: paint it as given.
-    pub pattern: Option<QrPattern>,
-}
-
-/// An address's pattern inside a payment code, in modules from the code's
-/// top-left corner (the quiet zone not counted).
-#[derive(uniffi::Record)]
-pub struct QrPattern {
-    /// 0–7, an index into the app's fixed palette.
-    pub colour: u8,
-    /// Every dot's radius.
-    pub radius: f32,
-    pub dots: Vec<QrDot>,
-}
-
-/// A dot's centre, in modules.
-#[derive(uniffi::Record)]
-pub struct QrDot {
-    pub x: f32,
-    pub y: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -1437,6 +1423,13 @@ impl FobWallet {
     pub async fn prepare(&self, to: String, amount: String, in_fiat: bool, note: Option<String>, code: Option<String>) -> Result<Prepared> {
         let p = self.inner.prepare_typed(&to, &amount, in_fiat, note, code.as_deref()).await?;
         Ok(prepared(&self.inner, p).await)
+    }
+
+    /// What [`prepare`](FobWallet::prepare) would pay, checked the same,
+    /// without asking the node: Confirm shows it at once, the fee to come.
+    pub async fn preview(&self, to: String, amount: String, in_fiat: bool, code: Option<String>) -> Result<PaymentPreview> {
+        let p = self.inner.preview_typed(&to, &amount, in_fiat, code.as_deref()).await?;
+        Ok(PaymentPreview { to: p.to, amount_text: exact(p.amount), amount_fiat: self.inner.worth_now(p.amount).await, receipt: p.receipt.map(Into::into) })
     }
 
     /// Split up's screen for `counts` pieces of each note (none as it
@@ -2482,21 +2475,9 @@ pub fn qr_code(text: String) -> Result<QrCode> {
     Ok(qr::encode(&text)?.into())
 }
 
-/// A payment code (Receive's, a request's), its middle cleared for the
-/// pattern of the address it pays, the dots placed.
-#[uniffi::export]
-pub fn payment_qr_code(text: String) -> Result<QrCode> {
-    Ok(qr::encode_payment(&text)?.into())
-}
-
 impl From<qr::QrMatrix> for QrCode {
     fn from(m: qr::QrMatrix) -> Self {
-        QrCode {
-            size: m.size,
-            dark: m.dark,
-            centre: m.centre,
-            pattern: m.dots.map(|d| QrPattern { colour: d.colour, radius: d.radius, dots: d.centres.into_iter().map(|(x, y)| QrDot { x, y }).collect() }),
-        }
+        QrCode { size: m.size, dark: m.dark }
     }
 }
 

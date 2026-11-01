@@ -74,6 +74,8 @@ import com.monokulo.fob.ui.InfoRow
 import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
+import com.monokulo.fob.ui.PatternBadge
+import com.monokulo.fob.ui.PatternBadgeSize
 import com.monokulo.fob.ui.QrImage
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SwipeToSend
@@ -101,7 +103,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.semantics.heading
 import uniffi.fob.addressGroups
 import uniffi.fob.fitReceiveNote
-import uniffi.fob.paymentQrCode
+import uniffi.fob.qrCode
 
 /**
  * Receive's form as typed, kept on the back stack while New contact (from
@@ -232,14 +234,13 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (screen.shareOnOpen && forContact != null && asked != null) { screen.shareOnOpen = false; share(forId) }
     }
 
-    // The code and its pattern from the same text: the pattern is of the address in the code itself.
-    val qr = remember(code) { code?.let { runCatching { paymentQrCode(it.uri) }.getOrNull() } }
+    val qr = remember(code) { code?.let { runCatching { qrCode(it.uri) }.getOrNull() } }
     val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } }
     // While the address comes, an unseen stand-in of the same length keeps its lines' room.
     val standIn = remember(wallet) { wallet?.let { addressGroups(it.primaryAddress()) } ?: emptyList() }
     val shownCode = code
     if (expanded && shownCode != null && qr != null) {
-        ExpandedQr(shownCode, qr) { expanded = false }
+        ExpandedQr(shownCode, qr, shownAddress) { expanded = false }
         return
     }
     Box(Modifier.fillMaxSize()) {
@@ -260,14 +261,18 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                 // Opened for a contact, the chip's room is kept while Rust reads them, so the code doesn't move down.
                 forContact?.let { ForChip(it) { choosing = true } } ?: run { if (forId != null) Spacer(Modifier.height(48.dp)) }
                 // The code on a white card; the round button on its corner, or the code itself, opens it full screen.
-                Box(Modifier.padding(top = 4.dp)) {
+                // The address's pattern sits across the card's bottom edge, the card longer by the half on it. With the
+                // code's own 2-module quiet zone, 12 dp leaves 4 modules or more of white beside it, and the badge
+                // stays 2 modules and 4 dp clear of its last row.
+                Box(Modifier.padding(top = 4.dp, bottom = PatternBadgeSize / 2)) {
                     Box(
                         Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
                             .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
-                            .padding(20.dp),
+                            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 + 4.dp),
                     ) {
                         if (qr != null) QrImage(qr, 220.dp) else Spacer(Modifier.size(220.dp))
                     }
+                    if (qr != null && shownAddress != null) PatternBadge(shownAddress, Modifier.align(Alignment.BottomCenter).offset(y = PatternBadgeSize / 2))
                     Box(
                         Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
                             .clickable(enabled = qr != null, role = Role.Button) { expanded = true }
@@ -396,7 +401,7 @@ private fun AddressGroups(groups: List<AddressGroup>, shown: Boolean = true) {
  * bright as it goes until it closes.
  */
 @Composable
-fun ExpandedQr(code: ReceiveCode, qr: QrCode, onClose: () -> Unit) {
+fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String?, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
     FullBrightness()
     // White in both themes: the bars' icons dark on it.
@@ -417,6 +422,8 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, onClose: () -> Unit) {
                 }
             }
             QrImage(qr, 320.dp, quiet = 4)
+            // Under the code's own quiet zone, as on Receive's card: never over it.
+            address?.let { AddressPattern(it, PatternBadgeSize) }
         }
     }
 }
@@ -446,37 +453,56 @@ fun ReceiptLines(receipt: Receipt) {
 
 /**
  * Confirm: what's paid, to whom, the fee; swipe, then the phone's lock.
- * While it's sending, Back does nothing (Rust finishes and records the
+ * Opened from Send before the fee is in ([Screen.Confirm.pending]), it
+ * shows what Rust checked at once, the fee and total waiting, and prepares
+ * the payment itself, becoming the prepared screen when it's in (Round 9 ›
+ * 3b). While it's sending, Back does nothing (Rust finishes and records the
  * payment whatever happens to the screen). Leaving any other way forgets
  * the prepared payment, unless the screen is only being made again; an
  * identity prompt still up then ([identityPending]) carries on here.
  */
 @Composable
 fun ConfirmScreen(
-    model: WalletModel, nav: Nav, prepared: Prepared, note: String?, confirmIdentity: suspend (String) -> Boolean, identityPending: () -> Boolean,
+    model: WalletModel, nav: Nav, screen: Screen.Confirm, confirmIdentity: suspend (String) -> Boolean, identityPending: () -> Boolean,
 ) {
     val scope = rememberCoroutineScope()
     val activity = LocalActivity.current
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    val split = prepared.split
-    val title = split?.title ?: prepared.receipt?.merchant?.let { "Pay $it" } ?: "Send"
+    val prepared = screen.prepared
+    val preview = screen.pending?.preview
+    val note = screen.note
+    val split = prepared?.split
+    val receipt = prepared?.receipt ?: preview?.receipt
+    val amountText = prepared?.amountText ?: preview?.amountText ?: ""
+    val to = prepared?.to ?: preview?.to ?: ""
+    val title = split?.title ?: receipt?.merchant?.let { "Pay $it" } ?: "Send"
     val sending by rememberUpdatedState(busy)
-    DisposableEffect(prepared.id) {
-        onDispose { if (!sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
+    DisposableEffect(prepared?.id) {
+        onDispose { if (prepared != null && !sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
     }
     BackHandler(enabled = busy) {}
+    // The fee: once in, this screen becomes the prepared one; gone meanwhile, Rust forgets it.
+    LaunchedEffect(screen) {
+        val pending = screen.pending
+        if (prepared != null || pending == null) return@LaunchedEffect
+        val d = pending.draft
+        runCatching { model.prepare(d.to, d.amount, d.inFiat, note, d.code) }
+            .onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it)) else model.cancelLater(it) }
+            .onFailure { error = it.reason() }
+    }
 
     fun swiped() {
+        val ready = prepared ?: return
         busy = true
         error = null
         scope.launch {
             if (!confirmIdentity(title)) {
                 error = "Not sent."
             } else {
-                runCatching { model.send(prepared) }
+                runCatching { model.send(ready) }
                     // Sent: neither this nor the filled form under it is a step back from Paid.
-                    .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(prepared, tx)) }
+                    .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(ready, tx)) }
                     .onFailure { error = it.reason() }
             }
             busy = false
@@ -486,24 +512,28 @@ fun ConfirmScreen(
     LaunchedEffect(Unit) { if (identityPending()) swiped() }
     Page(bottom = {
         ErrorText(error)
-        SwipeToSend(if (busy) "Sending…" else split?.swipe ?: "Swipe to send ${prepared.amountText} XMR", enabled = !busy) { swiped() }
-        Text("Then confirm it's you", color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        val label = when {
+            busy -> "Sending…"
+            prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+            else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
+        }
+        SwipeToSend(label, enabled = !busy && prepared != null, waiting = prepared == null && error == null) { swiped() }
     }) {
         TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(prepared.receipt?.total ?: "${prepared.amountText} XMR", style = display(52))
-                if (prepared.receipt != null) Text("${prepared.amountText} XMR", color = Fob.muted, fontSize = 18.sp)
+                Text(receipt?.total ?: "$amountText XMR", style = display(52))
+                if (receipt != null) Text("$amountText XMR", color = Fob.muted, fontSize = 18.sp)
                 // Worth now, at the current price.
-                else prepared.amountFiat?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
+                else (prepared?.amountFiat ?: preview?.amountFiat)?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
                 note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
             Card {
-                if (split != null) InfoRow("To", split.to) else InfoRow("To", short(prepared.to, 2), mono = true)
+                if (split != null) InfoRow("To", split.to) else InfoRow("To", short(to, 2), mono = true)
                 Divider()
-                InfoRow("Network fee", "${prepared.feeText} XMR" + (prepared.feeFiat?.let { " · $it" } ?: ""))
+                InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
                 Divider()
-                InfoRow("Total", "${prepared.totalText} XMR" + (prepared.totalFiat?.let { " · $it" } ?: ""), bold = true)
+                InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
             }
             // A split's pieces; its address is this wallet's own, with no pattern to compare.
             if (split != null) Card {
@@ -511,14 +541,14 @@ fun ConfirmScreen(
                 split.pieces.forEach { InfoRow(it.label, it.amountText) }
             } else Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    AddressPattern(prepared.to, 54.dp)
+                    AddressPattern(to, 54.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("Address pattern", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                         Text("Check it matches the pattern on their screen. If it differs, don't send.", color = Fob.muted, fontSize = 14.sp)
                     }
                 }
             }
-            prepared.receipt?.let { Card { Text("Receipt · ${it.itemCount} items", fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp)); ReceiptLines(it) } }
+            receipt?.let { Card { Text("Receipt · ${it.itemCount} items", fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp)); ReceiptLines(it) } }
         }
     }
 }

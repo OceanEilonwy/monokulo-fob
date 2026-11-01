@@ -1,7 +1,12 @@
 package com.monokulo.fob.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,6 +44,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +55,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -57,6 +64,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -364,12 +372,13 @@ fun Divider() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Fob.line))
 }
 
-/** A label and value in a card: "Network fee  0.00003 XMR". */
+/** A label and value in a card: "Network fee  0.00003 XMR"; a null [value] is still coming, a [WaitingBar]. */
 @Composable
-fun InfoRow(label: String, value: String, bold: Boolean = false, mono: Boolean = false) {
+fun InfoRow(label: String, value: String?, bold: Boolean = false, mono: Boolean = false) {
     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = if (bold) Fob.ink else Fob.muted, fontSize = 15.sp, fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal, modifier = Modifier.weight(1f))
-        Text(
+        if (value == null) WaitingBar(if (bold) 150.dp else 120.dp, "$label coming")
+        else Text(
             value, fontSize = if (mono) 14.sp else 15.sp, fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
             fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default, textAlign = TextAlign.End,
         )
@@ -478,9 +487,9 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
 
 /**
  * A QR code from the Rust library's module grid, with a quiet zone of
- * [quiet] modules: dark on white in both themes. A payment code's pattern
- * (of the address in the code itself) is painted where Rust placed it, in
- * the light square in its middle; TalkBack reads only [description].
+ * [quiet] modules: dark on white in both themes, nothing drawn over it (a
+ * payment code's pattern goes beside it, [PatternBadge]); TalkBack reads
+ * only [description].
  */
 @Composable
 fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
@@ -499,10 +508,22 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
                 drawRect(Fob.qrDark, topLeft = Offset(origin + x * cell, origin + y * cell), size = Size(cell + bleed, cell + bleed))
             }
         }
-        code.pattern?.let { p ->
-            val colour = Fob.patternColours[p.colour.toInt() % Fob.patternColours.size]
-            p.dots.forEach { drawCircle(colour, radius = p.radius * cell, center = Offset(origin + it.x * cell, origin + it.y * cell)) }
-        }
+    }
+}
+
+/** A [PatternBadge] across, its 3 dp ring in. */
+val PatternBadgeSize = 50.dp
+
+/**
+ * A payment code's pattern as a badge centred on its white card's bottom
+ * edge (Round 9 › A), ringed in the page's colour: half of it on the card,
+ * which adds that half under its code so the badge never reaches the code
+ * or its quiet zone.
+ */
+@Composable
+fun PatternBadge(address: String, modifier: Modifier = Modifier) {
+    Box(modifier.size(PatternBadgeSize).clip(CircleShape).background(Fob.paper), contentAlignment = Alignment.Center) {
+        AddressPattern(address, PatternBadgeSize - 6.dp)
     }
 }
 
@@ -592,9 +613,10 @@ fun ProgressBar(progress: Float, height: Dp = 6.dp, fill: Color = Fob.orange) {
 /**
  * Swipe to send: drag the orange knob all the way across. Let go early and
  * it springs back, so a stray tap never pays. TalkBack gets a plain action.
+ * While [waiting] (the fee still coming), the knob turns a spinner.
  */
 @Composable
-fun SwipeToSend(label: String, enabled: Boolean, onSwiped: () -> Unit) {
+fun SwipeToSend(label: String, enabled: Boolean, waiting: Boolean = false, onSwiped: () -> Unit) {
     val scope = rememberCoroutineScope()
     val offset = remember { Animatable(0f) }
     BoxWithConstraints(
@@ -629,9 +651,25 @@ fun SwipeToSend(label: String, enabled: Boolean, onSwiped: () -> Unit) {
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            StrokeIcon(Icons.arrow, tint = Fob.onOrange, size = 24.dp, width = 2.2f)
+            if (waiting) CircularProgressIndicator(Modifier.size(24.dp), color = Fob.paper, strokeWidth = 2.6.dp)
+            else StrokeIcon(Icons.arrow, tint = Fob.onOrange, size = 24.dp, width = 2.2f)
         }
     }
+}
+
+/**
+ * A value still coming (Confirm's fee before the node answers): a bar
+ * [width] wide that slowly brightens and fades; TalkBack reads [label].
+ */
+@Composable
+fun WaitingBar(width: Dp, label: String) {
+    val glow by rememberInfiniteTransition(label = "waiting").animateFloat(
+        0.45f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "waiting",
+    )
+    Box(
+        Modifier.size(width, 14.dp).graphicsLayer { alpha = glow }.clip(RoundedCornerShape(7.dp)).background(Fob.track)
+            .semantics { contentDescription = label },
+    )
 }
 
 @Composable

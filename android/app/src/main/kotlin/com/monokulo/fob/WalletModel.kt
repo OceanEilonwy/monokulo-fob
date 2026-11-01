@@ -40,6 +40,7 @@ import uniffi.fob.PriceSettings
 import uniffi.fob.PriceToast
 import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
+import uniffi.fob.PaymentPreview
 import uniffi.fob.Prepared
 import uniffi.fob.ReceiveAddress
 import uniffi.fob.Profile
@@ -595,6 +596,10 @@ class WalletModel(private val app: Application) {
      */
     suspend fun prepare(to: String, amount: String, inFiat: Boolean, note: String?, code: String?): Prepared =
         requireNotNull(_wallet.value).prepare(to, amount, inFiat, note, code)
+
+    /** What [prepare] would pay, checked the same without asking the node: Confirm shows it while the fee comes. */
+    suspend fun preview(to: String, amount: String, inFiat: Boolean, code: String?): PaymentPreview =
+        requireNotNull(_wallet.value).preview(to, amount, inFiat, code)
 
     /** What the Paid screen offers for payment [tx]; null for a split or an address that's already a contact's. */
     suspend fun saveOffer(tx: String): SaveOffer? = _wallet.value?.saveOffer(tx)
