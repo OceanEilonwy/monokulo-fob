@@ -426,13 +426,13 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             }
         }
 
-        // Close, the title and the torch, below the status bar and clear of a cutout.
+        // Back, the title and the torch, below the status bar and clear of a cutout.
         Row(
             Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
                 .heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            EdgeIconButton(Icons.close, "Close", { nav.back() }, tint = Fob.onCamera)
+            EdgeIconButton(Icons.back, "Back", { nav.back() }, tint = Fob.onCamera)
             Text("Send", color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
             if (hasTorch) {
                 Box(
