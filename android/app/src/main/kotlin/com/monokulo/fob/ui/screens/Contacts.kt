@@ -1,5 +1,6 @@
 package com.monokulo.fob.ui.screens
 
+import kotlinx.coroutines.delay
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -184,12 +185,12 @@ private fun UnsavedRow(p: PaidBefore, onSave: () -> Unit) {
 
 /** A small sunken button, 40 dp drawn in a 48 dp touch area. */
 @Composable
-private fun Chip(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun Chip(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, highlight: Boolean = false) {
     Box(
-        modifier.minimumInteractiveComponentSize().height(40.dp).clip(RoundedCornerShape(20.dp)).background(Fob.sunken)
+        modifier.minimumInteractiveComponentSize().height(40.dp).clip(RoundedCornerShape(20.dp)).background(if (highlight) Fob.orange else Fob.sunken)
             .clickable(role = Role.Button, onClick = onClick).padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
-    ) { Text(text, color = Fob.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+    ) { Text(text, color = if (highlight) Fob.onOrange else Fob.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
 }
 
 /** A white section of a contact's card, rounder-cornered than a [Card] as the board's. */
@@ -228,6 +229,9 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
         // Deleted elsewhere: nothing to show.
         if (shown == null && nav.current == Screen.Contact(id)) nav.back() else card = shown
     }
+    // Send tapped with no send address to send to: the Add chip lights for a moment.
+    var pointAtAdd by remember { mutableStateOf(false) }
+    LaunchedEffect(pointAtAdd) { if (pointAtAdd) { delay(1500); pointAtAdd = false } }
     val c = card ?: return Page { TopBar(null, onBack = { nav.back() }) }
     val contact = c.contact
     Page {
@@ -241,9 +245,11 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PrimaryButton("Send", {
-                    nav.go(contact.sendAddress?.let { Screen.Send(draft = SendDraft(to = it)) } ?: Screen.Send())
-                }, Modifier.weight(1f), height = 52.dp, leading = Icons.up)
+                val sendTo = contact.sendAddress
+                // Without a send address Send is grey but still tappable: it points at Add instead of opening Send.
+                Box(Modifier.weight(1f).then(if (sendTo == null) Modifier.clickable(onClickLabel = "Add a send address first", role = Role.Button) { pointAtAdd = true } else Modifier)) {
+                    PrimaryButton("Send", { sendTo?.let { nav.go(Screen.Send(draft = SendDraft(to = it))) } }, height = 52.dp, enabled = sendTo != null, leading = Icons.up)
+                }
                 // Receive with them chosen; the request is made only on Share.
                 OutlineButton("Request", { nav.go(Screen.Receive(contact = id)) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
             }
@@ -256,7 +262,7 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                     Text(c.sendLabel, color = Fob.muted, fontSize = 13.sp)
                     c.sendShort?.let { Text(it, fontFamily = FontFamily.Monospace, fontSize = 14.sp, maxLines = 1) }
                 }
-                Chip(c.sendButton, { nav.go(Screen.ContactScan(id)) })
+                Chip(c.sendButton, { nav.go(Screen.ContactScan(id)) }, highlight = pointAtAdd)
             }
             if (c.requests.isNotEmpty()) {
                 Section("Requests") {
