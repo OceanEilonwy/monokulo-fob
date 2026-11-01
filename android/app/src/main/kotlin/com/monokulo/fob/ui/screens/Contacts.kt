@@ -1,6 +1,8 @@
 package com.monokulo.fob.ui.screens
 
-import kotlinx.coroutines.delay
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -185,12 +187,12 @@ private fun UnsavedRow(p: PaidBefore, onSave: () -> Unit) {
 
 /** A small sunken button, 40 dp drawn in a 48 dp touch area. */
 @Composable
-private fun Chip(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, highlight: Boolean = false) {
+private fun Chip(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, highlight: Float = 0f) {
     Box(
-        modifier.minimumInteractiveComponentSize().height(40.dp).clip(RoundedCornerShape(20.dp)).background(if (highlight) Fob.orange else Fob.sunken)
+        modifier.minimumInteractiveComponentSize().height(40.dp).clip(RoundedCornerShape(20.dp)).background(lerp(Fob.sunken, Fob.orange, highlight))
             .clickable(role = Role.Button, onClick = onClick).padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
-    ) { Text(text, color = if (highlight) Fob.onOrange else Fob.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+    ) { Text(text, color = lerp(Fob.ink, Fob.onOrange, highlight), fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
 }
 
 /** A white section of a contact's card, rounder-cornered than a [Card] as the board's. */
@@ -229,9 +231,9 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
         // Deleted elsewhere: nothing to show.
         if (shown == null && nav.current == Screen.Contact(id)) nav.back() else card = shown
     }
-    // Send tapped with no send address to send to: the Add chip lights for a moment.
-    var pointAtAdd by remember { mutableStateOf(false) }
-    LaunchedEffect(pointAtAdd) { if (pointAtAdd) { delay(1500); pointAtAdd = false } }
+    // Send tapped with no send address to send to: the Add chip lights at once, then fades out.
+    val addGlow = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
     val c = card ?: return Page { TopBar(null, onBack = { nav.back() }) }
     val contact = c.contact
     Page {
@@ -248,7 +250,7 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                 val sendTo = contact.sendAddress
                 // Without a send address Send is grey but still tappable: it points at Add instead of opening Send.
                 PrimaryButton(
-                    "Send", { if (sendTo != null) nav.go(Screen.Send(draft = SendDraft(to = sendTo))) else pointAtAdd = true },
+                    "Send", { if (sendTo != null) nav.go(Screen.Send(draft = SendDraft(to = sendTo))) else scope.launch { addGlow.snapTo(1f); addGlow.animateTo(0f, tween(1200)) } },
                     Modifier.weight(1f), dim = sendTo == null, height = 52.dp, leading = Icons.up,
                 )
                 // Receive with them chosen; the request is made only on Share.
@@ -263,7 +265,7 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                     Text(c.sendLabel, color = Fob.muted, fontSize = 13.sp)
                     c.sendShort?.let { Text(it, fontFamily = FontFamily.Monospace, fontSize = 14.sp, maxLines = 1) }
                 }
-                Chip(c.sendButton, { nav.go(Screen.ContactScan(id)) }, highlight = pointAtAdd)
+                Chip(c.sendButton, { nav.go(Screen.ContactScan(id)) }, highlight = addGlow.value)
             }
             if (c.requests.isNotEmpty()) {
                 Section("Requests") {
