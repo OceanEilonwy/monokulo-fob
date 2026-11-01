@@ -478,13 +478,12 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
 
 /**
  * A QR code from the Rust library's module grid, with a quiet zone of
- * [quiet] modules: dark on white in both themes. A payment code's light
- * square in the middle (Rust's `centre`) holds [pattern]'s dots, inside its
- * one-module margin; TalkBack reads only [description].
+ * [quiet] modules: dark on white in both themes. A payment code's pattern
+ * (of the address in the code itself) is painted where Rust placed it, in
+ * the light square in its middle; TalkBack reads only [description].
  */
 @Composable
-fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2, pattern: String? = null) {
-    val dots = remember(pattern) { pattern?.let { addressPattern(it) } }
+fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
     Canvas(modifier.size(size).semantics { contentDescription = description }) {
         val n = code.size.toInt()
         // Each module a whole number of pixels, the code centred, so a dense code (a profile's) stays crisp
@@ -500,10 +499,9 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
                 drawRect(Fob.qrDark, topLeft = Offset(origin + x * cell, origin + y * cell), size = Size(cell + bleed, cell + bleed))
             }
         }
-        val inner = code.centre.toInt() - 2
-        if (dots != null && inner > 0) {
-            val middle = origin + n * cell / 2
-            patternDots(dots, Offset(middle, middle), inner * cell)
+        code.pattern?.let { p ->
+            val colour = Fob.patternColours[p.colour.toInt() % Fob.patternColours.size]
+            p.dots.forEach { drawCircle(colour, radius = p.radius * cell, center = Offset(origin + it.x * cell, origin + it.y * cell)) }
         }
     }
 }
