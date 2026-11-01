@@ -396,6 +396,15 @@ pub struct Prepared {
     pub pieces: Option<u32>,
 }
 
+/// What the confirm screen shows of a payment while its fee is being
+/// worked out: what the form and the code say, the node not asked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Preview {
+    pub to: String,
+    pub amount: u64,
+    pub receipt: Option<ReceiptView>,
+}
+
 struct PreparedTx {
     signable: SignableTransaction,
     out: Outgoing,
@@ -1804,14 +1813,28 @@ impl Wallet {
     /// [`uri::code_terms`] says.
     pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
         self.inner.keys.spend()?;
+        let (destination, terms) = self.payment_terms(to, amount, code)?;
+        let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
+        self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await
+    }
+
+    /// What [`prepare`](Wallet::prepare) would pay, checked as it checks
+    /// it, without asking the node: the confirm screen shows it at once
+    /// while the fee is worked out.
+    pub fn preview(&self, to: &str, amount: u64, code: Option<&str>) -> Result<Preview> {
+        let (_, terms) = self.payment_terms(to, amount, code)?;
+        Ok(Preview { to: to.trim().to_owned(), amount, receipt: terms.receipt.as_ref().map(ReceiptView::from) })
+    }
+
+    /// `to` as an address on this wallet's network, `amount` more than
+    /// nothing, and what `code` gives the payment.
+    fn payment_terms(&self, to: &str, amount: u64, code: Option<&str>) -> Result<(MoneroAddress, uri::CodeTerms)> {
         let network = self.network();
         let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::BadAddress(network.name()))?;
         if amount == 0 {
             return Err(FobError::BadAmount);
         }
-        let terms = uri::code_terms(network, to, amount, code);
-        let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
-        self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await
+        Ok((destination, uri::code_terms(network, to, amount, code)))
     }
 
     /// Asks the node its fee rate, keeping it for Split up's estimate.
@@ -2406,6 +2429,13 @@ impl Wallet {
     pub async fn prepare_typed(&self, to: &str, amount_text: &str, in_fiat: bool, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
         let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
         self.prepare(to, atomic, note, code).await
+    }
+
+    /// [`preview`](Wallet::preview) of an amount as Send's field took it,
+    /// converted as [`prepare_typed`](Wallet::prepare_typed) converts it.
+    pub async fn preview_typed(&self, to: &str, amount_text: &str, in_fiat: bool, code: Option<&str>) -> Result<Preview> {
+        let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
+        self.preview(to, atomic, code)
     }
 
     /// Under Send's sheet at `now`: "1.8592 XMR ready to spend · $308.70",
@@ -3169,6 +3199,21 @@ mod tests {
         let coins = watch.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
         assert!(coins.ready > 0 && !coins.can_split);
         assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::ViewOnly)));
+    }
+
+    /// Confirm opens on a preview before the fee (round 9 › 3b): checked as
+    /// `prepare` checks, with no node to ask (this wallet has none).
+    #[tokio::test]
+    async fn a_payment_previews_without_a_node_and_refuses_what_prepare_refuses() {
+        let wallet = Wallet::create(&dir("preview"), [1; 32], Network::Stagenet).unwrap();
+        let to = Keys::generate(Network::Stagenet).keys.primary_address();
+        let code = format!("monero:{to}?tx_amount=0.5&tx_description=Flat%20white");
+        let p = wallet.preview_typed(&format!(" {to} "), "0.5", false, Some(&code)).await.unwrap();
+        assert_eq!(p, Preview { to: to.clone(), amount: 500_000_000_000, receipt: None });
+        assert!(matches!(wallet.preview_typed("86Ux", "0.5", false, None).await, Err(FobError::BadAddress(_))));
+        assert!(matches!(wallet.preview(&to, 0, None), Err(FobError::BadAmount)));
+        let mainnet = Keys::generate(Network::Mainnet).keys.primary_address();
+        assert!(wallet.preview(&mainnet, 1, None).is_err());
     }
 
     #[tokio::test]

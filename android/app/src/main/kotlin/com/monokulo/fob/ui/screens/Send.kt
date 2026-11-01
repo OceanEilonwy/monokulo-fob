@@ -111,6 +111,7 @@ import kotlinx.coroutines.launch
 import uniffi.fob.CodeKind
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
+import uniffi.fob.PaymentPreview
 import uniffi.fob.ScannedProfile
 import uniffi.fob.classifyCode
 import uniffi.fob.isProfileCode
@@ -141,6 +142,12 @@ data class SendDraft(
     val code: String? = null,
     val read: String? = null,
 )
+
+/**
+ * A payment Confirm opens on before its fee is in: what Rust checked of
+ * the form ([preview]), and the form as filled, which Confirm prepares.
+ */
+data class PendingSend(val preview: PaymentPreview, val draft: SendDraft)
 
 /** The sheet's movement, as the board's. */
 private val SHEET_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
@@ -231,12 +238,13 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         busy = true
         error = null
         scope.launch {
-            runCatching { model.prepare(address, typed, fiat, withNote, filledFrom) }
+            // Checked without asking the node, so Confirm opens at once (Round 9 › 3b) and the fee comes in on it.
+            runCatching { model.preview(address, typed, fiat, filledFrom) }
                 .onSuccess {
                     if (nav.current is Screen.Send) {
                         // Under Confirm, the form as filled, with the note Confirm shows: Back returns to it, not Home.
                         val filled = SendDraft(address, typed, fiat, withNote ?: "", filledFrom, lastRead)
-                        nav.back(); nav.go(Screen.Send(draft = filled)); nav.go(Screen.Confirm(it, withNote))
+                        nav.back(); nav.go(Screen.Send(draft = filled)); nav.go(Screen.Confirm(note = withNote, pending = PendingSend(it, filled)))
                     }
                 }
                 .onFailure { error = it.reason(); open = true }

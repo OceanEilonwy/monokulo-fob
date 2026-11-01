@@ -2501,3 +2501,39 @@ Review fixes.
     blank in the phone's dark mode; Android 12's splash takes it too. It
     follows the phone's mode, not Fob's own theme choice, which the
     window can't know before Fob runs.
+
+## Round 9 (2026-11-01, the owner's phone test of round 8)
+
+304. **A line is as tall as its words need** (every Material text style
+    at 1.35 em). Material's styles kept a fixed 24 sp line whatever size
+    a Text set, so a 12 sp detail took 24 sp and a row's two lines stood
+    apart. Every style is relative, not just body: a text field's label
+    moves between two styles, and Compose can't blend em with sp (only
+    bodyLarge at first crashed Receive's fields).
+305. **Home's profile and sync chip are drawn in `onPaper`**, a role for a
+    circle or chip straight on the page: `#E4DDD0` by day, as far from
+    the cream page as `sunken` is from the dark one (unchanged at night).
+306. **The address pattern sits beside a payment code, never in it**
+    (canvas r9, pick A; replaces 268). It is a badge across the bottom
+    edge of Receive's white card, ringed in the page colour. The card is
+    12 dp of padding round the code's own 2-module quiet zone (4 modules
+    or more of white), and at the bottom the badge's half plus 4 dp, so
+    the badge stays 2 modules and 4 dp clear of the code (the owner found
+    20 dp all round too much). On the full-screen code it sits under the
+    code. Payment codes are plain codes again, made like any other
+    (medium correction, low past version 20): a bare address is version
+    6, not 11, with larger modules. `qr::encode_payment`,
+    `payment_qr_code`, the `QrPattern` records and `uri::code_address`
+    are gone. A request's longest code (886 bytes) is version 21 at low.
+    ZBar and ZXing read Receive's code from the emulator's screen, bare
+    and with an amount and note, on the card and full screen.
+307. **Confirm opens at once and the fee comes in on it** (canvas r9,
+    pick 3b). Send asks Rust for a `preview` (the address and amount
+    checked as `prepare` checks them, the code's receipt, the worth now,
+    no node asked) and opens Confirm on it. The fee and total rows pulse
+    and the swipe reads "Getting the fee…" with a spinner in its knob
+    until `prepare` answers; then the screen becomes the prepared one
+    (`nav.replace`). If it fails, the reason shows and the swipe reads
+    "Can't send". A payment prepared after Confirm has gone is
+    cancelled, and one never claimed expires as before. Review on the
+    typed form goes the same way. "Then confirm it's you" is gone.

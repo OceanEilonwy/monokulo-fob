@@ -50,7 +50,7 @@ import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.launch
 import uniffi.fob.ReceiveCode
 import uniffi.fob.RequestDetail
-import uniffi.fob.paymentQrCode
+import uniffi.fob.qrCode
 
 /**
  * A request (Round 5 › "A request: no edits, can be deleted"): the amount
@@ -75,8 +75,8 @@ fun RequestScreen(model: WalletModel, nav: Nav, id: ULong) {
     }
     val d = detail ?: return Page { TopBar("Request", onBack = { nav.back() }) }
     showing?.let { code ->
-        val qr = remember(code) { runCatching { paymentQrCode(code.uri) }.getOrNull() }
-        if (qr != null) { ExpandedQr(code, qr) { showing = null }; return }
+        val qr = remember(code) { runCatching { qrCode(code.uri) }.getOrNull() }
+        if (qr != null) { ExpandedQr(code, qr, d.address) { showing = null }; return }
     }
     Box(Modifier.fillMaxSize()) {
         Page(bottom = {
