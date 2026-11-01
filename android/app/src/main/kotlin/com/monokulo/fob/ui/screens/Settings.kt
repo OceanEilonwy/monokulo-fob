@@ -656,7 +656,8 @@ fun WalletCodeScreen(model: WalletModel, nav: Nav) {
                 runCatching { qrCode(c) }.getOrNull()?.let { qr ->
                     Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Fob.qrLight).padding(16.dp)) { QrImage(qr, 280.dp, description = "Wallet code") }
                 }
-                Text("Scan it in Fob, the Monero GUI or Cake Wallet.", color = Fob.muted, fontSize = 14.sp)
+                // Centred under the code, also when a big font wraps it.
+                Text("Scan it in Fob, the Monero GUI or Cake Wallet.", color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center)
             }
         }
     }
