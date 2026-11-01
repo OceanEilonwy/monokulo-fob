@@ -282,7 +282,9 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
     Row(
         modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2))
             .background(if (enabled) Fob.orange else Fob.sunken)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            // A long label ("Share with Alexandria …") ellipsizes inside the pill's curve, as OutlineButton's does.
+            .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
