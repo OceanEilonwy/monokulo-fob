@@ -120,7 +120,7 @@ private data class Asked(val contact: ULong?, val amount: String, val inFiat: Bo
 /**
  * Receive (Round 2 › Receive; Round 5 › "Share asks who it's for",
  * "Request for Sam"). Opening it makes nothing: its code is this wallet's
- * Receive address. Share (the icon by New address) makes a request (Rust: a new address for
+ * Receive address. Share (the icon in the top bar) makes a request (Rust: a new address for
  * it alone, with its note and amount), and the code switches to it. Share
  * asks who it's for first, unless a contact is chosen already (the chip
  * over the code, or their card's Request).
@@ -247,10 +247,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                 // Shares the payment link for what's typed (and for whoever is chosen over the code).
                 val ready = code != null && asked != null && !making
                 EdgeIconButton(Icons.share, "Share", { if (ready) share(forId) }, tint = if (ready) Fob.ink else Fob.muted)
-                // A new address, as the refresh icon alone (Round 9).
-                EdgeIconButton(Icons.refresh, "New address", {
-                    scope.launch { runCatching { model.newReceiveAddress() }.onSuccess { made = null }.onFailure { error = it.reason() } }
-                })
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 // The code on a white card as wide as the page (at most 360 dp of code, and a third of the screen's height); the round button on its

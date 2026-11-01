@@ -320,15 +320,6 @@ class WalletModel(private val app: Application) {
         }
     }
 
-    /** Receive's New address: a fresh one nobody has seen. Throws what Rust refused. */
-    suspend fun newReceiveAddress() {
-        reading.withLock {
-            val wallet = _wallet.value ?: return
-            val address = wallet.newReceiveAddress()
-            if (_wallet.value === wallet) _receive.value = address
-        }
-    }
-
     /** "I've written them down": Home's reminder goes. */
     suspend fun backupDone() {
         val wallet = _wallet.value ?: return
