@@ -270,7 +270,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         ) {
                             if (qr != null) QrImage(qr, side) else Spacer(Modifier.size(side))
                         }
-                        ForChip(forContact, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2)) { choosing = true }
+                        // Opened for a contact Rust hasn't read yet: the chip waits unseen, so "Who is it for?" doesn't flash up and swap.
+                        ForChip(forContact, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2).alpha(if (forId != null && forContact == null) 0f else 1f)) { choosing = true }
                         if (qr != null && shownAddress != null) PatternBadge(shownAddress, Modifier.align(Alignment.BottomCenter).offset(y = PatternBadgeSize / 2))
                         Box(
                             Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
