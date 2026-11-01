@@ -142,6 +142,46 @@ pub struct Balance {
     pub ready_line: String,
 }
 
+/// Receive's own address and its index (a note typed on Receive is kept
+/// with it).
+#[derive(uniffi::Record)]
+pub struct ReceiveAddress {
+    pub address: String,
+    pub index: u32,
+}
+
+/// Everything the screens open with, read together.
+#[derive(uniffi::Record)]
+pub struct Screens {
+    /// Settings' money and price rows, and the amount fields' blank entry.
+    pub prices: PriceSettings,
+    pub balance: Balance,
+    /// Home's Activity, by the phone's day, newest first.
+    pub activity: Vec<ActivityDay>,
+    /// The money not ready to spend yet; none when all of it is.
+    pub not_ready: Option<NotReady>,
+    /// Home's card while a new wallet's words aren't written down.
+    pub reminder: Option<BackupReminder>,
+    /// Settings' Node line: "Working · node.example:38081".
+    pub node_line: String,
+    /// Settings' Backup and keys line: "Seed phrase, wallet code, keys".
+    pub backup_line: String,
+    /// Receive's own address, while it has one to show; none while one is
+    /// still to be handed out, which only Receive opening does.
+    pub receive: Option<ReceiveAddress>,
+    /// Every contact by name.
+    pub contacts: Vec<ContactRow>,
+    /// Contacts' "Paid, not saved".
+    pub unsaved: Vec<PaidBefore>,
+    /// The contacts Send's sheet offers.
+    pub send_contacts: Vec<ContactRow>,
+    /// Who was paid before, for Send's sheet while there's no contact.
+    pub paid_before: Vec<PaidBefore>,
+    pub coins: Coins,
+    /// The price toast while lookups fail.
+    pub price_toast: Option<PriceToast>,
+}
+
 /// Home's card while a new wallet's seed phrase isn't written down.
 #[derive(uniffi::Record)]
 pub struct BackupReminder {
@@ -149,6 +189,9 @@ pub struct BackupReminder {
     pub title: String,
     /// "Your 16 words aren't written down yet. …"
     pub line: String,
+    /// Over the words wherever they're shown until they're written down:
+    /// "These 16 words are your wallet. Write them down in order …"
+    pub seed_warning: String,
 }
 
 /// Backup and keys, every word from fob-core, and Settings' line for it.
@@ -1024,6 +1067,74 @@ async fn prepared(wallet: &fob_core::Wallet, p: fob_core::Prepared) -> Prepared 
     }
 }
 
+/// What [`FobWallet::screens`] reads, one by one.
+impl FobWallet {
+    /// Home's reminder while a wallet made here hasn't had its seed phrase
+    /// written down; none once it has.
+    async fn backup_reminder(&self) -> Option<BackupReminder> {
+        self.inner.backup_reminder().await.map(|r| BackupReminder { title: r.title, line: r.line, seed_warning: r.seed_warning })
+    }
+
+    /// The balance at `now` (seconds since the epoch), which dates the price.
+    async fn balance(&self, now: u64) -> Balance {
+        let b = self.inner.balance().await;
+        let (worth, order) = self.inner.balance_worth(b.total, now).await;
+        Balance {
+            total: b.total,
+            unlocked: b.unlocked,
+            total_text: xmr(b.total),
+            unlocked_text: xmr(b.unlocked),
+            fiat_line: worth.as_ref().map(|(w, old)| match old {
+                Some(old) => format!("{w} · {old}"),
+                None => w.clone(),
+            }),
+            fiat_age: worth.as_ref().and_then(|(_, old)| old.clone()),
+            fiat_text: worth.map(|(w, _)| w),
+            can_swap: order.can_swap,
+            fiat_first: order.fiat_first,
+            ready_line: self.inner.ready_line(now).await,
+        }
+    }
+
+    /// The money not ready to spend yet, piece by piece, with about when
+    /// it will be; `None` when all of it is. The clock as for `activity_days`.
+    async fn not_ready(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<NotReady> {
+        self.inner.not_ready(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
+    }
+
+    /// Every coin, ready to spend or not yet, for the Coins screen; the
+    /// clock as for `activity_days`.
+    async fn coins(&self, now: u64, utc_offset: i32, hours_24: bool) -> Coins {
+        self.inner.coins(activity::Clock { now, utc_offset, hours_24 }).await.into()
+    }
+
+    /// Settings' money and price rows, and Price from's "Ask over". The
+    /// clock as for `activity_days`, for when a failing row's price is from.
+    async fn price_settings(&self, now: u64, utc_offset: i32, hours_24: bool) -> PriceSettings {
+        let s = self.inner.price_settings().await;
+        let sources = price::transport_rows(&s)
+            .into_iter()
+            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: r.line, available: r.available, chosen: r.chosen })
+            .collect();
+        let (source_text, failing) = self.inner.price_from_line(activity::Clock { now, utc_offset, hours_24 }).await;
+        let intro = price::price_from_intro(&s);
+        PriceSettings {
+            currency_text: price::default_currency_text(&s),
+            currency_name: price::default_currency_name(&s),
+            intro_before: intro.before,
+            intro_bold: intro.bold,
+            intro_after: intro.after,
+            currency: s.currency.clone(),
+            provider: s.provider.into(),
+            failing: failing && s.code().is_some(),
+            source_text,
+            sources,
+            price_at: self.inner.price_at(now).await,
+            blank_entry: self.inner.blank_amount_field(activity::Clock { now, utc_offset, hours_24 }).await.into(),
+        }
+    }
+}
+
 #[uniffi::export(async_runtime = "tokio")]
 impl FobWallet {
     /// A new wallet with a fresh 16-word seed, saved at `path` under `key`
@@ -1089,12 +1200,6 @@ impl FobWallet {
         })
     }
 
-    /// Home's reminder while a wallet made here hasn't had its seed phrase
-    /// written down; none once it has.
-    pub async fn backup_reminder(&self) -> Option<BackupReminder> {
-        self.inner.backup_reminder().await.map(|(title, line)| BackupReminder { title, line })
-    }
-
     /// "I've written them down": the reminder goes.
     pub async fn backup_done(&self) -> Result<()> {
         Ok(self.inner.backup_done().await?)
@@ -1124,16 +1229,42 @@ impl FobWallet {
         self.inner.keys_page().await.into_iter().map(Into::into).collect()
     }
 
-    pub async fn receive_address(&self) -> Result<String> {
-        Ok(self.inner.receive_address().await?)
+    /// Receive's address as it opens, handing out a new one when the last
+    /// went to a request, a split or a share (or there's none yet).
+    pub async fn receive_address(&self) -> Result<ReceiveAddress> {
+        let address = self.inner.receive_address().await?;
+        Ok(ReceiveAddress { address, index: self.inner.receive_index().await })
     }
 
-    pub async fn new_receive_address(&self) -> Result<String> {
-        Ok(self.inner.new_receive_address().await?)
+    /// Receive's New address: a fresh one nobody has seen.
+    pub async fn new_receive_address(&self) -> Result<ReceiveAddress> {
+        let address = self.inner.new_receive_address().await?;
+        Ok(ReceiveAddress { address, index: self.inner.receive_index().await })
     }
 
-    pub async fn receive_index(&self) -> u32 {
-        self.inner.receive_index().await
+    /// Everything the screens open with, in one call and from one look at
+    /// the activity, so a screen draws whole on its first frame. The clock
+    /// as for `payment`; `phone_lock` as for `backup_hub`.
+    pub async fn screens(&self, now: u64, utc_offset: i32, hours_24: bool, phone_lock: bool) -> Screens {
+        let clock = activity::Clock { now, utc_offset, hours_24 };
+        let lists = self.inner.lists(clock).await;
+        let paid = |p: Vec<activity::PaidBefore>| p.into_iter().map(|p| PaidBefore { address: p.address, name: p.name, line: p.line }).collect();
+        Screens {
+            prices: self.price_settings(now, utc_offset, hours_24).await,
+            balance: self.balance(now).await,
+            activity: lists.days.into_iter().map(|day| ActivityDay { label: day.label, rows: day.rows.into_iter().map(Into::into).collect() }).collect(),
+            not_ready: self.not_ready(now, utc_offset, hours_24).await,
+            reminder: self.backup_reminder().await,
+            node_line: self.inner.node_line().await,
+            backup_line: self.inner.backup_hub(phone_lock).await.settings_line,
+            receive: self.inner.shown_receive_address().await.map(|(address, index)| ReceiveAddress { address, index }),
+            contacts: lists.contacts.into_iter().map(Into::into).collect(),
+            unsaved: paid(lists.unsaved),
+            send_contacts: lists.on_send.into_iter().map(Into::into).collect(),
+            paid_before: paid(lists.paid_before),
+            coins: self.coins(now, utc_offset, hours_24).await,
+            price_toast: self.inner.price_toast(clock).await.map(Into::into),
+        }
     }
 
     pub async fn node(&self) -> NodeSetting {
@@ -1190,53 +1321,6 @@ impl FobWallet {
         Ok(self.inner.set_zmq(on, endpoint.as_deref()).await?)
     }
 
-    /// The balance at `now` (seconds since the epoch), which dates the price.
-    pub async fn balance(&self, now: u64) -> Balance {
-        let b = self.inner.balance().await;
-        let worth = self.inner.worth_aged(b.total, now).await;
-        let order = self.inner.balance_order(now).await;
-        Balance {
-            total: b.total,
-            unlocked: b.unlocked,
-            total_text: xmr(b.total),
-            unlocked_text: xmr(b.unlocked),
-            fiat_line: worth.as_ref().map(|(w, old)| match old {
-                Some(old) => format!("{w} · {old}"),
-                None => w.clone(),
-            }),
-            fiat_age: worth.as_ref().and_then(|(_, old)| old.clone()),
-            fiat_text: worth.map(|(w, _)| w),
-            can_swap: order.can_swap,
-            fiat_first: order.fiat_first,
-            ready_line: self.inner.ready_line(now).await,
-        }
-    }
-
-    /// Every payment and request, grouped by the phone's day, newest first.
-    /// `now` is seconds since the epoch, `utc_offset` the phone's offset in
-    /// seconds, `hours_24` its clock setting.
-    pub async fn activity_days(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ActivityDay> {
-        let clock = activity::Clock { now, utc_offset, hours_24 };
-        self.inner
-            .activity_days(clock)
-            .await
-            .into_iter()
-            .map(|day| ActivityDay { label: day.label, rows: day.rows.into_iter().map(Into::into).collect() })
-            .collect()
-    }
-
-    /// The money not ready to spend yet, piece by piece, with about when
-    /// it will be; `None` when all of it is. The clock as for `activity_days`.
-    pub async fn not_ready(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<NotReady> {
-        self.inner.not_ready(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
-    }
-
-    /// Every coin, ready to spend or not yet, for the Coins screen; the
-    /// clock as for `activity_days`.
-    pub async fn coins(&self, now: u64, utc_offset: i32, hours_24: bool) -> Coins {
-        self.inner.coins(activity::Clock { now, utc_offset, hours_24 }).await.into()
-    }
-
     pub fn status(&self) -> SyncStatus {
         self.inner.status().into()
     }
@@ -1272,32 +1356,6 @@ impl FobWallet {
 
     pub fn stop_prices(&self) {
         self.inner.stop_prices();
-    }
-
-    /// Settings' money and price rows, and Price from's "Ask over". The
-    /// clock as for `activity_days`, for when a failing row's price is from.
-    pub async fn price_settings(&self, now: u64, utc_offset: i32, hours_24: bool) -> PriceSettings {
-        let s = self.inner.price_settings().await;
-        let sources = price::transport_rows(&s)
-            .into_iter()
-            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: r.line, available: r.available, chosen: r.chosen })
-            .collect();
-        let (source_text, failing) = self.inner.price_from_line(activity::Clock { now, utc_offset, hours_24 }).await;
-        let intro = price::price_from_intro(&s);
-        PriceSettings {
-            currency_text: price::default_currency_text(&s),
-            currency_name: price::default_currency_name(&s),
-            intro_before: intro.before,
-            intro_bold: intro.bold,
-            intro_after: intro.after,
-            currency: s.currency.clone(),
-            provider: s.provider.into(),
-            failing: failing && s.code().is_some(),
-            source_text,
-            sources,
-            price_at: self.inner.price_at(now).await,
-            blank_entry: self.inner.blank_amount_field(activity::Clock { now, utc_offset, hours_24 }).await.into(),
-        }
     }
 
     /// The price toast while lookups fail; none once one works. Show it
@@ -1379,17 +1437,6 @@ impl FobWallet {
     pub async fn prepare(&self, to: String, amount: String, in_fiat: bool, note: Option<String>, code: Option<String>) -> Result<Prepared> {
         let p = self.inner.prepare_typed(&to, &amount, in_fiat, note, code.as_deref()).await?;
         Ok(prepared(&self.inner, p).await)
-    }
-
-    /// The people this wallet paid before, the most recent first, for
-    /// Send's sheet; the clock as for `activity_days`.
-    pub async fn paid_before(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<PaidBefore> {
-        self.inner
-            .paid_before(activity::Clock { now, utc_offset, hours_24 })
-            .await
-            .into_iter()
-            .map(|p| PaidBefore { address: p.address, name: p.name, line: p.line })
-            .collect()
     }
 
     /// Split up's screen for `counts` pieces of each note (none as it
@@ -1481,23 +1528,6 @@ impl FobWallet {
     /// case; blank for all); the clock as for `activity_days`.
     pub async fn contacts(&self, search: String, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ContactRow> {
         self.inner.contacts(&search, activity::Clock { now, utc_offset, hours_24 }).await.into_iter().map(Into::into).collect()
-    }
-
-    /// The contacts Send's sheet offers (with a send address, the most
-    /// recently paid first, at most 3).
-    pub async fn contacts_on_send(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ContactRow> {
-        self.inner.contacts_on_send(activity::Clock { now, utc_offset, hours_24 }).await.into_iter().map(Into::into).collect()
-    }
-
-    /// Addresses paid that are no contact's, newest first, for "Paid, not
-    /// saved".
-    pub async fn paid_not_saved(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<PaidBefore> {
-        self.inner
-            .paid_not_saved(activity::Clock { now, utc_offset, hours_24 })
-            .await
-            .into_iter()
-            .map(|p| PaidBefore { address: p.address, name: p.name, line: p.line })
-            .collect()
     }
 
     pub async fn contact(&self, id: u64) -> Option<Contact> {

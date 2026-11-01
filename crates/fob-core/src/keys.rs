@@ -25,6 +25,16 @@ pub enum SeedKind {
     Classic,
 }
 
+impl SeedKind {
+    /// How many words its phrase has.
+    pub fn words(self) -> usize {
+        match self {
+            SeedKind::Polyseed => 16,
+            SeedKind::Classic => 25,
+        }
+    }
+}
+
 /// The secrets a wallet holds. A view-only wallet has no spend key.
 #[derive(Clone)]
 pub struct Keys {
@@ -150,6 +160,15 @@ impl Keys {
         match SubaddressIndex::new(0, index) {
             Some(sub) => self.view_pair().subaddress(self.network.monero(), sub).to_string(),
             None => self.primary_address(),
+        }
+    }
+
+    /// How many words [`seed_words`](Keys::seed_words) has, without
+    /// building the phrase: `None` for a view-only wallet.
+    pub fn seed_word_count(&self) -> Option<usize> {
+        match &self.seed {
+            Some((kind, _)) => Some(kind.words()),
+            None => self.spend.as_ref().map(|_| SeedKind::Classic.words()),
         }
     }
 
@@ -349,6 +368,27 @@ pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
     }
 }
 
+/// Home's card while a wallet made here hasn't had its seed phrase of
+/// `words` words written down, and the warning over the words wherever
+/// they're shown meanwhile (after making the wallet, from the card, or from
+/// Backup and keys).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reminder {
+    pub title: String,
+    pub line: String,
+    pub seed_warning: String,
+}
+
+pub fn reminder(words: usize) -> Reminder {
+    Reminder {
+        title: "Back up your seed phrase".into(),
+        line: format!("Your {words} words aren't written down yet. Without them, this wallet can't be restored."),
+        seed_warning: format!(
+            "These {words} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored."
+        ),
+    }
+}
+
 /// What the wallet file stores for the keys.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct StoredKeys {
@@ -405,6 +445,31 @@ mod tests {
 
     const CLASSIC: &str = "washing thirsty occur lectures tuesday fainted toxic adapt abnormal memoir nylon mostly building \
                            shrugged online ember northern ruby woes dauntless boil family illness inroads northern";
+
+    #[test]
+    fn the_word_count_is_the_phrase_s_without_building_it() {
+        let count = |keys: &Keys| (keys.seed_word_count(), keys.seed_words().map(|(_, w)| w.split_whitespace().count()));
+        let made = Keys::generate(Network::Stagenet).keys;
+        assert_eq!(count(&made), (Some(16), Some(16)));
+        let classic = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        assert_eq!(count(&classic), (Some(25), Some(25)));
+        // From a spend key: the 25 words that encode it.
+        let spend = Keys::from_spend_key(Network::Mainnet, &classic.spend_key_hex().unwrap(), None).unwrap();
+        assert_eq!(count(&spend), (Some(25), Some(25)));
+        let watching = Keys::view_only(Network::Mainnet, &classic.primary_address(), &classic.view_key_hex()).unwrap();
+        assert_eq!(count(&watching), (None, None));
+    }
+
+    #[test]
+    fn the_reminder_and_the_seed_warning_say_how_many_words() {
+        let r = reminder(16);
+        assert_eq!(r.title, "Back up your seed phrase");
+        assert_eq!(r.line, "Your 16 words aren't written down yet. Without them, this wallet can't be restored.");
+        assert_eq!(
+            reminder(25).seed_warning,
+            "These 25 words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored."
+        );
+    }
 
     #[test]
     fn a_classic_seed_gives_monero_s_keys() {

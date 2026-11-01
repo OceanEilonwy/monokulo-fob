@@ -2270,7 +2270,9 @@ pushed what was under them.
     `receive_address` hands out a new own address when the last went to
     a request, a split or a share; it now runs in `refresh()`, so a new
     wallet's first Receive address is handed out as it opens rather than
-    when Receive first opens. Nothing is shown or sent by it.
+    when Receive first opens. (Wrong, and replaced by 292: it saved the
+    wallet file and, in a restored wallet, fixed `fresh_from` before the
+    scan found the other phone's payments.)
 280. **The launch screen stays up while the saved wallet opens.** No
     splash library is in the tree, so MainActivity holds its first draw
     (a `ViewTreeObserver.OnPreDrawListener` returning false, Android's
@@ -2413,3 +2415,57 @@ Review fixes.
       px, one also at 6), the square's rule for every version, the
       alignment table against the standard's, and the dots inside the
       square's margin and of the code's own address.
+292. **Receive's address is handed out only as Receive opens** (H1,
+    replacing 279). A refresh hands nothing out: Rust's new
+    `shown_receive_address` reads Receive's address and index, or none
+    while one must be handed out (none yet, the last went to a request, a
+    split or a share, or a restored wallet that hasn't handed one out:
+    the highest the scan found there is the other phone's), and saves
+    nothing. Receive opening with none has the model call
+    `receive_address` (`WalletModel.openReceive`), as before step 7. A
+    restored wallet so never fixes `fresh_from` before its scan finds the
+    other phone's payments past the skip: the first address it hands out
+    goes past them. Receive still draws whole on its first frame: the code
+    keeps its 220 dp while it comes, and the address its lines (an unseen
+    stand-in of the same length, the primary address, laid out but not
+    heard). A refusal (a failed save) shows Rust's words under the
+    buttons (L10), no longer dropped.
+293. **The screens are read in one call, one read at a time** (M1, M2,
+    M3). `FobWallet::screens` returns everything `refresh()` set
+    (prices, balance, Activity, not ready, reminder, the two Settings
+    lines, Receive's address, contacts, "Paid, not saved", Send's sheet,
+    Coins and the price toast) from one look at the activity
+    (`Wallet::lists`; `activity()` parses every receipt, and ran about
+    six times a refresh). The seed phrase's word count comes from the
+    keys (`Keys::seed_word_count`: 16 for a Polyseed, else 25), never by
+    building the phrase. The FFI's `balance`, `price_settings`,
+    `not_ready`, `coins` and `backup_reminder` are now only `screens`'
+    parts; `activity_days`, `paid_before`, `contacts_on_send`,
+    `paid_not_saved` and `receive_index` are gone (core's
+    `activity_days`, `paid_before`, `contacts_on_send` and
+    `paid_not_saved` with them, their tests on `lists`), and the model's
+    `readSettingsLines` is a refresh. In Kotlin, `refresh()` runs under a
+    mutex, and asks made while one waits share it (it reads after them),
+    so a catch-up's flood of statuses runs at most one more read after
+    the current one. New address and Receive's hand-out take the same
+    mutex, and "I've written them down" refreshes: an older read never
+    lands over a newer answer. A read of a wallet closed meanwhile
+    (switching network, forgetting it) is dropped: Rust's call holds the
+    wallet while it runs, and the next refuses a closed one
+    (`IllegalStateException`), which the read takes as "nothing to show".
+294. **The seed phrase warns until the words are written down** (M4,
+    narrowing 276). From Backup and keys too, while Home's reminder is up
+    (a new wallet whose backup was skipped), the words have the warning
+    to write them down in order; once backed up, Backup and keys' own
+    warning is the only one, as 276 says. The warning's words, with the
+    word count, are Rust's (`keys::reminder`, carried as
+    `BackupReminder.seed_warning`), and showing it follows the reminder,
+    so `ShowSeed` lost its `warn`.
+295. **A new wallet's words are left when Fob leaves** (L12). "Back up
+    your wallet" is one of the screens closed in `onStop`, back to Home,
+    whose reminder leads to the words behind the phone's lock. The new
+    wallet's profile step after it is skipped then; Settings has it.
+296. **Home's balance swaps only with its worth, from one look** (L4).
+    `Wallet::balance_worth` reads the worth (with its age) and the order
+    under one lock, so `can_swap` is never true with no worth drawn, nor
+    a worth there that can't swap; `balance_order` went.

@@ -154,17 +154,20 @@ private fun Point(path: String, title: String, text: String) {
 
 /**
  * The seed phrase: after creating a wallet, from Home's reminder, or from
- * Backup and keys. [warn]: the warning above the words, left out from
- * Backup and keys, which already showed one.
+ * Backup and keys. Until the words are said to be written down (Home's
+ * reminder still up), Rust's warning over them says to write them down in
+ * order, whichever way it was opened; once they are, Backup and keys'
+ * warning is the one.
  */
 @Composable
-fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean, warn: Boolean) {
+fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
     NoScreenshots()
     val wallet by model.wallet.collectAsState()
     val seed = remember(wallet) { wallet?.seedPhrase() }
     val scope = rememberCoroutineScope()
     // Home's reminder brings you here until the words are said to be written down.
-    val pending = model.reminder.collectAsState().value != null
+    val reminder by model.reminder.collectAsState()
+    val pending = reminder != null
     fun written(then: () -> Unit) {
         scope.launch { model.backupDone(); then() }
     }
@@ -181,7 +184,7 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean, warn: Boole
             if (seed == null) {
                 Text("This wallet only watches, so it has no seed phrase.", color = Fob.muted, fontSize = 16.sp, lineHeight = 22.sp)
             } else {
-                if (warn) Warning("These ${seed.words.size} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored.")
+                reminder?.let { Warning(it.seedWarning) }
                 Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed.words) }
             }
         }

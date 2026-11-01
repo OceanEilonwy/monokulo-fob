@@ -147,7 +147,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val node by model.nodeLine.collectAsState()
     val backupLine by model.backupLine.collectAsState()
     // Again as it opens: the Node screen's checks, or a screen lock set meanwhile, change them.
-    LaunchedEffect(Unit) { model.readSettingsLines() }
+    LaunchedEffect(Unit) { model.refresh() }
     // Backup and keys opens only once the phone's lock says it's you;
     // cancelling stays here. The screens it leads to don't ask again while
     // Fob stays on screen.
