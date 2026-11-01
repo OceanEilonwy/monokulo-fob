@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window under Compose, and so the launch screen held while the
+         saved wallet opens: the page's paper, light or, in the phone's dark
+         mode, dark (values-night), never a bright blank window in the dark.
+         On Android 12 and up the system splash takes it too. -->
+    <style name="Fob" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window</item>
+    </style>
+</resources>

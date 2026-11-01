@@ -739,7 +739,8 @@ fun SheetHandle() {
  * longest word, so the value keeps its whole line ("57 blocks/s") where
  * it can; then the value wraps between words; where even its longest word
  * ("2,240,749", "blocks/s") wouldn't fit beside the label, it goes under
- * it at the end. Nothing breaks inside a word.
+ * it at the end, the label then taking the whole line. Nothing breaks
+ * inside a word.
  * [centred] puts both on the row's middle, else on its top.
  */
 @Composable
@@ -751,10 +752,11 @@ fun LabelAndValue(modifier: Modifier = Modifier, gap: Dp = 14.dp, centred: Boole
         val labelMax = maxOf(labelMin, l.maxIntrinsicWidth(Constraints.Infinity))
         // The value's whole line if the label can wrap to make room for it, else as much as the label's longest word leaves.
         val labelWidth = (width - space - v.maxIntrinsicWidth(Constraints.Infinity)).coerceIn(labelMin, labelMax)
-        val lp = l.measure(Constraints(maxWidth = labelWidth))
+        // Where even that would break the value's longest word, it goes under the label at the end, and the label
+        // has the whole line rather than breaking at every word.
+        val under = width - space - labelWidth < v.minIntrinsicWidth(Constraints.Infinity)
+        val lp = l.measure(Constraints(maxWidth = if (under) width else labelWidth))
         val room = width - space - lp.width
-        // Where even that would break the value's longest word, it goes under the label at the end.
-        val under = room < v.minIntrinsicWidth(Constraints.Infinity)
         val vp = v.measure(Constraints(maxWidth = if (under) width else room.coerceAtLeast(0)))
         val height = if (under) maxOf(lp.height + vp.height, c.minHeight) else maxOf(lp.height, vp.height, c.minHeight)
         layout(width, height) {

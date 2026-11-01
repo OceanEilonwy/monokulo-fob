@@ -656,7 +656,7 @@ fun ProfileScanScreen(model: WalletModel, nav: Nav) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 EdgeIconButton(Icons.close, "Close", { nav.back() }, tint = Fob.onCamera)
-                Text("Scan a profile", color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).semantics { heading() })
+                Text("Scan a profile", color = Fob.onCamera, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
             }
             if (found == null) {
                 BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {

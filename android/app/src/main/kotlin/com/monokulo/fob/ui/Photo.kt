@@ -93,8 +93,7 @@ fun rememberPhotoChooser(onPhoto: (ByteArray?) -> Unit): PhotoChooser {
 
 /**
  * The photo sheet (Round 5 › "Contact photo: take, choose, remove"): Take
- * a photo, Choose from your photos, Remove photo while there's one, and
- * [footnote] under them.
+ * a photo, Choose from your photos, and Remove photo while there's one.
  */
 @Composable
 fun PhotoSheet(title: String, hasPhoto: Boolean, chooser: PhotoChooser, onRemove: () -> Unit, onDismiss: () -> Unit) {

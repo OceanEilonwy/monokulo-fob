@@ -1948,14 +1948,27 @@ impl Wallet {
     }
 
     /// What was paid in the 30 days to `now`, splits aside: what Split
-    /// up's Auto learns from.
-    async fn split_payments(&self, now: u64) -> Vec<u64> {
+    /// up's Auto learns from. The amounts Activity shows going out, read
+    /// straight from what was sent and spent (no receipts parsed), as Split
+    /// up asks again with every tap.
+    fn split_payments(state: &State, now: u64) -> Vec<u64> {
         let since = now.saturating_sub(split::LOOKBACK);
-        self.activity()
-            .await
-            .into_iter()
-            .filter(|a| a.direction == Direction::Out && a.split.is_none() && a.time >= since && a.amount > 0)
-            .map(|a| a.amount)
+        let sent: HashSet<&str> = state.sent.iter().map(|s| s.tx.as_str()).collect();
+        let mut spent: HashSet<&str> = HashSet::new();
+        // A restored wallet's spends: the inputs less change and fee, as in Activity.
+        let spends = state.spends.iter().filter(|s| !sent.contains(s.tx.as_str()) && spent.insert(&s.tx)).map(|spend| {
+            let inputs: u64 = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&spend.tx)).map(|o| o.amount).sum();
+            let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
+            (spend.time, inputs.saturating_sub(change).saturating_sub(spend.fee))
+        });
+        state
+            .sent
+            .iter()
+            .filter(|s| s.pieces.is_none())
+            .map(|s| (s.time, s.amount))
+            .chain(spends)
+            .filter(|(time, amount)| *time >= since && *amount > 0)
+            .map(|(_, amount)| amount)
             .collect()
     }
 
@@ -1964,10 +1977,9 @@ impl Wallet {
     /// learns from. The screen opens with no counts: empty.
     pub async fn split_view(&self, counts: &[u32], clock: Clock) -> split::View {
         let (money, notes, budget) = self.split_setup().await;
-        let payments = self.split_payments(clock.now).await;
-        let age = {
+        let (payments, age) = {
             let state = self.inner.state.lock().await;
-            state.price_cache.shown(&state.prices, clock.now).and_then(|c| price::alert::old(c.at, clock.now))
+            (Self::split_payments(&state, clock.now), state.price_cache.shown(&state.prices, clock.now).and_then(|c| price::alert::old(c.at, clock.now)))
         };
         split::view(&notes, counts, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)), age.as_deref())
     }
@@ -2861,7 +2873,9 @@ impl Wallet {
         let history = if history_due { Some(source.daily(&code, price::window(source, now), settings.transport).await) } else { None };
 
         let mut state = self.inner.state.lock().await;
-        if state.prices != settings {
+        // Which leads on Home (fiat_first) only changes how amounts are drawn.
+        let asked_for = |s: &price::Settings| (s.code().map(str::to_owned), s.provider, s.transport);
+        if asked_for(&state.prices) != asked_for(&settings) {
             // Changed while asking: these answers are for settings gone.
             return Ok(false);
         }
@@ -3508,6 +3522,36 @@ mod tests {
         assert_eq!(wallet.price_now().await.map(|(_, p)| p), Some(170_000_000));
     }
 
+    /// Swapping Home's balance while a lookup is out keeps what the lookup
+    /// brings: the order is only how amounts are drawn, not what's asked.
+    #[tokio::test]
+    async fn a_price_asked_while_the_balance_swaps_is_kept() {
+        let wallet = Wallet::create(&dir("price-swap-while"), [1; 32], Network::Stagenet).unwrap();
+        wallet.set_currency(Some("USD")).await.unwrap();
+        let t = now();
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let fake = Arc::new(FakePrices { hold: Some(hold.clone()), ..FakePrices::new(166_100_000, vec![]) });
+        let (w, f) = (wallet.clone(), fake.clone());
+        let lookup = tokio::spawn(async move { w.refresh_prices_from(&*f, Asked::User, t).await });
+        while fake.asked().0 == 0 {
+            tokio::task::yield_now().await;
+        }
+        wallet.set_fiat_first(true).await.unwrap();
+        hold.notify_one();
+        assert!(lookup.await.unwrap().unwrap(), "kept");
+        assert_eq!(wallet.balance_worth(XMR, t).await.0, Some(("$166.10".into(), None)));
+        // Another currency meanwhile is another question: that answer goes.
+        let (w, f) = (wallet.clone(), fake.clone());
+        wallet.inner.state.lock().await.price_cache.current = None;
+        let lookup = tokio::spawn(async move { w.refresh_prices_from(&*f, Asked::User, t).await });
+        while fake.asked().0 == 1 {
+            tokio::task::yield_now().await;
+        }
+        wallet.set_currency(Some("EUR")).await.unwrap();
+        hold.notify_one();
+        assert!(!lookup.await.unwrap().unwrap(), "dropped");
+    }
+
     /// An older file's Tor stays Tor: the lookups fail saying why rather
     /// than going over the web unannounced.
     #[tokio::test]
@@ -3857,10 +3901,36 @@ mod tests {
             state.sent.push(sent("old", XMR, t - 40 * 86_400, None));
             state.sent.push(sent("split", XMR, t, Some(12)));
         }
+        // What Auto learns from, read straight from the wallet, is what
+        // Activity shows going out in those 30 days, splits aside.
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.outputs.push(Owned { key: "spent".into(), spent_in: Some("restored-spend".into()), ..received("old-in", t - 40 * 86_400, XMR) });
+            state.outputs.push(Owned { key: "change".into(), ..received("restored-spend", t, XMR / 2) });
+            state.spends.push(ChainSpend { tx: "restored-spend".into(), height: 99, time: t, fee: XMR / 100 });
+        }
+        let since = clock_now().now - split::LOOKBACK;
+        let mut learned = Wallet::split_payments(&*wallet.inner.state.lock().await, clock_now().now);
+        let mut shown: Vec<u64> = wallet
+            .activity()
+            .await
+            .into_iter()
+            .filter(|a| a.direction == Direction::Out && a.split.is_none() && a.time >= since && a.amount > 0)
+            .map(|a| a.amount)
+            .collect();
+        learned.sort();
+        shown.sort();
+        assert_eq!(learned, shown);
+        assert_eq!(learned, [XMR / 10, XMR / 10, XMR / 10, XMR / 10, XMR / 2 - XMR / 100]);
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.outputs.retain(|o| o.tx != "old-in" && o.tx != "restored-spend");
+            state.spends.clear();
+        }
         // No price: notes in XMR. Split up opens empty, with Auto learned
         // from the four coffees.
         let opening = wallet.split_view(&[], clock_now()).await;
-        assert_eq!((opening.pieces, opening.is_auto, opening.button.as_str()), (0, false, "Add a coin to split"));
+        assert_eq!((opening.pieces, opening.is_auto, opening.button.as_str(), opening.footer.as_str()), (0, false, "Add a coin to split", ""));
         let auto = opening.auto.expect("four payments to learn from").counts;
         assert_eq!(auto, [0, 0, 15, 0, 0, 0]);
         let view = wallet.split_view(&auto, clock_now()).await;

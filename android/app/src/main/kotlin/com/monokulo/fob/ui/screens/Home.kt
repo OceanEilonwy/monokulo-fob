@@ -151,7 +151,7 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             // Filling the line, so the other amount sits at its end.
             Row(Modifier.weight(1f).alignByBaseline(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 BasicText(
-                    if (fiatFirst) fiat!! else b?.totalText ?: "—",
+                    if (fiatFirst) fiat else b?.totalText ?: "—",
                     style = display(48).copy(color = Fob.ink, lineHeight = 50.sp),
                     maxLines = 1, autoSize = TextAutoSize.StepBased(minFontSize = 24.sp, maxFontSize = 48.sp),
                     modifier = Modifier.weight(1f, fill = false).alignByBaseline(),
