@@ -5,7 +5,7 @@ members = ["crates/*", "third_party/monero-seed", "third_party/polyseed"]
 [workspace.package]
 edition = "2024"
 license = "GPL-3.0-only"
-version = "0.1.1"
+version = "0.1.2"
 
 # monero-oxide's cryptography is unusably slow unoptimised, even in tests.
 [profile.dev.package."*"]
