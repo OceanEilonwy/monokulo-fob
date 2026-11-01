@@ -244,7 +244,7 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                 PrimaryButton("Send", {
                     nav.go(contact.sendAddress?.let { Screen.Send(draft = SendDraft(to = it)) } ?: Screen.Send())
                 }, Modifier.weight(1f), height = 52.dp, leading = Icons.up)
-                // Receive with them chosen; the request is made only on Share or Copy.
+                // Receive with them chosen; the request is made only on Share.
                 OutlineButton("Request", { nav.go(Screen.Receive(contact = id)) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
             }
             Row(
@@ -365,13 +365,12 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
         scope.launch {
             val draft = ContactDraft(name, note.ifBlank { null }, photo, address.ifBlank { null }, alsoPaidAt)
             runCatching { model.changeContacts { w -> if (id == null) w.addContact(draft) else w.editContact(id, draft) } }
-                // A new contact opens its card (or, made from Share's sheet, goes back to Receive for them and
-                // shares); an edited one goes back to it.
+                // A new contact opens its card (or, made from Share's sheet, goes back to Receive for them); an edited one goes back to it.
                 .onSuccess { c ->
                     nav.back()
                     val receive = nav.current as? Screen.Receive
                     when {
-                        forRequest && receive != null -> nav.replace(receive.copy(contact = c.id).also { it.shareOnOpen = true })
+                        forRequest && receive != null -> nav.replace(receive.copy(contact = c.id))
                         id == null -> nav.go(Screen.Contact(c.id))
                     }
                 }

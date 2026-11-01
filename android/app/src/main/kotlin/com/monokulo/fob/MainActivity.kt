@@ -101,10 +101,7 @@ sealed interface Screen {
      * Receive, for [contact] (chosen already, from their card's Request) or
      * no one yet; [draft] fills the form as it was (back from New contact).
      */
-    data class Receive(val contact: ULong? = null, val draft: ReceiveDraft? = null) : Screen {
-        /** Share as soon as it's open: a contact was just made for it. Not part of equality, so clearing it doesn't redraw. */
-        var shareOnOpen: Boolean = false
-    }
+    data class Receive(val contact: ULong? = null, val draft: ReceiveDraft? = null) : Screen
     /** A request: what it asked, what came, Show the code again, Delete. */
     data class Request(val id: ULong) : Screen
     /**

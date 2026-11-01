@@ -120,7 +120,7 @@ private data class Asked(val contact: ULong?, val amount: String, val inFiat: Bo
 /**
  * Receive (Round 2 › Receive; Round 5 › "Share asks who it's for",
  * "Request for Sam"). Opening it makes nothing: its code is this wallet's
- * Receive address. Share or Copy makes a request (Rust: a new address for
+ * Receive address. Share (the icon by New address) makes a request (Rust: a new address for
  * it alone, with its note and amount), and the code switches to it. Share
  * asks who it's for first, unless a contact is chosen already (the chip
  * over the code, or their card's Request).
@@ -158,7 +158,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     var forContact by remember { mutableStateOf<Contact?>(null) }
     var choosing by remember { mutableStateOf(false) }
     var people by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
-    // The request made by the last Share or Copy, and what it was made from.
+    // The request made by the last Share, and what it was made from.
     var made by remember { mutableStateOf<Pair<Asked, MadeRequest>?>(null) }
     // A request on its way: a second tap waits for it, not another (Rust gives the same one again anyway).
     var making by remember { mutableStateOf(false) }
@@ -232,11 +232,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     fun share(contact: ULong?) = withRequest(contact) {
         context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, it.code.uri), null))
     }
-    // Back from New contact, made for this request: share with them now.
-    LaunchedEffect(forContact, asked) {
-        if (screen.shareOnOpen && forContact != null && asked != null) { screen.shareOnOpen = false; share(forId) }
-    }
-
     val qr = remember(code) { code?.let { runCatching { qrCode(it.uri) }.getOrNull() } }
     val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } }
     // While the address comes, an unseen stand-in of the same length keeps its lines' room.
@@ -247,19 +242,11 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         return
     }
     Box(Modifier.fillMaxSize()) {
-        Page(bottom = {
-            ErrorText(error)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                val ready = code != null && asked != null && !making
-                OutlineButton("Copy", {
-                    if (ready) withRequest(forId) { scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Monero address", it.address).toClipEntry()) } }
-                }, Modifier.weight(1f), enabled = ready)
-                PrimaryButton(forContact?.let { "Share with ${it.name}" } ?: "Share", {
-                    if (ready) { if (forContact != null) share(forId) else choosing = true }
-                }, Modifier.weight(1f), enabled = ready)
-            }
-        }) {
+        Page(bottom = { ErrorText(error) }) {
             TopBar("Receive", onBack = { nav.back() }) {
+                // Shares the payment link for what's typed (and for whoever is chosen over the code).
+                val ready = code != null && asked != null && !making
+                EdgeIconButton(Icons.share, "Share", { if (ready) share(forId) }, tint = if (ready) Fob.ink else Fob.muted)
                 // A new address, as the refresh icon alone (Round 9).
                 EdgeIconButton(Icons.refresh, "New address", {
                     scope.launch { runCatching { model.newReceiveAddress() }.onSuccess { made = null }.onFailure { error = it.reason() } }
@@ -276,19 +263,18 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                     // On a short screen the code gives way so Note and the buttons stay in view; it opens larger on tap.
                     val side = (maxWidth - 24.dp).coerceAtMost(360.dp).coerceAtMost((LocalConfiguration.current.screenHeightDp * 0.32f).dp)
                     val module = qrModule(qr?.size?.toInt() ?: 41, side)
-                    val forWho = forId != null
-                    Box(Modifier.padding(top = if (forWho) PatternBadgeSize / 2 else 4.dp, bottom = PatternBadgeSize / 2)) {
+                    Box(Modifier.padding(top = PatternBadgeSize / 2, bottom = PatternBadgeSize / 2)) {
                         Box(
                             Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
                                 .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
                                 .padding(
                                     start = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 - module,
-                                    top = if (forWho) PatternBadgeSize / 2 - module else 12.dp,
+                                    top = PatternBadgeSize / 2 - module,
                                 ),
                         ) {
                             if (qr != null) QrImage(qr, side) else Spacer(Modifier.size(side))
                         }
-                        forContact?.let { ForChip(it, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2)) { choosing = true } }
+                        ForChip(forContact, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2)) { choosing = true }
                         if (qr != null && shownAddress != null) PatternBadge(shownAddress, Modifier.align(Alignment.BottomCenter).offset(y = PatternBadgeSize / 2))
                         Box(
                             Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
@@ -298,7 +284,9 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
                     }
                 }
-                AddressGroups(groups ?: standIn, shown = groups != null)
+                AddressGroups(groups ?: standIn, shown = groups != null) {
+                    shownAddress?.let { a -> scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Monero address", a).toClipEntry()) } }
+                }
                 AmountField(
                     amount, { amount = it }, entry, placeholder = "Amount",
                     onSwitch = {
@@ -319,14 +307,14 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
             BottomSheet("Who is this for?", onDismiss = { choosing = false }) {
                 WhoFor(
                     people,
-                    onPick = { p -> choosing = false; forId = p.id; share(p.id) },
+                    onPick = { p -> choosing = false; forId = p.id },
                     onNew = {
                         choosing = false
-                        // Back from New contact, Receive comes back filled, with them chosen and shared with.
+                        // Back from New contact, Receive comes back filled, with them chosen.
                         nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note)))
                         nav.go(Screen.ContactEdit(forRequest = true))
                     },
-                    onNoName = { choosing = false; forId = null; forContact = null; share(null) },
+                    onNoName = { choosing = false; forId = null; forContact = null },
                 )
             }
         }
@@ -335,28 +323,33 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
 
 /**
  * Who a request is for, across the top edge of the code's card as the
- * pattern is across its bottom (Round 9): their avatar and name on the
- * card's white, ringed in the page's colour, [PatternBadgeSize] tall and as
+ * pattern is across its bottom (Round 9): their avatar and name (an empty
+ * "Who is it for?" until chosen) on the card's white, ringed in the page's colour, [PatternBadgeSize] tall and as
  * wide as the name; tapping chooses again.
  */
 @Composable
-private fun ForChip(contact: Contact, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun ForChip(contact: Contact?, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Row(
         modifier.widthIn(max = 320.dp).height(PatternBadgeSize).clip(CircleShape).background(Fob.paper).padding(3.dp)
             .clip(CircleShape).background(Fob.qrLight)
             .clickable(role = Role.Button, onClick = onClick)
-            .semantics(mergeDescendants = true) { contentDescription = "For ${contact.name}. Change who it's for" }
+            .semantics(mergeDescendants = true) { contentDescription = contact?.let { "For ${it.name}. Change who it's for" } ?: "Who is it for? Choose a contact" }
             .padding(start = 4.dp, end = 16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Avatar(contact.name, contact.initial, contact.photo, 36.dp)
-        Text(contact.name, color = Fob.qrDark, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (contact != null) {
+            Avatar(contact.name, contact.initial, contact.photo, 36.dp)
+            Text(contact.name, color = Fob.qrDark, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        } else {
+            Box(Modifier.size(36.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.plus, size = 18.dp) }
+            Text("Who is it for?", color = Fob.qrDark.copy(alpha = 0.6f), fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
     }
 }
 
 /**
  * Share's sheet (Round 5 › "Share asks who it's for"): every contact with
- * Rust's line about their requests, New contact, then Share without a name.
+ * Rust's line about their requests, New contact, then No one in particular.
  */
 @Composable
 private fun ColumnScope.WhoFor(people: List<ContactRow>, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
@@ -385,7 +378,7 @@ private fun ColumnScope.WhoFor(people: List<ContactRow>, onPick: (ContactRow) ->
             }
         }
     }
-    OutlineButton("Share without a name", onNoName, Modifier.fillMaxWidth().padding(top = 4.dp), height = 52.dp)
+    OutlineButton("No one in particular", onNoName, Modifier.fillMaxWidth().padding(top = 4.dp), height = 52.dp)
 }
 
 /**
@@ -394,9 +387,12 @@ private fun ColumnScope.WhoFor(people: List<ContactRow>, onPick: (ContactRow) ->
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AddressGroups(groups: List<AddressGroup>, shown: Boolean = true) {
+private fun AddressGroups(groups: List<AddressGroup>, shown: Boolean = true, onCopy: () -> Unit) {
     FlowRow(
-        Modifier.fillMaxWidth().then(if (shown) Modifier.semantics(mergeDescendants = true) {} else Modifier.alpha(0f).clearAndSetSemantics {}),
+        Modifier.fillMaxWidth().then(
+            if (shown) Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClickLabel = "Copy address", role = Role.Button, onClick = onCopy).semantics(mergeDescendants = true) {}
+            else Modifier.alpha(0f).clearAndSetSemantics {},
+        ),
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

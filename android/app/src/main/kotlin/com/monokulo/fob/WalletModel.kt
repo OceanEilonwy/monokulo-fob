@@ -629,7 +629,7 @@ class WalletModel(private val app: Application) {
     }
 
     /**
-     * Makes a request (Share or Copy on Receive, never just opening it): a
+     * Makes a request (Share on Receive, never just opening it): a
      * new address for [contact] or no one, asking [amount] (in money when
      * [inFiat]) with [note]. Throws what Rust refused. Activity shows it.
      */
