@@ -349,7 +349,7 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
 
 /**
  * Your photo (or initial) at 40dp in a 56dp edge button, or a person outline in
- * a sunken circle while there's no profile name yet; TalkBack reads Rust's
+ * a circle while there's no profile name yet, each on the page's chip colour; TalkBack reads Rust's
  * words for Settings' row, "Your profile" or "Add a shareable Fob contact".
  */
 @Composable
@@ -363,8 +363,8 @@ private fun YouButton(you: You?, onClick: () -> Unit, modifier: Modifier) {
     ) {
         when {
             you == null -> {}
-            profile != null && you.row.name != null -> Avatar(profile.name, profile.initial, profile.photo, EdgeButton.avatar)
-            else -> Box(Modifier.size(EdgeButton.avatar).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) {
+            profile != null && you.row.name != null -> Avatar(profile.name, profile.initial, profile.photo, EdgeButton.avatar, fill = Fob.onPaper)
+            else -> Box(Modifier.size(EdgeButton.avatar).clip(CircleShape).background(Fob.onPaper), contentAlignment = Alignment.Center) {
                 StrokeIcon(Icons.person, tint = Fob.muted, size = 22.dp, width = 1.8f)
             }
         }
