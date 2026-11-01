@@ -29,7 +29,7 @@ android {
         targetSdk = 37
         // A release build is given these by CI (.github/workflows/release.yml).
         versionCode = (project.findProperty("fobVersionCode") as String?)?.toInt() ?: 1
-        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.0"
+        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.1"
     }
 
     // Only a build given the keystore (CI's release secrets) is signed; any
