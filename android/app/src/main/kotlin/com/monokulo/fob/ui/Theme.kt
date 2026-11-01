@@ -213,6 +213,23 @@ val Manrope = FontFamily(manrope(FontWeight.Medium), manrope(FontWeight.Bold), m
 /** Big amounts and titles: Manrope, extra bold. */
 fun display(size: Int) = TextStyle(fontFamily = Manrope, fontWeight = FontWeight.ExtraBold, fontSize = size.sp, letterSpacing = (-size / 36.0).sp)
 
+/**
+ * Every style's line as tall as its words need (1.35 times its size): a
+ * size set on a Text keeps it in step rather than Material's fixed 24sp,
+ * so a row's second line sits under its first. All of them alike, since a
+ * text field's label moves between two and Compose can't blend em with sp.
+ */
+private fun relativeLines(t: Typography): Typography {
+    fun TextStyle.relative() = copy(lineHeight = 1.35.em)
+    return t.copy(
+        displayLarge = t.displayLarge.relative(), displayMedium = t.displayMedium.relative(), displaySmall = t.displaySmall.relative(),
+        headlineLarge = t.headlineLarge.relative(), headlineMedium = t.headlineMedium.relative(), headlineSmall = t.headlineSmall.relative(),
+        titleLarge = t.titleLarge.relative(), titleMedium = t.titleMedium.relative(), titleSmall = t.titleSmall.relative(),
+        bodyLarge = t.bodyLarge.relative(), bodyMedium = t.bodyMedium.relative(), bodySmall = t.bodySmall.relative(),
+        labelLarge = t.labelLarge.relative(), labelMedium = t.labelMedium.relative(), labelSmall = t.labelSmall.relative(),
+    )
+}
+
 @Composable
 fun FobTheme(choice: ThemeChoice = ThemeChoice.PHONE, content: @Composable () -> Unit) {
     val dark = when (choice) {
@@ -236,9 +253,7 @@ fun FobTheme(choice: ThemeChoice = ThemeChoice.PHONE, content: @Composable () ->
             outline = c.outline,
             error = c.red,
         ),
-        // A line as tall as its words need: a size set on a Text keeps it in step rather than Material's fixed 24sp,
-        // so a row's second line sits under its first.
-        typography = Typography().let { it.copy(bodyLarge = it.bodyLarge.copy(lineHeight = 1.35.em)) },
+        typography = relativeLines(Typography()),
     ) {
         CompositionLocalProvider(LocalFobColors provides c, LocalContentColor provides c.ink, content = content)
     }
