@@ -1,0 +1,114 @@
+name: Release
+
+# A version tag builds the signed release APK (stagenet and mainnet are both in
+# it: the network is a setting in the app) and puts it on the Releases page with
+# its SHA-256. A manual run of any branch builds the same APK, signed only if
+# the secrets exist, and keeps it as the run's artifact.
+#
+# Secrets: FOB_KEYSTORE_BASE64 (the keystore file, base64), FOB_KEYSTORE_PASSWORD,
+# FOB_KEY_ALIAS, FOB_KEY_PASSWORD.
+# A tag must name the workspace's version (Cargo.toml).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      FOB_KEYSTORE_BASE64: ${{ secrets.FOB_KEYSTORE_BASE64 }}
+      FOB_KEYSTORE_PASSWORD: ${{ secrets.FOB_KEYSTORE_PASSWORD }}
+      FOB_KEY_ALIAS: ${{ secrets.FOB_KEY_ALIAS }}
+      FOB_KEY_PASSWORD: ${{ secrets.FOB_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME doesn't match the workspace version $version"; exit 1
+          fi
+          IFS=. read -r major minor patch <<< "${version%%-*}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$((major * 10000 + minor * 100 + patch))" >> "$GITHUB_OUTPUT"
+      - name: Signing key
+        run: |
+          if [ -n "$FOB_KEYSTORE_BASE64" ]; then
+            echo "$FOB_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/fob.jks"
+            echo "FOB_KEYSTORE=$RUNNER_TEMP/fob.jks" >> "$GITHUB_ENV"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "a release needs the signing secrets"; exit 1
+          fi
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Install Android SDK platform and NDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.2" "ndk;27.0.12077973" > /dev/null
+      - name: Rust for Android
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-ndk
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: android-rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: cargo-ndk
+        run: command -v cargo-ndk || cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew assembleRelease \
+            -PfobVersion=${{ steps.version.outputs.version }} \
+            -PfobVersionCode=${{ steps.version.outputs.code }}
+      - name: Name and check the APK
+        run: |
+          out=android/app/build/outputs/apk/release
+          mkdir dist
+          if [ -f "$out/app-release.apk" ]; then
+            apk="dist/fob-${{ steps.version.outputs.version }}.apk"
+            cp "$out/app-release.apk" "$apk"
+            "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$apk"
+          else
+            cp "$out/app-release-unsigned.apk" "dist/fob-${{ steps.version.outputs.version }}-unsigned.apk"
+          fi
+          cd dist && sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fob-release
+          path: dist/*
+          retention-days: 30
+
+  publish:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: fob-release
+          path: dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Fob ${GITHUB_REF_NAME#v}" --generate-notes
