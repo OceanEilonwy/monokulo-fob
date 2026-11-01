@@ -15,6 +15,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -52,12 +53,12 @@ private fun decodePhoto(photo: ByteArray, px: Int): ImageBitmap? = runCatching {
 
 /**
  * A contact's avatar (Shared › "Contact avatar"): their photo in a circle,
- * or the initial Rust gives on the sunken colour. With [describe], TalkBack
+ * or the initial Rust gives on [fill] (sunken, on a card). With [describe], TalkBack
  * reads "Sam's photo" or "Sam"; inside a row that already says the name,
  * it reads nothing.
  */
 @Composable
-fun Avatar(name: String, initial: String, photo: ByteArray?, size: Dp, modifier: Modifier = Modifier, describe: Boolean = false) {
+fun Avatar(name: String, initial: String, photo: ByteArray?, size: Dp, modifier: Modifier = Modifier, describe: Boolean = false, fill: Color = Fob.sunken) {
     val px = with(LocalDensity.current) { size.roundToPx() }.coerceAtLeast(1)
     // Decoded off the main thread; one decoded before shows at once.
     val image by produceState(photo?.let { decoded.get(key(it, px)) }, photo, px) {
@@ -66,7 +67,7 @@ fun Avatar(name: String, initial: String, photo: ByteArray?, size: Dp, modifier:
     val shown = image
     val label = if (shown != null) "$name's photo" else name
     Box(
-        modifier.size(size).clip(CircleShape).background(Fob.sunken)
+        modifier.size(size).clip(CircleShape).background(fill)
             .clearAndSetSemantics { if (describe) contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {

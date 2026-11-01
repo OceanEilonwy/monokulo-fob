@@ -3,6 +3,7 @@ package com.monokulo.fob.ui
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -16,6 +17,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.R
 
@@ -26,6 +28,8 @@ class FobColors(
     val paper: Color,
     val card: Color,
     val sunken: Color,
+    /** A circle or chip drawn straight on the page (Home's profile and sync chip): as far from it by day as at night. */
+    val onPaper: Color,
     val line: Color,
     val ink: Color,
     val muted: Color,
@@ -68,6 +72,7 @@ val LightColors = FobColors(
     paper = Color(0xFFF4F1EA),
     card = Color(0xFFFFFFFF),
     sunken = Color(0xFFEFEAE0),
+    onPaper = Color(0xFFE4DDD0),
     line = Color(0xFFE2DCCF),
     ink = Color(0xFF1A1917),
     muted = Color(0xFF5A564C),
@@ -99,6 +104,7 @@ val DarkColors = FobColors(
     paper = Color(0xFF141311),
     card = Color(0xFF1F1D1A),
     sunken = Color(0xFF2A2824),
+    onPaper = Color(0xFF2A2824),
     line = Color(0xFF3A3731),
     ink = Color(0xFFF2EEE6),
     muted = Color(0xFFB0A999),
@@ -134,6 +140,7 @@ object Fob {
     val paper: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.paper
     val card: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.card
     val sunken: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.sunken
+    val onPaper: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onPaper
     val line: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.line
     val ink: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.ink
     val muted: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.muted
@@ -229,6 +236,9 @@ fun FobTheme(choice: ThemeChoice = ThemeChoice.PHONE, content: @Composable () ->
             outline = c.outline,
             error = c.red,
         ),
+        // A line as tall as its words need: a size set on a Text keeps it in step rather than Material's fixed 24sp,
+        // so a row's second line sits under its first.
+        typography = Typography().let { it.copy(bodyLarge = it.bodyLarge.copy(lineHeight = 1.35.em)) },
     ) {
         CompositionLocalProvider(LocalFobColors provides c, LocalContentColor provides c.ink, content = content)
     }

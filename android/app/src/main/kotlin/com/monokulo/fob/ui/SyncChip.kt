@@ -116,7 +116,7 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
                     }
                     Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                 },
-                modifier = Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.sunken).padding(start = 12.dp, end = 14.dp),
+                modifier = Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.onPaper).padding(start = 12.dp, end = 14.dp),
             ) { (mark, words), c ->
                 val m = mark.measure(Constraints())
                 val w = words.measure(Constraints())
