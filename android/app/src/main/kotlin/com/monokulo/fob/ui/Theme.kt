@@ -42,6 +42,8 @@ class FobColors(
      * orange tint than [highlight], with ink words and an [orangeText] mark.
      */
     val warning: Color,
+    /** Behind a choice that's on, with an [orangeText] edge: Split up's Auto while the coins are its mix. */
+    val selectedFill: Color,
     /** The first, middle and last groups of an address on Receive. */
     val addressMark: Color,
     val onAddressMark: Color,
@@ -77,6 +79,7 @@ val LightColors = FobColors(
     onGreen = Color(0xFF1A1917),
     highlight = Color(0xFFFBF3E8),
     warning = Color(0xFFF7D6B4),
+    selectedFill = Color(0xFFFBE3CF),
     addressMark = Color(0xFFFBE3CC),
     onAddressMark = Color(0xFF7A2F00),
     red = Color(0xFFB3261E),
@@ -107,6 +110,7 @@ val DarkColors = FobColors(
     onGreen = Color(0xFF111111),
     highlight = Color(0xFF2E2418),
     warning = Color(0xFF46301A),
+    selectedFill = Color(0xFF452812),
     addressMark = Color(0xFF4A2A12),
     onAddressMark = Color(0xFFFFC9A0),
     red = Color(0xFFF2B8B5),
@@ -141,6 +145,7 @@ object Fob {
     val onGreen: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onGreen
     val highlight: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.highlight
     val warning: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.warning
+    val selectedFill: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.selectedFill
     val addressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.addressMark
     val onAddressMark: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.onAddressMark
     val red: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.red

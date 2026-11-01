@@ -1914,30 +1914,29 @@ impl Wallet {
         (money, notes, split::Budget { outputs, fee_rate: *self.inner.fee_rate.lock().expect("fee lock") })
     }
 
-    /// What Split up opens with, learned from the payments of the last 30
-    /// days, or an even mix.
-    pub async fn split_suggestion(&self) -> split::Suggestion {
-        let (money, notes, budget) = self.split_setup().await;
-        let since = now().saturating_sub(split::LOOKBACK);
-        let payments: Vec<u64> = self
-            .activity()
+    /// What was paid in the 30 days to `now`, splits aside: what Split
+    /// up's Auto learns from.
+    async fn split_payments(&self, now: u64) -> Vec<u64> {
+        let since = now.saturating_sub(split::LOOKBACK);
+        self.activity()
             .await
             .into_iter()
             .filter(|a| a.direction == Direction::Out && a.split.is_none() && a.time >= since && a.amount > 0)
             .map(|a| a.amount)
-            .collect();
-        split::suggest(&notes, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)))
+            .collect()
     }
 
     /// Split up's screen for `counts` of each note, at `clock` (the
-    /// phone's), which says how old the price is.
+    /// phone's), which says how old the price is and which payments Auto
+    /// learns from. The screen opens with no counts: empty.
     pub async fn split_view(&self, counts: &[u32], clock: Clock) -> split::View {
         let (money, notes, budget) = self.split_setup().await;
+        let payments = self.split_payments(clock.now).await;
         let age = {
             let state = self.inner.state.lock().await;
             state.price_cache.shown(&state.prices, clock.now).and_then(|c| price::alert::old(c.at, clock.now))
         };
-        split::view(&notes, counts, &budget, money.as_ref().map(|(c, p)| (c, *p)), age.as_deref())
+        split::view(&notes, counts, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)), age.as_deref())
     }
 
     /// One more piece of note `index`, or why not (the 15-piece cap, or not
@@ -3830,14 +3829,17 @@ mod tests {
             state.sent.push(sent("old", XMR, t - 40 * 86_400, None));
             state.sent.push(sent("split", XMR, t, Some(12)));
         }
-        // No price: notes in XMR.
-        let suggestion = wallet.split_suggestion().await;
-        assert_eq!(suggestion.text, "Picked from your last 30 days: most payments were about 0.1 XMR.");
-        assert_eq!(suggestion.counts, [0, 0, 15, 0, 0, 0]);
-        let view = wallet.split_view(&suggestion.counts, clock_now()).await;
+        // No price: notes in XMR. Split up opens empty, with Auto learned
+        // from the four coffees.
+        let opening = wallet.split_view(&[], clock_now()).await;
+        assert_eq!((opening.pieces, opening.is_auto, opening.button.as_str()), (0, false, "Add a coin to split"));
+        let auto = opening.auto.expect("four payments to learn from").counts;
+        assert_eq!(auto, [0, 0, 15, 0, 0, 0]);
+        let view = wallet.split_view(&auto, clock_now()).await;
+        assert!(view.is_auto);
         assert_eq!((view.summary.as_deref(), view.button.as_str()), (Some("15 coins · 1.5 XMR"), "Split into 15 coins"));
         assert!(view.footer.starts_with("Network fee about 0.0001"), "{}", view.footer);
-        let refused = wallet.split_add(&suggestion.counts, 0).await.unwrap_err();
+        let refused = wallet.split_add(&auto, 0).await.unwrap_err();
         assert_eq!(refused.to_string(), "15 coins is the most one split can make");
         // Only the 2 XMR ready counts: a 1 XMR piece fits once, not twice.
         let one = wallet.split_add(&[], 5).await.unwrap();

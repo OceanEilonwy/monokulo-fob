@@ -150,6 +150,8 @@ object Icons {
     const val onion = "M12 3c-1 2-1 3 0 4 M12 7c-4 0-7 3.5-7 7.5S8 21 12 21s7-2.5 7-6.5S16 7 12 7Z M12 10c-2.5 0-4 2-4 4.5S9.5 18 12 18s4-1 4-3.5S14.5 10 12 10Z M12 13c-1 0-1.5.7-1.5 1.5S11 16 12 16s1.5-.7 1.5-1.5S13 13 12 13Z"
     /** Two coins, one behind the other (drawn at stroke 1.8). */
     const val coins = "M2.5 13a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z M6.5 13a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z M13.2 4.3A6.5 6.5 0 1 1 17.6 16.4"
+    /** A four-pointed sparkle, drawn filled: Split up's Auto. */
+    const val sparkle = "M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"
     /** One coin splitting into three (drawn at stroke 1.8). */
     const val split = "M2.5 12a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0 -9 0Z M16.8 5a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 12a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M16.8 19a2.2 2.2 0 1 0 4.4 0a2.2 2.2 0 1 0 -4.4 0Z M11.5 12h5.3 M10.6 9.6l6.5-3.6 M10.6 14.4l6.5 3.6"
 }
@@ -165,6 +167,17 @@ fun icon(path: String, width: Float = 2f): ImageVector = remember(path, width) {
             strokeLineJoin = StrokeJoin.Round,
         )
         .build()
+}
+
+/** The shape [path] filled with [tint], on the same 24 × 24 grid as [Icons]. */
+@Composable
+fun FilledIcon(path: String, tint: Color = Fob.ink, size: Dp = 22.dp) {
+    val vector = remember(path) {
+        ImageVector.Builder(defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
+            .addPath(pathData = PathParser().parsePathString(path).toNodes(), fill = SolidColor(Color.Black))
+            .build()
+    }
+    Icon(vector, contentDescription = null, tint = tint, modifier = Modifier.size(size))
 }
 
 @Composable

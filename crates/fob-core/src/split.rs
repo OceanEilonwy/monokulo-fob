@@ -22,20 +22,18 @@ pub const MAX_PIECES: u32 = 15;
 const NOTE_COUNT: usize = 6;
 /// The notes in XMR, without a price: 0.01, 0.05, 0.1, 0.25, 0.5, 1.
 const XMR_NOTES: [u64; NOTE_COUNT] = [10_000_000_000, 50_000_000_000, 100_000_000_000, 250_000_000_000, 500_000_000_000, 1_000_000_000_000];
-/// How far back payments teach the suggestion: 30 days.
+/// How far back payments teach Auto: 30 days.
 pub const LOOKBACK: u64 = 30 * 86_400;
-/// Fewer payments than this, and the suggestion is an even mix instead.
+/// Fewer payments than this, and there's nothing to learn from: no Auto.
 const ENOUGH_PAYMENTS: usize = 3;
-/// The even mix: this many pieces, spread over three neighbouring notes.
-const EVEN_PIECES: u32 = 12;
 /// The fee per unit of weight before the node has said: about Monero's
 /// usual normal fee.
 const USUAL_PER_WEIGHT: u64 = 20_000;
 
 pub const TITLE: &str = "Split up";
 pub const INTRO: &str = "Each payment locks what's left of a coin for about 20 minutes. More, smaller coins keep money ready to spend.";
-const LEARNED: &str = "Picked from your last 30 days";
-const EVEN: &str = "Not enough payments yet to learn from, so here's an even mix. Change it to suit.";
+const AUTO: &str = "Auto";
+const AUTO_SPOKEN: &str = "Auto, fill coins like your last 30 days";
 
 /// The price pieces are set at: the currency and a price per XMR in
 /// millionths, as elsewhere in [`price`].
@@ -215,59 +213,33 @@ fn fill(notes: &[Note], weights: &[u32], limit: u32, budget: &Budget) -> Vec<u32
     counts
 }
 
-/// What the screen opens with: the counts and the words saying why.
+/// The mix Auto fills, learned from `payments` (amounts paid in the
+/// last 30 days, in atomic units): for each, the smallest note that covers
+/// it (the largest for one bigger than all), and pieces added in those
+/// proportions up to 15 or what's ready to spend. The rest stays as one
+/// piece, the change. `None` with fewer than [`ENOUGH_PAYMENTS`], or when
+/// not one piece fits: then there's no Auto.
+pub fn learned(notes: &[Note], payments: &[u64], budget: &Budget) -> Option<Vec<u32>> {
+    if payments.len() < ENOUGH_PAYMENTS || notes.is_empty() {
+        return None;
+    }
+    let mut weights = vec![0u32; notes.len()];
+    for &paid in payments {
+        let i = notes.iter().position(|n| n.atomic >= paid).unwrap_or(notes.len() - 1);
+        weights[i] += 1;
+    }
+    Some(fill(notes, &weights, MAX_PIECES, budget)).filter(|counts| pieces(counts) > 0)
+}
+
+/// Split up's Auto button, when there's a mix to learn.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Suggestion {
+pub struct Auto {
+    /// What tapping it fills, in the order of the tiles.
     pub counts: Vec<u32>,
-    /// "Picked from your last 30 days: most payments were $5–$25."
-    pub text: String,
-}
-
-/// An amount as the suggestion names it: money to the whole unit (to the
-/// cent under one), or XMR.
-fn spoken(atomic: u64, money: Money) -> String {
-    match money {
-        Some((currency, p)) => {
-            let minor = price::to_minor(atomic, p, currency);
-            let unit = 10u64.pow(currency.decimals);
-            if minor < unit { price::format(minor, currency) } else { whole((minor + unit / 2) / unit, currency) }
-        }
-        None => format!("{} XMR", amount::format_short(atomic)),
-    }
-}
-
-/// The pieces to start with. With [`ENOUGH_PAYMENTS`] or more `payments`
-/// (amounts paid in the last 30 days, in atomic units): for each, the
-/// smallest note that covers it (the largest for one bigger than all),
-/// and pieces added in those proportions up to 15 or what's ready to
-/// spend. With fewer: 12 pieces spread evenly over three neighbouring
-/// notes, the largest three that fit, or as many as fit of the smallest.
-/// The rest stays as one piece, the change.
-pub fn suggest(notes: &[Note], payments: &[u64], budget: &Budget, money: Money) -> Suggestion {
-    if payments.len() >= ENOUGH_PAYMENTS {
-        let mut weights = vec![0u32; notes.len()];
-        for &paid in payments {
-            let i = notes.iter().position(|n| n.atomic >= paid).unwrap_or(notes.len() - 1);
-            weights[i] += 1;
-        }
-        let mut sorted = payments.to_vec();
-        sorted.sort_unstable();
-        // Most payments: the 20th to the 80th percentile, by nearest rank.
-        let n = sorted.len();
-        let (low, high) = (spoken(sorted[(n - 1) / 5], money), spoken(sorted[((n - 1) * 4).div_ceil(5)], money));
-        let range = if low == high { format!("about {low}") } else { format!("{low}–{high}") };
-        return Suggestion { counts: fill(notes, &weights, MAX_PIECES, budget), text: format!("{LEARNED}: most payments were {range}.") };
-    }
-    let mut counts = vec![0u32; notes.len()];
-    for middle in (1..notes.len() - 1).rev() {
-        let mut weights = vec![0u32; notes.len()];
-        weights[middle - 1..=middle + 1].fill(1);
-        counts = fill(notes, &weights, EVEN_PIECES, budget);
-        if pieces(&counts) == EVEN_PIECES {
-            break;
-        }
-    }
-    Suggestion { counts, text: EVEN.into() }
+    /// "Auto"
+    pub label: String,
+    /// "Auto, fill coins like your last 30 days"
+    pub spoken: String,
 }
 
 /// A tile on the grid.
@@ -300,6 +272,10 @@ pub struct Block {
 pub struct View {
     pub title: String,
     pub intro: String,
+    /// Auto, with 3 or more payments in the last 30 days to learn from.
+    pub auto: Option<Auto>,
+    /// The counts are Auto's mix: the button is lit.
+    pub is_auto: bool,
     pub tiles: Vec<Tile>,
     pub counts: Vec<u32>,
     pub pieces: u32,
@@ -337,11 +313,12 @@ fn plural(n: u32) -> String {
     if n == 1 { "1 coin".into() } else { format!("{n} coins") }
 }
 
-/// The screen for `counts` of `notes`.
-/// `price_age` is how old the price is ("23 h old") once it's missed a
-/// refresh, `None` while it's fresh.
-pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money, price_age: Option<&str>) -> View {
+/// The screen for `counts` of `notes`, with Auto learned from `payments`
+/// (see [`learned`]). `price_age` is how old the price is ("23 h old") once
+/// it's missed a refresh, `None` while it's fresh.
+pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, money: Money, price_age: Option<&str>) -> View {
     let counts = sized(notes, counts);
+    let auto = learned(notes, payments, budget).map(|counts| Auto { counts, label: AUTO.into(), spoken: AUTO_SPOKEN.into() });
     let n = pieces(&counts);
     let total = value(notes, &counts);
     let (fee, left) = budget.plan(n.max(1), total);
@@ -383,6 +360,8 @@ pub fn view(notes: &[Note], counts: &[u32], budget: &Budget, money: Money, price
     View {
         title: TITLE.into(),
         intro: INTRO.into(),
+        is_auto: auto.as_ref().is_some_and(|a| a.counts == counts),
+        auto,
         tiles,
         pieces: n,
         bar,
@@ -525,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn the_suggestion_learns_from_payments() {
+    fn auto_learns_from_payments() {
         let usd = usd();
         let money = Some((&usd, PRICE));
         let notes = notes(money);
@@ -533,51 +512,82 @@ mod tests {
         // Coffees and lunches: $4, $5, $6, $12, $18, $25, $25.
         let payments = [dollars(4), dollars(5), dollars(6), dollars(12), dollars(18), dollars(25), dollars(25)];
         // 2 XMR is $600: plenty for 15 pieces.
-        let s = suggest(&notes, &payments, &budget(2_000), money);
-        assert_eq!(s.text, "Picked from your last 30 days: most payments were $5–$25.");
+        let mix = learned(&notes, &payments, &budget(2_000)).unwrap();
         // Shares 2 × $5, 1 × $10, 2 × $20, 2 × $50 of 7, filled to 15 in turn.
-        assert_eq!(s.counts, [5, 2, 4, 4, 0, 0]);
-        assert_eq!(view(&notes, &s.counts, &budget(2_000), money, None).summary.as_deref(), Some("15 coins · $325.00"));
+        assert_eq!(mix, [5, 2, 4, 4, 0, 0]);
+        assert_eq!(view(&notes, &mix, &payments, &budget(2_000), money, None).summary.as_deref(), Some("15 coins · $325.00"));
         // The same payments with $90: pieces in turn while they fit, $85.
-        let small = suggest(&notes, &payments, &budget(300), money);
-        assert_eq!(small.counts, [3, 0, 1, 1, 0, 0]);
-        assert!(check(&notes, &small.counts, &budget(300)).is_ok());
-        assert!(value(&notes, &small.counts) <= budget(300).spendable());
+        let small = learned(&notes, &payments, &budget(300)).unwrap();
+        assert_eq!(small, [3, 0, 1, 1, 0, 0]);
+        assert!(check(&notes, &small, &budget(300)).is_ok());
+        assert!(value(&notes, &small) <= budget(300).spendable());
         // Deterministic.
-        assert_eq!(suggest(&notes, &payments, &budget(300), money), small);
+        assert_eq!(learned(&notes, &payments, &budget(300)).unwrap(), small);
     }
 
     #[test]
-    fn the_suggestion_names_one_amount_when_payments_agree() {
+    fn auto_stays_within_fifteen_coins_and_the_money() {
         let notes = notes(None);
-        let s = suggest(&notes, &[XMR / 10; 4], &budget(5_000), None);
-        assert_eq!(s.text, "Picked from your last 30 days: most payments were about 0.1 XMR.");
-        assert_eq!(s.counts, [0, 0, 15, 0, 0, 0]);
-        // A payment bigger than every note counts as the largest.
-        let s = suggest(&notes, &[3 * XMR, 3 * XMR, 3 * XMR], &budget(5_000), None);
-        assert_eq!(s.counts, [0, 0, 0, 0, 0, 4]);
+        // Payments that agree: all of one note, up to 15.
+        assert_eq!(learned(&notes, &[XMR / 10; 4], &budget(5_000)).unwrap(), [0, 0, 15, 0, 0, 0]);
+        // A payment bigger than every note counts as the largest; 5 XMR
+        // holds 4 of them with the fee.
+        assert_eq!(learned(&notes, &[3 * XMR; 3], &budget(5_000)).unwrap(), [0, 0, 0, 0, 0, 4]);
+        // Whatever the money, the mix is a split that can be made.
+        for thousandths in [15, 100, 600, 1_000, 2_000, 5_000, 100_000] {
+            let b = budget(thousandths);
+            let payments = [XMR / 100, XMR / 20, XMR / 4, XMR, 2 * XMR];
+            if let Some(mix) = learned(&notes, &payments, &b) {
+                assert!(pieces(&mix) <= MAX_PIECES && pieces(&mix) > 0, "{thousandths}: {mix:?}");
+                assert!(check(&notes, &mix, &b).is_ok(), "{thousandths}: {mix:?}");
+            }
+        }
+        assert_eq!(pieces(&learned(&notes, &[XMR / 100; 30], &budget(100_000)).unwrap()), MAX_PIECES);
+        // Nothing ready, or not even the smallest note with the fee: no Auto.
+        assert_eq!(learned(&notes, &[XMR / 10; 4], &budget(0)), None);
+        assert_eq!(learned(&notes, &[XMR / 10; 4], &budget(10)), None);
     }
 
     #[test]
-    fn without_payments_the_suggestion_is_an_even_mix() {
-        let usd = usd();
-        let money = Some((&usd, PRICE));
-        let notes = notes(money);
-        // $600 doesn't hold 4 × ($50 + $100 + $200) or 4 × ($20 + $50 +
-        // $100): the largest three neighbours whose 12 pieces fit are $10,
-        // $20 and $50, $320.
-        let s = suggest(&notes, &[XMR / 10, XMR / 5], &budget(2_000), money);
-        assert_eq!(s.text, "Not enough payments yet to learn from, so here's an even mix. Change it to suit.");
-        assert_eq!(s.counts, [0, 4, 4, 4, 0, 0]);
-        // Lots of money: the largest three.
-        assert_eq!(suggest(&notes, &[], &budget(100_000), money).counts, [0, 0, 0, 4, 4, 4]);
-        // Little: as many as fit of the smallest three, in turn. $30 holds
-        // $5, $10, then not $20, then $5, not $10, $5, and not a fourth $5
-        // with the fee.
-        let little = suggest(&notes, &[], &budget(100), money);
-        assert_eq!(little.counts, [3, 1, 0, 0, 0, 0]);
-        // Nothing ready: no pieces.
-        assert_eq!(suggest(&notes, &[], &budget(0), money).counts, [0; 6]);
+    fn auto_is_offered_only_with_three_payments_or_more() {
+        let notes = notes(None);
+        let b = budget(5_000);
+        for few in [&[][..], &[XMR / 10], &[XMR / 10, XMR / 5]] {
+            assert_eq!(learned(&notes, few, &b), None);
+            let v = view(&notes, &[], few, &b, None, None);
+            assert!(v.auto.is_none() && !v.is_auto);
+        }
+        let v = view(&notes, &[], &[XMR / 10; 3], &b, None, None);
+        let auto = v.auto.unwrap();
+        assert_eq!((auto.label.as_str(), auto.spoken.as_str()), ("Auto", "Auto, fill coins like your last 30 days"));
+        assert_eq!(auto.counts, [0, 0, 15, 0, 0, 0]);
+    }
+
+    #[test]
+    fn auto_is_lit_while_the_coins_are_its_mix() {
+        let notes = notes(None);
+        let b = budget(5_000);
+        let payments = [XMR / 100, XMR / 10, XMR / 10, XMR / 4];
+        let lit = |counts: &[u32]| view(&notes, counts, &payments, &b, None, None).is_auto;
+        // The screen opens empty: no coins, Auto plain, nothing to split yet.
+        let opening = view(&notes, &[], &payments, &b, None, None);
+        assert_eq!((opening.counts.as_slice(), opening.pieces, opening.is_auto), (&[0; 6][..], 0, false));
+        assert_eq!((opening.button.as_str(), opening.ready), ("Add a coin to split", false));
+        // Tapping Auto fills its mix: lit.
+        let mix = opening.auto.unwrap().counts;
+        assert!(lit(&mix));
+        // The same coins with the zeros at the end left off: still lit.
+        let trimmed: Vec<u32> = mix.iter().copied().take(mix.iter().rposition(|c| *c > 0).unwrap() + 1).collect();
+        assert!(trimmed.len() < mix.len() && lit(&trimmed));
+        // Change a coin and it goes plain; put it back and it's lit again.
+        let fewer = remove(&notes, &mix, 2);
+        assert!(!lit(&fewer));
+        let back = add(&notes, &fewer, 2, &b).unwrap();
+        assert_eq!(back, mix);
+        assert!(lit(&back));
+        assert!(!lit(&add(&notes, &fewer, 0, &b).unwrap()));
+        // Clear: plain.
+        assert!(!lit(&[]));
     }
 
     #[test]
@@ -587,7 +597,7 @@ mod tests {
         let notes = notes(money);
         // $5 × 4, $10 × 4, $20 × 3: 11 pieces, $120. With 1 XMR ($300) ready.
         let b = budget(1_000);
-        let v = view(&notes, &[4, 4, 3], &b, money, None);
+        let v = view(&notes, &[4, 4, 3], &[], &b, money, None);
         assert_eq!(v.summary.as_deref(), Some("11 coins · $120.00"));
         let (fee, left) = b.plan(11, value(&notes, &[4, 4, 3]));
         assert_eq!(v.left_over, Some(format!("+ {} left as one coin", price::value(left.unwrap(), PRICE, &usd))));
@@ -595,7 +605,7 @@ mod tests {
         assert!(v.ready);
         assert_eq!(v.footer, format!("Network fee about {}", price::value(fee, PRICE, &usd)));
         // An old price: its age after the fee, and nothing more.
-        let aged = view(&notes, &[4, 4, 3], &b, money, Some("23 h old"));
+        let aged = view(&notes, &[4, 4, 3], &[], &b, money, Some("23 h old"));
         assert_eq!(aged.footer, format!("Network fee about {} · 23 h old price", price::value(fee, PRICE, &usd)));
         assert_eq!(v.counts, [4, 4, 3, 0, 0, 0]);
         let tile = |i: usize| (v.tiles[i].label.as_str(), v.tiles[i].count_text.as_str(), v.tiles[i].add_label.as_str());
@@ -610,11 +620,11 @@ mod tests {
         assert_eq!(v.bar[11].height, 1.0);
         assert!((v.bar[0].height - (20.0f32 / 180.0).sqrt()).abs() < 0.01, "{}", v.bar[0].height);
 
-        let empty = view(&notes, &[], &b, money, None);
+        let empty = view(&notes, &[], &[], &b, money, None);
         assert_eq!((empty.button.as_str(), empty.ready, empty.summary, empty.left_over, empty.bar.len()), ("Add a coin to split", false, None, None, 0));
 
         // In XMR there's no price, so no age even if one was given.
-        let xmr = view(&super::notes(None), &[0, 0, 1], &b, None, Some("23 h old"));
+        let xmr = view(&super::notes(None), &[0, 0, 1], &[], &b, None, Some("23 h old"));
         assert_eq!(xmr.summary.as_deref(), Some("1 coin · 0.1 XMR"));
         assert!(xmr.footer.starts_with("Network fee about 0.000") && !xmr.footer.contains("old"), "{}", xmr.footer);
         assert_eq!(xmr.button, "Split into 1 coin");

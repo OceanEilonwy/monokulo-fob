@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -36,7 +37,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,8 +48,11 @@ import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.EdgeButton
 import com.monokulo.fob.ui.ErrorText
+import com.monokulo.fob.ui.FilledIcon
 import com.monokulo.fob.ui.Fob
+import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.Page
 import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.TextButton
@@ -54,14 +61,16 @@ import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import uniffi.fob.SplitAuto
 import uniffi.fob.SplitBlock
 import uniffi.fob.SplitTile
 import uniffi.fob.SplitView
 
 /**
  * Split up: what's ready to spend paid back to this wallet as pieces, so
- * after a payment there's still money ready. Rust picks the notes, the
- * suggestion, what fits and every word; this draws them and passes taps on.
+ * after a payment there's still money ready. It opens empty. Rust picks
+ * the notes, whether Auto is offered and its mix, what fits and every
+ * word; this draws them and passes taps on.
  */
 @Composable
 fun SplitScreen(model: WalletModel, nav: Nav) {
@@ -70,7 +79,6 @@ fun SplitScreen(model: WalletModel, nav: Nav) {
     val prices by model.prices.collectAsState()
     val scope = rememberCoroutineScope()
     var counts by remember { mutableStateOf<List<UInt>>(emptyList()) }
-    var tip by remember { mutableStateOf<String?>(null) }
     var view by remember { mutableStateOf<SplitView?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -78,9 +86,6 @@ fun SplitScreen(model: WalletModel, nav: Nav) {
     var feeTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
-        val suggestion = w.splitSuggestion()
-        counts = suggestion.counts
-        tip = suggestion.text
         w.refreshFeeRate()
         feeTick++
     }
@@ -115,17 +120,15 @@ fun SplitScreen(model: WalletModel, nav: Nav) {
         v?.footer?.let { Text(it, color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
     }) {
         TopBar(v?.title ?: "", onBack = { nav.back() }) {
-            TextButton("Clear", { counts = emptyList(); error = null })
+            v?.auto?.let { auto ->
+                AutoButton(auto, lit = v.isAuto) { counts = auto.counts; error = null }
+                Spacer(Modifier.width(4.dp))
+            }
+            if (v != null && v.pieces > 0u) TextButton("Clear", { counts = emptyList(); error = null })
         }
         if (v == null) return@Page
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(v.intro, color = Fob.muted, fontSize = 15.sp)
-            tip?.let {
-                Text(
-                    it, fontSize = 14.sp,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Fob.highlight).padding(horizontal = 14.dp, vertical = 12.dp),
-                )
-            }
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 v.tiles.withIndex().chunked(3).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -150,6 +153,29 @@ fun SplitScreen(model: WalletModel, nav: Nav) {
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+}
+
+/**
+ * Auto: a pill with a sparkle that fills Rust's learned mix. Lit (a tint
+ * and an orange edge) while the coins are that mix, plain (an outline)
+ * once they're changed; tapping it then brings the mix back.
+ */
+@Composable
+private fun AutoButton(auto: SplitAuto, lit: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(EdgeButton.textHeight / 2)
+    Row(
+        Modifier.height(EdgeButton.textHeight).clip(shape)
+            .background(if (lit) Fob.selectedFill else Color.Transparent)
+            .border(1.dp, if (lit) Fob.orangeText else Fob.outline, shape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics { contentDescription = auto.spoken; role = Role.Button; selected = lit }
+            .padding(start = 12.dp, end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FilledIcon(Icons.sparkle, tint = Fob.orangeText, size = 18.dp)
+        Text(auto.label, color = Fob.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
 

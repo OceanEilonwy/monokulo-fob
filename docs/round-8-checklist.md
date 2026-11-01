@@ -122,3 +122,17 @@ every step is in. Each item: what to do, what should happen.
 - [ ] Home › Contacts and Home › Coins → the list (or empty card) is on the first frame; Coins' Split up greyed out with no coins.
 - [ ] Light and dark, 200 % font → none of the above moves; TalkBack doesn't read the faded "Balance so far" once synced.
 - [ ] A slow phone (or a large wallet) → the launch screen waits at most 2.5 s, then Home fills in.
+
+## Step 8 · Split up Auto
+
+- [ ] A funded wallet with 3 or more payments in the last 30 days › Coins › Split up → opens empty: every note "tap to add", no coins card, button greyed "Add a coin to split" with the fee line under it as before; the top bar has Auto (sparkle, outline) and no Clear. No "Picked from your last 30 days …" or "Not enough payments …" text; the intro "Each payment locks …" stays.
+- [ ] Tap Auto → the coins fill with the learned mix (at most 15, within the money), Auto lit (tinted, orange edge), Clear appears, the button reads "Split into N coins" with the fee under it.
+- [ ] Add or remove one coin → Auto goes plain; tap Auto → the mix comes back and it's lit again. Put the changed coin back by hand → lit again.
+- [ ] Clear → no coins, Clear gone, Auto plain.
+- [ ] Leave Split up and open it again (after Auto) → empty again.
+- [ ] A wallet with 0–2 payments in the last 30 days (e.g. only received money) → no Auto button and no text about it; Clear appears once a coin is added.
+- [ ] Enough payments but only a tiny amount ready (less than the smallest note and the fee) → no Auto.
+- [ ] Light and dark → Auto plain is an outline on paper; lit is a warm tint with an orange edge, readable, no thick outline; the sparkle is orange in both.
+- [ ] TalkBack → Auto reads "Auto, fill coins like your last 30 days, button"; once lit, "Selected" too; Clear reads "Clear".
+- [ ] 200 % font and a long title → Auto and Clear keep their 48 dp height and stay inside the screen; the title ellipsizes.
+- [ ] Prices in yen or dong (long notes) → Auto fills as before; the tiles' labels shrink to fit.

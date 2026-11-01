@@ -822,13 +822,16 @@ pub struct SplitLine {
     pub amount_text: String,
 }
 
-/// What Split up opens with.
+/// Split up's Auto button, offered with 3 or more payments in the last 30
+/// days to learn from.
 #[derive(uniffi::Record)]
-pub struct SplitSuggestion {
-    /// Pieces of each note, in the order of `SplitView::tiles`.
+pub struct SplitAuto {
+    /// What tapping it fills: pieces of each note, in the order of `SplitView::tiles`.
     pub counts: Vec<u32>,
-    /// "Picked from your last 30 days: most payments were $5–$25."
-    pub text: String,
+    /// "Auto"
+    pub label: String,
+    /// What TalkBack reads: "Auto, fill coins like your last 30 days".
+    pub spoken: String,
 }
 
 /// A note on Split up's grid.
@@ -861,6 +864,10 @@ pub struct SplitBlock {
 pub struct SplitView {
     pub title: String,
     pub intro: String,
+    /// Auto in the top bar; none without enough payments to learn from.
+    pub auto: Option<SplitAuto>,
+    /// The counts are Auto's mix: Auto is drawn lit and read as selected.
+    pub is_auto: bool,
     pub tiles: Vec<SplitTile>,
     /// What the screen shows, as Rust read it: keep these.
     pub counts: Vec<u32>,
@@ -882,6 +889,8 @@ impl From<split::View> for SplitView {
         SplitView {
             title: v.title,
             intro: v.intro,
+            auto: v.auto.map(|a| SplitAuto { counts: a.counts, label: a.label, spoken: a.spoken }),
+            is_auto: v.is_auto,
             tiles: v
                 .tiles
                 .into_iter()
@@ -1362,14 +1371,8 @@ impl FobWallet {
             .collect()
     }
 
-    /// What Split up opens with: pieces learned from the last 30 days'
-    /// payments, or an even mix, and the words saying which.
-    pub async fn split_suggestion(&self) -> SplitSuggestion {
-        let s = self.inner.split_suggestion().await;
-        SplitSuggestion { counts: s.counts, text: s.text }
-    }
-
-    /// Split up's screen for `counts` pieces of each note.
+    /// Split up's screen for `counts` pieces of each note (none as it
+    /// opens), with Auto learned from the 30 days to `now`.
     pub async fn split_view(&self, counts: Vec<u32>, now: u64, utc_offset: i32, hours_24: bool) -> SplitView {
         self.inner.split_view(&counts, activity::Clock { now, utc_offset, hours_24 }).await.into()
     }

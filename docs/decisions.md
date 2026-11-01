@@ -2296,3 +2296,46 @@ pushed what was under them.
     the sheet up no longer flashes the form at full height for a frame
     before the settle starts: until the settle's first frame the sheet
     keeps the stop it was shown at.
+
+## Round 8: Split up Auto
+
+284. **Split up opens empty, with Auto only when there's something to
+    learn.** The owner picked design A. `split::suggest` and its
+    `Suggestion` (counts and the "Picked from your last 30 days: most
+    payments were …" or "Not enough payments yet …" words) are gone with
+    `Wallet::split_suggestion` and the FFI's `SplitSuggestion`; nothing
+    else used them. The even mix (12 pieces over three neighbouring notes)
+    and its `EVEN_PIECES` went with it, and its test; the percentile range
+    that named "most payments" went with the words. What's left is
+    `split::learned`, today's learned branch unchanged: with 3 or more
+    payments (`ENOUGH_PAYMENTS`) in the last 30 days, the mix filled in
+    their proportions up to 15 coins or the money. Its tests were ported:
+    the coffee-and-lunch mix, payments that agree, one bigger than every
+    note.
+285. **Rust says whether Auto is offered, its mix and whether it's lit.**
+    `split::View` (and the FFI's `SplitView`) carries `auto:
+    Option<Auto>` (the counts, "Auto", and TalkBack's "Auto, fill coins
+    like your last 30 days") and `is_auto`, true while the counts are
+    Auto's mix (compared after sizing, so a list without its trailing
+    zeros still matches). `split::view` takes the payments and works it
+    out; `Wallet::split_view` reads them for the 30 days to the phone's
+    clock, the same filter as before (sent, not a split, not empty).
+    Kotlin starts with no counts, draws `auto`, sets the counts to
+    `auto.counts` on a tap and draws it lit from `is_auto`.
+286. **No Auto when not one coin fits.** With enough payments but too
+    little ready for even the smallest note and the fee, `learned` is
+    `None`: a button that filled nothing would be lit for an empty screen.
+    The board doesn't draw this case; it reads like the few-payments one,
+    no Auto and no words.
+287. **Auto's look.** A pill in the top bar before Clear, 48 dp tall (step
+    2's text-action height), a filled sparkle in `orangeText` and "Auto"
+    in ink at 15 sp semibold. Lit: a new `selectedFill` role (light
+    #FBE3CF as the board, dark #452812, the warm orange tint at night) and
+    a 1 dp `orangeText` edge; plain: no fill and a 1 dp `outline` edge.
+    TalkBack reads Rust's sentence with the selected state while lit. A
+    tap while lit sets the same counts, so nothing changes. The sparkle is
+    the board's path drawn filled, through a new `FilledIcon` beside
+    `StrokeIcon`.
+288. **Clear shows only with a coin chosen.** It comes in beside Auto as
+    the first coin is added and goes when cleared; Auto moves left by
+    Clear's width then, as the board draws it.
