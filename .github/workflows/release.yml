@@ -85,7 +85,8 @@ jobs:
           if [ -f "$out/app-release.apk" ]; then
             apk="dist/fob-${{ steps.version.outputs.version }}.apk"
             cp "$out/app-release.apk" "$apk"
-            "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$apk"
+            apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
+            "$apksigner" verify --print-certs "$apk"
           else
             cp "$out/app-release-unsigned.apk" "dist/fob-${{ steps.version.outputs.version }}-unsigned.apk"
           fi
