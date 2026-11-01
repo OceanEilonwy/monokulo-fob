@@ -2116,8 +2116,12 @@ Calls made while building the first version, with why. Newest last.
       Its outer ring is a one-module light margin; the pattern's 5 × 5 dots
       fill the `centre − 2` modules inside, on the code's white (the card's
       colour in both themes), without the round badge and ring it has
-      elsewhere. The square covers the middle alignment pattern of v7 and
-      up, as logos in codes do; decoders locate by the corner one;
+      elsewhere. (Not so: the square covered the middle alignment pattern
+      only in v7 to v13 and v21 to v27, cut corners off four in v14 to
+      v20, and held four whole in v28 to v30. 291 has it hold at most
+      one, whole, and v11 the least, H only to v20, the dots placed by
+      Rust.)
+
     - tested: `rqrr` reads every one of those codes rendered at 4 px a
       module, both as drawn (the square light) and with every module in the
       square the opposite of the code's own (the worst a pattern could
@@ -2358,3 +2362,54 @@ pushed what was under them.
     word, wraps the value between words next, and puts the value under
     the label at the end where even its longest word wouldn't fit. The
     old floor of a third for the label went.
+
+## Round 8: review fixes
+
+Six reviewers read every round 8 commit, and the emulator pass found what
+an owner would see; the fixes, by the ids in `docs/round-8-checklist.md`'s
+Review fixes.
+
+291. **Payment codes read in ZBar as in zxing, their dots placed by Rust**
+    (H2, L11, changing 268). With the dots, ZBar (the reader in many
+    Linux and Android apps) missed a version 10 code, every bare address
+    and address with an amount, for about one address in eight; zxing-cpp
+    read them all. So:
+    - **version 11 at the least** (`qr::FEWEST`): a code that fits v10 is
+      made at v11 at the same level (61 modules, 4 more, about 3.3 dp a
+      module on the 220 dp card);
+    - **H up to version 20, Q above** (Receive's longest, 521 bytes, is
+      now v22 at Q, not v25 at H; a request's longest is v29 at Q as
+      before): fewer, larger modules for the long ones, where Q's margin
+      was ample;
+    - **the square holds at most one alignment pattern, whole, and misses
+      the rest** (`centre_for`): the largest odd side within a quarter
+      that doesn't cut one (v14's 17 and v17's 21 cut a corner off four:
+      now 15 and 19) nor holds more than one (v29's 33 held four: now 19,
+      about 14 % of the side; v28 and v30 likewise). This corrects 268's
+      "the square covers the middle alignment pattern of v7 and up":
+      versions 14 to 20 and 28 to 30 have none in the middle;
+    - **Rust places the dots** (`QrMatrix::dots`, FFI `QrCode.pattern`):
+      their colour, radius and centres in modules, from the address in the
+      code itself (`uri::code_address`), so the code and its dots are
+      never two values a frame apart (New address, a request made); Kotlin
+      only paints circles. Receive remembers the encode for its code.
+    - **measured** with the real dots, as the phone paints them (palette
+      colours, modules `#1A1917` on white, a 2-module quiet zone), over
+      200 random addresses per version from 11 to 29 at 4, 6 and 9 px a
+      module (11,400), plus 6 px turned 3° with a blur (3,800):
+      zxing-cpp 3.1.1 read all 15,200; ZBar 0.23.93 (`zbarimg`) missed 6
+      flat and 3 turned. Every one it missed flat is a code ZBar misses
+      with no square and no dots at all (the same text rendered plain):
+      one address at v15 at every size, one each at v25, v26 and v27 at 9
+      px. Of the 3 turned, one (v14) the plain code misses too; v12 and
+      v21 lost one address each to the square, 2 in 3,800, under a tilt
+      and blur a held phone rarely adds together. Before this (v10, and
+      squares holding four patterns), the same harness had ZBar miss 21,
+      13 and 13 of 200 v10 codes at 4, 6 and 9 px, and 5 of 200 turned
+      v29 codes (none now). The harness, one-off and outside the repo,
+      rendered `encode_payment`'s own matrix and dots;
+    - **tested** in Rust with `rqrr`: the real dots drawn in their
+      colours' greys for three addresses at every version 11 to 30 (at 4
+      px, one also at 6), the square's rule for every version, the
+      alignment table against the standard's, and the dots inside the
+      square's margin and of the code's own address.

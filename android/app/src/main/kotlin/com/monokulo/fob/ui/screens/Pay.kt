@@ -226,11 +226,12 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (screen.shareOnOpen && forContact != null && asked != null) { screen.shareOnOpen = false; share(forId) }
     }
 
-    val qr = code?.let { runCatching { paymentQrCode(it.uri) }.getOrNull() }
+    // The code and its pattern from the same text: the pattern is of the address in the code itself.
+    val qr = remember(code) { code?.let { runCatching { paymentQrCode(it.uri) }.getOrNull() } }
     val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } ?: emptyList() }
     val shownCode = code
-    if (expanded && shownCode != null && qr != null && shownAddress != null) {
-        ExpandedQr(shownCode, qr, shownAddress) { expanded = false }
+    if (expanded && shownCode != null && qr != null) {
+        ExpandedQr(shownCode, qr) { expanded = false }
         return
     }
     Box(Modifier.fillMaxSize()) {
@@ -257,7 +258,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                             .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
                             .padding(20.dp),
                     ) {
-                        if (qr != null) QrImage(qr, 220.dp, pattern = shownAddress) else Spacer(Modifier.size(220.dp))
+                        if (qr != null) QrImage(qr, 220.dp) else Spacer(Modifier.size(220.dp))
                     }
                     Box(
                         Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
@@ -384,7 +385,7 @@ private fun AddressGroups(groups: List<AddressGroup>) {
  * bright as it goes until it closes.
  */
 @Composable
-fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Unit) {
+fun ExpandedQr(code: ReceiveCode, qr: QrCode, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
     FullBrightness()
     // White in both themes: the bars' icons dark on it.
@@ -404,7 +405,7 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String, onClose: () -> Un
                     code.detail?.let { Text(it, color = Fob.qrMuted, fontSize = 16.sp, textAlign = TextAlign.Center) }
                 }
             }
-            QrImage(qr, 320.dp, quiet = 4, pattern = address)
+            QrImage(qr, 320.dp, quiet = 4)
         }
     }
 }

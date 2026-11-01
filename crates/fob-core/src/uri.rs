@@ -74,6 +74,13 @@ fn check_address(network: Network, address: &str) -> Result<()> {
     Err(FobError::BadAddress(network.name()))
 }
 
+/// The address a payment code (`monero:<address>?…`, or a bare address)
+/// pays, as written in it, unchecked: what its pattern is drawn from.
+pub fn code_address(text: &str) -> &str {
+    let text = text.trim();
+    split_query(split_scheme(text, &["monero"]).unwrap_or(text)).0
+}
+
 /// A scanned or pasted payment code: `monero:<address>?tx_amount=…&orf=…`,
 /// or just an address.
 pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {

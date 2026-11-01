@@ -945,6 +945,27 @@ pub struct QrCode {
     /// address's pattern goes in the `centre - 2` inside its one-module
     /// margin.
     pub centre: u32,
+    /// A payment code's pattern, of the address in the code itself, placed
+    /// in that square: paint it as given.
+    pub pattern: Option<QrPattern>,
+}
+
+/// An address's pattern inside a payment code, in modules from the code's
+/// top-left corner (the quiet zone not counted).
+#[derive(uniffi::Record)]
+pub struct QrPattern {
+    /// 0–7, an index into the app's fixed palette.
+    pub colour: u8,
+    /// Every dot's radius.
+    pub radius: f32,
+    pub dots: Vec<QrDot>,
+}
+
+/// A dot's centre, in modules.
+#[derive(uniffi::Record)]
+pub struct QrDot {
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -2432,7 +2453,7 @@ pub fn qr_code(text: String) -> Result<QrCode> {
 }
 
 /// A payment code (Receive's, a request's), its middle cleared for the
-/// address's pattern.
+/// pattern of the address it pays, the dots placed.
 #[uniffi::export]
 pub fn payment_qr_code(text: String) -> Result<QrCode> {
     Ok(qr::encode_payment(&text)?.into())
@@ -2440,7 +2461,12 @@ pub fn payment_qr_code(text: String) -> Result<QrCode> {
 
 impl From<qr::QrMatrix> for QrCode {
     fn from(m: qr::QrMatrix) -> Self {
-        QrCode { size: m.size, dark: m.dark, centre: m.centre }
+        QrCode {
+            size: m.size,
+            dark: m.dark,
+            centre: m.centre,
+            pattern: m.dots.map(|d| QrPattern { colour: d.colour, radius: d.radius, dots: d.centres.into_iter().map(|(x, y)| QrDot { x, y }).collect() }),
+        }
     }
 }
 
