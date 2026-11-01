@@ -2121,7 +2121,6 @@ Calls made while building the first version, with why. Newest last.
       v20, and held four whole in v28 to v30. 291 has it hold at most
       one, whole, and v11 the least, H only to v20, the dots placed by
       Rust.)
-
     - tested: `rqrr` reads every one of those codes rendered at 4 px a
       module, both as drawn (the square light) and with every module in the
       square the opposite of the code's own (the worst a pattern could
@@ -2481,3 +2480,24 @@ Review fixes.
     catching up), so the balance sits under the top bar whether synced
     or not; "Still finding older ones" is the last row of Activity while
     syncing, so its going moves nothing above it.
+299. **A price asked while the balance swaps is kept** (L5). A lookup's
+    answer is dropped only when what it asked changed (currency,
+    provider, transport), as `change_prices` decides whether to ask:
+    which leads on Home only changes how amounts are drawn.
+300. **Split up reads Auto's payments straight from the wallet** (L6).
+    `split_payments` takes what was sent (splits aside) and a restored
+    wallet's spends from the state, the same amounts Activity shows going
+    out (a test holds them equal), without building Activity and parsing
+    every receipt on each tap.
+301. **Split up's footer is empty with no coin chosen** (L8), as board
+    SplitAuto A draws it: no fee for a split nobody has asked for. Its
+    line keeps its room, so the first coin's fee moves nothing.
+302. **A label whose value went under it takes the whole line** (L7,
+    amending 290): measured at the row's width, not its longest word's.
+303. **The window is the page's colour, dark at night** (L9). The
+    application's theme (`@style/Fob`, `res/values/themes.xml`) sets the
+    window background to the paper, `#141311` in values-night, so the
+    launch screen held while the saved wallet opens (280) isn't a bright
+    blank in the phone's dark mode; Android 12's splash takes it too. It
+    follows the phone's mode, not Fob's own theme choice, which the
+    window can't know before Fob runs.

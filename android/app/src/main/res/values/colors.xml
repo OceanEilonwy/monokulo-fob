@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="paper">#F4F1EA</color>
+    <!-- The window's colour (themes.xml): Theme.kt's paper, dark in values-night. -->
+    <color name="window">#F4F1EA</color>
 </resources>

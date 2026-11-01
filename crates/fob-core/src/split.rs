@@ -289,7 +289,8 @@ pub struct View {
     pub button: String,
     pub ready: bool,
     /// "Network fee about $0.03", and the price's age once it's old:
-    /// "Network fee about $0.03 · 23 h old price".
+    /// "Network fee about $0.03 · 23 h old price"; empty while no coin is
+    /// chosen, with no split to cost anything (board SplitAuto A).
     pub footer: String,
 }
 
@@ -353,8 +354,8 @@ pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, m
         Some((currency, _)) => price::format(notes.iter().zip(&counts).map(|(note, c)| note.minor.unwrap_or(0) * u64::from(*c)).sum(), currency),
         None => format!("{} XMR", amount::format_short(total)),
     };
-    let mut footer = format!("Network fee about {}", fee_text(fee, money));
-    if let Some(age) = price_age.filter(|_| money.is_some()) {
+    let mut footer = if n == 0 { String::new() } else { format!("Network fee about {}", fee_text(fee, money)) };
+    if let Some(age) = price_age.filter(|_| money.is_some() && n > 0) {
         footer.push_str(&format!(" · {age} price"));
     }
     View {
@@ -620,8 +621,9 @@ mod tests {
         assert_eq!(v.bar[11].height, 1.0);
         assert!((v.bar[0].height - (20.0f32 / 180.0).sqrt()).abs() < 0.01, "{}", v.bar[0].height);
 
-        let empty = view(&notes, &[], &[], &b, money, None);
+        let empty = view(&notes, &[], &[], &b, money, Some("23 h old"));
         assert_eq!((empty.button.as_str(), empty.ready, empty.summary, empty.left_over, empty.bar.len()), ("Add a coin to split", false, None, None, 0));
+        assert_eq!(empty.footer, "", "no fee for a split nobody has asked for");
 
         // In XMR there's no price, so no age even if one was given.
         let xmr = view(&super::notes(None), &[0, 0, 1], &[], &b, None, Some("23 h old"));

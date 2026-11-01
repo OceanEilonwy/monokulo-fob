@@ -428,7 +428,7 @@ fun FullBrightness() {
     DisposableEffect(activity) {
         val window = activity?.window
         val before = window?.attributes?.screenBrightness
-        window?.attributes = window?.attributes?.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL }
+        window?.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL }
         onDispose { if (before != null) window.attributes = window.attributes.apply { screenBrightness = before } }
     }
 }

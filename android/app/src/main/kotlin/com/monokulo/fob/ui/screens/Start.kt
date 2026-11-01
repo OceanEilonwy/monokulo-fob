@@ -49,7 +49,6 @@ import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.FobMark
-import com.monokulo.fob.ui.IconBadge
 import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.InfoRow
 import com.monokulo.fob.ui.NoScreenshots
