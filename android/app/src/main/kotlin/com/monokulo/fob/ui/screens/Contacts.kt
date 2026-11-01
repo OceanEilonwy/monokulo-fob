@@ -106,18 +106,16 @@ import uniffi.fob.sendAddressScan
 @Composable
 fun ContactsScreen(model: WalletModel, nav: Nav) {
     val wallet by model.wallet.collectAsState()
-    val activity by model.activity.collectAsState()
     var search by rememberSaveable { mutableStateOf("") }
-    var saved by remember { mutableStateOf<List<ContactRow>?>(null) }
-    var any by remember { mutableStateOf(false) }
-    var unsaved by remember { mutableStateOf<List<PaidBefore>>(emptyList()) }
+    // Everyone and "Paid, not saved" are the model's, read with the wallet, so the screen opens whole; only a
+    // search asks Rust as it's typed, the last answer kept meanwhile.
+    val all by model.contactList.collectAsState()
+    val unsaved by model.unsaved.collectAsState()
+    var found by remember { mutableStateOf<List<ContactRow>?>(null) }
+    LaunchedEffect(all, search) { found = if (search.isBlank()) null else model.contacts(search) }
+    val any = !all.isNullOrEmpty()
+    val saved = if (search.isBlank()) all else found
     val scope = rememberCoroutineScope()
-    LaunchedEffect(wallet, activity, search) {
-        val found = model.contacts(search)
-        any = if (search.isBlank()) found.isNotEmpty() else model.contacts().isNotEmpty()
-        saved = found
-        unsaved = model.paidNotSaved()
-    }
     Page {
         TopBar("Contacts", onBack = { nav.back() }) {
             // Another Fob's profile: add them in one scan.

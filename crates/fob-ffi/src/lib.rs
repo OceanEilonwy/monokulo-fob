@@ -411,6 +411,10 @@ pub struct PriceSettings {
     /// When the price shown was asked, none without one: new with every
     /// new price, so screens converting money (Receive's code) convert again.
     pub price_at: Option<u64>,
+    /// The amount field as Send and Receive open it, blank (in money while
+    /// there's a price): drawn whole on their first frame, before their
+    /// own `amount_entry` answers.
+    pub blank_entry: AmountEntry,
 }
 
 /// The price toast while lookups fail, every word from Rust.
@@ -1262,6 +1266,7 @@ impl FobWallet {
             source_text,
             sources,
             price_at: self.inner.price_at(now).await,
+            blank_entry: self.inner.blank_amount_field(activity::Clock { now, utc_offset, hours_24 }).await.into(),
         }
     }
 
@@ -1404,19 +1409,7 @@ impl FobWallet {
     /// Money typed against a price 5 minutes old has Rust ask again; a
     /// failure comes as the price toast.
     pub async fn amount_entry(&self, text: String, in_fiat: bool, now: u64, utc_offset: i32, hours_24: bool) -> AmountEntry {
-        let f = self.inner.amount_field(&text, in_fiat, activity::Clock { now, utc_offset, hours_24 }).await;
-        AmountEntry {
-            in_fiat: f.in_fiat,
-            sign: f.sign,
-            unit: f.unit,
-            can_switch: f.can_switch,
-            line: f.line,
-            label: f.label,
-            switch_label: f.switch_label,
-            sendable: f.sendable,
-            for_text: f.for_text,
-            for_in_fiat: f.for_in_fiat,
-        }
+        self.inner.amount_field(&text, in_fiat, activity::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
     /// An amount field's text switched between money and XMR (`to_fiat`):
@@ -2027,6 +2020,23 @@ pub struct AmountEntry {
     /// copied from one that's behind (the chip just tapped, say).
     pub for_text: String,
     pub for_in_fiat: bool,
+}
+
+impl From<price::AmountField> for AmountEntry {
+    fn from(f: price::AmountField) -> Self {
+        AmountEntry {
+            in_fiat: f.in_fiat,
+            sign: f.sign,
+            unit: f.unit,
+            can_switch: f.can_switch,
+            line: f.line,
+            label: f.label,
+            switch_label: f.switch_label,
+            sendable: f.sendable,
+            for_text: f.for_text,
+            for_in_fiat: f.for_in_fiat,
+        }
+    }
 }
 
 /// Someone this wallet paid before, on Send's sheet.

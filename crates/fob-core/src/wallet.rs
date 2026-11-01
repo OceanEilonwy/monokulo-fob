@@ -2285,13 +2285,36 @@ impl Wallet {
                 self.ask_prices(price::alert::Asked::Typing);
             }
         }
+        Self::with_field_price(wanted, shown, clock, |price| price::amount_field(text, in_fiat, price))
+    }
+
+    /// The amount field as a form opens it, blank: in money while there's a
+    /// price, XMR otherwise. It asks for nothing, so it can be ready before
+    /// the form is drawn; the form's own [`amount_field`](Self::amount_field)
+    /// then asks, as opening it does.
+    pub async fn blank_amount_field(&self, clock: Clock) -> price::AmountField {
+        let (wanted, shown) = {
+            let state = self.inner.state.lock().await;
+            (state.prices.code().map(price::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
+        };
+        Self::with_field_price(wanted, shown, clock, price::blank_field)
+    }
+
+    /// `make` given the field's price: the currency `wanted` at the price
+    /// `shown`, with its age by `clock` once it's aged.
+    fn with_field_price<T>(
+        wanted: Option<price::Currency>,
+        shown: Option<price::Current>,
+        clock: Clock,
+        make: impl FnOnce(price::FieldPrice) -> T,
+    ) -> T {
         let age = shown.as_ref().and_then(|c| price::alert::age(c.at, clock));
         let price = match (&wanted, &shown) {
             (Some(c), Some(now)) => price::FieldPrice::At(c, now.price, age.as_deref()),
             (Some(c), None) => price::FieldPrice::Missing(c),
             (None, _) => price::FieldPrice::None,
         };
-        price::amount_field(text, in_fiat, price)
+        make(price)
     }
 
     /// An amount field's text as typed, the other way: money to XMR (`to_fiat`
@@ -3629,6 +3652,26 @@ mod tests {
         wallet.set_currency(None).await.unwrap();
         asked();
         wallet.amount_field("1", false, at(t + 600)).await;
+        assert_eq!(asked(), None);
+    }
+
+    /// The blank field a form opens with, ready before it's drawn: in money
+    /// at the shown price, XMR without one, and never a lookup of its own.
+    #[tokio::test]
+    async fn the_blank_field_follows_the_price_and_asks_nothing() {
+        let wallet = Wallet::create(&dir("price-blank"), [1; 32], Network::Stagenet).unwrap();
+        let t = now();
+        let at = |now| Clock { now, utc_offset: 0, hours_24: true };
+        let asked = || wallet.inner.prices_asked.lock().unwrap().take();
+        let f = wallet.blank_amount_field(at(t)).await;
+        assert!(!f.in_fiat && !f.can_switch);
+        assert_eq!(asked(), None, "no price, still no lookup");
+        wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
+        let f = wallet.blank_amount_field(at(t)).await;
+        assert!(f.in_fiat && f.can_switch);
+        assert_eq!(f, wallet.amount_field("", true, at(t)).await, "the same as the form's own");
+        // Over a day old: XMR again.
+        assert!(!wallet.blank_amount_field(at(t + price::SHOWN)).await.in_fiat);
         assert_eq!(asked(), None);
     }
 

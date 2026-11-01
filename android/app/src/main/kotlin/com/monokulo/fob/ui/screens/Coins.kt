@@ -17,9 +17,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,15 +56,14 @@ import uniffi.fob.NotReadyPiece
 @Composable
 fun CoinsScreen(model: WalletModel, nav: Nav) {
     val wallet by model.wallet.collectAsState()
-    val balance by model.balance.collectAsState()
-    val notReady by model.notReady.collectAsState()
-    var coins by remember { mutableStateOf<Coins?>(null) }
-    // Again whenever the wallet changes, and each half minute while some coins wait.
-    LaunchedEffect(wallet, balance, notReady) {
-        while (true) {
-            coins = model.coins()
-            if (coins?.notReadyCoins.isNullOrEmpty()) break
+    // The model's, read with the wallet and again whenever it changes, so the screen opens whole.
+    val coins by model.coins.collectAsState()
+    // Ready times count down between blocks: Rust writes them again each half minute while some coins wait.
+    val waiting = !coins?.notReadyCoins.isNullOrEmpty()
+    LaunchedEffect(waiting) {
+        while (waiting) {
             delay(30_000)
+            model.refresh()
         }
     }
     val canSpend = wallet?.canSpend() != false

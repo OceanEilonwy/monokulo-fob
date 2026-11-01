@@ -50,8 +50,6 @@ import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
-import com.monokulo.fob.phoneLock
-import androidx.compose.ui.platform.LocalContext
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
@@ -138,24 +136,18 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val theme by model.theme.collectAsState()
     val status by model.status.collectAsState()
     val scope = rememberCoroutineScope()
-    var node by remember { mutableStateOf("") }
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
     var choosingTheme by remember { mutableStateOf(false) }
     val prices by model.prices.collectAsState()
-    // Your profile's row, its words from Rust ("Add a shareable Fob contact" before there's a name).
-    var profile by remember { mutableStateOf<Profile?>(null) }
-    var profileRow by remember { mutableStateOf<ProfileRow?>(null) }
-    // Backup and keys' line, from Rust: "Seed phrase, wallet code, keys".
-    var backupLine by remember { mutableStateOf("") }
-    val context = LocalContext.current
-    // Rust's Node line, again as syncing starts or stops failing.
-    LaunchedEffect(wallet, status?.error != null) { node = wallet?.nodeLine() ?: "" }
-    LaunchedEffect(wallet) {
-        profile = wallet?.profile()
-        profileRow = wallet?.profileRow()
-        backupLine = wallet?.backupHub(phoneLock(context))?.settingsLine ?: ""
-    }
+    // Every line here is the model's, read with the wallet, so the screen opens whole: your profile's row ("Add a
+    // shareable Fob contact" before there's a name), Rust's Node line (again as syncing starts or stops failing)
+    // and Backup and keys' line ("Seed phrase, wallet code, keys").
+    val you by model.you.collectAsState()
+    val node by model.nodeLine.collectAsState()
+    val backupLine by model.backupLine.collectAsState()
+    // Again as it opens: the Node screen's checks, or a screen lock set meanwhile, change them.
+    LaunchedEffect(Unit) { model.readSettingsLines() }
     // Backup and keys opens only once the phone's lock says it's you;
     // cancelling stays here. The screens it leads to don't ask again while
     // Fob stays on screen.
@@ -166,7 +158,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             Column {
                 SectionLabel("Wallet")
                 Card {
-                    profileRow?.let { row -> ProfileSettingRow(row, profile) { nav.go(Screen.Profile) } }
+                    you?.let { ProfileSettingRow(it.row, it.profile) { nav.go(Screen.Profile) } }
                     LeadRow(Icons.people, "Contacts", "Who you pay") { nav.go(Screen.Contacts) }
                     LeadRow(Icons.key, "Backup and keys", backupLine) { openBackup() }
                 }

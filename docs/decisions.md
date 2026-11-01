@@ -2238,3 +2238,61 @@ Calls made while building the first version, with why. Newest last.
     the reminder card is a call to act, not the warning about who can use
     the words. The mainnet switch shows no secret, so it has nothing to
     change.
+
+## Round 8: layout shifts
+
+Found on the QA emulator by screen recording (frames in the round's job
+folder, `shift/` before and `shift/after/` after). The common cause: a
+screen started its Rust-backed state empty and filled it from an async
+UniFFI call a frame after its first draw, and lines that come and go
+pushed what was under them.
+
+278. **The screens' data lives in WalletModel, read with the wallet.**
+    `refresh()` (on open, after every change and on every sync status)
+    now also reads Home's backup reminder, Settings' Node and Backup and
+    keys lines, Receive's own address and index, Contacts' list and
+    "Paid, not saved", Send's folded sheet (contacts on Send, any
+    contact, paid before) and Coins, and sets everything at once after
+    reading it all (never one answer new and the next old), dropping
+    answers from a wallet closed meanwhile. Settings' profile row is the
+    model's `you`, already there. Each screen draws whole on its first
+    frame. The model's one-shot readers these replaced (`coins()`,
+    `contactsOnSend()`, `paidBefore()`, `paidNotSaved()`, and
+    `contacts()` without a search) are gone; Contacts' search still asks
+    Rust as it's typed. Settings reads its two lines again as it opens,
+    for a Node check or a screen lock set meanwhile; New address and "I've
+    written them down" go through the model so its copy stays right.
+279. **Receive's address is handed out with the wallet's refresh.** Rust's
+    `receive_address` hands out a new own address when the last went to
+    a request, a split or a share; it now runs in `refresh()`, so a new
+    wallet's first Receive address is handed out as it opens rather than
+    when Receive first opens. Nothing is shown or sent by it.
+280. **The launch screen stays up while the saved wallet opens.** No
+    splash library is in the tree, so MainActivity holds its first draw
+    (a `ViewTreeObserver.OnPreDrawListener` returning false, Android's
+    own way, which keeps the system splash on Android 12+) while
+    `WalletModel.opening` (a saved wallet, no balance read yet, no open
+    error), at most 2.5 s. Home's first frame has the balance, photo and
+    reminder, then fades in with the splash's exit.
+281. **Lines that come and go keep their room.** Home's "Balance so far"
+    is always laid out and fades out once synced (TalkBack skips it then),
+    so the balance and everything under it stay put as syncing ends;
+    likewise "Still finding older ones" while there's activity. The
+    amount field's line under it is always laid out, empty when Rust has
+    nothing to say. Receive opened for a contact keeps the chip's 48 dp
+    while Rust reads them. The synced Home is ~15 dp taller at the top
+    than before, the label's empty room.
+282. **Amount fields open whole, from Rust.** `PriceSettings.blank_entry`
+    is the blank field as a form opens (`price::blank_field`: in money at
+    the shown price, else XMR; `Wallet::blank_amount_field`, which asks
+    for no price, unlike `amount_field`, so a refresh off screen never
+    triggers a lookup). Send and Receive start from it: sign, chip and
+    rate line on the first frame, no two round trips. A price that comes
+    later switches the field to money with its words in the same step.
+283. **Send's camera overlay waits for the sheet's measure.** The
+    viewfinder, its words and Allow the camera are placed by the sheet's
+    measured height; until it's measured (one or two frames) they're
+    drawn at alpha 0 rather than at a guess that jumped ~50 dp. Pulling
+    the sheet up no longer flashes the form at full height for a frame
+    before the settle starts: until the settle's first frame the sheet
+    keeps the stop it was shown at.
