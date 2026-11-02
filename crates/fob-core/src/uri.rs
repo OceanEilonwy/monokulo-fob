@@ -147,7 +147,11 @@ pub struct ProfileCode {
     /// Cleaned and cut as a contact's name.
     pub name: String,
     /// A WebP of at most [`PHOTO_MAX`](crate::contacts::PHOTO_MAX) bytes.
+    /// Only touching phones carry one; a shown code never does.
     pub photo: Option<Vec<u8>>,
+    /// Meet's second code: the sharer has already scanned yours, so
+    /// scanning this one finishes the meeting.
+    pub reply: bool,
 }
 
 /// A photo in a code: URL-safe base64 without padding, so it needs no
@@ -161,8 +165,18 @@ const PHOTO_BASE64: base64::engine::GeneralPurpose = base64::engine::GeneralPurp
 /// the name cleaned as a contact's, the photo (a WebP Fob keeps) in
 /// URL-safe base64 without padding.
 pub fn profile_uri(address: &str, name: &str, photo: Option<&[u8]>) -> String {
+    profile_uri_with(address, name, photo, false)
+}
+
+/// [`profile_uri`], marked as the reply to a scanned code when `reply`
+/// (`fob_reply=1`, which other wallets ignore).
+pub fn profile_uri_with(address: &str, name: &str, photo: Option<&[u8]>, reply: bool) -> String {
     use base64::Engine;
     let mut uri = payment_uri(address, None, None, Some(name));
+    if reply {
+        uri.push_str(if uri.contains('?') { "&" } else { "?" });
+        uri.push_str("fob_reply=1");
+    }
     if let Some(photo) = photo {
         uri.push_str(if uri.contains('?') { "&" } else { "?" });
         uri.push_str("recipient_avatar=");
@@ -201,7 +215,8 @@ pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
             Some(bytes)
         }
     };
-    Ok(ProfileCode { address: payment.address, name, photo })
+    let reply = get(&pairs, &["fob_reply"]).map(str::trim) == Some("1");
+    Ok(ProfileCode { address: payment.address, name, photo, reply })
 }
 
 /// The most bytes a name takes in a code before it's encoded: 40 letters
@@ -628,7 +643,7 @@ mod tests {
         assert!(code.starts_with(&format!("monero:{address}?recipient_name=Henry&recipient_avatar=")), "{code}");
         assert!(avatar.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "URL-safe, no padding: {avatar}");
         let read = parse_profile(Network::Stagenet, &code).unwrap();
-        assert_eq!(read, ProfileCode { address: address.clone(), name: "Henry".into(), photo: Some(photo.clone()) });
+        assert_eq!(read, ProfileCode { address: address.clone(), name: "Henry".into(), photo: Some(photo.clone()), reply: false });
         // Another wallet reads it as a payment code with a name.
         let payment = parse_payment(Network::Stagenet, &code).unwrap();
         assert_eq!((payment.address, payment.recipient_name.as_deref(), payment.amount), (address.clone(), Some("Henry"), None));
@@ -662,20 +677,34 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_profile_code_still_encodes_as_a_qr_code() {
-        // A 95-character subaddress, a name of 120 bytes (30 emoji, 12
-        // bytes each encoded) and the largest photo: within version 40 at
-        // low error correction.
+    fn a_shown_profile_code_has_no_photo_and_stays_small() {
+        // A 95-character subaddress and a name of 120 bytes (30 emoji, 12
+        // bytes each encoded): a small code, since the photo only travels
+        // by touching phones.
         let address = wallet().address(1_000_000);
-        let code = profile_uri(&address, &"😀".repeat(crate::contacts::NAME_MAX), Some(&webp(crate::contacts::PHOTO_MAX)));
-        assert_eq!(code.len(), 7 + 95 + 16 + 360 + 18 + 2048);
-        assert!(code.len() <= 2953, "version 40 at L holds 2953 bytes");
+        let code = profile_uri(&address, &"😀".repeat(crate::contacts::NAME_MAX), None);
+        assert!(code.len() <= 7 + 95 + 16 + 360, "{}", code.len());
         let qr = crate::qr::encode(&code).unwrap();
-        assert!(qr.size <= 177);
+        assert!(qr.size <= 17 + 4 * 25, "{}", qr.size);
         assert_eq!(parse_profile(Network::Stagenet, &code).unwrap().name.chars().count(), 30);
-        // A usual one, a short name and a photo near the budget, is version 33 or below.
-        let usual = profile_uri(&address, "Henry", Some(&webp(1400)));
-        assert!(crate::qr::encode(&usual).unwrap().size <= 17 + 4 * 33);
+        // A usual one is smaller still.
+        assert!(crate::qr::encode(&profile_uri(&address, "Henry", None)).unwrap().size <= 17 + 4 * 15);
+        // One with the largest photo is read as before but is too big for any QR code.
+        let with = profile_uri(&address, "Henry", Some(&webp(crate::contacts::PHOTO_MAX)));
+        assert!(parse_profile(Network::Stagenet, &with).is_ok());
+        assert!(crate::qr::encode(&with).is_err());
+    }
+
+    #[test]
+    fn the_second_meet_code_says_it_is_a_reply() {
+        let address = wallet().address(3);
+        assert!(!parse_profile(Network::Stagenet, &profile_uri(&address, "Sam", None)).unwrap().reply);
+        let reply = profile_uri_with(&address, "Sam", None, true);
+        let read = parse_profile(Network::Stagenet, &reply).unwrap();
+        assert!(read.reply);
+        assert_eq!((read.name.as_str(), read.address.as_str()), ("Sam", address.as_str()));
+        // Other wallets see the same address with a name.
+        assert!(parse_payment(Network::Stagenet, &reply).is_ok());
     }
 
     #[test]

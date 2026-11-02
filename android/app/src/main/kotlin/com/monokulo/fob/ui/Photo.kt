@@ -11,12 +11,36 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.text.font.FontWeight
+import kotlin.math.roundToInt
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
@@ -47,13 +71,13 @@ import uniffi.fob.contactPhotoKept
 import java.io.ByteArrayOutputStream
 
 /**
- * A photo's (side, WebP quality) tried in turn until Rust keeps it (decision 4 of the plan): quality 80 down to 20
- * at 96, 72 and 64 pixels, as decision 109 had it; only when none of those fits, quality 10 and 0 at 64, then 48
- * (decision 149), so a busy photo still fits without every other one going blocky.
+ * A photo's (side, WebP quality) tried in turn until Rust keeps it (at most 8 KB, since photos only travel by
+ * touching phones and never in a QR code): quality 90 down to 40 at 128, 112 and 96 pixels, and only when none of
+ * those fits, lower qualities and smaller sides, so a busy photo still fits without every other one going blocky.
  */
 private val PHOTO_STEPS: List<Pair<Int, Int>> =
-    listOf(96, 72, 64).flatMap { side -> listOf(80, 70, 60, 50, 40, 30, 20).map { side to it } } +
-        listOf(64 to 10, 64 to 0, 48 to 10, 48 to 0)
+    listOf(128, 112, 96).flatMap { side -> listOf(90, 80, 70, 60, 50, 40).map { q -> side to q } } +
+        listOf(96 to 30, 96 to 20, 72 to 30, 72 to 10, 64 to 10, 48 to 0)
 
 /** Take a photo or choose one; what comes back is already small enough for Rust. */
 class PhotoChooser(val take: () -> Unit, val choose: () -> Unit)
@@ -69,9 +93,17 @@ class PhotoChooser(val take: () -> Unit, val choose: () -> Unit)
 fun rememberPhotoChooser(onPhoto: (ByteArray?) -> Unit): PhotoChooser {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // A picked or taken photo waits here to be moved and scaled under the circle.
+    var cropping by remember { mutableStateOf<Bitmap?>(null) }
     fun use(bitmap: Bitmap?) {
         bitmap ?: return
-        scope.launch { onPhoto(withContext(Dispatchers.Default) { smallPhoto(bitmap) }) }
+        cropping = bitmap
+    }
+    cropping?.let { source ->
+        PhotoCropDialog(
+            source, onCancel = { cropping = null },
+            onUse = { square -> cropping = null; scope.launch { onPhoto(withContext(Dispatchers.Default) { smallPhoto(square) }) } },
+        )
     }
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { use(it) }
     // Fob holds the camera permission, so the system camera needs it granted too.
@@ -153,14 +185,14 @@ private fun decode(context: Context, uri: Uri): Bitmap? = runCatching {
 }.getOrNull()
 
 /**
- * A photo from [source]: cropped to a centred square, then scaled and
+ * A photo from [source]: a square (cropped by the user, or centred if not), scaled and
  * encoded by Android's WebP encoder along [PHOTO_STEPS] until Rust keeps
  * it; null if it never does.
  */
 private fun smallPhoto(source: Bitmap): ByteArray? {
     val side = minOf(source.width, source.height)
     if (side <= 0) return null
-    val square = Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
+    val square = if (source.width == source.height) source else Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
     val format = if (Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSY else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
     val scaled = mutableMapOf<Int, Bitmap>()
     for ((side, quality) in PHOTO_STEPS) {
@@ -169,4 +201,93 @@ private fun smallPhoto(source: Bitmap): ByteArray? {
         contactPhotoKept(bytes)?.let { return it }
     }
     return null
+}
+
+
+/** Zoom runs from the circle just filled by the short side (1) to this many times closer. */
+private const val MAX_ZOOM = 4f
+
+/**
+ * Move and scale: the photo under a circle (what everyone will see), moved
+ * by dragging and zoomed by pinching or by the slider. Use photo gives the
+ * square that circle covers; the avatar shows it in a circle.
+ */
+@Composable
+private fun PhotoCropDialog(source: Bitmap, onCancel: () -> Unit, onUse: (Bitmap) -> Unit) {
+    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val image = remember(source) { source.asImageBitmap() }
+        var zoom by remember { mutableFloatStateOf(1f) }
+        // The photo's own point under the circle's centre, in the photo's pixels.
+        var centre by remember { mutableStateOf(Offset(source.width / 2f, source.height / 2f)) }
+        // The circle's diameter on screen and the scale at which the photo's short side fills it, set as it's laid out.
+        var diameter by remember { mutableFloatStateOf(1f) }
+        val base = diameter / minOf(source.width, source.height)
+        fun held(c: Offset, z: Float): Offset {
+            val half = diameter / 2f / (base * z)
+            return Offset(c.x.coerceIn(half, source.width - half), c.y.coerceIn(half, source.height - half))
+        }
+        Column(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding()) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = EdgeButton.inset), verticalAlignment = Alignment.CenterVertically) {
+                EdgeIconButton(Icons.close, "Cancel", onCancel, tint = Color.White)
+                Text("Move and scale", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).semantics { heading() })
+            }
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                val density = LocalDensity.current
+                val w = with(density) { maxWidth.toPx() }
+                val h = with(density) { maxHeight.toPx() }
+                diameter = minOf(w - with(density) { 48.dp.toPx() }, h - with(density) { 24.dp.toPx() }).coerceAtLeast(1f)
+                Canvas(
+                    Modifier.fillMaxSize()
+                        .pointerInput(source) {
+                            detectTransformGestures { _, pan, gestureZoom, _ ->
+                                val z = (zoom * gestureZoom).coerceIn(1f, MAX_ZOOM)
+                                centre = held(Offset(centre.x - pan.x / (base * z), centre.y - pan.y / (base * z)), z)
+                                zoom = z
+                            }
+                        }
+                        .semantics { contentDescription = "Your photo. Drag to move, pinch to zoom" },
+                ) {
+                    val s = base * zoom
+                    val middle = Offset(size.width / 2f, size.height / 2f)
+                    drawImage(
+                        image, dstOffset = IntOffset((middle.x - centre.x * s).roundToInt(), (middle.y - centre.y * s).roundToInt()),
+                        dstSize = IntSize((source.width * s).roundToInt(), (source.height * s).roundToInt()),
+                    )
+                    // Dim everything but the circle: the photo itself stays clear inside it (a Clear blend would cut the photo out too).
+                    val dim = androidx.compose.ui.graphics.Path().apply {
+                        fillType = androidx.compose.ui.graphics.PathFillType.EvenOdd
+                        addRect(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
+                        addOval(androidx.compose.ui.geometry.Rect(middle, diameter / 2f))
+                    }
+                    drawPath(dim, Color(0xCC080807))
+                    drawCircle(Color.White, radius = diameter / 2f, center = middle, style = Stroke(2.dp.toPx()))
+                }
+                Text(
+                    "Drag to move · pinch to zoom", color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+                )
+            }
+            Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("−", color = Color.White, fontSize = 22.sp)
+                    Slider(
+                        value = zoom, onValueChange = { z -> zoom = z; centre = held(centre, z) },
+                        valueRange = 1f..MAX_ZOOM, modifier = Modifier.weight(1f).semantics { contentDescription = "Zoom" },
+                        colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.3f)),
+                    )
+                    Text("+", color = Color.White, fontSize = 22.sp)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlineButton("Cancel", onCancel, Modifier.weight(1f), tint = Color.White, edge = Color.White.copy(alpha = 0.6f))
+                    PrimaryButton("Use photo", {
+                        val half = diameter / 2f / (base * zoom)
+                        val side = (half * 2).roundToInt().coerceIn(1, minOf(source.width, source.height))
+                        val left = (centre.x - half).roundToInt().coerceIn(0, source.width - side)
+                        val top = (centre.y - half).roundToInt().coerceIn(0, source.height - side)
+                        onUse(Bitmap.createBitmap(source, left, top, side, side))
+                    }, Modifier.weight(1f))
+                }
+            }
+        }
+    }
 }

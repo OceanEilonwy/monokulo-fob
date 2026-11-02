@@ -2564,11 +2564,11 @@ impl Wallet {
         let profile = state.profile.profile().cloned().ok_or_else(|| FobError::Profile("Set up your profile first.".into()))?;
         let share = state.profile.get(id).ok_or_else(|| FobError::Profile("That share was deleted.".into()))?;
         if !self.can_touch(share) {
-            return Err(FobError::Profile("Touch phones works on a new Share my profile only.".into()));
+            return Err(FobError::Profile("NFC works on a new Share my profile only.".into()));
         }
         let session = Arc::new(swap::Session::new(
             self.network(),
-            &uri::profile_uri(&share.address, &profile.name, profile.photo.as_deref()),
+            &profile::swap_code(&profile, share),
             share.subaddress,
             share.address.clone(),
         )?);
@@ -2611,6 +2611,14 @@ impl Wallet {
         Some((share.clone(), profile::code(state.profile.profile()?, share), self.can_touch(share)))
     }
 
+    /// A share's code as Meet's second one, after the other phone's was
+    /// scanned (marked as a reply, so scanning it finishes the meeting).
+    pub async fn share_reply_code(&self, id: u64) -> Option<String> {
+        let state = self.inner.state.lock().await;
+        let share = state.profile.get(id)?;
+        Some(profile::reply_code(state.profile.profile()?, share))
+    }
+
     /// Copy link or Share pressed on a share's screen: kept as that kind.
     /// Its address is now with whoever gets the link, so a swap running on
     /// it ends at once.
@@ -2622,6 +2630,11 @@ impl Wallet {
             session.end();
         }
         self.change_profile(|book| Ok(book.went_out(id, kind))).await.map(|_| ())
+    }
+
+    /// Meet's QR code tab finished with `name`: share `id` is kept as met.
+    pub async fn share_met(&self, id: u64, name: &str) -> Result<()> {
+        self.change_profile(|book| Ok(book.met(id, name.to_owned()))).await.map(|_| ())
     }
 
     /// Your shares, newest first, each with what came to its address.
@@ -2641,7 +2654,9 @@ impl Wallet {
     /// Checked again here, whatever the screen showed: a profile whose
     /// address is a contact's is never added beside it (Update is the way),
     /// and one whose name is (or looks like) a contact's only once asked.
-    pub async fn add_contact_from_profile(&self, text: &str, as_new: bool) -> Result<Contact> {
+    /// `met`: it came from Meet (a touch, or both codes), so they have our
+    /// address too; otherwise the contact is half set up.
+    pub async fn add_contact_from_profile(&self, text: &str, as_new: bool, met: bool) -> Result<Contact> {
         let code = uri::parse_profile(self.network(), text)?;
         self.change_contacts(|book, network, _| {
             if let Some(owner) = book.owner(&code.address) {
@@ -2650,18 +2665,21 @@ impl Wallet {
             if let Some(named) = book.named(&code.name).filter(|_| !as_new) {
                 return Err(FobError::Contact(format!("You have a contact named {}: choose Update or Add as new contact.", named.name)));
             }
-            book.add(network, profile::new_contact(&code), now())
+            let added = book.add(network, profile::new_contact(&code), now())?;
+            if met { Ok(added) } else { book.set_half(added.id, true) }
         })
         .await
     }
 
     /// "Update Sam" on a scanned profile, once asked: the contact takes its
     /// name, photo and address as the send address.
-    pub async fn update_contact_from_profile(&self, id: u64, text: &str) -> Result<Contact> {
+    /// `met`: it came from Meet, so the contact is no longer half set up.
+    pub async fn update_contact_from_profile(&self, id: u64, text: &str, met: bool) -> Result<Contact> {
         let code = uri::parse_profile(self.network(), text)?;
         self.change_contacts(|book, network, paid| {
             let contact = book.get(id).ok_or_else(|| FobError::Contact("That contact was deleted.".into()))?;
-            book.edit(network, id, profile::updated(contact, &code), paid)
+            let edited = book.edit(network, id, profile::updated(contact, &code), paid)?;
+            if met { book.set_half(id, false) } else { Ok(edited) }
         })
         .await
     }
@@ -4759,7 +4777,7 @@ mod tests {
         let (first, code) = wallet.share_profile().await.unwrap();
         let (second, _) = wallet.share_profile().await.unwrap();
         assert_eq!((first.subaddress, second.subaddress), (2, 3));
-        assert_eq!(code, uri::profile_uri(&address(2), "Henry", Some(&webp(300))));
+        assert_eq!(code, uri::profile_uri(&address(2), "Henry", None), "a shown code carries no photo");
         // Receive keeps its own address, and New address never gives a share's.
         assert_eq!(wallet.receive_address().await.unwrap(), own);
         assert_eq!(wallet.new_receive_address().await.unwrap(), address(4));
@@ -4769,14 +4787,17 @@ mod tests {
         wallet.inner.state.lock().await.outputs.push(Owned { subaddress: 2, ..received("via", t - 60, XMR / 4) });
         let days = wallet.lists(clock).await.days;
         let rows: Vec<_> = days[0].rows.iter().map(|r| (r.title.as_str(), r.share, r.amount.as_str())).collect();
-        assert_eq!(rows.iter().filter(|r| r.0 == "Shared your profile").count(), 2, "{rows:?}");
+        assert!(rows.iter().all(|r| !r.0.starts_with("Shared your") && !r.0.starts_with("Met")), "shares nobody took aren't in Activity: {rows:?}");
+        wallet.share_met(second.id, "Sam").await.unwrap();
+        let met = wallet.lists(clock).await.days[0].rows.iter().filter(|r| r.share == Some(second.id)).map(|r| r.title.clone()).collect::<Vec<_>>();
+        assert_eq!(met, ["Met Sam"]);
         let via = days[0].rows.iter().find(|r| r.title == "Via your profile").unwrap();
         let shared = activity::time_of_day(activity::local(first.created, clock).1, clock);
         assert!(via.line.starts_with(&format!("Shared {shared} · ")), "{}", via.line);
         let detail = wallet.payment("via", clock).await.unwrap();
         assert_eq!(detail.party.as_deref(), Some("Address 2 · via your profile"));
         let lines = wallet.profile_shares(clock).await;
-        assert_eq!(lines.iter().map(|l| (l.title.as_str(), l.received.as_str())).collect::<Vec<_>>(), [("Code shown", "nothing yet"), ("Link copied", "+0.25 XMR")]);
+        assert_eq!(lines.iter().map(|l| (l.title.as_str(), l.received.as_str())).collect::<Vec<_>>(), [("Met Sam", "nothing yet"), ("Link copied", "+0.25 XMR")]);
 
         // Kept in the file; a share's code again is the profile as it is now.
         let again = Wallet::open(&path, [1; 32]).unwrap();
@@ -4837,7 +4858,7 @@ mod tests {
         assert_eq!(henry.profile_shares(clock).await.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Touched phones with Sam"]);
         // Adding Sam goes the way a scanned profile does, asking when he clashes.
         let text = uri::profile_uri(&got.code.address, &got.code.name, got.code.photo.as_deref());
-        sam.add_contact_from_profile(&text, false).await.unwrap();
+        sam.add_contact_from_profile(&text, false, false).await.unwrap();
         let (_, again) = share_and_swap(&sam).await;
         let (_, ours) = share_and_swap(&henry).await;
         touch(&again, &ours);
@@ -4926,36 +4947,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_contact_scanned_on_its_own_is_half_set_up_until_met() {
+        let wallet = Wallet::create(&dir("profile-half"), [1; 32], Network::Stagenet).unwrap();
+        let other = Keys::generate(Network::Stagenet).keys;
+        let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
+        let code = uri::profile_uri(&other.address(4), "Ana", None);
+        let ana = wallet.add_contact_from_profile(&code, false, false).await.unwrap();
+        assert!(wallet.contact_card(ana.id, clock).await.unwrap().half.is_some());
+        // Meeting (a touch, or both codes) clears it, whether Meet updates or opens them.
+        let newer = uri::profile_uri_with(&other.address(9), "Ana", None, true);
+        assert!(uri::parse_profile(Network::Stagenet, &newer).unwrap().reply);
+        wallet.update_contact_from_profile(ana.id, &newer, true).await.unwrap();
+        assert!(wallet.contact_card(ana.id, clock).await.unwrap().half.is_none());
+        // Added by Meet, never half set up.
+        let sam = wallet.add_contact_from_profile(&uri::profile_uri(&other.address(5), "Sam", None), false, true).await.unwrap();
+        assert!(wallet.contact_card(sam.id, clock).await.unwrap().half.is_none());
+        // The mark survives the wallet file.
+        let ben = wallet.add_contact_from_profile(&uri::profile_uri(&other.address(6), "Ben", None), false, false).await.unwrap();
+        assert!(wallet.contact(ben.id).await.unwrap().half);
+    }
+
+    #[tokio::test]
     async fn a_scanned_profile_adds_a_contact_or_updates_one_only_when_asked() {
         let wallet = Wallet::create(&dir("profile-scan"), [1; 32], Network::Stagenet).unwrap();
         let other = Keys::generate(Network::Stagenet).keys;
         let code = uri::profile_uri(&other.address(4), "Henry", Some(&webp(200)));
         let scanned = wallet.scanned_profile(&code).await.unwrap();
         assert!(scanned.clash.is_none());
-        let henry = wallet.add_contact_from_profile(&code, false).await.unwrap();
+        let henry = wallet.add_contact_from_profile(&code, false, false).await.unwrap();
         assert_eq!((henry.name.as_str(), henry.send_address.clone(), henry.photo.clone()), ("Henry", Some(other.address(4)), Some(webp(200))));
         // Scanned again from a new share: the same name, a new address. Nothing changes until Update.
         let newer = uri::profile_uri(&other.address(9), "Henry", None);
         let clash = wallet.scanned_profile(&newer).await.unwrap().clash.unwrap();
         assert_eq!((clash.contact.id, clash.changes.len()), (henry.id, 1));
         assert_eq!(wallet.contact(henry.id).await.unwrap().send_address, Some(other.address(4)));
-        let updated = wallet.update_contact_from_profile(henry.id, &newer).await.unwrap();
+        let updated = wallet.update_contact_from_profile(henry.id, &newer, false).await.unwrap();
         assert_eq!((updated.send_address, updated.photo), (Some(other.address(9)), Some(webp(200))));
         // Rust asks too, whatever the screen did: the same name only once asked; a contact's address never.
         let elsewhere = uri::profile_uri(&other.address(11), "Henry", None);
-        assert!(wallet.add_contact_from_profile(&elsewhere, false).await.is_err());
+        assert!(wallet.add_contact_from_profile(&elsewhere, false, false).await.is_err());
         let lookalike = uri::profile_uri(&other.address(12), "Hen\u{200b}ry", None);
-        assert!(wallet.add_contact_from_profile(&lookalike, false).await.is_err());
-        let refused = wallet.add_contact_from_profile(&newer, true).await.unwrap_err().to_string();
+        assert!(wallet.add_contact_from_profile(&lookalike, false, false).await.is_err());
+        let refused = wallet.add_contact_from_profile(&newer, true, false).await.unwrap_err().to_string();
         assert_eq!(refused, "That address is Henry's already: update Henry instead.");
         let renamed = uri::profile_uri(&other.address(9), "Someone else", None);
-        assert!(wallet.add_contact_from_profile(&renamed, true).await.is_err(), "an address is never two contacts' send address");
+        assert!(wallet.add_contact_from_profile(&renamed, true, false).await.is_err(), "an address is never two contacts' send address");
         assert_eq!(wallet.contacts("", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 1);
         // Add as new contact, once asked about the name, keeps both.
-        wallet.add_contact_from_profile(&elsewhere, true).await.unwrap();
+        wallet.add_contact_from_profile(&elsewhere, true, false).await.unwrap();
         assert_eq!(wallet.contacts("henry", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 2);
         assert!(wallet.scanned_profile(&format!("monero:{}", other.address(4))).await.is_err());
-        assert!(wallet.update_contact_from_profile(99, &newer).await.is_err());
+        assert!(wallet.update_contact_from_profile(99, &newer, false).await.is_err());
     }
 
     #[tokio::test]

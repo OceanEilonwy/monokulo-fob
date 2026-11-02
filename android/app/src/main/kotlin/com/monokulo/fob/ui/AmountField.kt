@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,7 +60,7 @@ private const val SWAP = "M7 4v14M3 14l4 4 4-4 M17 20V6M13 10l4-4 4 4"
  * converts what's typed (Rust too). Without a price there's no chip.
  */
 @Composable
-fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, onSwitch: () -> Unit, modifier: Modifier = Modifier, placeholder: String = "") {
+fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, onSwitch: () -> Unit, modifier: Modifier = Modifier, placeholder: String = "", showRate: Boolean = true, optional: Boolean = false) {
     // Each tap turns the arrows another half turn, the same way round.
     var turns by rememberSaveable { mutableIntStateOf(0) }
     val spin by animateFloatAsState(turns * 180f, tween(260, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)), label = "swap")
@@ -69,7 +71,8 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
     Column(modifier.fillMaxWidth().bringIntoViewRequester(whole), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(Fob.card)
-                .border(1.dp, Fob.outline, RoundedCornerShape(16.dp)).padding(start = 16.dp, end = 8.dp),
+                .then(if (optional) Modifier.optionalOutline(value.isNotBlank()) else Modifier.border(1.dp, Fob.outline, RoundedCornerShape(16.dp)))
+                .padding(start = 16.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             entry?.sign?.let { sign ->
@@ -93,7 +96,7 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
             )
             if (entry != null && entry.canSwitch) {
                 Row(
-                    Modifier.minimumInteractiveComponentSize().height(44.dp).clip(RoundedCornerShape(22.dp)).background(Fob.orange)
+                    Modifier.minimumInteractiveComponentSize().height(44.dp).clip(RoundedCornerShape(10.dp)).background(Fob.orange)
                         .clickable(role = Role.Button) { turns++; onSwitch() }
                         .semantics { entry.switchLabel?.let { contentDescription = it } }
                         .padding(start = 16.dp, end = 14.dp),
@@ -106,7 +109,59 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
         }
         // Its line always laid out, empty when Rust has nothing to say, so what's under the field never moves as one
         // comes or goes ("That isn't an amount", a price coming).
-        val line = entry?.line
-        Text(line ?: "", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp).then(if (line == null) Modifier.clearAndSetSemantics {} else Modifier))
+        // Without [showRate], the "1 XMR = $166.10" part is left off: "≈ 0.1204 XMR · 1 XMR = $166.10" is "≈ 0.1204 XMR".
+        val line = entry?.line?.let { l -> if (showRate) l else l.substringBefore(" · 1 XMR =").takeUnless { it.startsWith("1 XMR =") }?.ifBlank { null } }
+        if (showRate || line != null) Text(line ?: "", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp).then(if (line == null) Modifier.clearAndSetSemantics {} else Modifier))
+    }
+}
+
+/**
+ * The amount, big and centred (Receive): the sign and what's typed at 44 sp, and under it Rust's conversion line
+ * with the orange unit chip that switches it. Without a price there's no chip.
+ */
+@Composable
+fun BigAmount(value: String, onChange: (String) -> Unit, entry: AmountEntry?, onSwitch: () -> Unit, modifier: Modifier = Modifier) {
+    var turns by rememberSaveable { mutableIntStateOf(0) }
+    val spin by animateFloatAsState(turns * 180f, tween(260, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)), label = "swap")
+    val style = TextStyle(fontFamily = Manrope, fontWeight = FontWeight.Bold, fontSize = 44.sp, color = Fob.ink, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    val whole = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    Column(modifier.fillMaxWidth().bringIntoViewRequester(whole), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+            entry?.sign?.let { sign ->
+                Text(
+                    sign, style = style.copy(color = Fob.muted, fontFamily = if (entry.inFiat) Manrope else FontFamily.Default, fontSize = 30.sp),
+                    modifier = Modifier.padding(end = 4.dp).clearAndSetSemantics {},
+                )
+            }
+            BasicTextField(
+                value = value, onValueChange = onChange, singleLine = true, textStyle = style, cursorBrush = SolidColor(Fob.orange),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.width(androidx.compose.foundation.layout.IntrinsicSize.Min).widthIn(min = 56.dp).semantics { entry?.let { contentDescription = it.label } }
+                    .onFocusChanged { if (it.isFocused) scope.launch { delay(350); whole.bringIntoView() } },
+                decorationBox = { field ->
+                    Box(contentAlignment = Alignment.Center) {
+                        if (value.isEmpty()) Text("0", style = style.copy(color = Fob.muted.copy(alpha = 0.6f)))
+                        field()
+                    }
+                },
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(min = 44.dp)) {
+            val line = entry?.line?.substringBefore(" · 1 XMR =")?.takeUnless { it.startsWith("1 XMR =") }?.ifBlank { null }
+            if (line != null) Text(line, color = Fob.muted, fontSize = 14.sp)
+            if (entry != null && entry.canSwitch) {
+                Row(
+                    Modifier.minimumInteractiveComponentSize().height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.orange)
+                        .clickable(role = Role.Button) { turns++; onSwitch() }
+                        .semantics { entry.switchLabel?.let { contentDescription = it } }
+                        .padding(start = 14.dp, end = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(entry.unit, color = Fob.onOrange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Box(Modifier.rotate(spin)) { StrokeIcon(SWAP, tint = Fob.onOrange, size = 15.dp) }
+                }
+            }
+        }
     }
 }

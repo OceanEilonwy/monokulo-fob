@@ -23,11 +23,11 @@ import uniffi.fob.Balance
 import uniffi.fob.BackupReminder
 import uniffi.fob.SplitView
 import uniffi.fob.Coins
+import uniffi.fob.Contact
 import uniffi.fob.ContactCard
 import uniffi.fob.ContactRow
 import uniffi.fob.FobWallet
 import uniffi.fob.Network
-import uniffi.fob.MadeRequest
 import uniffi.fob.NotReady
 import uniffi.fob.PaidBefore
 import uniffi.fob.RequestDetail
@@ -46,6 +46,7 @@ import uniffi.fob.ReceiveAddress
 import uniffi.fob.Profile
 import uniffi.fob.ProfileRow
 import uniffi.fob.ProfileShare
+import uniffi.fob.ScannedProfile
 import uniffi.fob.ShareLine
 import uniffi.fob.Swapped
 import uniffi.fob.TouchSwap
@@ -131,6 +132,26 @@ class WalletModel(private val app: Application) {
     fun setTheme(choice: ThemeChoice) {
         prefs.edit().putString("theme", choice.name).apply()
         _theme.value = choice
+    }
+
+    /**
+     * NFC (Settings), two switches, each on unless turned off (and each starting from the one switch an earlier version had):
+     * Meet swaps profiles by holding phones together; Payments sends and receives by holding them together. Either uses NFC
+     * only while one of its screens is open.
+     */
+    private val _meetNfc = MutableStateFlow(prefs.getBoolean("nfc_meet", prefs.getBoolean("touch", true)))
+    val meetNfc: StateFlow<Boolean> = _meetNfc
+    private val _payNfc = MutableStateFlow(prefs.getBoolean("nfc_pay", prefs.getBoolean("touch", true)))
+    val payNfc: StateFlow<Boolean> = _payNfc
+
+    fun setMeetNfc(on: Boolean) {
+        prefs.edit().putBoolean("nfc_meet", on).apply()
+        _meetNfc.value = on
+    }
+
+    fun setPayNfc(on: Boolean) {
+        prefs.edit().putBoolean("nfc_pay", on).apply()
+        _payNfc.value = on
     }
 
     private val _status = MutableStateFlow<SyncStatus?>(null)
@@ -619,18 +640,7 @@ class WalletModel(private val app: Application) {
         return result
     }
 
-    /**
-     * Makes a request (Share on Receive, never just opening it): a
-     * new address for [contact] or no one, asking [amount] (in money when
-     * [inFiat]) with [note]. Throws what Rust refused. Activity shows it.
-     */
-    suspend fun makeRequest(contact: ULong?, amount: String, inFiat: Boolean, note: String): MadeRequest {
-        val made = requireNotNull(_wallet.value).makeRequest(contact, amount.ifBlank { null }, inFiat, note.ifBlank { null })
-        refresh()
-        return made
-    }
-
-    /** A request's own screen, every word from Rust; null once it's deleted. */
+        /** A request's own screen, every word from Rust; null once it's deleted. */
     suspend fun request(id: ULong): RequestDetail? {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
@@ -681,6 +691,23 @@ class WalletModel(private val app: Application) {
         scope.launch { runCatching { endSwap(swap) } }
     }
 
+    /**
+     * Saves a profile met by touch or by code (Meet): a new contact, or the one with that address when nothing
+     * would change, either way not half set up (they have our address too). A profile that would change a contact
+     * (a name that matches, a new address) isn't saved: [Met.Ask] returns it to be asked about, as decision 5 says.
+     */
+    suspend fun meetSave(text: String): Met {
+        val wallet = requireNotNull(_wallet.value)
+        val found = wallet.scannedProfile(text)
+        val clash = found.clash
+        val contact = when {
+            clash == null -> changeContacts { it.addContactFromProfile(text, false, true) }
+            clash.changes.isEmpty() -> changeContacts { it.updateContactFromProfile(clash.contact.id, text, true) }
+            else -> return Met.Ask(found)
+        }
+        return Met.Saved(contact, found)
+    }
+
     /** A split for the confirm screen: [counts] pieces of each of Rust's notes. */
     suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)
 
@@ -707,6 +734,12 @@ class WalletModel(private val app: Application) {
         /** The least time the price toast says "Trying again…". */
         const val RETRY_SHOWN_MS = 800L
     }
+}
+
+/** What Meet did with a profile: saved a contact, or found one it must ask about first. */
+sealed interface Met {
+    data class Saved(val contact: Contact, val found: ScannedProfile) : Met
+    data class Ask(val found: ScannedProfile) : Met
 }
 
 /** Your profile (null before it's set up) and its row's words: "Your profile", or "Add a shareable Fob contact". */

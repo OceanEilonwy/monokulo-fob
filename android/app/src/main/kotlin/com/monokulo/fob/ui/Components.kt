@@ -71,6 +71,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalDensity
@@ -118,7 +119,6 @@ object Icons {
     const val share = "M12 15V4M7 8l5-5 5 5M5 13v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-6"
     const val warning = "M12 3l9.5 17h-19L12 3Z M12 10v4.5 M12 17.5v.5"
     const val check = "M5 12.5l4.5 4.5L19 7.5"
-    const val expand = "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"
     const val plus = "M12 5v14M5 12h14"
     /** A circling arrow: check the node again. */
     const val refresh = "M20 11a8 8 0 1 0-2.3 5.7 M20 4v7h-7"
@@ -140,6 +140,14 @@ object Icons {
     const val person = "M8.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M5.5 19.5c0.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5"
     /** Two links of a chain: a share's link copied or shared. */
     const val link = "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"
+    /** A person with waves coming off them: Meet (drawn at stroke 2). */
+    const val meet = "M4.5 7.5a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0Z M2.5 20c.5-3.6 2.7-5.5 5.5-5.5s5 1.9 5.5 5.5 M16 9a4 4 0 0 1 0 6 M19.2 6.5a8 8 0 0 1 0 11"
+    /** Three waves: NFC is on and listening (Receive, Send). */
+    const val nfc = "M7 8a6 6 0 0 1 0 8 M11 5.5a10 10 0 0 1 0 13 M15 3a14 14 0 0 1 0 18"
+    /** The same three waves, one each, to light in turn. */
+    val nfcWaves = listOf("M7 8a6 6 0 0 1 0 8", "M11 5.5a10 10 0 0 1 0 13", "M15 3a14 14 0 0 1 0 18")
+    /** Two arrows the other way each: Met, the two of you. */
+    const val swap = "M4 8h15 M15 4l4 4-4 4 M20 16H5 M9 12l-4 4 4 4"
     /** A phone with waves (drawn at stroke 1.8): touch phones, and a share made that way. */
     const val touch = "M7 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M18.5 8.5a5 5 0 0 1 0 7 M20.8 6.2a8.2 8.2 0 0 1 0 11.6"
     /** A payment code, drawn loose: a request in Activity. */
@@ -532,32 +540,36 @@ val PatternBadgeSize = 50.dp
  * or its quiet zone.
  */
 @Composable
-fun PatternBadge(address: String, modifier: Modifier = Modifier) {
-    Box(modifier.size(PatternBadgeSize).clip(CircleShape).background(Fob.paper), contentAlignment = Alignment.Center) {
-        AddressPattern(address, PatternBadgeSize - 6.dp)
+fun PatternBadge(address: String, modifier: Modifier = Modifier, size: Dp = PatternBadgeSize, ring: Color = Fob.paper, inverted: Boolean = false) {
+    Box(modifier.size(size).clip(RoundedCornerShape(size * 0.24f)).background(ring), contentAlignment = Alignment.Center) {
+        AddressPattern(address, size - 6.dp, inverted = inverted)
     }
 }
 
 /**
- * An address's pattern, as Rust derives it: a round white badge with dots
+ * An address's pattern, as Rust derives it: a white rounded square with dots
  * on a 5 × 5 grid (66% of the badge, centred, so the corners stay inside),
  * each dot 84% of its cell. Only Fob draws it; it has no words.
  */
 @Composable
-fun AddressPattern(address: String, size: Dp, modifier: Modifier = Modifier) {
+fun AddressPattern(address: String, size: Dp, modifier: Modifier = Modifier, inverted: Boolean = false) {
     val pattern = remember(address) { addressPattern(address) }
-    val (badge, edge) = Fob.patternBadge to Fob.line
+    // Inverted (over the full-screen code's white): a dark badge, its dots the same colours lightened to show on it.
+    val (badge, edge) = (if (inverted) Fob.qrDark else Fob.patternBadge) to (if (inverted) Fob.qrDark else Fob.line)
     Canvas(modifier.size(size).semantics { contentDescription = "Address pattern" }) {
         val side = this.size.width
-        drawCircle(badge)
-        drawCircle(edge, style = Stroke(1.dp.toPx()), radius = side / 2 - 0.5.dp.toPx())
-        patternDots(pattern, center, side * 0.66f)
+        // Corners as the code card's: a rounded square.
+        val corner = androidx.compose.ui.geometry.CornerRadius(side * 0.22f)
+        drawRoundRect(badge, cornerRadius = corner)
+        drawRoundRect(edge, topLeft = Offset(0.5.dp.toPx(), 0.5.dp.toPx()), size = Size(side - 1.dp.toPx(), side - 1.dp.toPx()), cornerRadius = corner, style = Stroke(1.dp.toPx()))
+        patternDots(pattern, center, side * 0.66f, inverted)
     }
 }
 
 /** A pattern's dots on a 5 × 5 grid [grid] wide around [centre], each dot 84% of its cell, in the pattern's colour. */
-private fun DrawScope.patternDots(pattern: uniffi.fob.AddressPattern, centre: Offset, grid: Float) {
-    val colour = Fob.patternColours[pattern.colour.toInt() % Fob.patternColours.size]
+private fun DrawScope.patternDots(pattern: uniffi.fob.AddressPattern, centre: Offset, grid: Float, inverted: Boolean = false) {
+    val base = Fob.patternColours[pattern.colour.toInt() % Fob.patternColours.size]
+    val colour = if (inverted) androidx.compose.ui.graphics.lerp(base, Color.White, 0.55f) else base
     val cell = grid / 5
     val start = Offset(centre.x - grid / 2, centre.y - grid / 2)
     for (row in 0 until 5) for (column in 0 until 5) {
@@ -817,5 +829,23 @@ fun LabelAndValue(modifier: Modifier = Modifier, gap: Dp = 14.dp, centred: Boole
                 vp.placeRelative(width - vp.width, if (centred) (height - vp.height) / 2 else 0)
             }
         }
+    }
+}
+
+/**
+ * An optional input's outline: dashed while it is empty, solid once it is filled in. Drawn inside the field's shape
+ * ([corner] its radius), over the field's background.
+ */
+@Composable
+fun Modifier.optionalOutline(filled: Boolean, corner: Dp = 16.dp): Modifier {
+    val colour = if (filled) Fob.muted.copy(alpha = 0.6f) else Fob.outline
+    return this.drawBehind {
+        val width = 1.dp.toPx()
+        val inset = width / 2
+        drawRoundRect(
+            colour, topLeft = Offset(inset, inset), size = Size(size.width - width, size.height - width),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner.toPx() - inset),
+            style = Stroke(width, pathEffect = if (filled) null else androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))),
+        )
     }
 }

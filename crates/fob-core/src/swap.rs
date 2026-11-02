@@ -47,9 +47,9 @@ pub const AID: [u8; 8] = [0xF0, b'F', b'O', b'B', b'S', b'W', b'A', b'P'];
 /// The frame's first byte; another means another Fob.
 pub const VERSION: u8 = 1;
 /// The longest profile code a frame carries. The largest Fob makes (a
-/// 95-character subaddress, a 120-byte name, a 1536-byte photo) is 2544
-/// bytes.
-pub const CODE_MAX: usize = 3000;
+/// 95-character subaddress, a 120-byte name, an 8192-byte photo) is a
+/// little under 11,300 bytes, about 47 chunks.
+pub const CODE_MAX: usize = 12_000;
 /// The most bytes of a frame in one command or one answer.
 pub const CHUNK: usize = 240;
 /// Version, length and checksum.
@@ -678,7 +678,7 @@ mod tests {
     fn one_touch_gives_each_phone_the_other_s_profile() {
         let (henry, sam) = (Keys::generate(Network::Stagenet).keys, Keys::generate(Network::Stagenet).keys);
         let big = largest(&henry);
-        assert_eq!(big.len(), 2544);
+        assert!(big.len() > 11_000 && big.len() <= CODE_MAX, "{}", big.len());
         let small = uri::profile_uri(&sam.address(3), "Sam", None);
         // Largest each way, and one much shorter than the other both ways.
         for (a, b) in [(big.clone(), big.clone()), (big.clone(), small.clone()), (small.clone(), big.clone()), (small.clone(), small.clone())] {
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(a.code().unwrap(), "monero:abc");
         assert_eq!(a.push(b"x"), Err(Problem::Garbled), "more after the end");
         // Says more than the cap, or carries more than it says.
-        assert_eq!(Assembly::default().push(&[VERSION, 0x0B, 0xB9]), Err(Problem::Garbled));
+        assert_eq!(Assembly::default().push(&[VERSION, 0x2E, 0xE1]), Err(Problem::Garbled));
         assert_eq!(Assembly::default().push(&[VERSION, 0, 1, 0, 0, 0, 0, b'a', b'b']), Err(Problem::Garbled));
         assert_eq!(Assembly::default().push(&[2, 0, 1]), Err(Problem::Version));
         let mut flipped = f.clone();

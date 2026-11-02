@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -64,8 +65,9 @@ import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
-import com.monokulo.fob.You
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.rememberPayReading
+import com.monokulo.fob.ui.rememberTouchState
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.EdgeButton
 import com.monokulo.fob.ui.EdgeIconButton
@@ -90,7 +92,7 @@ import uniffi.fob.NotReady
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
+fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confirmIdentity: suspend (String) -> Boolean, identityPending: () -> Boolean) {
     val wallet by model.wallet.collectAsState()
     val balance by model.balance.collectAsState()
     val activity by model.activity.collectAsState()
@@ -98,7 +100,6 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val notReady by model.notReady.collectAsState()
     val prices by model.prices.collectAsState()
     val network by model.network.collectAsState()
-    val you by model.you.collectAsState()
     val synced = status?.synced == true
     val canSpend = wallet?.canSpend() != false
     val scope = rememberCoroutineScope()
@@ -113,6 +114,12 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
         }
     }
 
+    // Touch to pay, the reader: a phone on Receive held to this one raises the pay drawer with what it asks.
+    val touch = rememberTouchState(model)
+    var payCode by remember { mutableStateOf<String?>(null) }
+    var touchNotice by remember { mutableStateOf<String?>(null) }
+    rememberPayReading(model, touch, enabled = canSpend && payCode == null, onProblem = { touchNotice = it }) { code -> touchNotice = null; payCode = code }
+    Box(Modifier.fillMaxSize()) {
     Page(refreshing = refreshing, onRefresh = {
         refreshing = true
         scope.launch {
@@ -122,8 +129,8 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     }) {
         // Tapping the chip opens Rust's details card under it, Node settings on it.
         var syncOpen by rememberSaveable { mutableStateOf(false) }
-        // Your photo opens Your profile, which goes on to setting one up while there's none (as Settings' row does).
-        TopBar(network == Network.STAGENET, you, onYou = { nav.go(Screen.Profile) }, onSettings = { nav.go(Screen.Settings) }) {
+        // Meet takes the place your photo had, beside the cog; your profile is in Settings.
+        TopBar(network == Network.STAGENET, onMeet = { nav.go(Screen.Meet) }, onSettings = { nav.go(Screen.Settings) }) {
             SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails) { nav.go(Screen.Node) }
         }
 
@@ -207,6 +214,8 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 Text("Still finding older ones", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             }
         }
+    }
+    payCode?.let { code -> PayDrawer(model, nav, code, confirmIdentity, onClose = { payCode = null }) }
     }
 }
 
@@ -299,14 +308,14 @@ private fun Chip(icon: String, label: String, onClick: () -> Unit) {
  * the badge stay as far as they fit.
  */
 @Composable
-private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
+private fun TopBar(stagenet: Boolean, onMeet: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
     Layout(
         content = {
             Box(Modifier.layoutId("mark")) { FobMark(26.dp) }
             Text("Fob", style = display(22), maxLines = 1, modifier = Modifier.layoutId("word"))
             if (stagenet) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.layoutId("badge").clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
             Box(Modifier.layoutId("chip")) { chip() }
-            YouButton(you, onYou, Modifier.layoutId("you"))
+            MeetButton(onMeet, Modifier.layoutId("you"))
             EdgeIconButton(Icons.gear, "Settings", onSettings, Modifier.layoutId("cog"), width = 1.8f)
         },
         modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = EdgeButton.inset).heightIn(min = 64.dp),
@@ -347,26 +356,15 @@ private fun TopBar(stagenet: Boolean, you: You?, onYou: () -> Unit, onSettings: 
     }
 }
 
-/**
- * Your photo (or initial) at 40dp in a 56dp edge button, or a person outline in
- * a circle while there's no profile name yet, each on the page's chip colour; TalkBack reads Rust's
- * words for Settings' row, "Your profile" or "Add a shareable Fob contact".
- */
+/** Meet: the person with waves in a 40dp circle on the page's chip colour, in a 56dp edge button. */
 @Composable
-private fun YouButton(you: You?, onClick: () -> Unit, modifier: Modifier) {
-    val profile = you?.profile
+private fun MeetButton(onClick: () -> Unit, modifier: Modifier) {
     Box(
-        modifier.size(EdgeButton.target).clip(CircleShape)
-            .clickable(enabled = you != null, role = Role.Button, onClick = onClick)
-            .semantics { you?.let { contentDescription = it.row.title } },
+        modifier.size(EdgeButton.target).clip(CircleShape).clickable(role = Role.Button, onClick = onClick).semantics { contentDescription = "Meet" },
         contentAlignment = Alignment.Center,
     ) {
-        when {
-            you == null -> {}
-            profile != null && you.row.name != null -> Avatar(profile.name, profile.initial, profile.photo, EdgeButton.avatar, fill = Fob.onPaper)
-            else -> Box(Modifier.size(EdgeButton.avatar).clip(CircleShape).background(Fob.onPaper), contentAlignment = Alignment.Center) {
-                StrokeIcon(Icons.person, tint = Fob.muted, size = 22.dp, width = 1.8f)
-            }
+        Box(Modifier.size(EdgeButton.avatar).clip(CircleShape).background(Fob.onPaper), contentAlignment = Alignment.Center) {
+            StrokeIcon(Icons.meet, tint = Fob.ink, size = 22.dp, width = 1.8f)
         }
     }
 }
@@ -430,7 +428,7 @@ fun PaymentRow(row: ActivityRow, onClick: () -> Unit) {
     val a = row.activity
     val outgoing = a?.outgoing == true
     val (icon, tint) = when {
-        row.share != null -> Icons.person to Fob.muted
+        row.share != null -> Icons.meet to Fob.muted
         a == null -> Icons.request to Fob.muted
         outgoing -> Icons.up to Fob.ink
         else -> Icons.down to Fob.green

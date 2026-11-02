@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Touch phones: Fob's own application on the card side, answered only
-     while Share my profile is in front on an unlocked phone. The AID is
+     while Meet or Receive is in front on an unlocked phone. The AID is
      fob-core's swap::AID (F0 then "FOBSWAP"); a test there checks it. -->
 <host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/swap_service"
     android:requireDeviceUnlock="true">
     <aid-group android:description="@string/swap_service" android:category="other">
         <aid-filter android:name="F0464F4253574150" />
+        <!-- Touch to pay: Receive's payment code, read by Send or Home. pay::AID (F0 then "FOBPAY!"). -->
+        <aid-filter android:name="F0464F4250415921" />
+        <!-- The standard NFC Forum Type 4 tag, holding the same payment code as a monero: link, so any
+             phone's own tag reader gets it. ndef::AID. -->
+        <aid-filter android:name="D2760000850101" />
     </aid-group>
 </host-apdu-service>

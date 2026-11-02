@@ -23,9 +23,11 @@ use crate::{
 pub const NAME_MAX: usize = 40;
 /// The most characters a contact's note has.
 pub const NOTE_MAX: usize = 80;
-/// The most bytes a contact's photo takes: a 96 × 96 WebP, its quality
-/// stepped down (then made smaller) by the app until it fits.
-pub const PHOTO_MAX: usize = 1536;
+/// The most bytes a contact's photo takes: a 128 × 128 WebP, its quality
+/// stepped down (then made smaller) by the app until it fits. Photos only
+/// travel by touching phones, never in a code, so this isn't held down by
+/// what a QR code can carry.
+pub const PHOTO_MAX: usize = 8192;
 /// How many contacts Send's sheet lists.
 pub const ON_SEND: usize = 3;
 
@@ -51,6 +53,10 @@ pub struct Contact {
     /// When it was made, seconds since the epoch.
     #[serde(default)]
     pub created: u64,
+    /// Half set up: scanned from a profile code on its own, so they have
+    /// no address of yours yet. Meeting them (touch or both codes) clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub half: bool,
 }
 
 impl Contact {
@@ -435,9 +441,16 @@ impl Book {
         }
         let id = self.next_id.max(self.contacts.iter().map(|c| c.id + 1).max().unwrap_or(1)).max(1);
         self.next_id = id + 1;
-        let contact = Contact { id, name, note, photo: draft.photo, send_address, also_paid_at, created: now };
+        let contact = Contact { id, name, note, photo: draft.photo, send_address, also_paid_at, created: now, half: false };
         self.contacts.push(contact.clone());
         Ok(contact)
+    }
+
+    /// Sets or clears a contact's half set up mark.
+    pub fn set_half(&mut self, id: u64, half: bool) -> Result<Contact> {
+        let contact = self.get_mut(id)?;
+        contact.half = half;
+        Ok(contact.clone())
     }
 
     /// Changes a contact's name, note, photo and send address (its paid-at
@@ -678,6 +691,8 @@ pub struct Card {
     pub paid: Vec<Paid>,
     /// "Nothing paid to Sam yet.", when nothing was.
     pub paid_empty: Option<String>,
+    /// Half set up: the alert's title and line.
+    pub half: Option<(String, String)>,
 }
 
 /// `contact`'s card, from their requests and the payments in `rows`.
@@ -734,6 +749,7 @@ pub fn card(contact: &Contact, requests: &requests::Book, rows: &[Activity], clo
         also_note: format!("codes named {name}"),
         paid_title: if from_them { format!("Payments with {name}") } else { format!("Paid to {name}") },
         paid_empty: paid_rows.is_empty().then(|| format!("Nothing paid to {name} yet.")),
+        half: contact.half.then(|| ("Half set up".into(), format!("{name} doesn't have an address from you yet. Meet to give them one, so what they pay you shows as from {name}."))),
         paid: paid_rows,
         contact: contact.clone(),
     }
@@ -1142,7 +1158,7 @@ mod tests {
         // Another network's address, a bad photo, no name: refused, nothing added.
         let mainnet = Keys::generate(Network::Mainnet).keys.address(0);
         assert!(matches!(book.add(Network::Stagenet, Draft { send_address: Some(mainnet), ..draft("Mum") }, NOW), Err(FobError::WrongNetwork { .. })));
-        assert!(book.add(Network::Stagenet, Draft { photo: Some(webp(2000)), ..draft("Mum") }, NOW).is_err());
+        assert!(book.add(Network::Stagenet, Draft { photo: Some(webp(PHOTO_MAX + 1)), ..draft("Mum") }, NOW).is_err());
         assert!(book.add(Network::Stagenet, draft(""), NOW).is_err());
         assert_eq!(book.all().len(), 1);
         // The same send address twice is allowed.

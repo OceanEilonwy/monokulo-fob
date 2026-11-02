@@ -1,5 +1,7 @@
 package com.monokulo.fob.ui.screens
 
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -81,13 +83,18 @@ fun fieldColors() = OutlinedTextFieldDefaults.colors(
 @Composable
 fun Field(
     value: String, onChange: (String) -> Unit, label: String, mono: Boolean = false, lines: Int = 1, hint: String? = null,
-    placeholder: String? = null, prose: Boolean = false,
+    placeholder: String? = null, prose: Boolean = false, icon: String? = null,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    // Focused, the whole field and its hint show above the keyboard once it is up.
+    val whole = androidx.compose.runtime.remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    Column(Modifier.bringIntoViewRequester(whole), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         OutlinedTextField(
             value = value, onValueChange = onChange, label = { Text(label) }, minLines = lines, singleLine = lines == 1,
             placeholder = placeholder?.let { { Text(it, color = Fob.muted) } },
-            shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth(),
+            leadingIcon = icon?.let { { StrokeIcon(it, tint = Fob.muted, size = 20.dp, width = 1.8f) } },
+            shape = RoundedCornerShape(16.dp), colors = fieldColors(),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) scope.launch { kotlinx.coroutines.delay(350); whole.bringIntoView() } },
             textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default),
             keyboardOptions = if (prose) KeyboardOptions(capitalization = KeyboardCapitalization.Sentences) else KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
         )

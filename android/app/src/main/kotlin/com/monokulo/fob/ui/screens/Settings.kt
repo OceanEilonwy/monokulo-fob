@@ -49,7 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
+import com.monokulo.fob.Nfc
 import com.monokulo.fob.WalletModel
+import com.monokulo.fob.ui.openNfcSettings
+import com.monokulo.fob.ui.rememberTouchState
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
@@ -144,6 +147,9 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     // shareable Fob contact" before there's a name), Rust's Node line (again as syncing starts or stops failing)
     // and Backup and keys' line ("Seed phrase, wallet code, keys").
     val you by model.you.collectAsState()
+    val touch = rememberTouchState(model)
+    val meetOn by model.meetNfc.collectAsState()
+    val payOn by model.payNfc.collectAsState()
     val node by model.nodeLine.collectAsState()
     val backupLine by model.backupLine.collectAsState()
     // Again as it opens: the Node screen's checks, or a screen lock set meanwhile, change them.
@@ -161,6 +167,27 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                     you?.let { ProfileSettingRow(it.row, it.profile) { nav.go(Screen.Profile) } }
                     LeadRow(Icons.people, "Contacts", "Who you pay") { nav.go(Screen.Contacts) }
                     LeadRow(Icons.key, "Backup and keys", backupLine) { openBackup() }
+                }
+            }
+            Column {
+                SectionLabel("NFC")
+                Card {
+                    SettingRow(
+                        "Meet",
+                        if (touch.nfc == Nfc.NONE) "This phone has no NFC" else "Swap profiles by holding phones together",
+                        checked = meetOn && touch.nfc != Nfc.NONE, onChecked = if (touch.nfc == Nfc.NONE) null else { on -> model.setMeetNfc(on) },
+                    )
+                    Divider()
+                    SettingRow(
+                        "Payments",
+                        if (touch.nfc == Nfc.NONE) "This phone has no NFC" else "Send and receive by holding phones together",
+                        checked = payOn && touch.nfc != Nfc.NONE, onChecked = if (touch.nfc == Nfc.NONE) null else { on -> model.setPayNfc(on) },
+                    )
+                    if (touch.nfc == Nfc.OFF) {
+                        Divider()
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        SettingRow("NFC is off on this phone", "Turn it on in Android's settings", onClick = { openNfcSettings(context) })
+                    }
                 }
             }
             Column {

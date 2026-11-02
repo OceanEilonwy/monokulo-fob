@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -118,8 +119,8 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
     val scope = rememberCoroutineScope()
     Page {
         TopBar("Contacts", onBack = { nav.back() }) {
-            // Another Fob's profile: add them in one scan.
-            EdgeIconButton(Icons.scan, "Scan a profile", { nav.go(Screen.ProfileScan) })
+            // Another Fob: swap names and addresses by touch or by two codes.
+            EdgeIconButton(Icons.meet, "Meet", { nav.go(Screen.Meet) })
             EdgeIconButton(Icons.plus, "Add a contact", { nav.go(Screen.ContactEdit()) })
         }
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -255,6 +256,24 @@ fun ContactScreen(model: WalletModel, nav: Nav, id: ULong) {
                 )
                 // Receive with them chosen; the request is made only on Share.
                 OutlineButton("Request", { nav.go(Screen.Receive(contact = id)) }, Modifier.weight(1f), height = 52.dp, leading = Icons.down)
+            }
+            // Half set up: they have no address of yours yet. Meet gives them one.
+            c.halfLine?.let { line ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Fob.warning).padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 16.dp)
+                        .semantics(mergeDescendants = true) {},
+                    verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    StrokeIcon(Icons.warning, tint = Fob.orangeText, size = 24.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(c.halfTitle ?: "Half set up", fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold)
+                        Text(line, fontSize = 15.sp, lineHeight = 21.sp)
+                    }
+                    Box(
+                        Modifier.size(44.dp).clip(CircleShape).background(Fob.orange).clickable(role = Role.Button, onClickLabel = "Meet ${contact.name}") { nav.go(Screen.Meet) },
+                        contentAlignment = Alignment.Center,
+                    ) { StrokeIcon(Icons.meet, tint = Fob.onOrange, size = 24.dp) }
+                }
             }
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.card).padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),

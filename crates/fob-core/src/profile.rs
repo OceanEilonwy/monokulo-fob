@@ -59,9 +59,17 @@ pub enum ShareKind {
     /// Swapped by touching phones (NFC), with whom; no name when ours went
     /// out whole but theirs didn't come.
     TouchedPhones { name: Option<String> },
+    /// Met by two codes (Meet's QR code tab): theirs was scanned or theirs
+    /// scanned back, and they're saved.
+    Met { name: String },
 }
 
 impl ShareKind {
+    /// Whether someone's profile came back for it: the only shares Activity lists.
+    pub fn completed(&self) -> bool {
+        matches!(self, ShareKind::TouchedPhones { name: Some(_) } | ShareKind::Met { .. })
+    }
+
     /// "Code shown", "Link copied", "Link shared", "Touched phones with Sam".
     pub fn title(&self) -> String {
         match self {
@@ -70,6 +78,7 @@ impl ShareKind {
             ShareKind::LinkShared => "Link shared".into(),
             ShareKind::TouchedPhones { name: Some(name) } => format!("Touched phones with {name}"),
             ShareKind::TouchedPhones { name: None } => "Touched phones".into(),
+            ShareKind::Met { name } => format!("Met {name}"),
         }
     }
 }
@@ -205,6 +214,16 @@ impl Book {
         Some(share.clone())
     }
 
+    /// Met by two codes, with whom: kept as that unless it already shows a meeting.
+    pub fn met(&mut self, id: u64, name: String) -> Option<Share> {
+        let share = self.shares.iter_mut().find(|s| s.id == id)?;
+        if share.kind.completed() {
+            return None;
+        }
+        share.kind = ShareKind::Met { name };
+        Some(share.clone())
+    }
+
     /// Every share, newest first.
     pub fn newest_first(&self) -> Vec<&Share> {
         let mut all: Vec<&Share> = self.shares.iter().collect();
@@ -213,9 +232,21 @@ impl Book {
     }
 }
 
-/// A share's code: its address, the profile's name and photo as they are
-/// now.
+/// A share's code, shown or sent as a link: its address and the profile's
+/// name as they are now. No photo: photos go only by touching phones, so
+/// the code stays small and quick to scan.
 pub fn code(profile: &Profile, share: &Share) -> String {
+    uri::profile_uri(&share.address, &profile.name, None)
+}
+
+/// A share's code as Meet's second one, after the other phone's was
+/// scanned: the same, marked as a reply.
+pub fn reply_code(profile: &Profile, share: &Share) -> String {
+    uri::profile_uri_with(&share.address, &profile.name, None, true)
+}
+
+/// A share's code with the photo, which touching phones swap.
+pub fn swap_code(profile: &Profile, share: &Share) -> String {
     uri::profile_uri(&share.address, &profile.name, profile.photo.as_deref())
 }
 
@@ -278,17 +309,23 @@ pub fn lines(book: &Book, rows: &[Activity], clock: Clock) -> Vec<Line> {
         .collect()
 }
 
-/// Each share's line in Activity, newest first: "Shared your profile",
-/// "A new address for this share · 09:15", no amount.
+/// Each completed share's line in Activity, newest first: "Met Sam", "A
+/// new address for this share · 09:15", no amount. A share nobody took
+/// (a code shown, a touch that gave nothing) isn't listed there; Your
+/// profile still lists every one.
 pub fn activity_rows(book: &Book, clock: Clock) -> Vec<activity::Row> {
     book.newest_first()
         .into_iter()
+        .filter(|s| s.kind.completed())
         .map(|s| activity::Row {
             activity: None,
             request: None,
             share: Some(s.id),
             time: s.created,
-            title: "Shared your profile".into(),
+            title: match &s.kind {
+                ShareKind::TouchedPhones { name: Some(name) } | ShareKind::Met { name } => format!("Met {name}"),
+                _ => "Shared your profile".into(),
+            },
             line: format!("A new address for this share · {}", activity::time_of_day(activity::local(s.created, clock).1, clock)),
             amount: String::new(),
             fiat: None,
@@ -584,10 +621,16 @@ mod tests {
             ("Link copied", "28 Oct", "+0.005 XMR", true),
         ]);
         assert_eq!(super::lines(&book, &[], clock())[0].received, "nothing yet");
+        // Activity lists only a share someone took: a code shown, or a link sent, isn't one.
+        assert!(activity_rows(&book, clock()).is_empty());
+        let met = book.met(2, "Sam".into()).unwrap();
+        assert!(book.met(2, "Other".into()).is_none(), "a meeting stays the one it was");
+        assert_eq!(met.kind.title(), "Met Sam");
         let activity = activity_rows(&book, clock());
+        assert_eq!(activity.len(), 1);
         assert_eq!(
             (activity[0].title.as_str(), activity[0].line.as_str(), activity[0].share, activity[0].amount.as_str()),
-            ("Shared your profile", "A new address for this share · 10:00", Some(2), "")
+            ("Met Sam", "A new address for this share · 10:00", Some(2), "")
         );
         assert_eq!(shared_text(NOW - 2 * 3600, clock()), "Shared 10:00");
         assert_eq!(shared_text(NOW - DAY * 3, clock()), "Shared 28 Oct");
@@ -636,7 +679,7 @@ mod tests {
     }
 
     fn code(name: &str, address: &str, photo: Option<Vec<u8>>) -> uri::ProfileCode {
-        uri::ProfileCode { address: address.into(), name: name.into(), photo }
+        uri::ProfileCode { address: address.into(), name: name.into(), photo, reply: false }
     }
 
     #[test]

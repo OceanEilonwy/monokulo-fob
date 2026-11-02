@@ -98,7 +98,6 @@ import uniffi.fob.Contact
 import com.monokulo.fob.ui.Avatar
 import androidx.compose.ui.text.style.TextOverflow
 import uniffi.fob.ContactRow
-import uniffi.fob.MadeRequest
 import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.SheetHandle
 import androidx.compose.foundation.layout.ColumnScope
@@ -107,6 +106,27 @@ import androidx.compose.ui.semantics.heading
 import uniffi.fob.addressGroups
 import uniffi.fob.fitReceiveNote
 import uniffi.fob.qrCode
+import com.monokulo.fob.ui.optionalOutline
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusRequester
+import com.monokulo.fob.ui.SearchField
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.draw.rotate
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import com.monokulo.fob.Nfc
+import com.monokulo.fob.ui.NfcBadge
+import com.monokulo.fob.ui.openNfcSettings
+import com.monokulo.fob.ui.rememberPayCard
+import com.monokulo.fob.ui.rememberTick
+import com.monokulo.fob.ui.rememberTouchState
 
 /**
  * Receive's form as typed, kept on the back stack while New contact (from
@@ -114,8 +134,8 @@ import uniffi.fob.qrCode
  */
 data class ReceiveDraft(val amount: String, val inFiat: Boolean, val note: String)
 
-/** What a request was made from: the same again shares the same request, not a new one. */
-private data class Asked(val contact: ULong?, val amount: String, val inFiat: Boolean, val note: String)
+/** What the code was made from. */
+private data class Asked(val amount: String, val inFiat: Boolean, val note: String)
 
 /**
  * Receive (Round 2 › Receive; Round 5 › "Share asks who it's for",
@@ -158,10 +178,6 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     var forContact by remember { mutableStateOf<Contact?>(null) }
     var choosing by remember { mutableStateOf(false) }
     var people by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
-    // The request made by the last Share, and what it was made from.
-    var made by remember { mutableStateOf<Pair<Asked, MadeRequest>?>(null) }
-    // A request on its way: a second tap waits for it, not another (Rust gives the same one again anyway).
-    var making by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet, forId) {
         val w = wallet ?: return@LaunchedEffect
@@ -195,97 +211,80 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     }
     // What's typed, in the unit Rust last said it's in; none while Rust is behind (the chip just tapped), so
     // nothing is made, copied or shared from an amount read in the wrong unit.
-    val asked = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }?.let { Asked(forId, amount, it.inFiat, note) }
-    // The request's code while the form is as it was made from; Receive's own otherwise.
-    val request = made?.takeIf { it.first == asked }?.second
+    val asked = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }?.let { Asked(amount, it.inFiat, note) }
     // Keyed on the price too: a new one makes the code again, so it asks what the field and Share say.
-    LaunchedEffect(wallet, address, asked, request, prices?.priceAt) {
-        if (request != null) { code = request.code; return@LaunchedEffect }
+    LaunchedEffect(wallet, address, asked, prices?.priceAt) {
         val w = wallet ?: return@LaunchedEffect
         val a = address ?: return@LaunchedEffect
         val q = asked ?: return@LaunchedEffect
         code = runCatching { w.receiveCode(a, q.amount, q.inFiat, q.note) }.getOrNull()
     }
-    // A note typed for Receive's own code goes with its address, kept when the screen or the address changes;
-    // one that went into a request is the request's.
-    val latestNote by rememberUpdatedState(note.takeIf { request == null } ?: "")
+    // A note typed for Receive's own code goes with its address, kept when the screen or the address changes.
+    val latestNote by rememberUpdatedState(note)
     DisposableEffect(index) {
         val shown = index
         onDispose { if (shown > 0u && latestNote.isNotBlank()) model.rememberReceiveNote(shown, latestNote) }
     }
-    val shownAddress = request?.address ?: address
+    val shownAddress = address
 
-    /** The request for what's typed, for [contact] (the one already made, if it's the same), then [then] with it. */
-    fun withRequest(contact: ULong?, then: (MadeRequest) -> Unit) {
-        if (making) return
-        val now = asked?.copy(contact = contact) ?: return
-        error = null
-        made?.takeIf { it.first == now }?.let { then(it.second); return }
-        making = true
-        scope.launch {
-            runCatching { model.makeRequest(now.contact, now.amount, now.inFiat, now.note) }
-                .onSuccess { made = now to it; then(it) }
-                .onFailure { error = it.reason() }
-            making = false
-        }
-    }
-    fun share(contact: ULong?) = withRequest(contact) {
-        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, it.code.uri), null))
-    }
+    // Share gives the code on screen (Receive's own address, with what's typed); it never makes a new address.
+    fun share() { code?.let { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, it.uri), null)) } }
     val qr = remember(code) { code?.let { runCatching { qrCode(it.uri) }.getOrNull() } }
     val groups = remember(shownAddress) { shownAddress?.let { addressGroups(it) } }
     // While the address comes, an unseen stand-in of the same length keeps its lines' room.
     val standIn = remember(wallet) { wallet?.let { addressGroups(it.primaryAddress()) } ?: emptyList() }
     val shownCode = code
+    // Touch to pay, the card: whatever code is shown is what a phone on Send or Home reads, while NFC is on.
+    val touch = rememberTouchState(model)
+    val tick = rememberTick()
+    rememberPayCard(touch, shownCode?.uri) { tick() }
     if (expanded && shownCode != null && qr != null) {
-        ExpandedQr(shownCode, qr, shownAddress) { expanded = false }
+        ExpandedQr(shownCode, qr, shownAddress, { expanded = false })
         return
     }
     Box(Modifier.fillMaxSize()) {
         Page(bottom = { ErrorText(error) }) {
             TopBar("Receive", onBack = { nav.back() }) {
                 // Shares the payment link for what's typed (and for whoever is chosen over the code).
-                val ready = code != null && asked != null && !making
-                EdgeIconButton(Icons.share, "Share", { if (ready) share(forId) }, tint = if (ready) Fob.ink else Fob.muted)
+                val ready = code != null && asked != null
+                EdgeIconButton(Icons.share, "Share", { if (ready) share() }, tint = if (ready) Fob.ink else Fob.muted)
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 // The code on a white card as wide as the page (at most 360 dp of code, and a third of the screen's height); the round button on its
                 // corner, or the code itself, opens it full screen. With the code's own 2-module quiet zone, 12 dp
-                // leaves 4 modules or more of white beside it. The address's pattern sits across the card's bottom
-                // edge and who it's for across its top, each reaching into the quiet zone and stopping one module
-                // short of the code, whatever its module size (a bare address's, version 6, until the code comes, so
-                // nothing moves as it does). Opened for a contact, the top's room is kept while Rust reads them.
-                BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                // leaves 4 modules or more of white beside it. The address's pattern sits across the card's top
+                // edge, reaching into the quiet zone and stopping one module short of the code, whatever its module
+                // size (a bare address's, version 6, until the code comes, so nothing moves as it does).
+                BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
                     // On a short screen the code gives way so Note and the buttons stay in view; it opens larger on tap.
                     val side = (maxWidth - 24.dp).coerceAtMost(360.dp).coerceAtMost((LocalConfiguration.current.screenHeightDp * 0.32f).dp)
                     val module = qrModule(qr?.size?.toInt() ?: 41, side)
-                    Box(Modifier.padding(top = PatternBadgeSize / 2, bottom = PatternBadgeSize / 2)) {
+                    Box(Modifier.padding(top = PatternBadgeSize / 2)) {
                         Box(
                             Modifier.clip(RoundedCornerShape(14.dp)).background(Fob.qrLight)
                                 .clickable(enabled = qr != null, onClickLabel = "Show larger", role = Role.Button) { expanded = true }
                                 .padding(
-                                    start = 12.dp, end = 12.dp, bottom = PatternBadgeSize / 2 - module,
+                                    start = 12.dp, end = 12.dp, bottom = 12.dp,
                                     top = PatternBadgeSize / 2 - module,
                                 ),
                         ) {
                             if (qr != null) QrImage(qr, side) else Spacer(Modifier.size(side))
                         }
-                        // Opened for a contact Rust hasn't read yet: the chip waits unseen, so "Who is it for?" doesn't flash up and swap.
-                        ForChip(forContact, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2).alpha(if (forId != null && forContact == null) 0f else 1f)) { choosing = true }
-                        if (qr != null && shownAddress != null) PatternBadge(shownAddress, Modifier.align(Alignment.BottomCenter).offset(y = PatternBadgeSize / 2))
-                        Box(
-                            Modifier.align(Alignment.BottomEnd).offset(10.dp, 10.dp).size(32.dp).clip(CircleShape).background(Fob.sunken)
-                                .clickable(enabled = qr != null, role = Role.Button) { expanded = true }
-                                .semantics { contentDescription = "Show larger" },
-                            contentAlignment = Alignment.Center,
-                        ) { StrokeIcon(Icons.expand, tint = Fob.ink, size = 16.dp) }
+                        // The address's pattern and NFC, level on the card's top edge as one group, centred.
+                        Row(
+                            Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            if (qr != null && shownAddress != null) PatternBadge(shownAddress)
+                            NfcBadge(touch, PatternBadgeSize, { if (touch.nfc == Nfc.OFF) openNfcSettings(context) else model.setPayNfc(true) })
+                        }
                     }
                 }
                 AddressGroups(groups ?: standIn, shown = groups != null) {
                     shownAddress?.let { a -> scope.launch { clipboard.setClipEntry(ClipData.newPlainText("Monero address", a).toClipEntry()) } }
                 }
                 AmountField(
-                    amount, { amount = it }, entry, placeholder = "Amount",
+                    amount, { amount = it }, entry, placeholder = "Amount", showRate = false, optional = true,
                     onSwitch = {
                         // The text, unit and Rust's word on them change together.
                         scope.launch {
@@ -297,85 +296,97 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         }
                     },
                 )
-                Field(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, "Note", placeholder = "What it's for, shown to the payer", prose = true, hint = noteHint)
+                NoteField(note, { typed -> fitReceiveNote(typed).let { note = it.text; noteHint = it.hint } }, placeholder = "Note", hint = noteHint)
+                WhoForField(forContact, loading = forId != null && forContact == null) { choosing = true }
             }
         }
         if (choosing) {
-            BottomSheet("Who is this for?", onDismiss = { choosing = false }) {
-                WhoFor(
-                    people,
-                    onPick = { p -> choosing = false; forId = p.id },
-                    onNew = {
-                        choosing = false
-                        // Back from New contact, Receive comes back filled, with them chosen.
-                        nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note)))
-                        nav.go(Screen.ContactEdit(forRequest = true))
-                    },
-                    onNoName = { choosing = false; forId = null; forContact = null },
-                )
-            }
+            WhoForPicker(
+                people,
+                onDismiss = { choosing = false },
+                onPick = { p -> choosing = false; forId = p.id },
+                onNew = {
+                    choosing = false
+                    // Back from New contact, Receive comes back filled, with them chosen.
+                    nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note)))
+                    nav.go(Screen.ContactEdit(forRequest = true))
+                },
+                onNoName = { choosing = false; forId = null; forContact = null },
+            )
         }
     }
 }
 
 /**
- * Who a request is for, across the top edge of the code's card as the
- * pattern is across its bottom (Round 9): their avatar and name (an empty
- * "Who is it for?" until chosen) on the card's white, ringed in the page's colour, [PatternBadgeSize] tall and as
- * wide as the name; tapping chooses again.
+ * "Who is it for?": a field in Amount's and Note's style above Amount; tapping opens the sheet. With someone chosen, their
+ * avatar and name; otherwise the question in a placeholder's grey. [loading]: a contact Rust hasn't read yet, so the
+ * field waits unseen rather than flashing "Who is it for?" and swapping.
  */
 @Composable
-private fun ForChip(contact: Contact?, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun WhoForField(contact: Contact?, loading: Boolean, onClick: () -> Unit) {
     Row(
-        modifier.widthIn(max = 320.dp).height(PatternBadgeSize).clip(CircleShape).background(Fob.paper).padding(3.dp)
-            .clip(CircleShape).background(Fob.qrLight)
+        Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(Fob.card).optionalOutline(contact != null)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) { contentDescription = contact?.let { "For ${it.name}. Change who it's for" } ?: "Who is it for? Choose a contact" }
-            .padding(start = 4.dp, end = 16.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(start = 12.dp, end = 16.dp).alpha(if (loading) 0f else 1f),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (contact != null) Avatar(contact.name, contact.initial, contact.photo, 36.dp)
+        else Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.person, tint = Fob.muted, size = 18.dp, width = 1.8f) }
         if (contact != null) {
-            Avatar(contact.name, contact.initial, contact.photo, 36.dp)
-            Text(contact.name, color = Fob.qrDark, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text("Who is it for?", color = Fob.muted, fontSize = 12.sp)
+                Text(contact.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         } else {
-            Box(Modifier.size(36.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.plus, size = 18.dp) }
-            Text("Who is it for?", color = Fob.qrDark.copy(alpha = 0.6f), fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text("Who is it for?", color = Fob.muted, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.weight(1f))
         }
+        Box(Modifier.rotate(90f)) { StrokeIcon(Icons.chevron, tint = Fob.muted, size = 16.dp) }
     }
 }
 
 /**
- * Share's sheet (Round 5 › "Share asks who it's for"): every contact with
- * Rust's line about their requests, New contact, then No one in particular.
+ * "Who is it for?": a full-screen contact picker over Receive, the keyboard up at once. Contacts whose name or line
+ * match what's typed, then New contact; No one in particular is pinned under the list.
  */
 @Composable
-private fun ColumnScope.WhoFor(people: List<ContactRow>, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
-    SheetHandle()
-    Text("Who is this for?", style = display(22), modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp).semantics { heading() })
-    Card(Modifier.weight(1f, fill = false)) {
-        Column(Modifier.verticalScroll(rememberScrollState())) {
-            people.forEach { p ->
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button) { onPick(p) }.padding(horizontal = 20.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Avatar(p.name, p.initial, p.photo, 36.dp)
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(p.line, color = Fob.muted, fontSize = 12.5.sp)
+private fun WhoForPicker(people: List<ContactRow>, onDismiss: () -> Unit, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
+    BackHandler(onBack = onDismiss)
+    var search by remember { mutableStateOf("") }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val shown = remember(people, search) { people.filter { search.isBlank() || it.name.contains(search.trim(), ignoreCase = true) || it.line.contains(search.trim(), ignoreCase = true) } }
+    Column(Modifier.fillMaxSize().background(Fob.paper).safeDrawingPadding()) {
+        TopBar("Who is it for?", onBack = onDismiss, closeIcon = true)
+        Column(Modifier.weight(1f).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            SearchField(search, { search = it }, "Search contacts", "Search contacts", Modifier.focusRequester(focus))
+            Card(Modifier.weight(1f, fill = false)) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    shown.forEach { p ->
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button) { onPick(p) }.padding(horizontal = 20.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Avatar(p.name, p.initial, p.photo, 36.dp)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(p.line, color = Fob.muted, fontSize = 12.5.sp)
+                            }
+                        }
+                    }
+                    if (shown.isEmpty() && search.isNotBlank()) Text("No contact matches", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp))
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button, onClick = onNew).padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.plus, size = 18.dp) }
+                        Text("New contact", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                     }
                 }
             }
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button, onClick = onNew).padding(horizontal = 20.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Box(Modifier.size(36.dp).clip(CircleShape).background(Fob.sunken), contentAlignment = Alignment.Center) { StrokeIcon(Icons.plus, size = 18.dp) }
-                Text("New contact", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            }
         }
+        OutlineButton("No one in particular", onNoName, Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 16.dp), height = 52.dp)
     }
-    OutlineButton("No one in particular", onNoName, Modifier.fillMaxWidth().padding(top = 4.dp), height = 52.dp)
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 }
 
 /**
@@ -395,7 +406,7 @@ private fun AddressGroups(groups: List<AddressGroup>, shown: Boolean = true, onC
     ) {
         groups.forEach { g ->
             Text(
-                g.text, fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp,
+                g.text, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp,
                 fontWeight = if (g.highlighted) FontWeight.Bold else FontWeight.Normal,
                 color = if (g.highlighted) Fob.onAddressMark else Fob.ink,
                 modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(if (g.highlighted) Fob.addressMark else Color.Transparent).padding(horizontal = 3.dp),
@@ -419,7 +430,7 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String?, onClose: () -> U
             EdgeIconButton(Icons.close, "Close", onClose, tint = Fob.qrDark)
         }
         Column(
-            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
         ) {
             if (code.headline != null || code.detail != null) {
@@ -429,12 +440,33 @@ fun ExpandedQr(code: ReceiveCode, qr: QrCode, address: String?, onClose: () -> U
                     code.detail?.let { Text(it, color = Fob.qrMuted, fontSize = 16.sp, textAlign = TextAlign.Center) }
                 }
             }
-            // As wide as the page lets it be: this is the view for scanning, so it is never smaller than Receive's.
+            // As wide as the page lets it be: this is the view for scanning, so it is never smaller than Receive's. As on
+            // Receive's card, the address's pattern sits across the top edge, ringed in the page's white and scaled by how
+            // much larger this code is than the card's, so it keeps its proportion. It reaches into the code's quiet zone
+            // (3 modules here) and stops one module short of the code; where that
+            // takes more than the zone, white is added above the code.
             BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                QrImage(qr, maxWidth.coerceAtMost(560.dp), quiet = 4)
+                val side = this.maxWidth.coerceAtMost(720.dp)
+                val config = LocalConfiguration.current
+                val cardSide = (config.screenWidthDp.dp - 40.dp - 24.dp).coerceAtMost(360.dp).coerceAtMost((config.screenHeightDp * 0.32f).dp)
+                val scale = (side / cardSide).coerceIn(1f, 2.2f)
+                val quiet = 3
+                val module = side / (qr.size.toInt() + 2 * quiet)
+                val half = PatternBadgeSize * scale / 2
+                val extra = (half - module * (quiet - 1)).coerceAtLeast(0.dp)
+                val onTop = address != null
+                val reserve = if (onTop) half else 0.dp
+                val density = LocalDensity.current
+                Box(Modifier.padding(top = reserve)) {
+                    Box(Modifier.padding(top = if (onTop) extra else 0.dp)) { QrImage(qr, side, quiet = quiet) }
+                    // The identicon across the code's top edge, ringed in the page's white and scaled like the code.
+                    address?.let {
+                        CompositionLocalProvider(LocalDensity provides Density(density.density * scale, density.fontScale)) {
+                            PatternBadge(it, Modifier.align(Alignment.TopCenter).offset(y = -PatternBadgeSize / 2), ring = Fob.qrLight, inverted = true)
+                        }
+                    }
+                }
             }
-            // Under the code's own quiet zone, as on Receive's card: never over it.
-            address?.let { AddressPattern(it, PatternBadgeSize) }
         }
     }
 }
@@ -628,5 +660,36 @@ private fun SaveOfferButtons(offer: SaveOffer, onAdd: (Contact) -> Unit, onNew: 
         offer.footnote?.let {
             Text(it, color = Fob.muted, fontSize = 12.5.sp, lineHeight = 18.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 320.dp).padding(top = 4.dp))
         }
+    }
+}
+
+/** Note, in Amount's style: an icon and the text on a 60 dp card, its outline dashed until something is written; Rust's hint under it. */
+@Composable
+private fun NoteField(value: String, onChange: (String) -> Unit, placeholder: String, hint: String?) {
+    val style = androidx.compose.ui.text.TextStyle(fontSize = 17.sp, fontWeight = FontWeight.Medium, color = Fob.ink)
+    // Focused, the whole field and its hint show above the keyboard once it is up, as Amount's do.
+    val whole = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    Column(Modifier.bringIntoViewRequester(whole), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(Fob.card).optionalOutline(value.isNotBlank()).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            StrokeIcon(Icons.lines, tint = Fob.muted, size = 20.dp, width = 1.8f)
+            androidx.compose.foundation.text.BasicTextField(
+                value = value, onValueChange = onChange, singleLine = true, textStyle = style,
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(Fob.ink),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+                modifier = Modifier.weight(1f).semantics { contentDescription = "Note, what it's for, shown to the payer" }
+                    .onFocusChanged { if (it.isFocused) scope.launch { kotlinx.coroutines.delay(350); whole.bringIntoView() } },
+                decorationBox = { field ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (value.isEmpty()) Text(placeholder, style = style.copy(color = Fob.muted))
+                        field()
+                    }
+                },
+            )
+        }
+        if (hint != null) Text(hint, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }

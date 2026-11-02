@@ -1,0 +1,136 @@
+package com.monokulo.fob.ui.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.monokulo.fob.Nav
+import com.monokulo.fob.Screen
+import com.monokulo.fob.WalletModel
+import com.monokulo.fob.ui.AddressPattern
+import com.monokulo.fob.ui.BottomSheet
+import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.Divider
+import com.monokulo.fob.ui.ErrorText
+import com.monokulo.fob.ui.Fob
+import com.monokulo.fob.ui.InfoRow
+import com.monokulo.fob.ui.SheetHandle
+import com.monokulo.fob.ui.SwipeToSend
+import com.monokulo.fob.ui.display
+import com.monokulo.fob.ui.reason
+import com.monokulo.fob.ui.short
+import kotlinx.coroutines.launch
+import uniffi.fob.PaymentPreview
+import uniffi.fob.Prepared
+import uniffi.fob.parsePayment
+
+/**
+ * Touch to pay from Home: a phone on Receive was touched, and this is
+ * Confirm condensed into a drawer over Home: what is asked and from whom,
+ * the fee and total (waiting bars until the fee is in), the address's
+ * pattern, and the same bar as Confirm, which reads "Getting the fee…" and
+ * becomes the swipe to send. A code with no amount opens Send to fill it
+ * in. Closing before sending forgets the prepared payment.
+ */
+@Composable
+fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspend (String) -> Boolean, onClose: () -> Unit) {
+    val network by model.network.collectAsState()
+    val scope = rememberCoroutineScope()
+    val request = remember(code, network) { runCatching { parsePayment(network, code) }.getOrNull() }
+    var preview by remember { mutableStateOf<PaymentPreview?>(null) }
+    var prepared by remember { mutableStateOf<Prepared?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val sending by rememberUpdatedState(busy)
+    val amount = request?.amountText
+
+    // Checked without asking the node, so the drawer opens at once; no amount means the form takes it.
+    LaunchedEffect(code) {
+        val r = request
+        if (r == null) { onClose(); return@LaunchedEffect }
+        if (amount == null) { onClose(); nav.go(Screen.Send(code)); return@LaunchedEffect }
+        runCatching { model.preview(r.address, amount, false, code) }.onSuccess { preview = it }.onFailure { error = it.reason() }
+    }
+    // Then the fee comes in on it.
+    LaunchedEffect(preview) {
+        val r = request ?: return@LaunchedEffect
+        if (preview == null || amount == null) return@LaunchedEffect
+        runCatching { model.prepare(r.address, amount, false, r.description, code) }.onSuccess { prepared = it }.onFailure { error = it.reason() }
+    }
+    DisposableEffect(prepared?.id) {
+        val p = prepared
+        onDispose { if (p != null && !sending) model.cancelLater(p) }
+    }
+
+    val title = request?.recipientName?.let { "Pay $it" } ?: "Send"
+    fun swiped() {
+        val ready = prepared ?: return
+        busy = true
+        error = null
+        scope.launch {
+            if (!confirmIdentity(title)) {
+                error = "Not sent."
+            } else {
+                runCatching { model.send(ready) }
+                    .onSuccess { tx -> onClose(); nav.go(Screen.Paid(ready, tx)) }
+                    .onFailure { error = it.reason() }
+            }
+            busy = false
+        }
+    }
+
+    BottomSheet(title, onDismiss = { if (!busy) onClose() }) {
+        SheetHandle()
+        val receipt = prepared?.receipt ?: preview?.receipt
+        val amountText = prepared?.amountText ?: preview?.amountText ?: amount ?: ""
+        val fiat = prepared?.amountFiat ?: preview?.amountFiat
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Medium, modifier = Modifier.semantics { heading() })
+            Text(receipt?.total ?: "$amountText XMR", style = display(44), modifier = Modifier.padding(top = 4.dp))
+            if (receipt != null) Text("$amountText XMR", color = Fob.muted, fontSize = 16.sp) else fiat?.let { Text(it, color = Fob.muted, fontSize = 16.sp) }
+            request?.description?.let { Text(it, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
+        }
+        val to = prepared?.to ?: preview?.to ?: request?.address ?: ""
+        Card {
+            // Who it goes to, with the address's pattern beside it, so it can be compared with their screen.
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("To", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                AddressPattern(to, 28.dp)
+                Text(short(to, 2), fontFamily = FontFamily.Monospace, fontSize = 15.sp, modifier = Modifier.padding(start = 10.dp))
+            }
+            Divider()
+            InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
+            Divider()
+            InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
+        }
+        ErrorText(error)
+        val label = when {
+            busy -> "Sending…"
+            prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+            else -> "Swipe to send ${prepared!!.amountText} XMR"
+        }
+        SwipeToSend(label, enabled = !busy && prepared != null, waiting = prepared == null && error == null) { swiped() }
+    }
+}

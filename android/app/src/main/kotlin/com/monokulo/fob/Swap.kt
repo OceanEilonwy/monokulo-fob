@@ -16,8 +16,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import uniffi.fob.Network
+import uniffi.fob.PayCard
+import uniffi.fob.PayReader
+import uniffi.fob.PayStep
 import uniffi.fob.ReaderStep
 import uniffi.fob.TouchSwap
+import uniffi.fob.payIsSelect
+import uniffi.fob.payNotAvailable
 import uniffi.fob.swapNotAvailable
 import kotlin.random.Random
 
@@ -35,6 +41,10 @@ object TouchPhones {
     val swapped = MutableStateFlow<TouchSwap?>(null)
     /** Why the last touch took nothing, in Rust's words. */
     val problem = MutableStateFlow<String?>(null)
+    /** The payment code the card service answers for: set only while Receive is resumed. */
+    @Volatile var pay: PayCard? = null
+    /** Counts the times a reader took Receive's whole code. */
+    val payRead = MutableStateFlow(0)
 }
 
 /**
@@ -43,7 +53,19 @@ object TouchPhones {
  * available" to everything, so nothing is read from a phone in a pocket.
  */
 class SwapService : HostApduService() {
+    /** The reader chose the payment application (Receive's code) rather than the swap's, for this link. */
+    private var viaPay = false
+
     override fun processCommandApdu(commandApdu: ByteArray, extras: Bundle?): ByteArray {
+        // A select says which of Fob's two applications this link is for; what follows goes to the same one.
+        val select = commandApdu.size >= 2 && commandApdu[1] == 0xA4.toByte()
+        if (select) viaPay = payIsSelect(commandApdu)
+        if (viaPay) {
+            val card = TouchPhones.pay ?: return payNotAvailable()
+            val answer = card.cardAnswer(commandApdu)
+            if (card.read()) TouchPhones.payRead.value += 1
+            return answer
+        }
         val swap = TouchPhones.session ?: return swapNotAvailable()
         val answer = swap.cardAnswer(commandApdu)
         if (swap.swapped()) TouchPhones.swapped.value = swap
@@ -52,6 +74,8 @@ class SwapService : HostApduService() {
 
     override fun onDeactivated(reason: Int) {
         TouchPhones.session?.cardLost()
+        TouchPhones.pay?.cardLost()
+        viaPay = false
     }
 }
 
@@ -129,5 +153,61 @@ class SwapRunner(private val activity: Activity, private val swap: TouchSwap, pr
     private companion object {
         const val READER_FLAGS = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or
             NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+    }
+}
+
+/**
+ * Touch to pay, the reader: while started (Send or Home in front) reader
+ * mode stays on, and a phone on Receive gives its payment code, handed to
+ * [onCode] on the main thread; a touch that took nothing says why to
+ * [onProblem]. The protocol is Rust's [PayReader].
+ */
+class PayRunner(private val activity: Activity, network: Network, private val onCode: (String) -> Unit, private val onProblem: (String) -> Unit) {
+    private val adapter = NfcAdapter.getDefaultAdapter(activity)
+    private val reader = PayReader(network)
+
+    fun start() {
+        val nfc = adapter ?: return
+        runCatching { nfc.enableReaderMode(activity, ::read, FLAGS, null) }
+    }
+
+    fun stop() {
+        adapter?.let { runCatching { it.disableReaderMode(activity) } }
+    }
+
+    /** A card in the field, on NFC's thread: the whole read, then close. */
+    private fun read(tag: Tag) {
+        val iso = IsoDep.get(tag) ?: return
+        var apdu = reader.start()
+        try {
+            iso.connect()
+            iso.timeout = 1000
+            while (true) {
+                when (val step = reader.next(iso.transceive(apdu))) {
+                    is PayStep.Send -> apdu = step.apdu
+                    is PayStep.Done -> { activity.runOnUiThread { onCode(step.code) }; return }
+                    is PayStep.Failed -> { activity.runOnUiThread { onProblem(step.reason) }; return }
+                }
+            }
+        } catch (_: Exception) {
+            // The phones moved apart: the next touch starts over.
+            reader.lost()
+        } finally {
+            runCatching { iso.close() }
+        }
+    }
+
+    private companion object {
+        const val FLAGS = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or
+            NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+    }
+}
+
+/** Fob's service made the one to answer while a screen is in front, and let go after. */
+fun preferFobService(activity: Activity, on: Boolean) {
+    val nfc = NfcAdapter.getDefaultAdapter(activity) ?: return
+    runCatching {
+        val card = CardEmulation.getInstance(nfc)
+        if (on) card.setPreferredService(activity, ComponentName(activity, SwapService::class.java)) else card.unsetPreferredService(activity)
     }
 }

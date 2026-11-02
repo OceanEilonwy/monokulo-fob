@@ -76,7 +76,7 @@ fun RequestScreen(model: WalletModel, nav: Nav, id: ULong) {
     val d = detail ?: return Page { TopBar("Request", onBack = { nav.back() }) }
     showing?.let { code ->
         val qr = remember(code) { runCatching { qrCode(code.uri) }.getOrNull() }
-        if (qr != null) { ExpandedQr(code, qr, d.address) { showing = null }; return }
+        if (qr != null) { ExpandedQr(code, qr, d.address, { showing = null }); return }
     }
     Box(Modifier.fillMaxSize()) {
         Page(bottom = {

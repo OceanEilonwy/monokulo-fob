@@ -1551,6 +1551,8 @@ impl FobWallet {
                 .map(|p| ContactPayment { activity: activity(p.activity), title: p.title, when: p.when, amount_text: p.amount, fiat_text: p.fiat })
                 .collect(),
             paid_empty: c.paid_empty,
+            half_title: c.half.as_ref().map(|h| h.0.clone()),
+            half_line: c.half.map(|h| h.1),
         })
     }
 
@@ -1703,6 +1705,11 @@ impl FobWallet {
         Some(ProfileShare { id: share.id, address: share.address, code, can_touch })
     }
 
+    /// Meet's QR code tab finished with `name`: share `id` is kept as met.
+    pub async fn share_met(&self, id: u64, name: String) -> Result<()> {
+        Ok(self.inner.share_met(id, &name).await?)
+    }
+
     /// Copy link or Share pressed on a share's screen.
     pub async fn share_went_out(&self, id: u64, kind: ShareKind) -> Result<()> {
         Ok(self.inner.share_went_out(id, kind.into()).await?)
@@ -1743,14 +1750,22 @@ impl FobWallet {
 
     /// "Add contact" on a scanned profile, or "Add as new contact" once
     /// asked (`as_new`). Throws when its address is a contact's, or its
-    /// name is (or looks like) one's and it wasn't asked.
-    pub async fn add_contact_from_profile(&self, text: String, as_new: bool) -> Result<Contact> {
-        Ok(self.inner.add_contact_from_profile(&text, as_new).await?.into())
+    /// name is (or looks like) one's and it wasn't asked. `met`: it came
+    /// from Meet (a touch, or both codes), so they have your address too;
+    /// otherwise the contact is half set up.
+    pub async fn add_contact_from_profile(&self, text: String, as_new: bool, met: bool) -> Result<Contact> {
+        Ok(self.inner.add_contact_from_profile(&text, as_new, met).await?.into())
     }
 
-    /// "Update Sam" on a scanned profile, once asked.
-    pub async fn update_contact_from_profile(&self, id: u64, text: String) -> Result<Contact> {
-        Ok(self.inner.update_contact_from_profile(id, &text).await?.into())
+    /// "Update Sam" on a scanned profile, once asked; `met` as above.
+    pub async fn update_contact_from_profile(&self, id: u64, text: String, met: bool) -> Result<Contact> {
+        Ok(self.inner.update_contact_from_profile(id, &text, met).await?.into())
+    }
+
+    /// A share's code as Meet's second one, once the other phone's was
+    /// scanned: the same address, marked as a reply.
+    pub async fn share_reply_code(&self, id: u64) -> Option<String> {
+        self.inner.share_reply_code(id).await
     }
 }
 
@@ -1791,6 +1806,8 @@ pub enum ShareKind {
     LinkShared,
     /// By touching phones, with whom (none when theirs didn't come).
     TouchedPhones { name: Option<String> },
+    /// By two codes, with whom.
+    Met { name: String },
 }
 
 impl From<ShareKind> for profile::ShareKind {
@@ -1800,6 +1817,7 @@ impl From<ShareKind> for profile::ShareKind {
             ShareKind::LinkCopied => profile::ShareKind::LinkCopied,
             ShareKind::LinkShared => profile::ShareKind::LinkShared,
             ShareKind::TouchedPhones { name } => profile::ShareKind::TouchedPhones { name },
+            ShareKind::Met { name } => profile::ShareKind::Met { name },
         }
     }
 }
@@ -1811,6 +1829,7 @@ impl From<profile::ShareKind> for ShareKind {
             profile::ShareKind::LinkCopied => ShareKind::LinkCopied,
             profile::ShareKind::LinkShared => ShareKind::LinkShared,
             profile::ShareKind::TouchedPhones { name } => ShareKind::TouchedPhones { name },
+            profile::ShareKind::Met { name } => ShareKind::Met { name },
         }
     }
 }
@@ -1874,6 +1893,88 @@ impl TouchSwap {
     pub fn swapped(&self) -> bool {
         self.inner.got().is_some()
     }
+}
+
+/// Touch to pay, the card side: Receive's payment code, answered chunk by
+/// chunk to a reader on Send or Home. The protocol is all in Rust.
+#[derive(uniffi::Object)]
+pub struct PayCard {
+    inner: fob_core::pay::PayCard,
+}
+
+#[uniffi::export]
+impl PayCard {
+    /// The card for `code`, the payment code Receive shows; throws when it's
+    /// too big to send.
+    #[uniffi::constructor]
+    pub fn new(code: String) -> Result<Arc<PayCard>> {
+        Ok(Arc::new(PayCard { inner: fob_core::pay::PayCard::new(&code)? }))
+    }
+
+    pub fn card_answer(&self, apdu: Vec<u8>) -> Vec<u8> {
+        self.inner.answer(&apdu)
+    }
+
+    pub fn card_lost(&self) {
+        self.inner.lost()
+    }
+
+    /// A reader took the whole code.
+    pub fn read(&self) -> bool {
+        self.inner.read()
+    }
+}
+
+/// What a payment reader sends next.
+#[derive(uniffi::Enum)]
+pub enum PayStep {
+    Send { apdu: Vec<u8> },
+    /// The payment code the other phone shows.
+    Done { code: String },
+    Failed { reason: String },
+}
+
+/// Touch to pay, the reader side: Send's (or Home's) reading of a phone on
+/// Receive.
+#[derive(uniffi::Object)]
+pub struct PayReader {
+    inner: fob_core::pay::PayReader,
+}
+
+#[uniffi::export]
+impl PayReader {
+    #[uniffi::constructor]
+    pub fn new(network: Network) -> Arc<PayReader> {
+        Arc::new(PayReader { inner: fob_core::pay::PayReader::new(network.into()) })
+    }
+
+    pub fn start(&self) -> Vec<u8> {
+        self.inner.start()
+    }
+
+    pub fn next(&self, response: Vec<u8>) -> PayStep {
+        match self.inner.next(&response) {
+            fob_core::pay::Step::Send(apdu) => PayStep::Send { apdu },
+            fob_core::pay::Step::Done(code) => PayStep::Done { code },
+            fob_core::pay::Step::Failed(problem) => PayStep::Failed { reason: problem.text() },
+        }
+    }
+
+    pub fn lost(&self) {
+        self.inner.lost()
+    }
+}
+
+/// Whether a command selects the payment application, not the swap's.
+#[uniffi::export]
+pub fn pay_is_select(apdu: Vec<u8>) -> bool {
+    fob_core::pay::is_select(&apdu)
+}
+
+/// What the card service answers a payment select while Receive isn't in front.
+#[uniffi::export]
+pub fn pay_not_available() -> Vec<u8> {
+    fob_core::pay::NOT_AVAILABLE.to_vec()
 }
 
 /// What the card service answers while no Share my profile is in front:
@@ -1960,6 +2061,8 @@ pub struct ProfileClash {
 /// Another Fob's profile, scanned.
 #[derive(uniffi::Record)]
 pub struct ScannedProfile {
+    /// Meet's second code: their phone already scanned yours.
+    pub reply: bool,
     pub address: String,
     pub name: String,
     pub photo: Option<Vec<u8>>,
@@ -1978,6 +2081,7 @@ pub struct ScannedProfile {
 impl From<profile::Scanned> for ScannedProfile {
     fn from(s: profile::Scanned) -> Self {
         ScannedProfile {
+            reply: s.code.reply,
             address: s.code.address,
             name: s.code.name,
             photo: s.code.photo,
@@ -2296,6 +2400,10 @@ pub struct ContactCard {
     pub paid: Vec<ContactPayment>,
     /// "Nothing paid to Sam yet."
     pub paid_empty: Option<String>,
+    /// Half set up (they have no address of yours yet): "Half set up".
+    pub half_title: Option<String>,
+    /// "Sam doesn't have an address from you yet. Meet to give them one, …"
+    pub half_line: Option<String>,
 }
 
 /// The edit card's words for the name typed so far.

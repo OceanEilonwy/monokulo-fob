@@ -48,6 +48,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="monero" />
             </intent-filter>
+            <!-- A phone on Receive shows its payment code as a standard NFC tag: any phone's own tag reader
+                 hands the monero: link here, with Fob closed. -->
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="monero" />
+            </intent-filter>
         </activity>
         <service
             android:name=".SyncService"

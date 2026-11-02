@@ -33,6 +33,8 @@ pub mod qr;
 pub mod receipt;
 pub mod requests;
 pub mod split;
+pub mod ndef;
+pub mod pay;
 pub mod swap;
 pub mod transport;
 mod store;

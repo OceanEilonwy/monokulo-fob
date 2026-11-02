@@ -56,6 +56,7 @@ import com.monokulo.fob.ui.screens.ContactScanScreen
 import com.monokulo.fob.ui.screens.ContactScreen
 import com.monokulo.fob.ui.screens.ContactsScreen
 import com.monokulo.fob.ui.screens.HomeScreen
+import com.monokulo.fob.ui.screens.MeetScreen
 import com.monokulo.fob.ui.screens.KeysScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
@@ -158,8 +159,10 @@ sealed interface Screen {
      * step of a new or restored wallet, with Skip; Edit without one.
      */
     data class ProfileEdit(val step: String? = null) : Screen
-    /** A share's code, full screen: just made by Share my profile, or again. */
-    data class ProfileShare(val id: ULong, val fresh: Boolean = false) : Screen
+    /** A share's code again, full screen, from Your shares or Activity. */
+    data class ProfileShare(val id: ULong) : Screen
+    /** Meet: swap names and addresses with another Fob, by touch or by two codes. */
+    data object Meet : Screen
     /**
      * The seed phrase, from Backup and keys or Home's backup reminder: with
      * the warning to write them down while they aren't yet.
@@ -415,7 +418,7 @@ class MainActivity : FragmentActivity() {
             Screen.RestoreViewOnly -> RestoreViewOnlyScreen(model, nav)
             Screen.RestoreScan -> RestoreScanScreen(model, nav)
             is Screen.RestoreFound -> RestoreFoundScreen(model, nav, screen.code)
-            Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav, ::openLocked) else WelcomeScreen(model, nav)
+            Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav, ::openLocked, ::confirmIdentity, ::identityPending) else WelcomeScreen(model, nav)
             is Screen.Receive -> ReceiveScreen(model, nav, screen)
             is Screen.Request -> RequestScreen(model, nav, screen.id)
             is Screen.Send -> SendScreen(model, nav, screen.code, screen.draft)
@@ -437,7 +440,8 @@ class MainActivity : FragmentActivity() {
             Screen.ProfileScan -> ProfileScanScreen(model, nav)
             Screen.Profile -> ProfileScreen(model, nav)
             is Screen.ProfileEdit -> ProfileEditScreen(model, nav, screen.step)
-            is Screen.ProfileShare -> ProfileShareScreen(model, nav, screen.id, screen.fresh)
+            is Screen.ProfileShare -> ProfileShareScreen(model, nav, screen.id)
+            Screen.Meet -> MeetScreen(model, nav)
             Screen.ShowSeed -> BackupScreen(model, nav, afterCreate = false)
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)

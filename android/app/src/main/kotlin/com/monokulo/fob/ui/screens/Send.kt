@@ -112,6 +112,9 @@ import uniffi.fob.CodeKind
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentPreview
+import com.monokulo.fob.ui.NfcMark
+import com.monokulo.fob.ui.rememberPayReading
+import com.monokulo.fob.ui.rememberTouchState
 import uniffi.fob.ScannedProfile
 import uniffi.fob.classifyCode
 import uniffi.fob.isProfileCode
@@ -317,6 +320,10 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         notice = null
     }
 
+    // Touch to pay, the reader: a phone on Receive held to this one gives its code, taken as if scanned.
+    val touch = rememberTouchState(model)
+    rememberPayReading(model, touch, enabled = profile == null && !busy, onProblem = { notice = it }) { text -> if (!busy) take(text, asProfile = false) }
+
     LaunchedEffect(code) { code?.let { read(it) } }
     // Back folds the sheet first, then closes Send.
     BackHandler(enabled = open) { pull(false) }
@@ -415,7 +422,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             Modifier.fillMaxWidth().padding(top = barBottom).height((sheetTop - barBottom).coerceAtLeast(0.dp)).then(overCamera),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
         ) {
-            if (finder > 24.dp) Viewfinder(finder, if (profile != null) 6f else 6f + 4f * toward)
+            if (finder > 24.dp) Viewfinder(finder, if (profile != null) 6f else 6f + 4f * toward, nfc = touch.payActive && profile == null)
             // In a landscape strip without the frame, the words take less room, and none where there's none.
             if (!form && sheetTop - barBottom >= 40.dp) {
                 Text(
@@ -487,7 +494,9 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                             .clickable(role = Role.Button, onClickLabel = if (open) "Back to the camera" else "Type the payment instead") { pull(!open) }
                             .semantics { contentDescription = if (open) "Back to the camera" else "Type the payment instead"; stateDescription = if (open) "Expanded" else "Collapsed" },
                         contentAlignment = Alignment.Center,
-                    ) { Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline)) }
+                    ) {
+                        Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Fob.outline))
+                    }
                     if (form) {
                         // As tall as the form, Review straight under it; scrolling only where it doesn't fit, Review kept.
                         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -606,14 +615,18 @@ private fun OtherCode(address: String, onUse: () -> Unit, onKeep: () -> Unit) {
 
 /** The viewfinder's corners, [size] across, in the camera's light colour; [width] on the 280 grid. */
 @Composable
-fun Viewfinder(size: Dp, width: Float) {
+fun Viewfinder(size: Dp, width: Float, nfc: Boolean = false) {
     val corners = remember { PathParser().parsePathString(CORNERS).toPath() }
     val colour = Fob.onCamera
-    Canvas(Modifier.size(size).clearAndSetSemantics {}) {
-        val s = this.size.width / 280f
-        withTransform({ scale(s, s, pivot = Offset.Zero) }) {
-            drawPath(corners, colour, style = Stroke(width, cap = StrokeCap.Round))
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize().clearAndSetSemantics {}) {
+            val s = this.size.width / 280f
+            withTransform({ scale(s, s, pivot = Offset.Zero) }) {
+                drawPath(corners, colour, style = Stroke(width, cap = StrokeCap.Round))
+            }
         }
+        // NFC is on: its mark in the frame's centre, waves breathing out of it.
+        if (nfc) NfcMark((size * 0.34f).coerceIn(24.dp, 96.dp), fill = Color.Transparent, tint = colour, waves = true, reach = (size * 0.12f).coerceIn(7.dp, 28.dp))
     }
 }
 

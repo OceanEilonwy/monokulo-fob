@@ -2549,3 +2549,45 @@ Review fixes.
     room is kept from the moment it's for someone, so the code doesn't
     move down when Rust reads them. Amount and Note drop "(optional)":
     the code works without them.
+
+## Round 10: Meet, Met and touch to pay
+
+309. **Meet replaces Share my profile as the way to swap** (`Meet.kt`).
+    Home's top bar shows Meet (person with waves) where your photo was,
+    beside the cog; your profile is the first row of Settings' Wallet card
+    and Contacts' top bar has Meet beside + in place of Scan a profile. Meet
+    has two tabs, Touch (the default, listening as it opens) and QR code;
+    a phone without NFC shows only the code. Opening it makes one share
+    (`share_profile`), the address given to whoever you meet. Your profile's
+    Share my profile button is now Meet; Your shares still lists every share
+    and reopens its code.
+310. **Photos travel by touch only.** A shown or shared code carries a name
+    and an address (`profile::code`), a small sparse QR. The swap frame
+    (`profile::swap_code`) still carries the photo. `contacts::PHOTO_MAX` is
+    8192 bytes (was 1536, a QR limit), `swap::CODE_MAX` 12,000. The app
+    encodes at 128 px first, after a circle crop (drag, pinch, zoom slider).
+311. **QR meeting is two scans** and ends like a touch. The second code is
+    marked `fob_reply=1` (`ProfileCode::reply`; other wallets ignore it).
+    Scanning a first code saves the contact and shows yours as the reply;
+    scanning a reply saves them and goes to Met. `WalletModel.meetSave` adds
+    a contact, or opens the one with that address when nothing would change;
+    anything that would change one is asked about first (decision 5).
+312. **Half set up** (`Contact::half`): a contact added by scanning a profile
+    outside Meet has no address of yours, so its card shows an alert with a
+    Meet button. Meet (either way) clears it. Older contacts are not marked.
+313. **Met** says "Met Sam", both avatars centred with a swap between them,
+    and the send and receive addresses with the same arrows as Send and
+    Receive.
+314. **NFC is automatic.** Settings has one Touch switch (on by default);
+    NFC itself can only be turned on in Android's settings, so profile setup
+    asks once and Meet shows a warning that opens them. Receive and Send
+    show an NFC mark (no prompt) while it's listening.
+315. **Touch to pay** (`pay.rs`, AID F0 "FOBPAY!"): one side only gives and
+    the other only takes. Receive is the card, offering the code it shows;
+    Send and Home are readers. A reader gets what a camera would, and
+    nothing is sent until the person confirms. With someone chosen on
+    Receive and NFC on, the request is made as typed so their payment is
+    named. Home raises a drawer (Confirm condensed, with "Getting the fee…"
+    becoming the swipe); a code without an amount opens Send instead.
+316. **Receive says "Receiving from"** as a field above Amount; the chip on
+    the code's top edge is gone. Its sheet is retitled to match.
