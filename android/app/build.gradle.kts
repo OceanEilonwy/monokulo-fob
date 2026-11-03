@@ -49,6 +49,14 @@ android {
         debug {
             applicationIdSuffix = ".debug"
         }
+        // For profiling on a phone: release's code and shrinking, profileable by the shell, debug-signed, and its own id
+        // beside the real install.
+        create("profile") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".profile"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

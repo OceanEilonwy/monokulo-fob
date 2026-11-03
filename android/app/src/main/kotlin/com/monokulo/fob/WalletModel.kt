@@ -341,6 +341,18 @@ class WalletModel(private val app: Application) {
         }
     }
 
+    /**
+     * Receive's pull to refresh: a fresh address nobody has seen, set under
+     * [reading] like [openReceive]'s. Throws what Rust refused.
+     */
+    suspend fun newReceive() {
+        reading.withLock {
+            val wallet = _wallet.value ?: return
+            val address = wallet.newReceiveAddress()
+            if (_wallet.value === wallet) _receive.value = address
+        }
+    }
+
     /** "I've written them down": Home's reminder goes. */
     suspend fun backupDone() {
         val wallet = _wallet.value ?: return

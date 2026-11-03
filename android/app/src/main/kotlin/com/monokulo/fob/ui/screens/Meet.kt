@@ -42,6 +42,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -267,9 +269,10 @@ private fun TouchTab(profile: Profile?, touch: TouchState, onSettings: () -> Uni
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(28.dp),
     ) {
         Box(Modifier.size(220.dp), contentAlignment = Alignment.Center) {
-            val breathe = 0.97f + 0.03f * kotlin.math.sin(phase * 6.2831855f)
-            Box(Modifier.matchParentSize().scale(breathe).border2(Fob.line))
-            Box(Modifier.matchParentSize().padding(30.dp).scale(breathe).border2(Fob.track))
+            // Read as the layer draws: the breathing recomposes nothing.
+            val breathe: GraphicsLayerScope.() -> Unit = { val b = 0.97f + 0.03f * kotlin.math.sin(phase.value * 6.2831855f); scaleX = b; scaleY = b }
+            Box(Modifier.matchParentSize().graphicsLayer(breathe).border2(Fob.line))
+            Box(Modifier.matchParentSize().padding(30.dp).graphicsLayer(breathe).border2(Fob.track))
             Box(Modifier.matchParentSize().padding(60.dp).clip(CircleShape).background(Fob.highlight))
             profile?.let { Avatar(it.name, it.initial, it.photo, 88.dp) }
         }

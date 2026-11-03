@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalDensity
@@ -501,7 +502,9 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
  */
 @Composable
 fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
-    Canvas(modifier.size(size).semantics { contentDescription = description }) {
+    // One path, built once: the modules as one shape rather than some 800 rects, which cost the GPU pipeline a fill op
+    // apiece on every frame the screen redrew (over half the render thread, mostly allocating them).
+    Spacer(modifier.size(size).semantics { contentDescription = description }.drawWithCache {
         val n = code.size.toInt()
         // Each module a whole number of pixels, the code centred, so a dense code (a profile's) stays crisp
         // rather than blurring at its edges; a code with more modules than pixels falls back to fractions.
@@ -510,13 +513,17 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
         val start = (this.size.width - cell * n) / 2
         val origin = if (whole >= 1f) kotlin.math.floor(start) else quiet * cell
         val bleed = if (whole >= 1f) 0f else 0.5f
-        drawRect(Fob.qrLight)
+        val modules = androidx.compose.ui.graphics.Path()
         for (y in 0 until n) for (x in 0 until n) {
             if (code.dark[y * n + x]) {
-                drawRect(Fob.qrDark, topLeft = Offset(origin + x * cell, origin + y * cell), size = Size(cell + bleed, cell + bleed))
+                modules.addRect(androidx.compose.ui.geometry.Rect(origin + x * cell, origin + y * cell, origin + x * cell + cell + bleed, origin + y * cell + cell + bleed))
             }
         }
-    }
+        onDrawBehind {
+            drawRect(Fob.qrLight)
+            drawPath(modules, Fob.qrDark)
+        }
+    })
 }
 
 /**
@@ -555,14 +562,18 @@ fun PatternBadge(address: String, modifier: Modifier = Modifier, size: Dp = Patt
 fun AddressPattern(address: String, size: Dp, modifier: Modifier = Modifier, inverted: Boolean = false) {
     val pattern = remember(address) { addressPattern(address) }
     // Inverted (over the full-screen code's white): a dark badge, its dots the same colours lightened to show on it.
-    val (badge, edge) = (if (inverted) Fob.qrDark else Fob.patternBadge) to (if (inverted) Fob.qrDark else Fob.line)
+    // On the OLED theme the badge is true black, with the page's hairline, and its dots lightened as when inverted.
+    val oled = Fob.oled && !inverted
+    val lightDots = inverted || oled
+    val badge = if (inverted) Fob.qrDark else if (oled) Color.Black else Fob.patternBadge
+    val edge = if (inverted) Fob.qrDark else Fob.line
     Canvas(modifier.size(size).semantics { contentDescription = "Address pattern" }) {
         val side = this.size.width
         // Corners as the code card's: a rounded square.
         val corner = androidx.compose.ui.geometry.CornerRadius(side * 0.22f)
         drawRoundRect(badge, cornerRadius = corner)
         drawRoundRect(edge, topLeft = Offset(0.5.dp.toPx(), 0.5.dp.toPx()), size = Size(side - 1.dp.toPx(), side - 1.dp.toPx()), cornerRadius = corner, style = Stroke(1.dp.toPx()))
-        patternDots(pattern, center, side * 0.66f, inverted)
+        patternDots(pattern, center, side * 0.66f, lightDots)
     }
 }
 
@@ -839,13 +850,29 @@ fun LabelAndValue(modifier: Modifier = Modifier, gap: Dp = 14.dp, centred: Boole
 @Composable
 fun Modifier.optionalOutline(filled: Boolean, corner: Dp = 16.dp): Modifier {
     val colour = if (filled) Fob.muted.copy(alpha = 0.6f) else Fob.outline
-    return this.drawBehind {
+    // Drawn once into a bitmap, then only blitted: as a path, the dashes were cut and stroked again on the CPU (Skia's
+    // SkDashPath and SkStroke) for every frame drawn, three outlines on Receive, a quarter of the render thread.
+    return this.drawWithCache {
         val width = 1.dp.toPx()
         val inset = width / 2
-        drawRoundRect(
-            colour, topLeft = Offset(inset, inset), size = Size(size.width - width, size.height - width),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner.toPx() - inset),
-            style = Stroke(width, pathEffect = if (filled) null else androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))),
-        )
+        val bitmap = rasterised {
+            drawRoundRect(
+                colour, topLeft = Offset(inset, inset), size = Size(size.width - width, size.height - width),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner.toPx() - inset),
+                style = Stroke(width, pathEffect = if (filled) null else androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))),
+            )
+        }
+        onDrawBehind { drawImage(bitmap) }
     }
+}
+
+/**
+ * What [draw] paints over this cache scope's size, as a bitmap at 1:1 pixels, for [onDrawBehind] to blit. A screen that
+ * animates redraws all of it on every frame, and the GPU pipeline pays for each draw op again each time (an 800-rect QR
+ * code was over half the render thread, mostly allocating its fill ops); a bitmap is one op.
+ */
+fun androidx.compose.ui.draw.CacheDrawScope.rasterised(draw: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit): androidx.compose.ui.graphics.ImageBitmap {
+    val bitmap = androidx.compose.ui.graphics.ImageBitmap(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1))
+    androidx.compose.ui.graphics.drawscope.CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(bitmap), size, draw)
+    return bitmap
 }

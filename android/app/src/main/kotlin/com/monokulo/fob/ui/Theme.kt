@@ -64,6 +64,8 @@ class FobColors(
     val inverseMuted: Color,
     val inverseAccent: Color,
     val inverseGreen: Color,
+    /** The OLED theme: the address pattern's badge is true black too, its dots lightened. */
+    val oled: Boolean = false,
 )
 
 /** The Monokulo family's colours, as in the Fob designs. */
@@ -130,6 +132,42 @@ val DarkColors = FobColors(
     inverseGreen = Color(0xFF1F7A45),
 )
 
+/**
+ * For OLED screens and battery savers: the night colours on true black, where an OLED pixel is off and draws nothing. The page is
+ * black; cards, fields and chips are the faintest lift from it so they still read, held by their outlines.
+ */
+val OledColors = FobColors(
+    dark = true,
+    paper = Color(0xFF000000),
+    card = Color(0xFF0C0B0A),
+    sunken = Color(0xFF181613),
+    onPaper = Color(0xFF181613),
+    line = Color(0xFF2A2723),
+    ink = Color(0xFFF2EEE6),
+    muted = Color(0xFFB0A999),
+    outline = Color(0xFF6B655A),
+    orangeText = Color(0xFFFF8F45),
+    green = Color(0xFF5CC88A),
+    greenDot = Color(0xFF5CC88A),
+    greenFill = Color(0xFF5CC88A),
+    onGreen = Color(0xFF111111),
+    highlight = Color(0xFF1C1610),
+    warning = Color(0xFF3A2814),
+    selectedFill = Color(0xFF3A210F),
+    addressMark = Color(0xFF3F230E),
+    onAddressMark = Color(0xFFFFC9A0),
+    red = Color(0xFFF2B8B5),
+    onRed = Color(0xFF601410),
+    track = Color(0xFF2A2723),
+    scrim = Color(0xB3000000),
+    inverse = Color(0xFFF2EEE6),
+    onInverse = Color(0xFF1A1917),
+    inverseMuted = Color(0xFF5A564C),
+    inverseAccent = Color(0xFFB34700),
+    inverseGreen = Color(0xFF1F7A45),
+    oled = true,
+)
+
 val LocalFobColors = staticCompositionLocalOf { LightColors }
 
 /**
@@ -164,6 +202,7 @@ object Fob {
     val inverseMuted: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverseMuted
     val inverseAccent: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverseAccent
     val inverseGreen: Color @Composable @ReadOnlyComposable get() = LocalFobColors.current.inverseGreen
+    val oled: Boolean @Composable @ReadOnlyComposable get() = LocalFobColors.current.oled
 
     val orange = Color(0xFFFF6600)
     val onOrange = Color(0xFF111111)
@@ -203,6 +242,7 @@ enum class ThemeChoice(val label: String) {
     PHONE("Same as the phone"),
     LIGHT("Light"),
     DARK("Dark"),
+    OLED("OLED (true black, saves battery)"),
 }
 
 /** Manrope is one variable font file: each weight is a variation of it. */
@@ -235,9 +275,13 @@ fun FobTheme(choice: ThemeChoice = ThemeChoice.PHONE, content: @Composable () ->
     val dark = when (choice) {
         ThemeChoice.PHONE -> isSystemInDarkTheme()
         ThemeChoice.LIGHT -> false
-        ThemeChoice.DARK -> true
+        ThemeChoice.DARK, ThemeChoice.OLED -> true
     }
-    val c = if (dark) DarkColors else LightColors
+    val c = when {
+        choice == ThemeChoice.OLED -> OledColors
+        dark -> DarkColors
+        else -> LightColors
+    }
     val roles = if (dark) darkColorScheme() else lightColorScheme()
     MaterialTheme(
         colorScheme = roles.copy(

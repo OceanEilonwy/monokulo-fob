@@ -36,6 +36,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -179,6 +184,9 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     var choosing by remember { mutableStateOf(false) }
     var people by remember { mutableStateOf<List<ContactRow>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
+    // Any touch on the screen wakes the NFC badge's waves for another while.
+    var wake by remember { mutableIntStateOf(0) }
     LaunchedEffect(wallet, forId) {
         val w = wallet ?: return@LaunchedEffect
         forContact = forId?.let { w.contact(it) }
@@ -242,8 +250,20 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         ExpandedQr(shownCode, qr, shownAddress, { expanded = false })
         return
     }
-    Box(Modifier.fillMaxSize()) {
-        Page(bottom = { ErrorText(error) }) {
+    Box(Modifier.fillMaxSize().pointerInput(Unit) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); wake++ } }) {
+        Page(
+            refreshing = refreshing,
+            // Pull down for a new code: a fresh address, with the note (kept with the last one) cleared.
+            onRefresh = {
+                if (!refreshing) scope.launch {
+                    refreshing = true
+                    error = null
+                    runCatching { model.newReceive() }.onSuccess { note = ""; noteHint = null }.onFailure { error = it.reason() }
+                    refreshing = false
+                }
+            },
+            bottom = { ErrorText(error) },
+        ) {
             TopBar("Receive", onBack = { nav.back() }) {
                 // Shares the payment link for what's typed (and for whoever is chosen over the code).
                 val ready = code != null && asked != null
@@ -276,7 +296,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             if (qr != null && shownAddress != null) PatternBadge(shownAddress)
-                            NfcBadge(touch, PatternBadgeSize, { if (touch.nfc == Nfc.OFF) openNfcSettings(context) else model.setPayNfc(true) })
+                            NfcBadge(touch, PatternBadgeSize, { if (touch.nfc == Nfc.OFF) openNfcSettings(context) else model.setPayNfc(true) }, wake = wake)
                         }
                     }
                 }

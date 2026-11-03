@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -137,13 +139,13 @@ fun rememberPayCard(touch: TouchState, code: String?, onRead: () -> Unit = {}) {
 /** The NFC mark on a [size] disc: orange waves on the page's sunken colour (or [fill]); [waves] breathe out round it. */
 @Composable
 fun NfcMark(size: Dp = 32.dp, fill: Color = Fob.sunken, tint: Color = Fob.orangeText, modifier: Modifier = Modifier, waves: Boolean = false, reach: Dp = 7.dp, onClick: (() -> Unit)? = null) {
-    val phase = if (waves) rememberWavePhase() else 0f
+    val phase = if (waves) rememberWavePhase() else null
     Box(
         modifier.size(size)
             .then(
                 if (waves) Modifier.drawBehind {
                     for (i in 0 until 2) {
-                        val t = (phase + i / 2f) % 1f
+                        val t = ((phase?.value ?: 0f) + i / 2f) % 1f
                         drawCircle(tint.copy(alpha = 0.5f * (1f - t)), radius = this.size.width / 2f + reach.toPx() * t, style = Stroke(1.6.dp.toPx()))
                     }
                 } else Modifier,
@@ -162,17 +164,20 @@ fun NfcMark(size: Dp = 32.dp, fill: Color = Fob.sunken, tint: Color = Fob.orange
  * phone has no NFC.
  */
 @Composable
-fun NfcBadge(touch: TouchState, size: Dp, onTurnOn: () -> Unit, modifier: Modifier = Modifier) {
+fun NfcBadge(touch: TouchState, size: Dp, onTurnOn: () -> Unit, modifier: Modifier = Modifier, wake: Int = 0) {
     if (touch.nfc == Nfc.NONE) return
     val on = touch.payActive
-    val phase = if (on) rememberWavePhase(1800) else 0f
+    // Full speed, but only for a while: every frame is a whole screen's render, so a glow that never rests costs a third of a
+    // core on a screen that is otherwise still. It runs [WAVE_RUN_MS] from opening, and again from each touch ([wake]).
+    val phase = if (on) rememberWavesFor(1800, WAVE_RUN_MS, wake) else null
     Box(
-        modifier.size(size).clip(RoundedCornerShape(16.dp)).background(Fob.paper).padding(3.dp).clip(RoundedCornerShape(13.dp)).background(Fob.qrLight)
+        modifier.size(size).clip(RoundedCornerShape(16.dp)).background(Fob.paper).padding(3.dp).clip(RoundedCornerShape(13.dp)).background(if (Fob.oled) Color.Black else Fob.qrLight)
             .then(if (on) Modifier else Modifier.clickable(role = Role.Button, onClick = onTurnOn))
             .semantics { contentDescription = if (on) "NFC is on" else "NFC is off. Turn it on" },
         contentAlignment = Alignment.Center,
     ) {
-        val tint = if (on) Fob.qrMuted else Fob.muted
+        // On the OLED theme the square is true black, so the grey is the night text's, light enough to read on it.
+        val tint = if (Fob.oled) (if (on) Fob.muted else Fob.outline) else if (on) Fob.qrMuted else Fob.muted
         Box(
             Modifier.size(40.dp).then(
                 if (on) Modifier else Modifier.drawBehind {
@@ -183,20 +188,50 @@ fun NfcBadge(touch: TouchState, size: Dp, onTurnOn: () -> Unit, modifier: Modifi
         ) {
             if (on) {
                 // The three waves, each lit as the phase passes it, then dimmed again: the signal going out.
+                // The phase is read when the layer draws, so a frame of it redraws the three waves and recomposes nothing.
                 Icons.nfcWaves.forEachIndexed { i, wave ->
-                    val a = ((phase - i * 0.16f) % 1f + 1f) % 1f
-                    val lit = if (a < 0.4f) kotlin.math.sin(Math.PI.toFloat() * a / 0.4f) else 0f
-                    StrokeIcon(wave, tint = tint.copy(alpha = 0.3f + 0.7f * lit), size = 32.dp, width = 2.7f)
+                    Box(Modifier.graphicsLayer {
+                        val p = phase?.value ?: 0f
+                        // At rest all three show, steady.
+                        alpha = if (p < 0f) 1f else {
+                            val a = ((p - i * 0.16f) % 1f + 1f) % 1f
+                            val lit = if (a < 0.4f) kotlin.math.sin(Math.PI.toFloat() * a / 0.4f) else 0f
+                            0.3f + 0.7f * lit
+                        }
+                    }) { StrokeIcon(wave, tint = tint, size = 32.dp, width = 2.7f) }
                 }
             } else StrokeIcon(Icons.nfc, tint = tint, size = 32.dp, width = 2.7f)
         }
     }
 }
 
-/** A phase that runs 0 to 1 and round again, slowly: the waves' breathing. */
+/** How long the badge's waves run after Receive opens or is touched. */
+private const val WAVE_RUN_MS = 10_000
+
+/**
+ * A wave phase that runs 0 to 1 and round again for [runMillis], from the start and again whenever [wake] changes, then rests
+ * at -1 (steady, nothing drawn per frame). A [State], read in a graphicsLayer block only.
+ */
 @Composable
-fun rememberWavePhase(millis: Int = 2800): Float {
+fun rememberWavesFor(cycleMillis: Int, runMillis: Int, wake: Int): State<Float> {
+    val phase = remember { androidx.compose.animation.core.Animatable(-1f) }
+    LaunchedEffect(wake) {
+        val end = System.nanoTime() + runMillis * 1_000_000L
+        while (System.nanoTime() < end) {
+            phase.snapTo(0f)
+            phase.animateTo(1f, tween(cycleMillis, easing = LinearEasing))
+        }
+        phase.snapTo(-1f)
+    }
+    return phase.asState()
+}
+
+/**
+ * A phase that runs 0 to 1 and round again, slowly: the waves' breathing. A [State], to be read inside a draw or graphicsLayer
+ * block only: read in composition, every frame of it would recompose what reads it, a whole screen's worth.
+ */
+@Composable
+fun rememberWavePhase(millis: Int = 2800): State<Float> {
     val transition = rememberInfiniteTransition(label = "waves")
-    val phase by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(millis, easing = LinearEasing), RepeatMode.Restart), label = "wave")
-    return phase
+    return transition.animateFloat(0f, 1f, infiniteRepeatable(tween(millis, easing = LinearEasing), RepeatMode.Restart), label = "wave")
 }
