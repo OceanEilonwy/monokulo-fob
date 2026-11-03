@@ -27,6 +27,22 @@ https://stagenet-faucet.xmr-tw.org.
 adb install -r dist/fob-debug.apk
 ```
 
+### Installing and updating with Obtainium
+
+Every `v*` tag publishes a signed APK (`fob-<version>.apk`, with a `SHA256SUMS`
+file) on the [Releases](https://github.com/OceanEilonwy/monokulo-fob/releases)
+page, so [Obtainium](https://obtainium.imranr.dev/) can install Fob and keep it
+up to date from there, with no store.
+
+In Obtainium, tap **Add App**, paste
+`https://github.com/OceanEilonwy/monokulo-fob` as the source, and add. Or open
+this link on the phone: [obtainium://add/https://github.com/OceanEilonwy/monokulo-fob](obtainium://add/https://github.com/OceanEilonwy/monokulo-fob).
+Its defaults suit this repo: the one APK on each release is picked, and the
+tag (`v0.1.4`) is the version, as the app's own is. Every release is signed
+with the same key, so an update installs over the last (package
+`com.monokulo.fob`). The debug build above is a different package and sits
+beside it.
+
 ## Building
 
 You need Rust, `cargo-ndk`, the Android SDK (platform 37.2, NDK r27) and a
