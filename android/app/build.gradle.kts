@@ -10,6 +10,9 @@ val repo: File = rootDir.parentFile
 val hostLibrary = File(repo, "target/release/" + System.mapLibraryName("fob_ffi"))
 // Phones, and the emulator.
 val abis = listOf("arm64-v8a", "x86_64")
+// A release (-PfobSplits, from CI) comes as an APK for each ABI, smaller, and a universal one holding both. Any other
+// build is one APK holding both.
+val splitting = project.hasProperty("fobSplits")
 
 /** A cargo command that writes one directory, so AGP can take it as generated sources. */
 abstract class CargoTask : Exec() {
@@ -30,6 +33,24 @@ android {
         // A release build is given these by CI (.github/workflows/release.yml).
         versionCode = (project.findProperty("fobVersionCode") as String?)?.toInt() ?: 1
         versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.4"
+    }
+
+    // Only the ABIs fob-ffi is built for, in the universal APK too: with the 32-bit libraries the dependencies carry, a
+    // 32-bit phone would install it and crash at the first call into Rust, not be refused at install.
+    packaging {
+        jniLibs {
+            excludes += listOf("lib/armeabi/**", "lib/armeabi-v7a/**", "lib/x86/**", "lib/mips/**", "lib/mips64/**")
+        }
+    }
+
+    // One versionCode for all of them: an APK of another ABI, or the universal one, installs over any other.
+    splits {
+        abi {
+            isEnable = splitting
+            reset()
+            include(*abis.toTypedArray())
+            isUniversalApk = true
+        }
     }
 
     // Only a build given the keystore (CI's release secrets) is signed; any

@@ -29,19 +29,25 @@ adb install -r dist/fob-debug.apk
 
 ### Installing and updating with Obtainium
 
-Every `v*` tag publishes a signed APK (`fob-<version>.apk`, with a `SHA256SUMS`
-file) on the [Releases](https://github.com/OceanEilonwy/monokulo-fob/releases)
-page, so [Obtainium](https://obtainium.imranr.dev/) can install Fob and keep it
-up to date from there, with no store.
+Every `v*` tag publishes signed APKs on the
+[Releases](https://github.com/OceanEilonwy/monokulo-fob/releases) page, with a
+`SHA256SUMS` file, so [Obtainium](https://obtainium.imranr.dev/) can install Fob
+and keep it up to date from there, with no store:
+
+- `fob-<version>-arm64-v8a.apk`: for phones, about half the size of the
+  universal one. This is the one most people want.
+- `fob-<version>-x86_64.apk`: for the emulator and x86 Chromebooks.
+- `fob-<version>-universal.apk`: both in one, for when you don't know.
 
 In Obtainium, tap **Add App**, paste
 `https://github.com/OceanEilonwy/monokulo-fob` as the source, and add. Or open
 this link on the phone: [obtainium://add/https://github.com/OceanEilonwy/monokulo-fob](obtainium://add/https://github.com/OceanEilonwy/monokulo-fob).
-Its defaults suit this repo: the one APK on each release is picked, and the
-tag (`v0.1.4`) is the version, as the app's own is. Every release is signed
-with the same key, so an update installs over the last (package
-`com.monokulo.fob`). The debug build above is a different package and sits
-beside it.
+With three APKs on a release, Obtainium asks which; set the APK filter to
+`arm64-v8a` in the app's settings to pick the phone one every time. The tag
+(`v0.1.4`) is the version, as the app's own is. Every release is signed with the
+same key and the APKs share a version code, so any installs over another
+(package `com.monokulo.fob`). The debug build above is a different package and
+sits beside it.
 
 ## Building
 

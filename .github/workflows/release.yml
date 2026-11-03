@@ -1,8 +1,10 @@
 name: Release
 
-# A version tag builds the signed release APK (stagenet and mainnet are both in
-# it: the network is a setting in the app) and puts it on the Releases page with
-# its SHA-256. A manual run of any branch builds the same APK, signed only if
+# A version tag builds the signed release APKs (stagenet and mainnet are both in
+# them: the network is a setting in the app): one for each ABI (arm64-v8a for
+# phones, x86_64 for the emulator), about half the size, and a universal one
+# holding both, put on the Releases page with their SHA-256. All share one
+# versionCode, so any installs over any other. A manual run of any branch builds the same APK, signed only if
 # the secrets exist, and keeps it as the run's artifact.
 #
 # Secrets: FOB_KEYSTORE_BASE64 (the keystore file, base64), FOB_KEYSTORE_PASSWORD,
@@ -75,21 +77,24 @@ jobs:
         working-directory: android
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          ./gradlew assembleRelease \
+          ./gradlew assembleRelease -PfobSplits \
             -PfobVersion=${{ steps.version.outputs.version }} \
             -PfobVersionCode=${{ steps.version.outputs.code }}
-      - name: Name and check the APK
+      - name: Name and check the APKs
         run: |
           out=android/app/build/outputs/apk/release
+          version=${{ steps.version.outputs.version }}
           mkdir dist
-          if [ -f "$out/app-release.apk" ]; then
-            apk="dist/fob-${{ steps.version.outputs.version }}.apk"
-            cp "$out/app-release.apk" "$apk"
-            apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
-            "$apksigner" verify --print-certs "$apk"
-          else
-            cp "$out/app-release-unsigned.apk" "dist/fob-${{ steps.version.outputs.version }}-unsigned.apk"
-          fi
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
+          for abi in universal arm64-v8a x86_64; do
+            if [ -f "$out/app-$abi-release.apk" ]; then
+              apk="dist/fob-$version-$abi.apk"
+              cp "$out/app-$abi-release.apk" "$apk"
+              "$apksigner" verify --print-certs "$apk"
+            else
+              cp "$out/app-$abi-release-unsigned.apk" "dist/fob-$version-$abi-unsigned.apk"
+            fi
+          done
           cd dist && sha256sum * > SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
