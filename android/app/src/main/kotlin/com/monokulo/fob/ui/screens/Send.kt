@@ -172,6 +172,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     val prices by model.prices.collectAsState()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
+    // The node is asked what a payment needs while the form is filled, not after Review is pressed.
+    LaunchedEffect(wallet) { wallet?.warmUpSend() }
     var open by rememberSaveable { mutableStateOf(draft != null) }
     var torch by remember { mutableStateOf(false) }
     var hasTorch by remember { mutableStateOf(false) }

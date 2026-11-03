@@ -66,6 +66,8 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     val sending by rememberUpdatedState(busy)
     val amount = request?.amountText
 
+    // The node is asked what the payment needs as the drawer opens; the fee below takes the answer, whichever is first.
+    LaunchedEffect(code) { model.wallet.value?.warmUpSend() }
     // Checked without asking the node, so the drawer opens at once; no amount means the form takes it.
     LaunchedEffect(code) {
         val r = request

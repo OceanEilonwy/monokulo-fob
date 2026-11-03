@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::decoys::Decoys;
+use crate::send_context::SendContext;
 use crate::fetch::{Adaptive, Pipeline, Tuning};
 
 /// A node, as a raw transport, a daemon, a decoy source and what's been learned about it.
@@ -478,6 +479,8 @@ struct Inner {
     /// The node's fee per unit of weight and its rounding mask, as last
     /// asked: Split up's fee "about" before a payment is built.
     fee_rate: std::sync::Mutex<Option<(u64, u64)>>,
+    /// What a payment asks the node before it can be built, kept briefly.
+    send_context: SendContext,
     /// The share the last "Share my profile" made, while its screen may
     /// still swap by touching phones: a share reopened later never does.
     fresh_share: std::sync::Mutex<Option<u64>>,
@@ -711,6 +714,7 @@ impl Wallet {
                 price_looked_up: AtomicU64::new(0),
                 price_alerts: std::sync::Mutex::new(price::alert::Alerts::default()),
                 fee_rate: std::sync::Mutex::new(None),
+                send_context: SendContext::new(),
                 fresh_share: std::sync::Mutex::new(None),
                 node_verdict: std::sync::Mutex::new(None),
                 live_swap: std::sync::Mutex::new(std::sync::Weak::new()),
@@ -1847,6 +1851,44 @@ impl Wallet {
         Ok(fee_rate)
     }
 
+    /// What a payment asks the node before it can be built: the fee rate and
+    /// the chain tip, with the output distribution brought up to it. Asked
+    /// together (each is a round trip), unless a moment ago, and asked once
+    /// however many call it at once (see [`SendContext`]).
+    async fn send_ready(&self, rpc: &Daemon, decoys: &Decoys) -> Result<(FeeRate, usize)> {
+        let node = self.node().await;
+        let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
+        let (fee_rate, tip) = self
+            .inner
+            .send_context
+            .get(&node, || async {
+                let (fee_rate, tip) = tokio::join!(self.fee_rate(rpc), async {
+                    let tip = rpc.latest_block_number().await.map_err(node_err)?;
+                    // Brings the distribution up to the tip, so choosing decoys finds it ready.
+                    decoys.update(tip).await.map_err(node_err)?;
+                    Ok::<_, FobError>(tip)
+                });
+                Ok((fee_rate?, tip?))
+            })
+            .await?;
+        // Choosing each input's decoys asks for the tip again; it is this one.
+        decoys.note_tip(tip);
+        Ok((fee_rate, tip))
+    }
+
+    /// Gets the node ready for a payment: opens the connection if it has
+    /// gone quiet, and asks what building one needs (the fee rate and chain
+    /// tip, the output distribution brought up to date), so that
+    /// [`prepare`](Wallet::prepare) and the like, a moment later, wait for
+    /// the node once instead of several times. Call it when the Send screen
+    /// opens. It changes nothing, fails quietly, and is cheap to call again:
+    /// what it fetched is kept for twenty seconds.
+    pub async fn warm_up_send(&self) {
+        if let Ok((_, rpc, decoys, _)) = self.connection().await {
+            let _ = self.send_ready(&rpc, &decoys).await;
+        }
+    }
+
     /// Asks the node its fee rate now, so Split up's fee estimate is the
     /// node's, not Monero's usual. Quietly keeps the last one on failure.
     pub async fn refresh_fee_rate(&self) {
@@ -1868,9 +1910,7 @@ impl Wallet {
     ) -> Result<Prepared> {
         let amount: u64 = payments.iter().map(|p| p.1).sum();
         let (_, rpc, decoys, _) = self.connection().await?;
-        let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
-        let fee_rate = self.fee_rate(&rpc).await?;
-        let latest = rpc.latest_block_number().await.map_err(node_err)?;
+        let (fee_rate, latest) = self.send_ready(&rpc, &decoys).await?;
 
         let (mut candidates, available) = {
             let state = self.inner.state.lock().await;
@@ -1907,10 +1947,18 @@ impl Wallet {
             total += c.1;
             chosen.push(c);
         }
-        let mut with_decoys = vec![];
-        for c in &chosen {
-            with_decoys.push(OutputWithDecoys::new(&mut OsRng, &decoys, RING_LEN, latest, c.2.clone()).await.map_err(|e| FobError::Node(format!("{e:?}")))?);
+        // Every input's ring at once: each is a round trip to the node.
+        let mut rings = tokio::task::JoinSet::new();
+        for (i, c) in chosen.iter().enumerate() {
+            let (decoys, output) = (decoys.clone(), c.2.clone());
+            rings.spawn(async move { (i, OutputWithDecoys::new(&mut OsRng, &decoys, RING_LEN, latest, output).await) });
         }
+        let mut with_decoys: Vec<Option<OutputWithDecoys>> = vec![None; chosen.len()];
+        while let Some(done) = rings.join_next().await {
+            let (i, ring) = done.map_err(|e| FobError::Node(format!("{e}")))?;
+            with_decoys[i] = Some(ring.map_err(|e| FobError::Node(format!("{e:?}")))?);
+        }
+        let mut with_decoys: Vec<OutputWithDecoys> = with_decoys.into_iter().flatten().collect();
         let change = Change::new(self.inner.keys.view_pair(), None);
         let signable = loop {
             let mut outgoing_view = Zeroizing::new([0u8; 32]);
@@ -3336,6 +3384,103 @@ mod tests {
         // instant updates go off rather than follow somewhere unchosen.
         again.inner.state.lock().await.node = "http://127.0.0.1:1".into();
         assert!(matches!(again.set_zmq(true, Some("tcp://stagenet.xmr-tw.org:38083")).await, Err(FobError::BadEndpoint(_))));
+    }
+
+    /// How often a counting node was asked for the tip and for the fee.
+    #[derive(Default)]
+    struct NodeCalls {
+        height: AtomicU64,
+        fee: AtomicU64,
+    }
+
+    /// A stagenet node on 127.0.0.1 that answers only what a payment asks
+    /// first, counting each, with the tip taking `delay` to arrive so that
+    /// callers overlap. Gives its address and the counts.
+    async fn counting_node(delay: Duration) -> (String, Arc<NodeCalls>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let counts = Arc::new(NodeCalls::default());
+        let seen = counts.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { return };
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut request = vec![];
+                    let mut buf = [0; 4096];
+                    loop {
+                        let Ok(n) = stream.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buf[..n]);
+                        let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+                        if request.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    let body = if text.contains("get_height") {
+                        seen.height.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(delay).await;
+                        r#"{"height":3000000,"status":"OK"}"#
+                    } else if text.contains("get_fee_estimate") {
+                        seen.fee.fetch_add(1, Ordering::Relaxed);
+                        r#"{"jsonrpc":"2.0","id":0,"result":{"fee":20000,"quantization_mask":10000,"status":"OK"}}"#
+                    } else {
+                        // Connecting asks something of json_rpc; any answer will do.
+                        r#"{"jsonrpc":"2.0","id":0,"result":{}}"#
+                    };
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (url, counts)
+    }
+
+    /// A wallet using `node`, with an output distribution already kept up to
+    /// past the tip, so that only the tip and the fee are asked.
+    async fn wallet_for_sending(name: &str, node: &str) -> Wallet {
+        let path = dir(name);
+        let mut kept = 2_999_000u64.to_le_bytes().to_vec();
+        kept.extend((0..2_000u64).flat_map(|i| (i * 10).to_le_bytes()));
+        std::fs::write(path.with_extension("decoys"), kept).unwrap();
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        wallet.inner.state.lock().await.node = node.into();
+        wallet
+    }
+
+    async fn ready(wallet: &Wallet) -> Result<(FeeRate, usize)> {
+        let (_, rpc, decoys, _) = wallet.connection().await?;
+        wallet.send_ready(&rpc, &decoys).await
+    }
+
+    #[tokio::test]
+    async fn a_payment_built_during_the_warm_up_waits_for_it_and_the_node_is_asked_once() {
+        let (url, asked) = counting_node(Duration::from_millis(300)).await;
+        let wallet = wallet_for_sending("warm-overlap", &url).await;
+        let ((), b, c) = tokio::join!(
+            wallet.warm_up_send(),
+            ready(&wallet),
+            async {
+                // Arrives while the first is still waiting for the tip.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                ready(&wallet).await
+            }
+        );
+        let (b, c) = (b.unwrap(), c.unwrap());
+        assert_eq!(b.1, 2_999_999);
+        assert_eq!((b.1, c.1), (c.1, b.1), "the same tip");
+        assert_eq!(asked.height.load(Ordering::Relaxed), 1, "the tip asked once");
+        assert_eq!(asked.fee.load(Ordering::Relaxed), 1, "the fee asked once");
+        ready(&wallet).await.unwrap();
+        wallet.warm_up_send().await;
+        assert_eq!((asked.height.load(Ordering::Relaxed), asked.fee.load(Ordering::Relaxed)), (1, 1), "kept, so not asked again");
     }
 
     /// A provider standing in for Kraken: a fixed price now, and a history.

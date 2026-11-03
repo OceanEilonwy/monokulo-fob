@@ -1449,6 +1449,15 @@ impl FobWallet {
         self.inner.split_remove(&counts, index as usize).await
     }
 
+    /// Gets the node ready for a payment, for when the Send screen opens:
+    /// opens the connection if it has gone quiet and asks what building a
+    /// payment needs, so that `prepare` a moment later waits for the node
+    /// once, not several times. Changes nothing, fails quietly, and is cheap
+    /// to call again (what it fetched is kept for twenty seconds).
+    pub async fn warm_up_send(&self) {
+        self.inner.warm_up_send().await;
+    }
+
     /// Asks the node its fee rate, so Split up's fee estimate is the node's.
     pub async fn refresh_fee_rate(&self) {
         self.inner.refresh_fee_rate().await;

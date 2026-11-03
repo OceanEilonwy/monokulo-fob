@@ -37,6 +37,7 @@ pub mod ndef;
 pub mod pay;
 pub mod swap;
 pub mod transport;
+mod send_context;
 mod store;
 pub mod uri;
 pub mod wallet;

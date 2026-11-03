@@ -17,6 +17,7 @@ use std::{
     ops::{Bound, RangeBounds},
     path::PathBuf,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use monero_wallet::{
@@ -32,6 +33,9 @@ use monero_epee::{Epee, HEADER, Type, VERSION};
 /// Blocks fetched again at the end of the cached distribution, in case a
 /// reorganisation changed them.
 const REFETCH: usize = 30;
+
+/// How long a tip taken by [`Decoys::note_tip`] stands in for asking the node.
+const TIP_FOR: Duration = Duration::from_secs(10);
 
 /// The cumulative RingCT output count at each block from `start`.
 struct Distribution {
@@ -75,12 +79,20 @@ pub struct Decoys {
     transport: Transport,
     cache: Arc<Mutex<Option<Distribution>>>,
     file: Arc<PathBuf>,
+    /// The chain tip a payment has just asked the node for. Choosing each
+    /// input's decoys asks again, a round trip apiece, for the same answer.
+    tip: Arc<std::sync::Mutex<Option<(Instant, usize)>>>,
 }
 
 impl Decoys {
     pub fn new(daemon: Daemon, transport: Transport, file: PathBuf) -> Decoys {
         let cached = Distribution::read(&file);
-        Decoys { daemon, transport, cache: Arc::new(Mutex::new(cached)), file: Arc::new(file) }
+        Decoys { daemon, transport, cache: Arc::new(Mutex::new(cached)), file: Arc::new(file), tip: Arc::default() }
+    }
+
+    /// Takes `tip`, just asked of the node, as the tip for the next few seconds.
+    pub fn note_tip(&self, tip: usize) {
+        *self.tip.lock().expect("tip lock") = Some((Instant::now(), tip));
     }
 
     /// Brings the distribution up to block `to`, fetching only what's new.
@@ -217,7 +229,14 @@ async fn compressed_distribution(transport: &Transport, from: usize, to: usize) 
 
 impl ProvidesBlockchainMeta for Decoys {
     fn latest_block_number(&self) -> impl Send + Future<Output = Result<usize, InterfaceError>> {
-        self.daemon.latest_block_number()
+        let noted = self.tip.lock().expect("tip lock").filter(|(at, _)| at.elapsed() < TIP_FOR).map(|(_, tip)| tip);
+        let daemon = self.daemon.clone();
+        async move {
+            match noted {
+                Some(tip) => Ok(tip),
+                None => daemon.latest_block_number().await,
+            }
+        }
     }
 }
 
