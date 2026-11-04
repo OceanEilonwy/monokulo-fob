@@ -44,6 +44,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.monokulo.fob.ui.FobTheme
 import com.monokulo.fob.ui.LocalBottomSpace
+import com.monokulo.fob.ui.LocalCameraAuto
 import com.monokulo.fob.ui.LocalFobColors
 import com.monokulo.fob.ui.PriceToastHost
 import com.monokulo.fob.ui.screens.BackupKeysScreen
@@ -270,7 +271,8 @@ class MainActivity : FragmentActivity() {
                 BackHandler(enabled = nav.stack.size > 1) { nav.back() }
                 // The price toast over whatever screen is open, above its bottom bar.
                 val bottomSpace = remember { mutableStateOf(0.dp) }
-                CompositionLocalProvider(LocalBottomSpace provides bottomSpace) {
+                val cameraAuto by model.cameraAuto.collectAsState()
+                CompositionLocalProvider(LocalBottomSpace provides bottomSpace, LocalCameraAuto provides cameraAuto) {
                     Box(Modifier.fillMaxSize()) {
                         App(nav)
                         val toast by model.priceToast.collectAsState()

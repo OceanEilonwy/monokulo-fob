@@ -150,6 +150,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val touch = rememberTouchState(model)
     val meetOn by model.meetNfc.collectAsState()
     val payOn by model.payNfc.collectAsState()
+    val cameraAuto by model.cameraAuto.collectAsState()
     val node by model.nodeLine.collectAsState()
     val backupLine by model.backupLine.collectAsState()
     // Again as it opens: the Node screen's checks, or a screen lock set meanwhile, change them.
@@ -188,6 +189,15 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                         val context = androidx.compose.ui.platform.LocalContext.current
                         SettingRow("NFC is off on this phone", "Turn it on in Android's settings", onClick = { openNfcSettings(context) })
                     }
+                }
+            }
+            Column {
+                SectionLabel("Camera")
+                Card {
+                    SettingRow(
+                        "Open automatically", if (cameraAuto) "Scanning screens open the camera as they appear" else "Tap to turn the camera on",
+                        checked = cameraAuto, onChecked = { on -> model.setCameraAuto(on) },
+                    )
                 }
             }
             Column {

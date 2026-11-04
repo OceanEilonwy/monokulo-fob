@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -31,6 +32,9 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import java.util.concurrent.Executors
 
+/** Whether a scanning screen opens the camera by itself (Settings); off, it waits for a tap. */
+val LocalCameraAuto = staticCompositionLocalOf { true }
+
 /**
  * The camera, reading QR codes; [onText] gets each one read (on the main
  * thread). The light is on while [torch]; [onHasTorch] says, once the
@@ -46,7 +50,17 @@ fun QrScanner(onText: (String) -> Unit, modifier: Modifier = Modifier, torch: Bo
     val read by rememberUpdatedState(onText)
     val hasTorch by rememberUpdatedState(onHasTorch)
     var camera by remember { mutableStateOf<Camera?>(null) }
-    DisposableEffect(Unit) { onDispose { executor.shutdown() } }
+    // The camera is bound to the activity's lifecycle, not this composable's: leaving the screen (or the idle shut-off)
+    // has to let it go itself, or it stays open until the app is left.
+    var bound by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var gone by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        onDispose {
+            gone = true
+            bound?.unbindAll()
+            executor.shutdown()
+        }
+    }
     LaunchedEffect(camera, torch) {
         val c = camera ?: return@LaunchedEffect
         if (c.cameraInfo.hasFlashUnit()) c.cameraControl.enableTorch(torch)
@@ -58,7 +72,9 @@ fun QrScanner(onText: (String) -> Unit, modifier: Modifier = Modifier, torch: Bo
                 val view = PreviewView(ctx)
                 val future = ProcessCameraProvider.getInstance(ctx)
                 future.addListener({
-                    val provider = future.get()
+                    // Left the screen before the camera service answered: nothing to open.
+                    if (gone) return@addListener
+                    val provider = future.get().also { bound = it }
                     val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
                     val reader = MultiFormatReader().apply {
                         setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
@@ -79,9 +95,9 @@ fun QrScanner(onText: (String) -> Unit, modifier: Modifier = Modifier, torch: Bo
                         }
                     }
                     provider.unbindAll()
-                    val bound = provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-                    camera = bound
-                    hasTorch(bound.cameraInfo.hasFlashUnit())
+                    val cam = provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                    camera = cam
+                    hasTorch(cam.cameraInfo.hasFlashUnit())
                 }, ContextCompat.getMainExecutor(ctx))
                 view
             },

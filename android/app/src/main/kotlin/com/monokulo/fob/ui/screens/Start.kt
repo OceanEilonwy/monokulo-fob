@@ -377,10 +377,14 @@ fun RestoreFoundScreen(model: WalletModel, nav: Nav, code: String) {
     }
 }
 
+/** How long the camera stays open with nothing read before it shuts to spare the battery. */
+private const val CAMERA_IDLE_MS = 60_000L
+
 /**
- * The camera, once allowed; until then, a button to allow it, centred in
- * what [askPadding] leaves (clear of what's drawn over the camera). The
- * light as for [QrScanner]. The status bar's icons are light meanwhile.
+ * The camera, once on and allowed. It opens by itself or waits for a tap, as the Camera setting says, and shuts after
+ * a minute of reading nothing (or on leaving the screen), with a button to open it again, centred in what [askPadding]
+ * leaves (clear of what's drawn over the camera). The permission is asked when the camera is first wanted. The light
+ * as for [QrScanner]. The status bar's icons are light meanwhile.
  */
 @Composable
 fun CameraOrAsk(
@@ -388,23 +392,41 @@ fun CameraOrAsk(
     onText: (String) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val auto = com.monokulo.fob.ui.LocalCameraAuto.current
     var granted by remember {
         mutableStateOf(androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED)
     }
+    // Wanted: the camera is to be open (once allowed). Starts as the setting has it; a tap sets it, the idle shut-off clears it.
+    var wanted by remember { mutableStateOf(auto) }
+    var resumed by remember { mutableStateOf(true) }
+    // Each code read, or the screen coming back, starts the minute again.
+    var activity by remember { mutableStateOf(0) }
     val ask = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted = it }
-    LaunchedEffect(Unit) { if (!granted) ask.launch(android.Manifest.permission.CAMERA) }
+    LaunchedEffect(wanted) { if (wanted && !granted) ask.launch(android.Manifest.permission.CAMERA) }
     // Allowed in Android's settings meanwhile: the camera shows on coming back.
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        resumed = true
+        activity++
         if (!granted) granted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        onPauseOrDispose {}
+        onPauseOrDispose { resumed = false }
     }
+    val on = wanted && granted
+    LaunchedEffect(on, resumed, activity) {
+        if (on && resumed) {
+            kotlinx.coroutines.delay(CAMERA_IDLE_MS)
+            wanted = false
+        }
+    }
+    // The light has nothing to light while the camera is shut.
+    LaunchedEffect(on) { if (!on) onHasTorch(false) }
     // Light status bar icons over the dark camera, whatever the theme.
     BarIcons(darkIcons = false, statusOnly = true)
-    if (granted) {
-        QrScanner(onText, modifier, torch, onHasTorch)
+    if (on) {
+        QrScanner({ activity++; onText(it) }, modifier, torch, onHasTorch)
     } else {
         Box(modifier.padding(askPadding), contentAlignment = Alignment.Center) {
-            OutlineButton("Allow the camera", { ask.launch(android.Manifest.permission.CAMERA) }, tint = Fob.onCamera)
+            val label = if (wanted && !granted) "Allow the camera" else "Turn on the camera"
+            OutlineButton(label, { wanted = true; if (!granted) ask.launch(android.Manifest.permission.CAMERA) else activity++ }, tint = Fob.onCamera)
         }
     }
 }

@@ -154,6 +154,18 @@ class WalletModel(private val app: Application) {
         _payNfc.value = on
     }
 
+    /**
+     * Camera (Settings): on, a screen that scans opens the camera as it appears; off, it waits for a tap. Either way the
+     * camera shuts after a minute of reading nothing, to spare the battery.
+     */
+    private val _cameraAuto = MutableStateFlow(prefs.getBoolean("camera_auto", true))
+    val cameraAuto: StateFlow<Boolean> = _cameraAuto
+
+    fun setCameraAuto(on: Boolean) {
+        prefs.edit().putBoolean("camera_auto", on).apply()
+        _cameraAuto.value = on
+    }
+
     private val _status = MutableStateFlow<SyncStatus?>(null)
     val status: StateFlow<SyncStatus?> = _status
 
