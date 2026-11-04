@@ -32,7 +32,7 @@ android {
         targetSdk = 37
         // A release build is given these by CI (.github/workflows/release.yml).
         versionCode = (project.findProperty("fobVersionCode") as String?)?.toInt() ?: 1
-        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.6"
+        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.7"
     }
 
     // Only the ABIs fob-ffi is built for, in the universal APK too: with the 32-bit libraries the dependencies carry, a
