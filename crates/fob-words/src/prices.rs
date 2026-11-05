@@ -69,7 +69,7 @@ pub struct Intro {
 
 pub fn intro(intro: PriceFromIntro) -> Intro {
     match intro {
-        PriceFromIntro::In(plural) => Intro { before: "Prices in ".into(), bold: Some(plural), after: ", checked as this page opens. Tap a provider to pick it.".into() },
+        PriceFromIntro::In(plural) => Intro { before: "Prices in ".into(), bold: Some(plural), after: format!(", checked as this page opens. {} a provider to pick it.", crate::capitalised(crate::device().press())) },
         PriceFromIntro::XmrOnly => Intro { before: format!("With XMR as the default currency, {NEVER_LOOKS}."), bold: None, after: String::new() },
     }
 }

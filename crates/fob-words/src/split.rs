@@ -92,7 +92,7 @@ fn fee(fee: &SplitFee) -> String {
 
 pub fn view(v: split::View) -> View {
     let tile = |t: split::Tile| Tile {
-        count_text: if t.count > 0 { format!("× {}", t.count) } else { "tap to add".into() },
+        count_text: if t.count > 0 { format!("× {}", t.count) } else { format!("{} to add", crate::device().press()) },
         add_label: format!("Add a {} coin, {} so far", t.spoken, if t.count == 0 { "none".to_owned() } else { t.count.to_string() }),
         remove_label: format!("Remove a {} coin", t.spoken),
         label: t.label,

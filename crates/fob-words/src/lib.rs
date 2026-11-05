@@ -41,6 +41,14 @@ impl Device {
             Device::Computer => "computer",
         }
     }
+
+    /// How something's chosen on it: "tap", "click".
+    pub fn press(self) -> &'static str {
+        match self {
+            Device::Phone => "tap",
+            Device::Computer => "click",
+        }
+    }
 }
 
 static DEVICE: AtomicU8 = AtomicU8::new(0);

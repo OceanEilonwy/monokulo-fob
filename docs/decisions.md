@@ -2778,14 +2778,17 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      enum now, and `FobError` shows the same words as before. `fob-words` is the only
      crate meant to hold sentences, and takes the device (`Phone`, `Computer`) as a
      process-wide setting, as it doesn't change while running. This reverses "every
-     word is Rust's" only in where in Rust: apps still never write a word. The move
-     isn't finished. `fob-screens` still builds its rows' text, so about 250 fields
-     across `fob-ffi` are still strings. Those screens go one at a time, each gaining
-     an enum as `PaymentStatus` has beside its text.
+     word is Rust's" only in where in Rust: apps still never write a word. Screens
+     and prices now build typed views too, and `fob-words` says each with the old
+     field names, so `fob-ffi`'s records and Kotlin's bindings didn't change. That
+     boundary is where sentences begin: `fob-ffi` holds strings because its callers
+     draw them. Data stays text: names, amounts, month names, currency names.
 336. **`fob-app` is the core a desktop client draws.** Like tern's `tern-app`, it
-     holds what's unlocked, which wallet is open, the sync lifecycle and form rules,
-     and publishes to a listener. Android's `WalletModel` does the same in Kotlin for
-     now, and could move onto it.
+     holds what's unlocked, which wallet is open, the sync lifecycle, locking when
+     left alone and saving who you met, and publishes to a listener. The rules of
+     Send's form live lower, in `fob-ffi`, because Android uses them too. Android's
+     `WalletModel` still holds its own state in Kotlin: that's flows and a phone's
+     lifecycle, not wallet rules, and nothing could run a rewrite of it here.
 337. **The desktop's wallet key is sealed under a passphrase**, not put in the
      desktop's keyring, which any program running as the same user can read once it's
      unlocked. Argon2id at 128 MiB, sealing a random key, so changing the passphrase
@@ -2794,4 +2797,11 @@ against Fob's after a mainnet trial felt slower than it. Measured with
 338. **`fob-gtk` draws with Relm4 and libadwaita, through a small bridge** as tern is
      trying (`bridge.rs`): the engine's updates become the root component's input, a
      screen's model is its latest view, and what it does goes to the engine. No
-     camera: a code is pasted or read from a picture. No NFC.
+     camera: a code is pasted or read from a picture. No NFC, so Meet is two codes,
+     or a link. A photo from someone's code is drawn by `image-webp`, in safe Rust;
+     libwebp, in C, only encodes a picture you chose yourself.
+339. **The desktop locks when left alone** (15 minutes unless changed) and when the
+     desktop's session locks, never during a payment going out. Locking closes
+     any dialog that's open, so a seed phrase doesn't stay on screen behind the lock.
+     A passphrase is wiped once it reaches Rust; what GTK's own copy of the typed
+     text leaves behind isn't in Fob's reach.
