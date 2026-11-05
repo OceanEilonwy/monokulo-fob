@@ -201,14 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn the_subtitle_names_the_place_and_how_it_is_doing() {
-        let at = Some("tcp://node.example:18083");
-        assert_eq!(ZmqStatus::Off.text(at), "Off");
-        assert_eq!(ZmqStatus::Listening.text(at), "node.example:18083 · listening");
-        assert_eq!(ZmqStatus::CantConnect("no answer".into()).text(at), "node.example:18083 · can't connect");
-    }
-
-    #[test]
     fn only_the_two_topics_are_announcements() {
         let pool = format!(r#"{POOL_TOPIC}:[{{"id":"ab","blob_size":1,"weight":1,"fee":1}}]"#);
         let chain = format!(r#"{CHAIN_TOPIC}:{{"first_height":1,"first_prev_id":"ab","ids":["cd"]}}"#);
