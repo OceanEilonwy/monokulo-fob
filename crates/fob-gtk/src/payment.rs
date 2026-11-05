@@ -14,6 +14,9 @@ pub enum Input {
     Open(String, Option<View<Screens>>),
     Show(Option<View<PaymentDetail>>),
     CopyTx,
+    AskRelease,
+    Released,
+    Failed(String),
 }
 
 pub struct Payment {
@@ -71,6 +74,15 @@ impl SimpleComponent for Payment {
             }
             Input::Show(None) => widgets::empty(&self.body),
             Input::Show(Some(View(detail))) => self.draw(&detail, &sender),
+            Input::AskRelease => self.ask_release(&sender),
+            Input::Released => {
+                if let Some(tx) = self.tx.clone() {
+                    sender.input(Input::Open(tx, self.screens.clone()));
+                }
+            }
+            Input::Failed(why) => {
+                let _ = sender.output(RootMsg::Say(why));
+            }
             Input::CopyTx => {
                 if let Some(tx) = &self.tx {
                     widgets::copy(&self.body, tx);
@@ -82,6 +94,25 @@ impl SimpleComponent for Payment {
 }
 
 impl Payment {
+    fn ask_release(&self, sender: &ComponentSender<Self>) {
+        let Some(tx) = self.tx.clone() else { return };
+        let dialog = adw::AlertDialog::builder().heading("Release these coins?").body("You can spend them again. If this payment does go through after all, Fob shows it at its next scan, and a later payment using the same coins is refused. Check with whoever you were paying first.").build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("release", "_Release")]);
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("release", adw::ResponseAppearance::Destructive);
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        dialog.connect_response(Some("release"), move |_, _| {
+            let (engine, tx, sender) = (engine.clone(), tx.clone(), sender.clone());
+            relm4::spawn(async move {
+                match engine.change(move |wallet| async move { wallet.release_payment(tx).await }).await {
+                    Ok(()) => sender.input(Input::Released),
+                    Err(e) => sender.input(Input::Failed(e.to_string())),
+                }
+            });
+        });
+        dialog.present(Some(&self.body));
+    }
+
     fn draw(&self, detail: &PaymentDetail, sender: &ComponentSender<Self>) {
         widgets::empty(&self.body);
         let big = gtk::Label::builder().label(&detail.amount_text).selectable(true).build();
@@ -119,6 +150,14 @@ impl Payment {
             && let Some(receipt) = screens.activity.iter().flat_map(|day| &day.rows).filter_map(|row| row.activity.as_ref()).find(|a| a.tx == detail.tx).and_then(|a| a.receipt.as_ref())
         {
             self.body.append(&widgets::receipt(receipt));
+        }
+        if detail.can_release {
+            let group = adw::PreferencesGroup::builder().title("Not confirmed").description("Your node has no record of this payment a day after it was sent, so it probably didn't go through. Its coins stay held until you release them.").build();
+            let release = gtk::Button::builder().label("Release coins").halign(gtk::Align::Center).css_classes(["pill"]).margin_top(12).build();
+            let then = sender.clone();
+            release.connect_clicked(move |_| then.input(Input::AskRelease));
+            self.body.append(&group);
+            self.body.append(&release);
         }
         if let Some(footer) = &detail.footer {
             self.body.append(&widgets::dim(footer));

@@ -2805,3 +2805,7 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      any dialog that's open, so a seed phrase doesn't stay on screen behind the lock.
      A passphrase is wiped once it reaches Rust; what GTK's own copy of the typed
      text leaves behind isn't in Fob's reach.
+345. **On the desktop, Manual Sync's pull is the refresh button.** There's nothing to
+     pull down, so `Pull to refresh` reads `Refresh on Home`, with the same three
+     settings. What it does for each wallet is decided in `fob-app`, not the window.
+     Scanning is a page rather than a drawer, and picks dates on calendars.

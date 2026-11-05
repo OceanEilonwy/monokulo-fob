@@ -164,7 +164,26 @@ async fn walk(engine: &Engine, png: &str) -> Result<(), String> {
     press("Back").await?;
     press("Back").await?;
 
+    // Manual Sync on, asked first; Home offers Sync; the Scan page opens; and off again.
+    press("Manual Sync").await?;
+    press("Manual Sync").await?;
+    press("Turn on").await?;
+    see("Settled confirmations").await?;
+    shot("manual");
+    press("Back").await?;
+    press("Rescan").await?;
+    see("The whole wallet").await?;
+    shot("scan");
+    press("Back").await?;
+    // Home's Sync needs a status, so `live-scan` presses that.
+    press("Manual Sync").await?;
+    press("Manual Sync").await?;
+    settle().await;
+    press("Back").await?;
+    press("Back").await?;
+
     // Locked, a wrong passphrase refused, and back to the same wallet.
+    press("Settings").await?;
     press("Lock now").await?;
     see("Unlock").await?;
     fill("Passphrase", PASS).await?;
@@ -252,9 +271,38 @@ async fn play(engine: &Engine, to: &Sender<Msg>, scene: &str) -> Result<(), Stri
     settle().await;
     let go = match scene {
         "home" => None,
+        "scan" => Some(Go::Scan),
+        "manual" => Some(Go::ManualSync),
         // With FOB_SCENE_ONLINE: follows the real chain until it's caught up.
         "live" => {
             see("Synced").await?;
+            None
+        }
+        // With FOB_SCENE_ONLINE: Manual Sync on, then a real scan, started as someone would.
+        "live-scan" => {
+            see("Synced").await?;
+            let e = engine.clone();
+            off(async move { e.change(|wallet| async move { wallet.set_manual_sync(true).await }).await }).await.map_err(|e| e.to_string())?;
+            press("Sync").await?;
+            see("The whole wallet").await?;
+            let wallet = engine.wallet().expect("just made");
+            let clock = engine.clock();
+            let drawer = off(async move { wallet.scan_drawer(clock.now, clock.utc_offset, clock.hours_24).await }).await;
+            eprintln!("live-scan: {}", drawer.last_scan);
+            // "From last scan" has nothing to do yet: today's blocks are a real scan.
+            let (label, action) = (&drawer.options[2].label, &drawer.options[2].action);
+            eprintln!("live-scan: {label}: {action}");
+            press(label).await?;
+            press(action).await?;
+            see("You can leave this page").await?;
+            // Done, the page closed, and Home offers Sync again.
+            let mut left = 8;
+            while let Err(why) = see("Sync").await {
+                left -= 1;
+                if left == 0 {
+                    return Err(why);
+                }
+            }
             None
         }
         "receive" => Some(Go::Receive),
