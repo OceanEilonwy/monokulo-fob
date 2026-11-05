@@ -443,7 +443,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "fob-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "fob-ffi"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "fob-core",
  "thiserror 2.0.21",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "fob-scan"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ash",
  "curve25519-dalek",
