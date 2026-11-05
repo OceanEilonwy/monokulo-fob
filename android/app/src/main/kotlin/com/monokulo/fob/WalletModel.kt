@@ -913,6 +913,6 @@ data class SendPeople(val contacts: List<ContactRow>, val anyContact: Boolean, v
 /** The choices for what scans, with what Settings says of each. */
 enum class ScanChoice(val label: String, val description: String, val mode: ScanMode) {
     GPU("GPU", "GPU: the graphics chip, using less power", ScanMode.GPU),
-    AUTO("Auto", "Auto: the main cores for a few blocks, the graphics chip for more, and both for a lot", ScanMode.AUTO),
+    AUTO("Auto", "Auto: the main cores for a few blocks, the graphics chip for more", ScanMode.AUTO),
     CPU("CPU", "CPU: only the main cores", ScanMode.CPU),
 }

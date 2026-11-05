@@ -184,43 +184,15 @@ impl Prefilter {
         let jobs: Vec<Job> = found.into_inner().expect("jobs lock").into_iter().flatten().collect();
         match engine::route(jobs.len(), gpu_allowed) {
             policy::Route::Cpu => in_chunks(&jobs, threads, CHUNK, |_, chunk| self.check(chunk, &flags)),
-            policy::Route::Gpu { cpu_too } => self.with_gpu(&jobs, &flags, threads, cpu_too),
+            policy::Route::Gpu => self.with_gpu(&jobs, &flags, threads),
         }
         flags.into_iter().map(AtomicBool::into_inner).collect()
     }
 
-    /// The GPU works from the front; with `cpu_too` the cores work from the back
-    /// until they meet. A GPU that fails hands everything left to the cores.
-    fn with_gpu(&self, jobs: &[Job], flags: &[AtomicBool], threads: usize, cpu_too: bool) {
-        let left = std::sync::Mutex::new(0..jobs.len());
-        let from_the_front = |most: usize| {
-            let mut left = left.lock().expect("range lock");
-            let end = left.end.min(left.start + most);
-            let taken = left.start..end;
-            left.start = end;
-            taken
-        };
-        let from_the_back = |most: usize| {
-            let mut left = left.lock().expect("range lock");
-            let start = left.start.max(left.end.saturating_sub(most));
-            let taken = start..left.end;
-            left.end = start;
-            taken
-        };
+    /// The GPU works out every key's 8aR, a batch at a time, and the cores do
+    /// what follows. A GPU that fails hands everything left to the cores.
+    fn with_gpu(&self, jobs: &[Job], flags: &[AtomicBool], threads: usize) {
         std::thread::scope(|scope| {
-            if cpu_too {
-                for _ in 0..threads.saturating_sub(1).max(1) {
-                    scope.spawn(|| {
-                        loop {
-                            let taken = from_the_back(CHUNK);
-                            if taken.is_empty() {
-                                return;
-                            }
-                            self.check(&jobs[taken], flags);
-                        }
-                    });
-                }
-            }
             // The GPU goes on to its next batch while the cores finish its last.
             let (done, finishing) = std::sync::mpsc::sync_channel::<(&[Job], gpu::Points)>(1);
             scope.spawn(move || {
@@ -233,12 +205,7 @@ impl Prefilter {
                 }
             });
             let most = engine::batch();
-            loop {
-                let taken = from_the_front(most);
-                if taken.is_empty() {
-                    return;
-                }
-                let part = &jobs[taken];
+            for (i, part) in jobs.chunks(most).enumerate() {
                 let keys: Vec<[u8; 32]> = part.iter().map(|job| sendable(&job.key)).collect();
                 match engine::derive(&self.digits, &keys) {
                     Some(points) => {
@@ -250,9 +217,7 @@ impl Prefilter {
                     }
                     // Failed, so this batch and the rest go to the cores.
                     None => {
-                        in_chunks(part, threads, CHUNK, |_, chunk| self.check(chunk, flags));
-                        let taken = from_the_front(usize::MAX);
-                        in_chunks(&jobs[taken], threads, CHUNK, |_, chunk| self.check(chunk, flags));
+                        in_chunks(&jobs[i * most..], threads, CHUNK, |_, chunk| self.check(chunk, flags));
                         return;
                     }
                 }

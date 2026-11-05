@@ -2699,8 +2699,10 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      once a second). Whole syncs on the test node were no faster, as fetching is the
      limit there. Settings offers Auto (the default), GPU and CPU, kept per phone.
      `AutoSyncModePolicy` in `policy.rs` uses the CPU below 512 keys, about nine
-     blocks, the GPU from there, and adds the cores from 4,096, about 70 blocks. Per
-     batch on a Mali-G715, charging, batches 300 ms apart: one block CPU 6 mJ (+-9),
+     blocks, and the GPU from there. The cores no longer do 8aR beside it: they were
+     meant to from 4,096 keys, but the GPU took up to 32,768 at once, so they got
+     almost nothing, and power is why the GPU scans. Scanning with both was never
+     measured on a phone. Per batch on a Mali-G715, charging, batches 300 ms apart: one block CPU 6 mJ (+-9),
      GPU 46 (+-16); ten blocks 26 (+-14) and 24 (+-13); 100 blocks 290 (+-24) and 143
      (+-42). The gap is under 0.1% of a battery a day. The GPU
      returns projective points, for the CPU to invert in a batch, and overlaps with

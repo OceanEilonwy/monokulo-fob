@@ -212,7 +212,7 @@ fn every_way_of_being_paid_is_flagged_and_strangers_are_not() {
     every_way_of_being_paid();
 }
 
-/// The same on the GPU, on its own and beside the cores. Needs a real GPU: the
+/// The same on the GPU, chosen and through Auto. Needs a real GPU: the
 /// mode is global, so it's kept from the other tests.
 #[test]
 #[ignore = "needs a GPU; run with --ignored"]
@@ -230,11 +230,11 @@ fn the_gpu_flags_the_same_blocks() {
     set_mode(Mode::Auto);
     let (_, filter, _) = wallet();
     let mut rng = StdRng::seed_from_u64(8);
-    // Beside the cores: enough keys for Auto.
+    // Enough keys for Auto to choose the GPU, and for more than one of its batches.
     let (w, _, _) = wallet();
     let mut blocks = vec![];
     let mut expected = vec![];
-    for i in 0..(crate::policy::AutoSyncModePolicy::CHOSEN.both_from + 300) {
+    for i in 0..(crate::gpu::TUNING.batch + 300) {
         let r = random_scalar(&mut rng);
         let pays = i % 500 == 3;
         let output = if pays { paying(&w, &r, 0, w.spend) } else { stranger(&mut rng) };
