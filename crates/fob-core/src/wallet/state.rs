@@ -139,7 +139,7 @@ pub(super) struct State {
     /// What XMR was worth when each payment moved, by transaction: one
     /// record per currency.
     #[serde(default)]
-    pub(super) price_records: HashMap<String, Vec<price::Record>>,
+    pub(super) price_records: HashMap<String, Vec<fiat::Record>>,
     /// The note last put in a payment code for each address, by its index:
     /// what payments to that address are for.
     #[serde(default)]

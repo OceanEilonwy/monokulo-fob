@@ -33,10 +33,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sha3::{Digest, Sha3_256};
 
 use crate::{
-    error::{FobError, Result},
+    nfc,
+    error::Result,
     network::Network,
     uri::{self, ProfileCode},
 };
@@ -106,25 +106,6 @@ impl Problem {
     }
 }
 
-fn checksum(code: &[u8]) -> [u8; 4] {
-    let hash = Sha3_256::digest(code);
-    [hash[0], hash[1], hash[2], hash[3]]
-}
-
-/// A profile code as a frame: version, length, checksum, the code.
-pub fn frame(code: &str) -> Result<Vec<u8>> {
-    let bytes = code.as_bytes();
-    if bytes.len() > CODE_MAX {
-        return Err(FobError::Profile("Your profile is too big to swap by touching phones.".into()));
-    }
-    let mut out = Vec::with_capacity(HEADER + bytes.len());
-    out.push(VERSION);
-    out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-    out.extend_from_slice(&checksum(bytes));
-    out.extend_from_slice(bytes);
-    Ok(out)
-}
-
 /// The `index`th chunk of `frame`: empty past its end.
 fn chunk(frame: &[u8], index: usize) -> &[u8] {
     let start = (index * CHUNK).min(frame.len());
@@ -172,7 +153,7 @@ impl Assembly {
             return Err(Problem::Garbled);
         }
         let code = &self.bytes[HEADER..];
-        if checksum(code) != self.bytes[3..HEADER] {
+        if nfc::checksum(code) != self.bytes[3..HEADER] {
             return Err(Problem::Garbled);
         }
         String::from_utf8(code.to_vec()).map_err(|_| Problem::Garbled)
@@ -182,14 +163,6 @@ impl Assembly {
     fn profile(&self, network: Network) -> std::result::Result<ProfileCode, Problem> {
         uri::parse_meet_code(network, &self.code()?).map_err(|e| Problem::NotProfile(e.to_string()))
     }
-}
-
-/// The select command for Fob's application.
-pub fn select() -> Vec<u8> {
-    let mut apdu = vec![0x00, 0xA4, 0x04, 0x00, AID.len() as u8];
-    apdu.extend_from_slice(&AID);
-    apdu.push(0x00);
-    apdu
 }
 
 fn exchange(index: usize, data: &[u8]) -> Vec<u8> {
@@ -625,13 +598,23 @@ pub struct Ended {
     pub sure: bool,
 }
 
+/// A profile code as a frame: version, length, checksum, the code.
+pub fn frame(code: &str) -> Result<Vec<u8>> {
+    nfc::frame(code, VERSION, CODE_MAX, "Your profile is too big to swap by touching phones.")
+}
+
+/// The select command for Fob's application.
+pub fn select() -> Vec<u8> {
+    nfc::select(&AID)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{contacts, keys::Keys};
 
     fn webp(len: usize) -> Vec<u8> {
-        crate::contacts::test_webp(len, 96)
+        crate::names::test_webp(len, 96)
     }
 
     fn largest(keys: &Keys) -> String {

@@ -19,6 +19,11 @@
 pub use fob_scan as scanning;
 
 pub mod activity;
+pub mod address;
+pub mod clock;
+pub mod fiat;
+pub mod names;
+pub mod price_alert;
 pub mod amount;
 pub mod catch_up;
 pub mod contacts;
@@ -40,6 +45,7 @@ pub mod requests;
 mod scan;
 pub mod split;
 pub mod ndef;
+pub mod nfc;
 pub mod pay;
 pub mod swap;
 pub mod transport;
@@ -56,7 +62,7 @@ use std::sync::LazyLock;
 pub use error::{FobError, Result};
 pub use keys::SeedKind;
 pub use network::Network;
-pub use zmq::ZmqStatus;
+pub use network::ZmqStatus;
 pub use wallet::{Activity, Balance, CodePreview, Direction, Prepared, Preview, Retried, SyncListener, SyncStatus, Wallet, preview_wallet_code, restore_point};
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {

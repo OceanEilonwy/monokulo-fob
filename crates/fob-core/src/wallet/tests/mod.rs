@@ -10,7 +10,7 @@ mod sync;
 
 use super::*;
 
-use crate::price::alert::Asked;
+use crate::price_alert::Asked;
 
 /// The phone's clock now, at UTC.
 fn clock_now() -> Clock {
@@ -50,9 +50,9 @@ async fn a_used_wallet(path: &Path) -> Wallet {
     wallet.new_receive_address().await.unwrap();
     wallet.remember_receive_note(1, "Coffee beans").await.unwrap();
     wallet.add_node("https://mine.example:18081", true).await.unwrap();
-    wallet.set_profile("Henry", Some(contacts::test_webp(300, 96))).await.unwrap();
+    wallet.set_profile("Henry", Some(crate::names::test_webp(300, 96))).await.unwrap();
     wallet.share_profile().await.unwrap();
-    let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), note: Some("Neighbour".into()), photo: Some(contacts::test_webp(300, 96)), ..Default::default() }).await.unwrap();
+    let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), note: Some("Neighbour".into()), photo: Some(crate::names::test_webp(300, 96)), ..Default::default() }).await.unwrap();
     wallet.make_request(Some(sam.id), Some("0.5"), false, Some("Tickets")).await.unwrap();
     let mut state = wallet.inner.state.lock().await;
     state.outputs.push(Owned { subaddress: 1, coinbase: true, unlock_block: 77, key_image: Some("aa".into()), spent_in: Some("bb".into()), ..received("in", 1_700_000_000, u64::MAX) });
@@ -83,8 +83,8 @@ async fn a_used_wallet(path: &Path) -> Wallet {
     state.prices.currency = Some("EUR".into());
     state.price_cache.current = Some(price::Current { currency: "NZD".into(), provider: "Kraken".into(), price: 166_000_000, at: 1_700_000_400 });
     state.price_cache.history.push(price::History { currency: "NZD".into(), provider: "Kraken".into(), fetched: 5, days: vec![(-1, 2), (3, 4)] });
-    state.price_records.entry("in".into()).or_default().push(price::Record { currency: "NZD".into(), price: 1, provider: "Kraken".into(), at: 2, daily: true });
-    state.price_records.entry("in".into()).or_default().push(price::Record { currency: "USD".into(), price: 3, provider: "CoinGecko".into(), at: 4, daily: false });
+    state.price_records.entry("in".into()).or_default().push(fiat::Record { currency: "NZD".into(), price: 1, provider: "Kraken".into(), at: 2, daily: true });
+    state.price_records.entry("in".into()).or_default().push(fiat::Record { currency: "USD".into(), price: 3, provider: "CoinGecko".into(), at: 4, daily: false });
     wallet.save_state(&state).unwrap();
     drop(state);
     wallet
@@ -261,7 +261,7 @@ fn outgoing(to: &str, inputs: Vec<usize>) -> Outgoing {
 }
 
 fn webp(len: usize) -> Vec<u8> {
-    crate::contacts::test_webp(len, 96)
+    crate::names::test_webp(len, 96)
 }
 
 /// One touch between two phones' swaps: `reader` reads `card`.

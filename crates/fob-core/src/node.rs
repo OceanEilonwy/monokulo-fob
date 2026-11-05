@@ -20,12 +20,12 @@ use monero_daemon_rpc::HttpTransport;
 use monero_wallet::interface::InterfaceError;
 use tokio::time::Instant;
 
+pub use crate::network::is_onion;
 use crate::{
     FobError,
-    catch_up::link_speed,
+    amount::grouped,
     fetch,
-    network::Network,
-    price::grouped,
+    network::{Network, link_speed},
     transport::{CertProblem, Transport},
 };
 
@@ -48,14 +48,6 @@ const BLOCK_SECONDS: u64 = 120;
 /// yet, and looking the name up through the phone's DNS would tell whoever
 /// answers which onion service this wallet uses.
 pub const NO_ONION: &str = "Fob can't reach .onion nodes yet";
-
-/// Whether `host` is an onion service's (`….onion`, any case, with or
-/// without the root's dot).
-pub fn is_onion(host: &str) -> bool {
-    let host = host.trim_end_matches('.');
-    let n = host.len();
-    host.eq_ignore_ascii_case("onion") || n > 6 && host.is_char_boundary(n - 6) && host[n - 6..].eq_ignore_ascii_case(".onion")
-}
 
 /// Refuses a node Fob can't reach without leaking it: one on an onion
 /// service. Checked before anything connects (or looks a name up).

@@ -18,10 +18,10 @@
 
 use std::{sync::Mutex, time::Instant};
 
-use sha3::{Digest, Sha3_256};
 
 use crate::{
-    error::{FobError, Result},
+    nfc,
+    error::Result,
     ndef,
     network::Network,
     uri,
@@ -68,33 +68,6 @@ impl Problem {
             Problem::NotPayment(why) => why.clone(),
         }
     }
-}
-
-fn checksum(code: &[u8]) -> [u8; 4] {
-    let hash = Sha3_256::digest(code);
-    [hash[0], hash[1], hash[2], hash[3]]
-}
-
-/// A payment code as a frame.
-pub fn frame(code: &str) -> Result<Vec<u8>> {
-    let bytes = code.as_bytes();
-    if bytes.len() > CODE_MAX {
-        return Err(FobError::Profile("That payment code is too big to send by touching phones.".into()));
-    }
-    let mut out = Vec::with_capacity(HEADER + bytes.len());
-    out.push(VERSION);
-    out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-    out.extend_from_slice(&checksum(bytes));
-    out.extend_from_slice(bytes);
-    Ok(out)
-}
-
-/// The select command.
-pub fn select() -> Vec<u8> {
-    let mut apdu = vec![0x00, 0xA4, 0x04, 0x00, AID.len() as u8];
-    apdu.extend_from_slice(&AID);
-    apdu.push(0x00);
-    apdu
 }
 
 /// The name a select-by-name command asks for, if `apdu` is one.
@@ -387,7 +360,7 @@ impl PayReader {
             return Step::Send(read_command(state.next));
         }
         let code = &state.bytes[HEADER..];
-        if checksum(code) != state.bytes[3..HEADER] {
+        if nfc::checksum(code) != state.bytes[3..HEADER] {
             return Self::fail(&mut state, Problem::Garbled);
         }
         let Ok(text) = String::from_utf8(code.to_vec()) else { return Self::fail(&mut state, Problem::Garbled) };
@@ -398,6 +371,16 @@ impl PayReader {
             Err(e) => Step::Failed(Problem::NotPayment(e.to_string())),
         }
     }
+}
+
+/// A payment code as a frame.
+pub fn frame(code: &str) -> Result<Vec<u8>> {
+    nfc::frame(code, VERSION, CODE_MAX, "That payment code is too big to send by touching phones.")
+}
+
+/// The select command.
+pub fn select() -> Vec<u8> {
+    nfc::select(&AID)
 }
 
 #[cfg(test)]

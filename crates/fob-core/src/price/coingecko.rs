@@ -9,7 +9,8 @@ use std::ops::Range;
 
 use serde_json::Value;
 
-use super::{Failure, Source, Transport, currencies, micro_number};
+use super::{Failure, Source, Transport, micro_number};
+use crate::fiat::currencies;
 use crate::error::{FobError, Result};
 
 const API: &str = "https://api.coingecko.com/api/v3";

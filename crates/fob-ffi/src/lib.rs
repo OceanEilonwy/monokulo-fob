@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, amount, contacts, keys, not_ready, pattern, price, profile, qr, receipt, split, uri};
+use fob_core::{activity, address, amount, clock, contacts, keys, not_ready, pattern, price, profile, qr, receipt, split, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -480,8 +480,8 @@ pub struct PriceToast {
     pub retrying_line: String,
 }
 
-impl From<price::alert::Toast> for PriceToast {
-    fn from(t: price::alert::Toast) -> Self {
+impl From<fob_core::price_alert::Toast> for PriceToast {
+    fn from(t: fob_core::price_alert::Toast) -> Self {
         PriceToast { id: t.id, title: t.title, line: t.line, retrying_title: t.retrying_title, retrying_line: t.retrying_line }
     }
 }
@@ -1389,13 +1389,13 @@ impl FobWallet {
     /// The money not ready to spend yet, piece by piece, with about when
     /// it will be; `None` when all of it is. The clock as for `activity_days`.
     async fn not_ready(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<NotReady> {
-        self.inner.not_ready(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
+        self.inner.not_ready(clock::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
     }
 
     /// Every coin, ready to spend or not yet, for the Coins screen; the
     /// clock as for `activity_days`.
     async fn coins(&self, now: u64, utc_offset: i32, hours_24: bool) -> Coins {
-        self.inner.coins(activity::Clock { now, utc_offset, hours_24 }).await.into()
+        self.inner.coins(clock::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
     /// Settings' money and price rows, and Price from's "Ask over". The
@@ -1406,7 +1406,7 @@ impl FobWallet {
             .into_iter()
             .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: r.line, available: r.available, chosen: r.chosen })
             .collect();
-        let (source_text, failing) = self.inner.price_from_line(activity::Clock { now, utc_offset, hours_24 }).await;
+        let (source_text, failing) = self.inner.price_from_line(clock::Clock { now, utc_offset, hours_24 }).await;
         let intro = price::price_from_intro(&s);
         PriceSettings {
             currency_text: price::default_currency_text(&s),
@@ -1420,7 +1420,7 @@ impl FobWallet {
             source_text,
             sources,
             price_at: self.inner.price_at(now).await,
-            blank_entry: self.inner.blank_amount_field(activity::Clock { now, utc_offset, hours_24 }).await.into(),
+            blank_entry: self.inner.blank_amount_field(clock::Clock { now, utc_offset, hours_24 }).await.into(),
         }
     }
 }
@@ -1541,7 +1541,7 @@ impl FobWallet {
     /// the activity, so a screen draws whole on its first frame. The clock
     /// as for `payment`; `phone_lock` as for `backup_hub`.
     pub async fn screens(&self, now: u64, utc_offset: i32, hours_24: bool, phone_lock: bool) -> Screens {
-        let clock = activity::Clock { now, utc_offset, hours_24 };
+        let clock = clock::Clock { now, utc_offset, hours_24 };
         let lists = self.inner.lists(clock).await;
         let paid = |p: Vec<activity::PaidBefore>| p.into_iter().map(|p| PaidBefore { address: p.address, name: p.name, line: p.line }).collect();
         Screens {
@@ -1634,7 +1634,7 @@ impl FobWallet {
     /// The card Home's sync chip opens, for the status now; the clock as
     /// for `activity_days`.
     pub fn sync_details(&self, now: u64, utc_offset: i32, hours_24: bool) -> SyncDetails {
-        self.inner.sync_details(activity::Clock { now, utc_offset, hours_24 }).into()
+        self.inner.sync_details(clock::Clock { now, utc_offset, hours_24 }).into()
     }
 
     /// Frees the coins of a payment marked not confirmed.
@@ -1668,7 +1668,7 @@ impl FobWallet {
     pub async fn scan_drawer(&self, now: u64, utc_offset: i32, hours_24: bool) -> ScanDrawer {
         self.inner.refresh_tip().await;
         ScanDrawer {
-            last_scan: self.inner.last_scan_line(activity::Clock { now, utc_offset, hours_24 }).await,
+            last_scan: self.inner.last_scan_line(clock::Clock { now, utc_offset, hours_24 }).await,
             options: self
                 .inner
                 .scan_options()
@@ -1681,7 +1681,7 @@ impl FobWallet {
 
     /// What the Block tab shows for a typed block.
     pub async fn block_info(&self, height: u64, now: u64, utc_offset: i32, hours_24: bool) -> BlockInfo {
-        let info = self.inner.block_info(height, activity::Clock { now, utc_offset, hours_24 }).await;
+        let info = self.inner.block_info(height, clock::Clock { now, utc_offset, hours_24 }).await;
         BlockInfo { mined: info.mined, newest: info.newest, first: info.first }
     }
 
@@ -1743,12 +1743,12 @@ impl FobWallet {
     /// when its `id` is one not shown (or swiped away) yet. The clock as
     /// for `activity_days`.
     pub async fn price_toast(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<PriceToast> {
-        self.inner.price_toast(activity::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
+        self.inner.price_toast(clock::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
     }
 
     /// The toast's Retry: asks for the price again and says what came of it.
     pub async fn retry_prices(&self, now: u64, utc_offset: i32, hours_24: bool) -> PriceRetry {
-        match self.inner.retry_prices(activity::Clock { now, utc_offset, hours_24 }).await {
+        match self.inner.retry_prices(clock::Clock { now, utc_offset, hours_24 }).await {
             fob_core::Retried::Updated { title, line } => PriceRetry::Updated { title, line },
             fob_core::Retried::Failed(toast) => PriceRetry::Failed { toast: toast.into() },
         }
@@ -1830,7 +1830,7 @@ impl FobWallet {
     /// Split up's screen for `counts` pieces of each note (none as it
     /// opens), with Auto learned from the 30 days to `now`.
     pub async fn split_view(&self, counts: Vec<u32>, now: u64, utc_offset: i32, hours_24: bool) -> SplitView {
-        self.inner.split_view(&counts, activity::Clock { now, utc_offset, hours_24 }).await.into()
+        self.inner.split_view(&counts, clock::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
     /// One more piece of note `index`; throws why not (15 pieces at most,
@@ -1882,7 +1882,7 @@ impl FobWallet {
     /// Money typed against a price 5 minutes old has Rust ask again; a
     /// failure comes as the price toast.
     pub async fn amount_entry(&self, text: String, in_fiat: bool, now: u64, utc_offset: i32, hours_24: bool) -> AmountEntry {
-        self.inner.amount_field(&text, in_fiat, activity::Clock { now, utc_offset, hours_24 }).await.into()
+        self.inner.amount_field(&text, in_fiat, clock::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
     /// An amount field's text switched between money and XMR (`to_fiat`):
@@ -1901,7 +1901,7 @@ impl FobWallet {
 
     /// The payment `tx` for its own screen; the clock as for `activity_days`.
     pub async fn payment(&self, tx: String, now: u64, utc_offset: i32, hours_24: bool) -> Option<PaymentDetail> {
-        let d = self.inner.payment(&tx, activity::Clock { now, utc_offset, hours_24 }).await?;
+        let d = self.inner.payment(&tx, clock::Clock { now, utc_offset, hours_24 }).await?;
         Some(PaymentDetail {
             amount_text: d.amount,
             amount_exact: d.exact,
@@ -1931,7 +1931,7 @@ impl FobWallet {
     /// Contacts by name, those whose name or note has `search` in it (any
     /// case; blank for all); the clock as for `activity_days`.
     pub async fn contacts(&self, search: String, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ContactRow> {
-        self.inner.contacts(&search, activity::Clock { now, utc_offset, hours_24 }).await.into_iter().map(Into::into).collect()
+        self.inner.contacts(&search, clock::Clock { now, utc_offset, hours_24 }).await.into_iter().map(Into::into).collect()
     }
 
     pub async fn contact(&self, id: u64) -> Option<Contact> {
@@ -1940,7 +1940,7 @@ impl FobWallet {
 
     /// A contact's card, or none once it's deleted.
     pub async fn contact_card(&self, id: u64, now: u64, utc_offset: i32, hours_24: bool) -> Option<ContactCard> {
-        let c = self.inner.contact_card(id, activity::Clock { now, utc_offset, hours_24 }).await?;
+        let c = self.inner.contact_card(id, clock::Clock { now, utc_offset, hours_24 }).await?;
         Some(ContactCard {
             contact: c.contact.into(),
             send_label: c.send_label,
@@ -2039,7 +2039,7 @@ impl FobWallet {
     /// A request's own screen, or none once it's deleted; the clock as for
     /// `activity_days`.
     pub async fn request(&self, id: u64, now: u64, utc_offset: i32, hours_24: bool) -> Option<RequestDetail> {
-        let d = self.inner.request(id, activity::Clock { now, utc_offset, hours_24 }).await?;
+        let d = self.inner.request(id, clock::Clock { now, utc_offset, hours_24 }).await?;
         Some(RequestDetail {
             id: d.request.id,
             address: d.request.address,
@@ -2148,7 +2148,7 @@ impl FobWallet {
 
     /// Your shares, newest first; the clock as for `activity_days`.
     pub async fn profile_shares(&self, now: u64, utc_offset: i32, hours_24: bool) -> Vec<ShareLine> {
-        let clock = activity::Clock { now, utc_offset, hours_24 };
+        let clock = clock::Clock { now, utc_offset, hours_24 };
         self.inner
             .profile_shares(clock)
             .await
@@ -2987,13 +2987,13 @@ pub struct AddressGroup {
 /// An address in a field, its first and last five: "84Bv9 … 99fQ2".
 #[uniffi::export]
 pub fn short_address(address: String) -> String {
-    uri::short(&address)
+    address::short(&address)
 }
 
 /// An address in groups of five, the first, middle and last highlighted.
 #[uniffi::export]
 pub fn address_groups(address: String) -> Vec<AddressGroup> {
-    uri::address_groups(&address).into_iter().map(|g| AddressGroup { text: g.text, highlighted: g.highlighted }).collect()
+    address::address_groups(&address).into_iter().map(|g| AddressGroup { text: g.text, highlighted: g.highlighted }).collect()
 }
 
 #[uniffi::export]

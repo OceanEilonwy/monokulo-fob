@@ -10,12 +10,15 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    activity::{self, Clock},
-    amount, contacts,
+    activity::{self, Activity},
+    amount,
+    clock::{self, Clock},
+    contacts,
     error::{FobError, Result},
-    price, uri,
-    wallet::Activity,
+    fiat, uri,
 };
+
+pub use crate::names::clean_note;
 
 /// What a request asked for, as it was typed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,15 +85,6 @@ pub struct Draft {
     pub asked: Option<Asked>,
     /// Who's asking, for the code: the profile's name while requests carry it.
     pub name: Option<String>,
-}
-
-/// A note as a request keeps it: control characters and the marks that
-/// turn text round taken out, trimmed, cut to what a payment code holds.
-pub fn clean_note(note: Option<&str>) -> Option<String> {
-    let kept = contacts::clean(note?);
-    let fitted = uri::fit_note(kept.trim()).0;
-    let fitted = fitted.trim_end();
-    (!fitted.is_empty()).then(|| fitted.to_owned())
 }
 
 /// Every request, kept in the wallet file.
@@ -201,10 +195,10 @@ pub fn received(request: &Request, rows: &[Activity]) -> Option<Received> {
     let xmr = format!("{} XMR", amount::format_short(atomic));
     let unit = request.asked.as_ref().filter(|a| a.fiat.is_some()).map(|a| a.unit.as_str());
     let fiat = unit.and_then(|unit| {
-        let currency = price::currency(unit);
+        let currency = fiat::currency(unit);
         let minor: Option<u64> =
-            paid.iter().map(|a| a.price.as_ref().filter(|p| p.currency == unit).map(|p| price::to_minor(a.amount, p.price, &currency))).sum();
-        minor.map(|m| price::format(m, &currency))
+            paid.iter().map(|a| a.price.as_ref().filter(|p| p.currency == unit).map(|p| fiat::to_minor(a.amount, p.price, &currency))).sum();
+        minor.map(|m| fiat::format(m, &currency))
     });
     Some(Received { atomic, text: fiat.clone().unwrap_or_else(|| xmr.clone()), xmr, fiat })
 }
@@ -226,11 +220,6 @@ fn name<'a>(request: &Request, book: &'a contacts::Book) -> Option<&'a str> {
     request.contact.and_then(|id| book.get(id)).map(|c| c.name.as_str())
 }
 
-fn capitalised(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
-}
-
 /// A request's line in Activity: "Request to Sam" with "Concert tickets ·
 /// received $83.03 · 08:30", or "Request" with "No name · Bike · waiting ·
 /// 08:12"; the amount asked on the right, "asked" under it.
@@ -240,15 +229,15 @@ pub fn activity_row(request: &Request, book: &contacts::Book, rows: &[Activity],
         Some(r) => format!("received {}", r.text),
         None => "waiting".into(),
     };
-    let (_, seconds) = activity::local(request.created, clock);
-    let parts = [name.is_none().then(|| "No name".to_owned()), request.note.clone(), Some(state), Some(activity::time_of_day(seconds, clock))];
+    let (_, seconds) = clock::local(request.created, clock);
+    let parts = [name.is_none().then(|| "No name".to_owned()), request.note.clone(), Some(state), Some(clock::time_of_day(seconds, clock))];
     activity::Row {
         activity: None,
         request: Some(request.id),
         share: None,
         time: request.created,
         title: name.map(|n| format!("Request to {n}")).unwrap_or_else(|| "Request".into()),
-        line: capitalised(&parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")),
+        line: contacts::capitalised(&parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")),
         amount: request.asked.as_ref().map(Asked::text).unwrap_or_default(),
         fiat: request.asked.as_ref().map(|_| "asked".into()),
     }
@@ -309,7 +298,7 @@ pub fn detail(request: &Request, book: &contacts::Book, rows: &[Activity], clock
         .map(|a| {
             let mut row = activity::payment_row(a.clone(), clock);
             let status = activity::waiting(&a).map(|w| w.to_lowercase());
-            row.line = [Some(activity::when(a.time, clock)), status].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+            row.line = [Some(clock::when(a.time, clock)), status].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             row
         })
         .collect::<Vec<_>>();
@@ -317,7 +306,7 @@ pub fn detail(request: &Request, book: &contacts::Book, rows: &[Activity], clock
         headline: request.asked.as_ref().map(Asked::text).unwrap_or_else(|| "Any amount".into()),
         asked_line: [Some(who), request.note.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · "),
         // An amount asked in XMR is the headline already.
-        when: [Some(activity::when(request.created, clock)), then.filter(|_| request.asked.as_ref().is_some_and(|a| a.fiat.is_some()))]
+        when: [Some(clock::when(request.created, clock)), then.filter(|_| request.asked.as_ref().is_some_and(|a| a.fiat.is_some()))]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -368,9 +357,9 @@ pub fn on_card(contact: u64, requests: &Book, rows: &[Activity], clock: Clock) -
     theirs
         .into_iter()
         .map(|r| {
-            let day = activity::day_name(r.created, clock);
+            let day = clock::day_name(r.created, clock);
             let when = match day.as_str() {
-                "Today" => format!("today {}", activity::time_of_day(activity::local(r.created, clock).1, clock)),
+                "Today" => format!("today {}", clock::time_of_day(clock::local(r.created, clock).1, clock)),
                 "Yesterday" => "yesterday".into(),
                 _ => day,
             };
@@ -431,7 +420,7 @@ mod tests {
     use crate::{
         keys::Keys,
         network::Network,
-        price::Record,
+        fiat::Record,
         wallet::{Direction, UNLOCK},
     };
 
@@ -451,7 +440,7 @@ mod tests {
 
     fn usd(typed: &str, xmr: u64) -> Option<Asked> {
         let minor = (typed.parse::<f64>().unwrap() * 100.0).round() as u64;
-        Some(Asked { typed: typed.into(), unit: "USD".into(), xmr, fiat: Some(price::format(minor, &price::currency("USD"))) })
+        Some(Asked { typed: typed.into(), unit: "USD".into(), xmr, fiat: Some(fiat::format(minor, &fiat::currency("USD"))) })
     }
 
     fn draft(keys: &Keys, subaddress: u32, contact: Option<u64>, note: Option<&str>, asked: Option<Asked>) -> Draft {

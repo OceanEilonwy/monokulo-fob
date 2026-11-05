@@ -33,7 +33,7 @@ impl Wallet {
         let source = |sent: &Sent| match sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok()) {
             _ if sent.pieces.is_some() => Source::Split,
             Some(receipt) => Source::Change(Some(ReceiptView::from(&receipt).merchant)),
-            None => Source::Change(Some(short_address(&sent.to))),
+            None => Source::Change(Some(short_title(&sent.to))),
         };
         let (mut ready, mut waiting) = (vec![], vec![]);
         for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
@@ -79,7 +79,7 @@ impl Wallet {
         let mut summary = not_ready::summarise(pieces, ready, last_block_time, clock)?;
         if let Some((currency, p)) = self.price_now().await {
             for sum in &mut summary.sums {
-                sum.fiat = Some(price::value(sum.atomic, p, &currency));
+                sum.fiat = Some(fiat::value(sum.atomic, p, &currency));
             }
             summary.price_age = self.price_age(clock.now).await;
             if let Some(age) = &summary.price_age {

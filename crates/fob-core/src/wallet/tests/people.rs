@@ -31,7 +31,7 @@ async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
     let t = now();
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let (sam_address, other) = (wallet.inner.keys.address(7), wallet.inner.keys.address(8));
-    let photo = contacts::test_webp(400, 96);
+    let photo = crate::names::test_webp(400, 96);
     let sam = wallet
         .add_contact(contacts::Draft { name: "Sam".into(), note: Some("Lunch money".into()), photo: Some(photo.clone()), send_address: Some(sam_address.clone()), ..Default::default() })
         .await
@@ -51,7 +51,7 @@ async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
     let lists = reopened.lists(clock).await;
     let days = lists.days;
     let titles: Vec<_> = days[0].rows.iter().map(|r| r.title.as_str()).collect();
-    assert_eq!(titles, ["Sam", &activity::short_address(&other)]);
+    assert_eq!(titles, ["Sam", &crate::address::short_title(&other)]);
     assert_eq!(reopened.payment("lunch", clock).await.unwrap().party.as_deref(), Some("Sam"));
     assert_eq!(reopened.contacts("lunch", clock).await[0].line, "Lunch money · paid today");
     assert_eq!(lists.on_send[0].line, "Lunch · Today");
@@ -297,7 +297,7 @@ async fn each_share_of_the_profile_is_a_new_address_and_its_own_line() {
     let met = wallet.lists(clock).await.days[0].rows.iter().filter(|r| r.share == Some(second.id)).map(|r| r.title.clone()).collect::<Vec<_>>();
     assert_eq!(met, ["Met Sam"]);
     let via = days[0].rows.iter().find(|r| r.title == "Via your profile").unwrap();
-    let shared = activity::time_of_day(activity::local(first.created, clock).1, clock);
+    let shared = clock::time_of_day(clock::local(first.created, clock).1, clock);
     assert!(via.line.starts_with(&format!("Shared {shared} · ")), "{}", via.line);
     let detail = wallet.payment("via", clock).await.unwrap();
     assert_eq!(detail.party.as_deref(), Some("Address 2 · via your profile"));

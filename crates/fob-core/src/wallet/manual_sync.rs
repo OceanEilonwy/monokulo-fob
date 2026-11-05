@@ -227,7 +227,7 @@ impl Wallet {
         if mode == PullMode::Disabled {
             return Ok(None);
         }
-        let (checked, _) = tokio::join!(self.check_payments(mode), self.refresh_prices(price::alert::Asked::User));
+        let (checked, _) = tokio::join!(self.check_payments(mode), self.refresh_prices(crate::price_alert::Asked::User));
         checked.map(Some)
     }
 

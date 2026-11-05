@@ -213,7 +213,7 @@ impl Wallet {
 
     /// The notes Split up offers, in money at the current price when there
     /// is one, else in XMR; and the money the split can use.
-    pub(super) async fn split_setup(&self) -> (Option<(price::Currency, u64)>, Vec<split::Note>, split::Budget) {
+    pub(super) async fn split_setup(&self) -> (Option<(fiat::Currency, u64)>, Vec<split::Note>, split::Budget) {
         let money = self.price_now().await;
         let notes = split::notes(money.as_ref().map(|(c, p)| (c, *p)));
         let state = self.inner.state.lock().await;
@@ -253,7 +253,7 @@ impl Wallet {
         let (money, notes, budget) = self.split_setup().await;
         let (payments, age) = {
             let state = self.inner.state.lock().await;
-            (Self::split_payments(&state, clock.now), state.price_cache.shown(&state.prices, clock.now).and_then(|c| price::alert::old(c.at, clock.now)))
+            (Self::split_payments(&state, clock.now), state.price_cache.shown(&state.prices, clock.now).and_then(|c| crate::price_alert::old(c.at, clock.now)))
         };
         split::view(&notes, counts, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)), age.as_deref())
     }
