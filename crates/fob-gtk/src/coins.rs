@@ -7,7 +7,11 @@ use relm4::{
     prelude::*,
 };
 
-use crate::{bridge::View, root::Msg as RootMsg, widgets};
+use crate::{
+    bridge::View,
+    root::{Go, Msg as RootMsg},
+    widgets,
+};
 
 #[derive(Debug)]
 pub enum Input {
@@ -53,7 +57,7 @@ impl SimpleComponent for Coins {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, input: Input, _: ComponentSender<Self>) {
+    fn update(&mut self, input: Input, sender: ComponentSender<Self>) {
         let Input::Screens(View(screens)) = input;
         let coins = &screens.coins;
         widgets::empty(&self.body);
@@ -72,6 +76,14 @@ impl SimpleComponent for Coins {
             ready.add(&row);
         }
         self.body.append(&ready);
+        if coins.can_split {
+            let split = gtk::Button::builder().label("Split up").halign(gtk::Align::Center).css_classes(["pill"]).build();
+            let then = sender.clone();
+            split.connect_clicked(move |_| {
+                let _ = then.output(RootMsg::Go(Go::Split));
+            });
+            self.body.append(&split);
+        }
         if !coins.not_ready_coins.is_empty() {
             let waiting = adw::PreferencesGroup::builder().title(gtk::glib::markup_escape_text(&coins.not_ready_title).as_str()).description(gtk::glib::markup_escape_text(&coins.not_ready_sum).as_str()).build();
             for coin in &coins.not_ready_coins {

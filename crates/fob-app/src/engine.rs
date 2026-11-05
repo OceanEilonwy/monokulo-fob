@@ -285,6 +285,13 @@ impl Engine {
         self.save_settings()
     }
 
+    /// The desktop locked: this does too, unless a payment is going out.
+    pub fn lock_with_the_desktop(&self) {
+        if self.inner.sending.load(Ordering::SeqCst) == 0 && self.inner.open.lock().expect("open lock").is_some() {
+            self.lock();
+        }
+    }
+
     /// Locks if unlocked and left long enough, unless a payment is going out.
     /// A client calls this now and then; returns whether it locked.
     pub fn lock_if_idle(&self) -> bool {
@@ -803,6 +810,38 @@ mod tests {
         assert!(engine.unlock(PASS.into()).await.is_err());
         engine.unlock("battery staple".into()).await.unwrap();
         assert_eq!(engine.wallet().unwrap().primary_address(), address);
+    }
+
+    /// Two people on two computers, each reading the other's code.
+    #[tokio::test]
+    async fn two_people_meet_and_each_ends_up_a_contact() {
+        let (one, two) = (dir("meet-one"), dir("meet-two"));
+        let ((sam, _), (ana, _)) = (engine_at(&one), engine_at(&two));
+        for (engine, name) in [(&sam, "Sam"), (&ana, "Ana")] {
+            engine.set_up(PASS.into()).await.unwrap();
+            engine.create_wallet(name.into()).await.unwrap();
+            let name = name.to_owned();
+            engine.change(move |wallet| async move { wallet.set_profile(name, None).await }).await.unwrap();
+        }
+        let first = sam.change(|wallet| async move { wallet.share_profile().await }).await.unwrap();
+
+        // Ana reads Sam's first code: saved, not a reply, so Ana answers.
+        let Met::Saved(contact, found) = ana.meet_save(first.code.clone()).await.ok().unwrap() else { panic!("nothing to ask") };
+        assert_eq!(contact.name, "Sam");
+        assert!(!found.reply);
+        let shared = ana.change(|wallet| async move { wallet.share_profile().await }).await.unwrap();
+        let answer = ana.read(move |wallet, _| async move { wallet.share_reply_code(shared.id).await }).await.flatten().expect("a reply code");
+
+        // Sam reads the answer: saved, and it's a reply, so Sam is done.
+        let Met::Saved(contact, found) = sam.meet_save(answer.clone()).await.ok().unwrap() else { panic!("nothing to ask") };
+        assert_eq!(contact.name, "Ana");
+        assert!(found.reply);
+
+        // The same code again changes nothing, so nothing is asked.
+        let Met::Saved(again, _) = sam.meet_save(answer).await.ok().unwrap() else { panic!("nothing changed") };
+        assert_eq!(again.id, contact.id);
+        // Something that isn't a profile is refused.
+        assert!(sam.meet_save("hello".into()).await.is_err());
     }
 
     #[tokio::test]

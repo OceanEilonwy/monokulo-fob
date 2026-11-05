@@ -8,6 +8,8 @@ use relm4::{
     gtk::{self, cairo, gdk, gio},
 };
 
+use crate::root::Go;
+
 /// A boxed list, empty.
 pub fn list() -> gtk::ListBox {
     let list = gtk::ListBox::new();
@@ -47,6 +49,145 @@ pub fn dim(text: &str) -> gtk::Label {
     let label = words(text);
     label.add_css_class("dim-label");
     label
+}
+
+/// Dim words, centred.
+pub fn centred(text: &str) -> gtk::Label {
+    let label = dim(text);
+    label.set_xalign(0.5);
+    label.set_justify(gtk::Justification::Center);
+    label
+}
+
+/// A heading, centred.
+pub fn heading(text: &str) -> gtk::Label {
+    let label = words(text);
+    label.add_css_class("title-3");
+    label.set_xalign(0.5);
+    label.set_justify(gtk::Justification::Center);
+    label
+}
+
+/// Someone's face, or their initial without a photo.
+pub fn avatar(size: i32, name: &str, photo: Option<&[u8]>) -> adw::Avatar {
+    let avatar = adw::Avatar::new(size, Some(name), true);
+    if let Some((width, height, pixels)) = photo.and_then(fob_app::picture::photo_pixels) {
+        let bytes = gtk::glib::Bytes::from_owned(pixels);
+        let texture = gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4);
+        avatar.set_custom_image(Some(&texture));
+    }
+    avatar
+}
+
+/// A row of Activity, opening what it's about.
+pub fn activity_row(view: &views::ActivityRow, go: impl Fn(Go) + 'static) -> adw::ActionRow {
+    let row = self::row(&view.title, &view.line);
+    let amount = gtk::Box::builder().orientation(gtk::Orientation::Vertical).valign(gtk::Align::Center).build();
+    let text = gtk::Label::builder().label(&view.amount_text).xalign(1.0).build();
+    text.add_css_class("money");
+    if view.activity.as_ref().is_some_and(|a| !a.outgoing) {
+        text.add_css_class("incoming");
+    }
+    amount.append(&text);
+    if let Some(fiat) = &view.fiat_text {
+        let under = gtk::Label::builder().label(fiat).xalign(1.0).build();
+        under.add_css_class("dim-label");
+        under.add_css_class("caption");
+        amount.append(&under);
+    }
+    row.add_suffix(&amount);
+    let target = if let Some(activity) = &view.activity {
+        Some(Go::Payment(activity.tx.clone()))
+    } else if let Some(id) = view.request {
+        Some(Go::Request(id))
+    } else {
+        view.share.map(Go::Share)
+    };
+    if let Some(target) = target {
+        row.set_activatable(true);
+        let target = std::cell::RefCell::new(Some(target));
+        row.connect_activated(move |_| {
+            let taken = target.borrow_mut().take();
+            if let Some(next) = taken {
+                let again = next.again();
+                go(next);
+                *target.borrow_mut() = Some(again);
+            }
+        });
+    }
+    row
+}
+
+/// A receipt's lines, and its total.
+pub fn receipt(receipt: &views::Receipt) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title(gtk::glib::markup_escape_text(&receipt.merchant).as_str()).description(gtk::glib::markup_escape_text(&receipt.issued).as_str()).build();
+    let line = |title: &str, amount: &str| {
+        let row = self::row(title, "");
+        let text = gtk::Label::new(Some(amount));
+        text.add_css_class("money");
+        row.add_suffix(&text);
+        group.add(&row);
+    };
+    for item in &receipt.lines {
+        line(&item.label, &item.amount);
+    }
+    if let Some(tax) = &receipt.tax {
+        line("Tax", tax);
+    }
+    line("Total", &receipt.total);
+    group
+}
+
+/// A code in a dialog, over `parent`.
+pub fn show_code(parent: &gtk::Widget, heading: &str, body: &str, code: &str) {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    if let Some(qr) = qr(code, 300) {
+        column.append(&qr);
+    }
+    let dialog = adw::AlertDialog::builder().heading(heading).body(body).extra_child(&column).build();
+    dialog.add_responses(&[("close", "_Close"), ("copy", "_Copy")]);
+    dialog.set_close_response("close");
+    let (kept, from) = (code.to_owned(), parent.clone());
+    dialog.connect_response(Some("copy"), move |_, _| copy(&from, &kept));
+    dialog.present(Some(parent));
+}
+
+/// Asks for a picture and makes a photo Rust keeps from it.
+pub fn choose_photo_then(parent: &gtk::Widget, then: impl Fn(Result<Vec<u8>, String>) + 'static) {
+    let then = Rc::new(then);
+    let dialog = gtk::FileDialog::builder().title("Choose a photo").filters(&picture_filters()).build();
+    let window = parent.root().and_downcast::<gtk::Window>();
+    dialog.open(window.as_ref(), gio::Cancellable::NONE, move |file| {
+        let Ok(file) = file else { return };
+        let then = then.clone();
+        gtk::glib::spawn_future_local(async move {
+            let made = file.load_bytes_future().await.ok().and_then(|(bytes, _)| gdk::Texture::from_bytes(&bytes).ok()).and_then(|texture| {
+                let (width, height) = (texture.width() as u32, texture.height() as u32);
+                fob_app::picture::small_photo(width, height, &texture_rgba(&texture))
+            });
+            then(made.ok_or_else(fob_app::words::errors::photo_too_big));
+        });
+    });
+}
+
+fn picture_filters() -> gio::ListStore {
+    let filter = gtk::FileFilter::new();
+    filter.add_pixbuf_formats();
+    filter.set_name(Some("Pictures"));
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    filters
+}
+
+/// A texture's pixels as RGBA. GDK downloads them in Cairo's order.
+fn texture_rgba(texture: &gdk::Texture) -> Vec<u8> {
+    let (width, height) = (texture.width() as usize, texture.height() as usize);
+    let mut pixels = vec![0u8; width * height * 4];
+    texture.download(&mut pixels, width * 4);
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    pixels
 }
 
 /// Puts `text` on the clipboard.
@@ -149,12 +290,7 @@ pub fn paste(widget: &impl IsA<gtk::Widget>, then: impl FnOnce(Option<String>) +
 
 /// Asks for a picture and reads a code from it: a desktop's way of scanning.
 pub fn read_code_from_picture(parent: &gtk::Widget, then: impl Fn(Option<String>) + 'static) {
-    let filter = gtk::FileFilter::new();
-    filter.add_pixbuf_formats();
-    filter.set_name(Some("Pictures"));
-    let filters = gio::ListStore::new::<gtk::FileFilter>();
-    filters.append(&filter);
-    let dialog = gtk::FileDialog::builder().title("Choose a picture of a code").filters(&filters).build();
+    let dialog = gtk::FileDialog::builder().title("Choose a picture of a code").filters(&picture_filters()).build();
     let window = parent.root().and_downcast::<gtk::Window>();
     let then = Rc::new(then);
     dialog.open(window.as_ref(), gio::Cancellable::NONE, move |file| {
@@ -169,10 +305,7 @@ pub fn read_code_from_picture(parent: &gtk::Widget, then: impl Fn(Option<String>
 
 fn read_texture(texture: &gdk::Texture) -> Option<String> {
     let (width, height) = (texture.width() as usize, texture.height() as usize);
-    let mut rgba = vec![0u8; width * height * 4];
-    texture.download(&mut rgba, width * 4);
-    // Cairo's byte order on little-endian machines: blue, green, red, alpha.
-    let grey: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|p| ((u32::from(p[2]) * 299 + u32::from(p[1]) * 587 + u32::from(p[0]) * 114) / 1000) as u8).collect();
+    let grey: Vec<u8> = texture_rgba(texture).as_chunks::<4>().0.iter().map(|p| ((u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114) / 1000) as u8).collect();
     fob_app::picture::read_code(width, height, &grey)
 }
 

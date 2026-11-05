@@ -6,7 +6,7 @@
 #   cargo build -p fob-gtk && crates/fob-gtk/scenes.sh [out-dir]
 set -uo pipefail
 
-SCENES="first-run start locked home receive send pay-code settings add-wallet coins contacts"
+SCENES=${SCENES:-"first-run start locked home receive send pay-code settings add-wallet coins contacts request split profile node prices walk"}
 cd "$(dirname "$0")/../.."
 out=${1:-$(mktemp -d)}
 mkdir -p "$out"

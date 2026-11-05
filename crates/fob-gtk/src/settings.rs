@@ -3,7 +3,7 @@
 
 use fob_app::{
     Engine,
-    views::{BackupHub, HubItem, KeyGroup, Network, ScanMode, Screens, SeedPhrase, SyncStatus, WalletEntry},
+    views::{BackupHub, HubItem, KeyGroup, Network, ScanMode, Screens, SeedPhrase, SyncStatus, WalletEntry, ZmqStatus},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -36,9 +36,11 @@ pub enum Input {
     AddWallet,
     Rename(String, String),
     Forget,
-    SetNode,
+    Zmq,
     Scan(u32),
-    Currency,
+    LockAfter(u32),
+    ProfileLine(String),
+    GpuFailed(bool),
     Lock,
     ChangePassphrase,
     /// Asks for the passphrase, then shows `HubItem`.
@@ -61,7 +63,14 @@ pub struct Settings {
     backup_line: String,
     currency_line: String,
     zmq_line: String,
+    zmq_on: bool,
+    zmq_problem: Option<String>,
+    profile_line: String,
+    scan_row: adw::ComboRow,
 }
+
+/// How long untouched before locking, as the row lists them.
+const LOCK_MINUTES: [u32; 5] = [5, 15, 30, 60, 0];
 
 #[relm4::component(pub)]
 impl SimpleComponent for Settings {
@@ -95,6 +104,15 @@ impl SimpleComponent for Settings {
                             },
                         },
                         adw::PreferencesGroup {
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: "Your profile",
+                                set_activatable: true,
+                                #[watch]
+                                set_subtitle: &gtk::glib::markup_escape_text(&model.profile_line),
+                                add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
+                                connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Profile)); },
+                            },
                             #[local_ref]
                             add = network_row -> adw::ComboRow {
                                 set_title: "Network",
@@ -116,15 +134,19 @@ impl SimpleComponent for Settings {
                                 set_activatable: true,
                                 #[watch]
                                 set_subtitle: &gtk::glib::markup_escape_text(&model.node_line),
-                                connect_activated => Input::SetNode,
+                                add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
+                                connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Node)); },
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Instant updates (ZMQ)",
+                                set_activatable: true,
+                                connect_activated => Input::Zmq,
                                 #[watch]
                                 set_subtitle: &gtk::glib::markup_escape_text(&model.zmq_line),
                             },
-                            add = &adw::ComboRow {
+                            #[local_ref]
+                            add = scan_row -> adw::ComboRow {
                                 set_title: "Scanning",
                                 set_model: Some(&gtk::StringList::new(&["Auto: the main cores for a few blocks, the graphics chip for more", "GPU: the graphics chip", "CPU: only the main cores"])),
                                 set_selected: match model.engine.scan_mode() { ScanMode::Auto => 0, ScanMode::Gpu => 1, ScanMode::Cpu => 2 },
@@ -135,15 +157,22 @@ impl SimpleComponent for Settings {
                             set_title: "Prices",
                             add = &adw::ActionRow {
                                 set_use_markup: false,
-                                set_title: "Default currency",
+                                set_title: "Prices and currency",
                                 set_activatable: true,
+                                add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 #[watch]
                                 set_subtitle: &gtk::glib::markup_escape_text(&model.currency_line),
-                                connect_activated => Input::Currency,
+                                connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Prices)); },
                             },
                         },
                         adw::PreferencesGroup {
                             set_title: "This computer",
+                            add = &adw::ComboRow {
+                                set_title: "Lock when left alone",
+                                set_model: Some(&gtk::StringList::new(&["After 5 minutes", "After 15 minutes", "After 30 minutes", "After an hour", "Never"])),
+                                set_selected: LOCK_MINUTES.iter().position(|m| *m == model.engine.lock_after()).unwrap_or(1) as u32,
+                                connect_selected_notify[sender] => move |row| sender.input(Input::LockAfter(row.selected())),
+                            },
                             add = &adw::ButtonRow { set_title: "Change passphrase", connect_activated => Input::ChangePassphrase },
                             add = &adw::ButtonRow { set_title: "Lock now", connect_activated => Input::Lock },
                             add = &adw::ButtonRow {
@@ -160,7 +189,7 @@ impl SimpleComponent for Settings {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
-        let network_row = adw::ComboRow::new();
+        let (network_row, scan_row) = (adw::ComboRow::new(), adw::ComboRow::new());
         let model = Settings {
             engine,
             wallets_group: wallets_group.clone(),
@@ -172,8 +201,12 @@ impl SimpleComponent for Settings {
             backup_line: String::new(),
             currency_line: String::new(),
             zmq_line: String::new(),
+            zmq_on: false,
+            zmq_problem: None,
+            profile_line: String::new(),
+            scan_row: scan_row.clone(),
         };
-        let (wallets_group, backup_group, network_row) = (&wallets_group, &backup_group, &network_row);
+        let (wallets_group, backup_group, network_row, scan_row) = (&wallets_group, &backup_group, &network_row, &scan_row);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -185,13 +218,26 @@ impl SimpleComponent for Settings {
                 self.backup_line = screens.backup_line.clone();
                 self.currency_line = screens.prices.currency_text.clone();
             }
-            Input::Status(View(status)) => self.zmq_line = status.zmq_text.clone(),
+            Input::Status(View(status)) => {
+                self.zmq_line = status.zmq_text.clone();
+                self.zmq_on = !matches!(status.zmq, ZmqStatus::Off);
+                self.zmq_problem = match &status.zmq {
+                    ZmqStatus::CantConnect { reason } => Some(reason.clone()),
+                    _ => None,
+                };
+            }
             Input::Wallets(View(wallets)) => self.draw_wallets(&wallets, &sender),
             Input::Opened => {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     if let Some(hub) = engine.read(|wallet, _| async move { wallet.backup_hub(false).await }).await {
                         sender.input(Input::Hub(View(hub.into())));
+                    }
+                    if let Some(row) = engine.read(|wallet, _| async move { wallet.profile_row().await }).await {
+                        sender.input(Input::ProfileLine(row.name.unwrap_or(row.title)));
+                    }
+                    if let Some(failed) = engine.read(|wallet, _| async move { wallet.scan_gpu_check_failed().await }).await {
+                        sender.input(Input::GpuFailed(failed));
                     }
                 });
             }
@@ -226,7 +272,14 @@ impl SimpleComponent for Settings {
                 }
             }
             Input::Forget => self.ask_forget(&sender),
-            Input::SetNode => self.ask_node(&sender),
+            Input::Zmq => self.ask_zmq(&sender),
+            Input::LockAfter(i) => {
+                if let Err(e) = self.engine.set_lock_after(LOCK_MINUTES.get(i as usize).copied().unwrap_or(15)) {
+                    sender.input(Input::Say(e.to_string()));
+                }
+            }
+            Input::ProfileLine(line) => self.profile_line = line,
+            Input::GpuFailed(failed) => self.scan_row.set_subtitle(if failed { "The graphics chip failed its check: using the main cores" } else { "" }),
             Input::Scan(i) => {
                 let mode = match i {
                     1 => ScanMode::Gpu,
@@ -237,7 +290,6 @@ impl SimpleComponent for Settings {
                     sender.input(Input::Say(e.to_string()));
                 }
             }
-            Input::Currency => self.ask_currency(&sender),
             Input::Lock => self.engine.lock(),
             Input::ChangePassphrase => self.ask_new_passphrase(&sender),
             Input::Reveal(item) => {
@@ -421,63 +473,33 @@ impl Settings {
         dialog.present(Some(&self.backup_group));
     }
 
-    fn ask_node(&self, sender: &ComponentSender<Self>) {
-        let (url, trusted) = (adw::EntryRow::builder().title("Node address").build(), adw::SwitchRow::builder().title("Accept its self-signed certificate").build());
+    fn ask_zmq(&self, sender: &ComponentSender<Self>) {
+        let (on, endpoint) = (adw::SwitchRow::builder().title("Listen for new blocks").active(self.zmq_on).build(), adw::EntryRow::builder().title("ZMQ address").build());
         let form = widgets::list();
-        form.append(&url);
-        form.append(&trusted);
-        let dialog = adw::AlertDialog::builder().heading("Use another node").body(self.node_line.as_str()).extra_child(&form).build();
-        dialog.add_responses(&[("cancel", "_Cancel"), ("use", "_Use")]);
+        form.append(&on);
+        form.append(&endpoint);
+        let hint = format!("Your node's --zmq-pub, on the node's own host: tcp://host:port{}", self.zmq_problem.as_ref().map_or(String::new(), |why| format!("\n\n{why}")));
+        let dialog = adw::AlertDialog::builder().heading("Instant updates").body(&hint).extra_child(&form).build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("save", "_Save")]);
         dialog.set_close_response("cancel");
-        dialog.set_response_appearance("use", adw::ResponseAppearance::Suggested);
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        let (engine, shown) = (self.engine.clone(), endpoint.clone());
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(Some(now)) = relm4::spawn(async move { engine.read(|wallet, _| async move { wallet.zmq_endpoint().await }).await }).await {
+                shown.set_text(&now);
+            }
+        });
         let (engine, sender) = (self.engine.clone(), sender.clone());
-        dialog.connect_response(Some("use"), move |_, _| {
-            let (engine, sender, url, trusted) = (engine.clone(), sender.clone(), url.text().to_string(), trusted.is_active());
+        dialog.connect_response(Some("save"), move |_, _| {
+            let (engine, sender, on, typed) = (engine.clone(), sender.clone(), on.is_active(), endpoint.text().trim().to_owned());
             relm4::spawn(async move {
-                if let Err(e) = engine.change(move |wallet| async move { wallet.set_node(url, trusted).await }).await {
+                let endpoint = Some(typed).filter(|t| !t.is_empty());
+                if let Err(e) = engine.change(move |wallet| async move { wallet.set_zmq(on, endpoint).await }).await {
                     sender.input(Input::Say(e.to_string()));
                 }
             });
         });
         dialog.present(Some(&self.backup_group));
-    }
-
-    fn ask_currency(&self, sender: &ComponentSender<Self>) {
-        let holder = gtk::ListBox::new();
-        holder.add_css_class("boxed-list");
-        holder.set_selection_mode(gtk::SelectionMode::None);
-        let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).min_content_height(380).child(&holder).build();
-        let dialog = adw::AlertDialog::builder().heading("Default currency").extra_child(&scroll).build();
-        dialog.add_response("close", "_Close");
-        dialog.present(Some(&self.backup_group));
-        let (engine, sender, dialog_ref) = (self.engine.clone(), sender.clone(), dialog.clone());
-        gtk::glib::spawn_future_local(async move {
-            let lookup = engine.clone();
-            let list = relm4::spawn(async move { lookup.read(|wallet, _| async move { wallet.currency_list(None, String::new()).await }).await }).await.ok().flatten();
-            let Some(list) = list else { return };
-            for group in &list.groups {
-                for currency in &group.rows {
-                    let row = widgets::row(&currency.name, &currency.line);
-                    row.set_activatable(true);
-                    if currency.chosen {
-                        row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
-                    }
-                    let (code, engine, sender, dialog) = (currency.code.clone(), engine.clone(), sender.clone(), dialog_ref.clone());
-                    row.connect_activated(move |_| {
-                        let (code, engine, sender) = (code.clone(), engine.clone(), sender.clone());
-                        relm4::spawn(async move {
-                            match engine.change(move |wallet| async move { wallet.set_currency(code).await }).await {
-                                Ok(Some(said)) => sender.input(Input::Say(said)),
-                                Ok(None) => {}
-                                Err(e) => sender.input(Input::Say(e.to_string())),
-                            }
-                        });
-                        dialog.close();
-                    });
-                    holder.append(&row);
-                }
-            }
-        });
     }
 
     fn ask_new_passphrase(&self, sender: &ComponentSender<Self>) {

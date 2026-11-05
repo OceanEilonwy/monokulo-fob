@@ -1,6 +1,6 @@
 //! Receive: this wallet's address as a code, with an amount and note if asked.
 
-use fob_app::{Engine, views::{ReceiveCode, Screens}};
+use fob_app::{Engine, views::{ContactRow, ReceiveCode, Screens}};
 use relm4::{
     adw::{self, prelude::*},
     gtk,
@@ -9,7 +9,7 @@ use relm4::{
 
 use crate::{
     bridge::View,
-    root::Msg as RootMsg,
+    root::{Go, Msg as RootMsg},
     widgets,
 };
 
@@ -21,6 +21,9 @@ pub enum Input {
     Copy,
     Asked,
     Code(View<ReceiveCode>),
+    People(View<Vec<ContactRow>>),
+    MakeRequest,
+    Made(u64),
     Failed(String),
 }
 
@@ -33,6 +36,9 @@ pub struct Receive {
     code: gtk::Box,
     amount: adw::EntryRow,
     note: adw::EntryRow,
+    who: adw::ComboRow,
+    /// Who the rows of `who` are; the first row is no one.
+    people: Vec<u64>,
 }
 
 #[relm4::component(pub)]
@@ -96,6 +102,18 @@ impl SimpleComponent for Receive {
                                 set_title: "Note (optional)",
                                 connect_changed => Input::Asked,
                             },
+                            #[local_ref]
+                            add = who -> adw::ComboRow {
+                                set_title: "Who from",
+                                set_model: Some(&gtk::StringList::new(&["No one in particular"])),
+                            },
+                        },
+                        gtk::Button {
+                            set_label: "Keep as a request",
+                            set_tooltip_text: Some("On its own new address, so you can see when it's paid"),
+                            set_halign: gtk::Align::Center,
+                            add_css_class: "pill",
+                            connect_clicked => Input::MakeRequest,
                         },
                         gtk::Label {
                             add_css_class: "error",
@@ -113,9 +131,9 @@ impl SimpleComponent for Receive {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let code = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let (amount, note) = (adw::EntryRow::new(), adw::EntryRow::new());
-        let model = Receive { engine, address: None, uri: None, headline: None, error: None, code: code.clone(), amount: amount.clone(), note: note.clone() };
-        let (code, amount, note) = (&code, &amount, &note);
+        let (amount, note, who) = (adw::EntryRow::new(), adw::EntryRow::new(), adw::ComboRow::new());
+        let model = Receive { engine, address: None, uri: None, headline: None, error: None, code: code.clone(), amount: amount.clone(), note: note.clone(), who: who.clone(), people: vec![] };
+        let (code, amount, note, who) = (&code, &amount, &note, &who);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -132,6 +150,7 @@ impl SimpleComponent for Receive {
             // Rust hands one out only now, never on a refresh, so a restored
             // wallet hands none out before its scan has found the others.
             Input::Opened if self.address.is_none() => {
+                self.ask_people(&sender);
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     if let Err(e) = engine.change(|wallet| async move { wallet.receive_address().await.map(|_| ()) }).await {
@@ -139,7 +158,22 @@ impl SimpleComponent for Receive {
                     }
                 });
             }
-            Input::Opened => self.ask(&sender),
+            Input::Opened => {
+                self.ask_people(&sender);
+                self.ask(&sender);
+            }
+            Input::People(View(rows)) => {
+                let mut names = vec!["No one in particular"];
+                names.extend(rows.iter().map(|r| r.name.as_str()));
+                self.who.set_model(Some(&gtk::StringList::new(&names)));
+                self.people = rows.iter().map(|r| r.id).collect();
+            }
+            Input::MakeRequest => self.make_request(&sender),
+            Input::Made(id) => {
+                self.amount.set_text("");
+                self.note.set_text("");
+                let _ = sender.output(RootMsg::Go(Go::Request(id)));
+            }
             Input::NewAddress => {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
@@ -179,6 +213,28 @@ impl Receive {
                 Some(Ok(code)) => sender.input(Input::Code(View(code.into()))),
                 Some(Err(e)) => sender.input(Input::Failed(e.to_string())),
                 None => {}
+            }
+        });
+    }
+
+    fn ask_people(&self, sender: &ComponentSender<Self>) {
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        relm4::spawn(async move {
+            if let Some(rows) = engine.read(|wallet, _| async move { wallet.request_contacts().await }).await {
+                sender.input(Input::People(View(rows.into())));
+            }
+        });
+    }
+
+    fn make_request(&self, sender: &ComponentSender<Self>) {
+        let contact = (self.who.selected() as usize).checked_sub(1).and_then(|i| self.people.get(i).copied());
+        let amount = Some(self.amount.text().to_string()).filter(|a| !a.trim().is_empty());
+        let note = Some(self.note.text().to_string()).filter(|n| !n.trim().is_empty());
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        relm4::spawn(async move {
+            match engine.change(move |wallet| async move { wallet.make_request(contact, amount, false, note).await }).await {
+                Ok(made) => sender.input(Input::Made(made.id)),
+                Err(e) => sender.input(Input::Failed(e.to_string())),
             }
         });
     }

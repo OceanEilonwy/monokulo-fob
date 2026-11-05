@@ -176,6 +176,10 @@ pub fn no_code_in_picture() -> String {
     "Fob couldn't find a code in that picture.".into()
 }
 
+pub fn photo_too_big() -> String {
+    "Fob couldn't make that picture small enough to keep.".into()
+}
+
 pub fn profile_not_payment() -> String {
     "That's a profile, not a payment code. Add them from Contacts.".into()
 }

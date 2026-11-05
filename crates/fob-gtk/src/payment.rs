@@ -1,6 +1,6 @@
 //! One payment's own screen, every word from Rust.
 
-use fob_app::{Engine, views::PaymentDetail};
+use fob_app::{Engine, views::{PaymentDetail, Screens}};
 use relm4::{
     adw::{self, prelude::*},
     gtk,
@@ -11,7 +11,7 @@ use crate::{bridge::View, root::Msg as RootMsg, widgets};
 
 #[derive(Debug)]
 pub enum Input {
-    Open(String),
+    Open(String, Option<View<Screens>>),
     Show(Option<View<PaymentDetail>>),
     CopyTx,
 }
@@ -19,6 +19,7 @@ pub enum Input {
 pub struct Payment {
     engine: Engine,
     tx: Option<String>,
+    screens: Option<View<Screens>>,
     body: gtk::Box,
 }
 
@@ -51,7 +52,7 @@ impl SimpleComponent for Payment {
 
     fn init(engine: Engine, root: Self::Root, _sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let model = Payment { engine, tx: None, body: body.clone() };
+        let model = Payment { engine, tx: None, screens: None, body: body.clone() };
         let body = &body;
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -59,8 +60,9 @@ impl SimpleComponent for Payment {
 
     fn update(&mut self, input: Input, sender: ComponentSender<Self>) {
         match input {
-            Input::Open(tx) => {
+            Input::Open(tx, screens) => {
                 self.tx = Some(tx.clone());
+                self.screens = screens;
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     let detail = engine.read(move |wallet, clock| async move { wallet.payment(tx, clock.now, clock.utc_offset, clock.hours_24).await }).await.flatten();
@@ -113,6 +115,11 @@ impl Payment {
         tx.connect_activated(move |_| then.input(Input::CopyTx));
         list.append(&tx);
         self.body.append(&list);
+        if let Some(View(screens)) = &self.screens
+            && let Some(receipt) = screens.activity.iter().flat_map(|day| &day.rows).filter_map(|row| row.activity.as_ref()).find(|a| a.tx == detail.tx).and_then(|a| a.receipt.as_ref())
+        {
+            self.body.append(&widgets::receipt(receipt));
+        }
         if let Some(footer) = &detail.footer {
             self.body.append(&widgets::dim(footer));
         }

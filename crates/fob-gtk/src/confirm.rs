@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use fob_app::{Engine, views::Prepared};
+use fob_app::{Engine, views::{Prepared, SaveOffer}};
 use relm4::{
     adw::{self, prelude::*},
     gtk,
@@ -36,6 +36,8 @@ pub enum Input {
     /// Left without sending: the wallet can let what it prepared go.
     Left,
     Sent(String),
+    Offer(View<SaveOffer>),
+    Keep(View<SaveOffer>),
     Done,
 }
 
@@ -126,7 +128,12 @@ impl SimpleComponent for Confirm {
                 });
             }
             Input::Ready(View(prepared)) => {
+                if let Some(old) = self.prepared.take() {
+                    self.engine.cancel(&old);
+                }
                 self.busy = false;
+                self.sent = None;
+                self.error = None;
                 self.draw(&prepared);
                 self.prepared = Some(prepared);
             }
@@ -161,11 +168,53 @@ impl SimpleComponent for Confirm {
             }
             Input::Sent(tx) => {
                 self.busy = false;
-                self.prepared = None;
+                let done = self.prepared.take().and_then(|p| p.split.as_ref().map(|s| s.done.clone()));
                 widgets::empty(&self.body);
-                let page = adw::StatusPage::builder().icon_name("emblem-ok-symbolic").title("Sent").description(&tx).build();
+                let page = adw::StatusPage::builder().icon_name("emblem-ok-symbolic").title(done.as_deref().unwrap_or("Sent")).description(&tx).build();
                 self.body.append(&page);
+                let (engine, then, asked) = (self.engine.clone(), sender.clone(), tx.clone());
+                relm4::spawn(async move {
+                    if let Some(Some(offer)) = engine.read(move |wallet, _| async move { wallet.save_offer(asked).await }).await {
+                        then.input(Input::Offer(View(offer.into())));
+                    }
+                });
                 self.sent = Some(tx);
+            }
+            Input::Offer(offer) => {
+                let button = gtk::Button::builder().label(&offer.0.button).halign(gtk::Align::Center).css_classes(["pill"]).build();
+                let (then, kept) = (sender.clone(), offer.clone());
+                button.connect_clicked(move |button| {
+                    button.set_sensitive(false);
+                    then.input(Input::Keep(kept.clone()));
+                });
+                self.body.append(&button);
+                if let Some(named) = &offer.0.named {
+                    self.body.append(&widgets::centred(named));
+                }
+                if let Some(footnote) = &offer.0.footnote {
+                    self.body.append(&widgets::centred(footnote));
+                }
+            }
+            Input::Keep(View(offer)) => {
+                let (engine, then) = (self.engine.clone(), sender.clone());
+                let existing = offer.add_to.as_ref().map(|c| c.id);
+                let (address, draft) = (offer.address.clone(), copy_draft(&offer.draft));
+                relm4::spawn(async move {
+                    let saved = engine
+                        .change(move |wallet| async move {
+                            match existing {
+                                Some(id) => wallet.add_contact_paid_at(id, address).await,
+                                None => wallet.add_contact(draft).await,
+                            }
+                        })
+                        .await;
+                    match saved {
+                        Ok(contact) => {
+                            let _ = then.output(RootMsg::Say(format!("Saved {}", contact.name)));
+                        }
+                        Err(e) => then.input(Input::Failed(e.to_string())),
+                    }
+                });
             }
             Input::Done => self.busy = false,
             Input::Left => {
@@ -178,6 +227,10 @@ impl SimpleComponent for Confirm {
     }
 }
 
+fn copy_draft(draft: &fob_app::views::ContactDraft) -> fob_app::views::ContactDraft {
+    fob_app::views::ContactDraft { name: draft.name.clone(), note: draft.note.clone(), photo: draft.photo.clone(), send_address: draft.send_address.clone(), also_paid_at: draft.also_paid_at.clone() }
+}
+
 impl Confirm {
     fn draw_waiting(&self, filled: &Filled) {
         widgets::empty(&self.body);
@@ -188,8 +241,20 @@ impl Confirm {
 
     fn draw(&self, prepared: &Prepared) {
         widgets::empty(&self.body);
-        self.body.append(&widgets::pattern(&prepared.to));
-        self.body.append(&widgets::address(&prepared.to));
+        match &prepared.split {
+            // Paid back to this wallet: there's no one else's address to check.
+            Some(split) => {
+                self.body.append(&widgets::heading(&split.title));
+                self.body.append(&widgets::centred(&split.to));
+            }
+            None => {
+                self.body.append(&widgets::pattern(&prepared.to));
+                self.body.append(&widgets::address(&prepared.to));
+            }
+        }
+        if let Some(receipt) = &prepared.receipt {
+            self.body.append(&widgets::receipt(receipt));
+        }
         let list = widgets::list();
         let row = |title: &str, value: &str, fiat: Option<&str>| {
             let view = widgets::row(title, fiat.unwrap_or(""));
@@ -204,6 +269,9 @@ impl Confirm {
         self.body.append(&list);
         if let Some(split) = &prepared.split {
             self.body.append(&widgets::dim(&split.pieces_text));
+        }
+        if let Some(age) = &prepared.fiat_age {
+            self.body.append(&widgets::dim(age));
         }
     }
 }
