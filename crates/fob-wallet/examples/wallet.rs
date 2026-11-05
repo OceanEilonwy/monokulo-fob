@@ -1,9 +1,9 @@
-//! A command-line Fob wallet, for trying fob-core against stagenet:
+//! A command-line Fob wallet, for trying fob-wallet against stagenet:
 //!
 //! ```text
-//! cargo run --release -p fob-core --example wallet -- <file> address
-//! cargo run --release -p fob-core --example wallet -- <file> sync
-//! cargo run --release -p fob-core --example wallet -- <file> send <address> <amount>
+//! cargo run --release -p fob-wallet --example wallet -- <file> address
+//! cargo run --release -p fob-wallet --example wallet -- <file> sync
+//! cargo run --release -p fob-wallet --example wallet -- <file> send <address> <amount>
 //! ```
 //!
 //! The file is made on first use (a new stagenet wallet). Its key is fixed:
@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use fob_core::{Network, Wallet, amount};
+use fob_wallet::{Network, Wallet, amount};
 
 const KEY: [u8; 32] = [0x46; 32];
 

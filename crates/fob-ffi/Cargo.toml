@@ -1,6 +1,6 @@
 [package]
 name = "fob-ffi"
-description = "fob-core for Kotlin (and later Swift), through UniFFI. Types and calls only: no wallet logic."
+description = "fob-wallet for Kotlin (and later Swift), through UniFFI. Types and calls only: no wallet logic."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,6 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
-fob-core = { path = "../fob-core" }
+fob-wallet = { path = "../fob-wallet" }
 thiserror = "2"
 uniffi = { version = "=0.32.2", features = ["tokio"] }

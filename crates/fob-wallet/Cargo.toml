@@ -1,5 +1,5 @@
 [package]
-name = "fob-core"
+name = "fob-wallet"
 description = "Fob: a small Monero wallet with ORF receipts. All wallet logic lives here; apps are thin wrappers."
 version.workspace = true
 edition.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 monero-wallet = "0.2"
-fob-scan = { path = "../fob-scan" }
+fob-scanner = { path = "../fob-scanner" }
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }

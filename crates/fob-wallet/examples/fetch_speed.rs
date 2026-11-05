@@ -1,9 +1,9 @@
 //! How fast Fob catches up from a node:
-//! `cargo run --release -p fob-core --example fetch_speed [node] [blocks]`.
+//! `cargo run --release -p fob-wallet --example fetch_speed [node] [blocks]`.
 
 use std::time::Instant;
 
-use fob_core::{fetch, transport::Transport};
+use fob_wallet::{fetch, transport::Transport};
 use monero_daemon_rpc::MoneroDaemon;
 use monero_wallet::{Scanner, ViewPair, ed25519::Point, interface::prelude::*};
 use zeroize::Zeroizing;
@@ -24,7 +24,7 @@ async fn main() {
     let txs: usize = blocks.iter().map(|b| b.transactions.len()).sum();
 
     // Scan them with a random wallet, to see what the maths costs.
-    let keys = fob_core::keys::Keys::generate(fob_core::Network::Stagenet).keys;
+    let keys = fob_wallet::keys::Keys::generate(fob_wallet::Network::Stagenet).keys;
     let address = monero_wallet::address::MoneroAddress::from_str(
         monero_wallet::address::Network::Stagenet,
         &keys.primary_address(),

@@ -1,5 +1,5 @@
 //! What signing a payment costs, apart from the network: Bulletproofs+ for the outputs and
-//! a CLSAG for each input (ring of 16). `cargo run --release -p fob-core --example send_bench`.
+//! a CLSAG for each input (ring of 16). `cargo run --release -p fob-wallet --example send_bench`.
 //! On a phone: build with `cargo ndk -t arm64-v8a build --profile android --example send_bench`.
 
 use std::{hint::black_box, time::Instant};

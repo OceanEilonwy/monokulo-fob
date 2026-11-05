@@ -1,9 +1,9 @@
 //! Against a real public stagenet node. Ignored by default (they need the
-//! network); run with `cargo test -p fob-core --test stagenet_over_http -- --ignored`.
+//! network); run with `cargo test -p fob-wallet --test stagenet_over_http -- --ignored`.
 
 use std::time::Instant;
 
-use fob_core::{Network, Wallet, network::RESTORE_MARGIN};
+use fob_wallet::{Network, Wallet, network::RESTORE_MARGIN};
 
 fn path(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("fob-http-{name}-{}", std::process::id()));

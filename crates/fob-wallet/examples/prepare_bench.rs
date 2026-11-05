@@ -1,10 +1,10 @@
 //! The node round trips a payment makes before it can be signed, timed one by one:
-//! `cargo run --release -p fob-core --example prepare_bench -- [node]`.
+//! `cargo run --release -p fob-wallet --example prepare_bench -- [node]`.
 //! On a phone: build with `cargo ndk -t arm64-v8a build --profile android --example prepare_bench`.
 
 use std::time::Instant;
 
-use fob_core::transport::Transport;
+use fob_wallet::transport::Transport;
 use monero_daemon_rpc::MoneroDaemon;
 use monero_wallet::interface::{EvaluateUnlocked, FeePriority, prelude::*};
 use rand_core::{OsRng, RngCore};

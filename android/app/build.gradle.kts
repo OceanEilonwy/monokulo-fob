@@ -3,7 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// The wallet is the Rust crate fob-core, through fob-ffi's UniFFI bindings.
+// The wallet is the Rust crate fob-wallet, through fob-ffi's UniFFI bindings.
 // Both the native libraries and the Kotlin bindings are built here from the
 // crates, so they can't drift: building needs Rust, cargo-ndk and the NDK.
 val repo: File = rootDir.parentFile
