@@ -59,8 +59,9 @@ sits beside it.
 `crates/fob-gtk/install.sh` builds Fob and adds it to your menu; it needs Rust,
 GTK 4.18 and libadwaita 1.7 or newer. It starts on stagenet, like the debug
 Android build. Your wallets are sealed under a passphrase you choose, in
-`~/.local/share/fob`. `crates/fob-gtk/scenes.sh` checks the windows on a headless
-display.
+`~/.local/share/fob`, and lock after 15 minutes left alone. A camera isn't used:
+a code is pasted or read from a picture. `crates/fob-gtk/scenes.sh` checks the
+windows on a headless display, and its `walk` scene presses through the app.
 
 ## Building
 
