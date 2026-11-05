@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -646,13 +647,16 @@ fun ProgressBar(progress: Float, height: Dp = 6.dp, fill: Color = Fob.orange) {
 
 /**
  * Swipe to send: drag the orange knob all the way across. Let go early and
- * it springs back, so a stray tap never pays. TalkBack gets a plain action.
+ * it springs back, so a stray tap never pays. It goes back too when [sending]
+ * ends without leaving the screen: a cancelled fingerprint or a failed send.
+ * TalkBack gets a plain action.
  * While [waiting] (the fee still coming), the knob turns a spinner.
  */
 @Composable
-fun SwipeToSend(label: String, enabled: Boolean, waiting: Boolean = false, onSwiped: () -> Unit) {
+fun SwipeToSend(label: String, enabled: Boolean, sending: Boolean, waiting: Boolean = false, onSwiped: () -> Unit) {
     val scope = rememberCoroutineScope()
     val offset = remember { Animatable(0f) }
+    LaunchedEffect(sending) { if (!sending && offset.value != 0f) offset.animateTo(0f, spring()) }
     BoxWithConstraints(
         Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(32.dp)).background(Fob.sunken)
             .semantics(mergeDescendants = true) { contentDescription = label }
@@ -718,6 +722,7 @@ fun Throwable.reason(): String = when (this) {
     is uniffi.fob.FobException.NotEnoughFunds -> reason.replaceFirstChar { it.uppercase() }
     is uniffi.fob.FobException.WrongKey -> reason
     is uniffi.fob.FobException.ViewOnly -> reason
+    is uniffi.fob.FobException.SpendRejected -> reason.replaceFirstChar { it.uppercase() }
     is uniffi.fob.FobException.Other -> reason
     else -> message ?: toString()
 }.replaceFirstChar { it.uppercase() }

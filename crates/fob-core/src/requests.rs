@@ -460,6 +460,8 @@ mod tests {
 
     fn paid_in(subaddress: u32, amount: u64, time: u64, price: Option<u64>) -> Activity {
         Activity {
+            not_confirmed: false,
+            released: false,
             tx: format!("in-{subaddress}-{time}"),
             direction: Direction::In,
             amount,
@@ -521,7 +523,7 @@ mod tests {
         let r = requests.add(draft(&keys, 4, Some(7), Some("Pizza"), None), NOW).unwrap();
         assert_eq!(requests.payer(4, "in", NOW + 1), Some(7));
         // In the pool when it's deleted; mined after, its block's time later than the delete: still theirs.
-        let pooled = Activity { tx: "pooled".into(), height: None, ..paid_in(4, 1, NOW + 30, None) };
+        let pooled = Activity { not_confirmed: false, released: false, tx: "pooled".into(), height: None, ..paid_in(4, 1, NOW + 30, None) };
         requests.delete(r.id, NOW + HOUR, &[pooled, paid_in(5, 1, NOW, None)]);
         assert_eq!(requests.payer(4, "pooled", NOW + 3 * HOUR), Some(7));
         assert_eq!(requests.payer(4, "later", NOW + 1), None, "came after, whatever its block's time says");

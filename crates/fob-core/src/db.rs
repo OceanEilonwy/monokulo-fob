@@ -30,7 +30,7 @@ use crate::{
 };
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 3;
+const VERSION: i32 = 5;
 
 fn failed(e: impl std::fmt::Display) -> FobError {
     FobError::Storage(e.to_string())
@@ -82,6 +82,13 @@ const WALLET: Table = Table {
         // Since version 3.
         ("gpu_checked_on", Text),
         ("gpu_check_passed", Bool),
+        // Since version 4.
+        ("manual_sync", Bool),
+        ("pull_mode", Text),
+        ("incoming_scan_blocks", Int),
+        ("settled_confirmations", Int),
+        ("pull_mark_height", Int),
+        ("pull_mark_hash", Text),
     ],
 };
 const RECENT: Table = Table { name: "recent_blocks", columns: &[("height", Int), ("hash", Text)] };
@@ -117,6 +124,9 @@ const SENT: Table = Table {
         ("pieces", Int),
         ("back", Json),
         ("recipient_name", Text),
+        // Since version 5.
+        ("not_confirmed", Bool),
+        ("released", Bool),
     ],
 };
 const NOTES: Table = Table { name: "notes", columns: &[("subaddress", Int), ("note", Text)] };
@@ -450,6 +460,16 @@ impl Db {
             let upgrade = "BEGIN;\nALTER TABLE wallet ADD COLUMN gpu_checked_on TEXT;\nALTER TABLE wallet ADD COLUMN gpu_check_passed INTEGER DEFAULT 0;\nPRAGMA user_version = 3;\nCOMMIT;";
             connection.execute_batch(upgrade).map_err(failed)?;
             version = 3;
+        }
+        if version == 3 {
+            let upgrade = "BEGIN;\nALTER TABLE wallet ADD COLUMN manual_sync INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN pull_mode TEXT DEFAULT 'auto';\nALTER TABLE wallet ADD COLUMN incoming_scan_blocks INTEGER DEFAULT 5;\nALTER TABLE wallet ADD COLUMN settled_confirmations INTEGER DEFAULT 10;\nALTER TABLE wallet ADD COLUMN pull_mark_height INTEGER;\nALTER TABLE wallet ADD COLUMN pull_mark_hash TEXT;\nPRAGMA user_version = 4;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 4;
+        }
+        if version == 4 {
+            let upgrade = "BEGIN;\nALTER TABLE sent ADD COLUMN not_confirmed INTEGER DEFAULT 0;\nALTER TABLE sent ADD COLUMN released INTEGER DEFAULT 0;\nPRAGMA user_version = 5;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 5;
         }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));

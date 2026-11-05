@@ -17,7 +17,15 @@ import kotlinx.coroutines.withContext
 import android.text.format.DateFormat
 import com.monokulo.fob.ui.PriceToastState
 import com.monokulo.fob.ui.ThemeChoice
+import com.monokulo.fob.ui.reason
 import uniffi.fob.ActivityDay
+import uniffi.fob.BlockInfo
+import uniffi.fob.FobException
+import uniffi.fob.ManualSettings
+import uniffi.fob.PullMode
+import uniffi.fob.PullOutcome
+import uniffi.fob.ScanDrawer
+import uniffi.fob.ScanRequest
 import uniffi.fob.ScanMode
 import uniffi.fob.setScanMode
 import uniffi.fob.AmountEntry
@@ -202,6 +210,10 @@ class WalletModel(private val app: Application) {
         override fun onStatus(status: SyncStatus) {
             scope.launch {
                 _status.value = status
+                status.notice?.let { words ->
+                    _scanNotice.value = PullOutcome("The chain changed", words)
+                    _wallet.value?.clearNotice()
+                }
                 refresh()
                 if (status.synced && !visible) stopSync()
                 // Far behind while on screen: hold the process open to finish.
@@ -357,6 +369,7 @@ class WalletModel(private val app: Application) {
         _wallet.value = wallet
         _status.value = wallet.status()
         _you.value = You(wallet.profile(), wallet.profileRow())
+        _manual.value = wallet.manualSettings()
         // Toast ids start again with each wallet opened.
         toastDone = 0uL
         _priceToast.value = null
@@ -545,6 +558,12 @@ class WalletModel(private val app: Application) {
     }
 
     /** A payment's own screen, every word from Rust; null if there's no such payment. */
+    /** Frees the coins of a payment marked not confirmed. */
+    suspend fun releasePayment(tx: String) {
+        _wallet.value?.releasePayment(tx)
+        refresh()
+    }
+
     suspend fun payment(tx: String): PaymentDetail? {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
@@ -596,11 +615,99 @@ class WalletModel(private val app: Application) {
         return _wallet.value?.currencyList(phone, query)
     }
 
-    /** Pull to refresh: asks the node now (and the price), and returns once that round is over. */
+    /** Pull to refresh: asks the node now (and the price), and returns once that round is over. With Manual Sync, what its pull mode says. */
     suspend fun syncNow() {
         val wallet = _wallet.value ?: return
-        wallet.syncNow()
+        if (_manual.value?.on == true) {
+            runCatching { wallet.pullRefresh() }
+                .onSuccess { said -> _scanNotice.value = said }
+                .onFailure { _scanNotice.value = PullOutcome("Couldn't check", it.reason()) }
+        } else {
+            wallet.syncNow()
+        }
         refresh()
+    }
+
+    private val _manual = MutableStateFlow<ManualSettings?>(null)
+    /** This wallet's Manual Sync settings. */
+    val manual: StateFlow<ManualSettings?> = _manual
+
+    private val _scanOpen = MutableStateFlow(false)
+    /** The Scan drawer, or the running scan it became, is showing. */
+    val scanOpen: StateFlow<Boolean> = _scanOpen
+    fun openScan() { _scanOpen.value = true }
+    fun closeScan() { _scanOpen.value = false }
+
+    private val _spendRefused = MutableStateFlow(false)
+    /** With Manual Sync on, the node refused a payment: asked to sync. */
+    val spendRefused: StateFlow<Boolean> = _spendRefused
+    fun dismissRefused() { _spendRefused.value = false }
+
+    private val _scanNotice = MutableStateFlow<PullOutcome?>(null)
+    /** What a pull found, or that the chain changed. */
+    val scanNotice: StateFlow<PullOutcome?> = _scanNotice
+    fun dismissScanNotice() { _scanNotice.value = null }
+
+    private suspend fun readManual() {
+        _manual.value = _wallet.value?.manualSettings()
+    }
+
+    suspend fun setManualSync(on: Boolean) {
+        _wallet.value?.setManualSync(on)
+        readManual()
+        refresh()
+    }
+
+    suspend fun setPullMode(mode: PullMode) {
+        _wallet.value?.setPullMode(mode)
+        readManual()
+    }
+
+    suspend fun setIncomingScanBlocks(blocks: UInt) {
+        _wallet.value?.setIncomingScanBlocks(blocks)
+        readManual()
+    }
+
+    suspend fun setSettledConfirmations(confirmations: UInt) {
+        _wallet.value?.setSettledConfirmations(confirmations)
+        readManual()
+        refresh()
+    }
+
+    suspend fun scanDrawer(): ScanDrawer? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.scanDrawer(seconds, offset, hours24)
+    }
+
+    suspend fun blockInfo(height: ULong): BlockInfo? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.blockInfo(height, seconds, offset, hours24)
+    }
+
+    /** Starts a scan. True when it's already over: a check of payments, whose words are now showing. */
+    suspend fun startScan(request: ScanRequest): Boolean {
+        val wallet = _wallet.value ?: return true
+        val checked = wallet.startScan(request)
+        checked?.let { _scanNotice.value = it }
+        refresh()
+        return checked != null
+    }
+
+    fun stopScan() {
+        val wallet = _wallet.value ?: return
+        scope.launch {
+            runCatching { wallet.stopScan() }
+            _scanOpen.value = false
+            refresh()
+        }
+    }
+
+    /** Scans the whole wallet again, past a reorganisation too deep to check; on the model's scope, as it outlasts the card. */
+    fun scanAgain() {
+        val wallet = _wallet.value ?: return
+        scope.launch { runCatching { wallet.scanAgain() }; refresh() }
     }
 
     /** The address of the node being changed to; null when none is. */
@@ -873,7 +980,14 @@ class WalletModel(private val app: Application) {
      */
     suspend fun send(prepared: Prepared): String {
         val wallet = requireNotNull(_wallet.value)
-        return scope.async { wallet.send(prepared.id).also { refresh() } }.await()
+        return scope.async {
+            try {
+                wallet.send(prepared.id).also { refresh() }
+            } catch (refused: FobException.SpendRejected) {
+                _spendRefused.value = true
+                throw refused
+            }
+        }.await()
     }
 
     /** Forgets a prepared payment Confirm left without sending; on the model's scope, as Confirm is going. */

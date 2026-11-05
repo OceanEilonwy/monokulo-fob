@@ -38,6 +38,7 @@ use crate::{
     contacts::{self, Contact},
     error::{FobError, Result},
     keys::{self, Keys, SeedKind, StoredKeys},
+    manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest},
     network::Network,
     node,
     not_ready::{self, Coins, NotReady, Piece, Source},
@@ -61,8 +62,6 @@ const LOOKAHEAD: u32 = 200;
 /// goes, so another phone's handed out but unpaid addresses (requests,
 /// shares) aren't given out again.
 const RESTORE_SKIP: u32 = 50;
-/// Recent block hashes kept to notice a reorganisation.
-const KEEP_HASHES: usize = 30;
 /// Ring size for transactions since the 2022 hard fork.
 const RING_LEN: u8 = 16;
 /// The most Fob pays per unit of weight, whatever a node asks: about 100× the
@@ -70,6 +69,10 @@ const RING_LEN: u8 = 16;
 const MAX_FEE_PER_WEIGHT: u64 = 2_000_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
+/// A sent payment the node has never heard of for this long, in seconds, is marked not confirmed.
+const NOT_CONFIRMED_AFTER: u64 = 24 * 3600;
+/// How often syncing asks about sent payments gone quiet.
+const QUIET_CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How often it polls while the node's ZMQ publisher is heard, which
 /// announces each block: only in case an announcement goes missing.
 const POLL_LISTENING: Duration = Duration::from_secs(120);
@@ -148,6 +151,13 @@ struct Sent {
     /// everything that comes back, pieces and change.
     #[serde(default)]
     pieces: Option<u32>,
+    /// A day on, and the node has never heard of it. Its coins stay spent
+    /// until someone releases them.
+    #[serde(default)]
+    not_confirmed: bool,
+    /// Its coins were released: as far as anyone knows, it didn't go through.
+    #[serde(default)]
+    released: bool,
     /// Each output coming back to this wallet (a split's pieces, then the
     /// change), as sent, so they show one by one before the payment is
     /// mined, as they will after. Empty in older files: `change` as one.
@@ -157,6 +167,33 @@ struct Sent {
     /// code said it was, not checked by anyone.
     #[serde(default)]
     recipient_name: Option<String>,
+}
+
+fn default_incoming_scan_blocks() -> u32 {
+    5
+}
+
+fn default_settled_confirmations() -> u32 {
+    manual::SETTLED_MIN
+}
+
+/// How far back a reorganisation reaches, against the hashes kept.
+#[derive(Debug, PartialEq)]
+enum ReorgReach {
+    /// The oldest hash kept is still on the chain: only what's after it changed.
+    Kept,
+    /// It's gone, but it's the wallet's first block: nothing older is known.
+    ToStart,
+    /// It's gone, and older blocks were scanned that may have changed too.
+    TooDeep,
+}
+
+fn reorg_reach(oldest: u64, still_on_chain: bool, wallet_start: u64) -> ReorgReach {
+    match still_on_chain {
+        true => ReorgReach::Kept,
+        false if oldest <= wallet_start => ReorgReach::ToStart,
+        false => ReorgReach::TooDeep,
+    }
 }
 
 /// Where a wallet stands with the GPU it would scan on.
@@ -196,6 +233,20 @@ struct State {
     gpu_checked_on: Option<String>,
     #[serde(default)]
     gpu_check_passed: bool,
+    /// Only scan when asked. Off by default.
+    #[serde(default)]
+    manual_sync: bool,
+    #[serde(default)]
+    pull_mode: PullMode,
+    #[serde(default = "default_incoming_scan_blocks")]
+    incoming_scan_blocks: u32,
+    #[serde(default = "default_settled_confirmations")]
+    settled_confirmations: u32,
+    /// The newest block the last pull saw, to tell if the chain has changed since.
+    #[serde(default)]
+    pull_mark_height: Option<u64>,
+    #[serde(default)]
+    pull_mark_hash: Option<String>,
     /// The node's ZMQ publisher (`tcp://host:port`, on the node's host), as
     /// last set; kept while turned off, so turning it on again uses it.
     #[serde(default)]
@@ -336,6 +387,10 @@ pub struct Activity {
     /// For a payment in: what came to each address it paid, by index, so
     /// one transaction paying two requests credits each its own part.
     pub parts: Vec<(u32, u64)>,
+    /// Sent, and a day on the node has never heard of it.
+    pub not_confirmed: bool,
+    /// Sent, its coins since released.
+    pub released: bool,
 }
 
 impl Activity {
@@ -411,10 +466,32 @@ pub struct SyncStatus {
     /// The failure is the phone's own (the wallet couldn't be saved), not
     /// the node's.
     pub error_local: bool,
+    /// The failure is a reorganisation deeper than the wallet can check.
+    pub chain_changed: bool,
+    /// Manual Sync is on.
+    pub manual_sync: bool,
+    /// A scan someone asked for, while it runs.
+    pub scan: Option<ScanProgress>,
+    /// Something to say once: "The chain changed, so Fob scanned recent blocks again."
+    pub notice: Option<String>,
     /// Instant updates from the node's ZMQ publisher.
     pub zmq: ZmqStatus,
     /// [`zmq`](Self::zmq) as Settings shows it: "node.example:18083 · listening".
     pub zmq_text: String,
+}
+
+/// How far a scan someone asked for has got.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScanProgress {
+    /// "Scanning from last scan".
+    pub title: String,
+    pub from: u64,
+    pub to: u64,
+    /// The next block it will scan.
+    pub at: u64,
+    /// Blocks with payments found so far, and whether money came in. A block
+    /// with both is marked as money in; change isn't money in.
+    pub marks: Vec<(u64, bool)>,
 }
 
 /// Told about every change while the wallet syncs.
@@ -492,6 +569,16 @@ struct Inner {
     scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scan::Prefilter>)>>,
     /// This wallet's GPU check has run since it was opened.
     gpu_checked: AtomicBool,
+    /// When syncing last looked for sent payments gone quiet.
+    quiet_checked: std::sync::Mutex<Option<Instant>>,
+    /// With Manual Sync on, the sync loop scans only while this is set.
+    scan_asked: AtomicBool,
+    /// A scan of chosen blocks is to stop.
+    scan_stop: AtomicBool,
+    /// The scan someone asked for, while it runs.
+    scan_job: std::sync::Mutex<Option<ScanProgress>>,
+    /// Held by a pull or a scan of chosen blocks: one at a time.
+    scan_running: Mutex<()>,
     /// Scanning since the last save.
     unsaved: AtomicBool,
     /// When the file was last saved.
@@ -709,6 +796,12 @@ impl Wallet {
             custom_nodes: vec![],
             gpu_checked_on: None,
             gpu_check_passed: false,
+            manual_sync: false,
+            pull_mode: PullMode::default(),
+            incoming_scan_blocks: default_incoming_scan_blocks(),
+            settled_confirmations: default_settled_confirmations(),
+            pull_mark_height: None,
+            pull_mark_hash: None,
             zmq_endpoint: None,
             zmq_on: false,
             restore_height,
@@ -747,6 +840,8 @@ impl Wallet {
             tip: state.tip,
             start: state.restore_height.unwrap_or(state.next_block),
             up_to: state.last_block_time,
+            manual_sync: state.manual_sync,
+            synced: state.manual_sync,
             zmq_text: zmq.text(state.zmq_endpoint.as_deref()),
             zmq,
             ..SyncStatus::default()
@@ -761,6 +856,11 @@ impl Wallet {
                 pipeline: Mutex::new(None),
                 scanner: std::sync::Mutex::new(None),
                 gpu_checked: AtomicBool::new(false),
+                quiet_checked: std::sync::Mutex::new(None),
+                scan_asked: AtomicBool::new(false),
+                scan_stop: AtomicBool::new(false),
+                scan_job: std::sync::Mutex::new(None),
+                scan_running: Mutex::new(()),
                 unsaved: AtomicBool::new(false),
                 saved_at: std::sync::Mutex::new(Instant::now()),
                 db: std::sync::Mutex::new(Some(db)),
@@ -1120,7 +1220,7 @@ impl Wallet {
         let verdict = match checked {
             // A failed round drops the check before it: what's here is newer.
             Some((checked, verdict)) if checked == setting => Some(verdict),
-            _ if status.error.is_some() && !status.error_local => Some("Can't reach node"),
+            _ if status.error.is_some() && !status.error_local && !status.chain_changed => Some("Can't reach node"),
             _ if status.connected => Some("Working"),
             _ => None,
         };
@@ -1314,7 +1414,7 @@ impl Wallet {
         }
         let (on, endpoint) = {
             let state = self.inner.state.lock().await;
-            (state.zmq_on, state.zmq_endpoint.clone())
+            (state.zmq_on && !state.manual_sync, state.zmq_endpoint.clone())
         };
         self.set_zmq_status(if on { ZmqStatus::Connecting } else { ZmqStatus::Off }, endpoint.as_deref());
         let listener = self.inner.listener.lock().expect("listener lock").clone();
@@ -1388,11 +1488,11 @@ impl Wallet {
         let mut balance = Balance::default();
         for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
             balance.total += output.amount;
-            if confirmations(&state, output.height) >= output.needed() {
+            if confirmations(&state, output.height) >= state.needed(output) {
                 balance.unlocked += output.amount;
             }
         }
-        for sent in state.sent.iter().filter(|s| s.height.is_none()) {
+        for sent in state.sent.iter().filter(|s| s.height.is_none() && !s.released) {
             balance.total += sent.change;
         }
         for pooled in self.inner.pool.lock().expect("pool lock").values() {
@@ -1417,7 +1517,7 @@ impl Wallet {
         };
         let (mut ready, mut waiting) = (vec![], vec![]);
         for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
-            let needed = output.needed();
+            let needed = state.needed(output);
             let confirmations = confirmations(&state, output.height);
             let source = match state.sent.iter().find(|s| s.tx == output.tx) {
                 Some(sent) => source(sent),
@@ -1427,7 +1527,7 @@ impl Wallet {
             let piece = Piece { amount: output.amount, confirmations, needed, source, time: output.time };
             if confirmations >= needed { ready.push(piece) } else { waiting.push(piece) }
         }
-        for sent in state.sent.iter().filter(|s| s.height.is_none() && s.change > 0) {
+        for sent in state.sent.iter().filter(|s| s.height.is_none() && !s.released && s.change > 0) {
             let back = if sent.back.is_empty() { std::slice::from_ref(&sent.change) } else { sent.back.as_slice() };
             for &amount in back {
                 waiting.push(Piece { amount, confirmations: 0, needed: UNLOCK, source: source(sent), time: sent.time });
@@ -1478,6 +1578,8 @@ impl Wallet {
             outgoing.insert(&sent.tx);
             let receipt = sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok());
             rows.push(Activity {
+                not_confirmed: sent.not_confirmed,
+                released: sent.released,
                 tx: sent.tx.clone(),
                 direction: Direction::Out,
                 // A split's pieces are still this wallet's: only the fee left.
@@ -1510,6 +1612,8 @@ impl Wallet {
             let spent: u64 = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&spend.tx)).map(|o| o.amount).sum();
             let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
             rows.push(Activity {
+                not_confirmed: false,
+                released: false,
                 tx: spend.tx.clone(),
                 direction: Direction::Out,
                 amount: spent.saturating_sub(change).saturating_sub(spend.fee),
@@ -1535,6 +1639,8 @@ impl Wallet {
         let mut incoming: HashMap<&str, Activity> = HashMap::new();
         for output in state.outputs.iter().filter(|o| !outgoing.contains(o.tx.as_str())) {
             let row = incoming.entry(&output.tx).or_insert_with(|| Activity {
+                not_confirmed: false,
+                released: false,
                 tx: output.tx.clone(),
                 direction: Direction::In,
                 amount: 0,
@@ -1563,6 +1669,8 @@ impl Wallet {
         for (tx, pooled) in self.inner.pool.lock().expect("pool lock").iter() {
             if !rows.iter().any(|r| r.tx == *tx) {
                 rows.push(Activity {
+                    not_confirmed: false,
+                    released: false,
                     tx: tx.clone(),
                     direction: Direction::In,
                     amount: pooled.amount(),
@@ -1594,7 +1702,7 @@ impl Wallet {
                 Direction::In => {
                     let outputs: Vec<&Owned> = state.outputs.iter().filter(|o| o.tx == row.tx).collect();
                     row.pieces = outputs.iter().map(|o| o.amount).collect();
-                    row.needed = outputs.iter().map(|o| o.needed()).max().unwrap_or(UNLOCK);
+                    row.needed = outputs.iter().map(|o| state.needed(o)).max().unwrap_or(UNLOCK);
                     row.subaddress = row.subaddress.or(outputs.first().map(|o| o.subaddress));
                     // A request's address: its note, and who it was for.
                     match row.subaddress.and_then(|s| state.requests.at(s)) {
@@ -1717,6 +1825,9 @@ impl Wallet {
         // request goes to fetching blocks.
         if tip == 0 || start + BATCH > tip || !before.connected {
             tip = rpc.latest_block_number().await.map_err(node_err)? as u64 + 1;
+            if let Some(job) = self.inner.scan_job.lock().expect("scan lock").as_mut() {
+                job.to = job.to.max(tip);
+            }
             let mut state = self.inner.state.lock().await;
             state.tip = tip;
             if state.restore_height.is_none() {
@@ -1733,7 +1844,8 @@ impl Wallet {
         self.refresh_status().await;
         let status = self.set_status(|s| {
             s.connected = true;
-            if !s.error_local {
+            // A chain that changed too far back stays said until a round gets past it.
+            if !s.error_local && !s.chain_changed {
                 s.error = None;
             }
         });
@@ -1746,6 +1858,7 @@ impl Wallet {
             // Caught up: show payments on their way before they're mined. The
             // pool is a nicety: a node that won't share it doesn't stop syncing.
             let _ = self.scan_pool(&rpc).await;
+            self.check_quiet_payments(&rpc).await;
             // And keep the decoy data current, so a payment is quick to prepare.
             if self.can_spend() {
                 let _ = decoys.update(tip as usize - 1).await;
@@ -1792,11 +1905,12 @@ impl Wallet {
             }
         };
         // A reorganisation shows as a first block that doesn't follow the last
-        // one scanned: forget the recent blocks and scan them again.
+        // one scanned: scan the recent blocks again, if that's far enough back.
         if let (Some((_, hash)), Some(first)) = (&recent, blocks.first())
             && hex::encode(first.block.header.previous) != *hash
         {
-            self.rewind().await?;
+            *self.inner.pipeline.lock().await = None;
+            self.on_reorg(&rpc).await?;
             return Ok(true);
         }
 
@@ -1812,14 +1926,7 @@ impl Wallet {
             // Rewound or reset while fetching or scanning: this batch is stale.
             return Ok(true);
         }
-        let keys = &self.inner.keys;
-        // Looked up for every input of every transaction in the batch.
-        let mut images: HashMap<String, usize> = HashMap::with_capacity(state.outputs.len());
-        for (i, output) in state.outputs.iter().enumerate() {
-            if let Some(image) = &output.key_image {
-                images.entry(image.clone()).or_insert(i);
-            }
-        }
+        let mut images = Self::key_images(&state);
         let sent: HashMap<String, usize> = state.sent.iter().enumerate().map(|(i, s)| (s.tx.clone(), i)).collect();
         let mut changed = false;
         let mut watch_further = false;
@@ -1833,69 +1940,13 @@ impl Wallet {
             }
             let scanned = result.map_err(FobError::Node)?;
             let (height, time) = (scanned.height, scanned.time);
-            for tx in &scanned.txs {
-                if let Some(&i) = sent.get(&tx.hash) {
-                    state.sent[i].height = Some(height);
-                    changed = true;
-                }
-                for image in &tx.key_images {
-                    if let Some(&i) = images.get(image) {
-                        state.outputs[i].spent_in = Some(tx.hash.clone());
-                        if !state.spends.iter().any(|s| s.tx == tx.hash) {
-                            state.spends.push(ChainSpend { tx: tx.hash.clone(), height, time, fee: tx.fee });
-                        }
-                        changed = true;
-                    }
-                }
-            }
+            let hash = scanned.hash.clone();
+            changed |= self.take_block(&mut state, &mut images, &sent, scanned);
+            self.scan_reached(height + 1);
 
-            for output in scanned.found {
-                // Locked to a block (a mined reward, rarely anything else):
-                // kept, and not spent before then. Locked to a time: not
-                // kept, as before, since a phone's clock can't say when.
-                let unlock_block = match output.additional_timelock() {
-                    Timelock::None => 0,
-                    Timelock::Block(block) => block as u64,
-                    Timelock::Time(_) => continue,
-                };
-                let tx = hex::encode(output.transaction());
-                let key = hex::encode(output.key().compress().to_bytes());
-                // Seen before: the same output again, or the burning bug (a
-                // second output with a key already received, which can't
-                // both be spent). Only the first counts.
-                if state.outputs.iter().any(|o| o.key == key || (o.tx == tx && o.output == hex::encode(output.serialize()))) {
-                    continue;
-                }
-                self.inner.pool.lock().expect("pool lock").remove(&tx);
-                let subaddress = output.subaddress().map(|s| s.address()).unwrap_or(0);
-                // Money to the split address doesn't move Receive on to it.
-                if Some(subaddress) != state.split_index {
-                    state.receive_index = state.receive_index.max(subaddress);
-                }
-                let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
-                if let Some(image) = &key_image {
-                    images.entry(image.clone()).or_insert(state.outputs.len());
-                }
-                // An output arriving in a transaction already seen spending (our
-                // own change) is still ours to spend later.
-                state.outputs.push(Owned {
-                    output: hex::encode(output.serialize()),
-                    coinbase: tx == scanned.miner_tx,
-                    unlock_block,
-                    key,
-                    tx,
-                    height,
-                    time,
-                    amount: output.commitment().amount,
-                    subaddress,
-                    key_image,
-                    spent_in: None,
-                });
-                changed = true;
-            }
-
-            state.recent.push((height, scanned.hash));
-            if state.recent.len() > KEEP_HASHES {
+            state.recent.push((height, hash));
+            let keep = manual::keep_hashes(state.settled_confirmations);
+            while state.recent.len() > keep {
                 state.recent.remove(0);
             }
             state.next_block = height + 1;
@@ -1920,6 +1971,512 @@ impl Wallet {
         }
         self.refresh_status().await;
         Ok(more)
+    }
+
+    /// Key images of the coins known, each to its place: looked up for every
+    /// input of every transaction in a batch.
+    fn key_images(state: &State) -> HashMap<String, usize> {
+        let mut images = HashMap::with_capacity(state.outputs.len());
+        for (i, output) in state.outputs.iter().enumerate() {
+            if let Some(image) = &output.key_image {
+                images.entry(image.clone()).or_insert(i);
+            }
+        }
+        images
+    }
+
+    /// Takes in what a scanned block holds for this wallet. Whether it changed
+    /// anything. The same block twice changes nothing the second time.
+    fn take_block(&self, state: &mut State, images: &mut HashMap<String, usize>, sent: &HashMap<String, usize>, scanned: scan::Scanned) -> bool {
+        let keys = &self.inner.keys;
+        let (height, time) = (scanned.height, scanned.time);
+        let mut changed = false;
+        let mut outgoing: HashSet<String> = HashSet::new();
+        let mut incoming = false;
+        for tx in &scanned.txs {
+            let mut ours = false;
+            if let Some(&i) = sent.get(&tx.hash) {
+                state.sent[i].height = Some(height);
+                // It went through after all.
+                state.sent[i].not_confirmed = false;
+                state.sent[i].released = false;
+                changed = true;
+                ours = true;
+            }
+            for image in &tx.key_images {
+                if let Some(&i) = images.get(image) {
+                    state.outputs[i].spent_in = Some(tx.hash.clone());
+                    if !state.spends.iter().any(|s| s.tx == tx.hash) {
+                        state.spends.push(ChainSpend { tx: tx.hash.clone(), height, time, fee: tx.fee });
+                    }
+                    changed = true;
+                    ours = true;
+                }
+            }
+            if ours {
+                outgoing.insert(tx.hash.clone());
+            }
+        }
+
+        for output in scanned.found {
+            // Locked to a block (a mined reward, rarely anything else):
+            // kept, and not spent before then. Locked to a time: not
+            // kept, as before, since a phone's clock can't say when.
+            let unlock_block = match output.additional_timelock() {
+                Timelock::None => 0,
+                Timelock::Block(block) => block as u64,
+                Timelock::Time(_) => continue,
+            };
+            let tx = hex::encode(output.transaction());
+            let key = hex::encode(output.key().compress().to_bytes());
+            // Seen before: the same output again, or the burning bug (a
+            // second output with a key already received, which can't
+            // both be spent). Only the first counts.
+            if state.outputs.iter().any(|o| o.key == key || (o.tx == tx && o.output == hex::encode(output.serialize()))) {
+                continue;
+            }
+            self.inner.pool.lock().expect("pool lock").remove(&tx);
+            // Change comes in a transaction this wallet sent: it isn't money in.
+            incoming |= !outgoing.contains(&tx) && !state.sent.iter().any(|s| s.tx == tx);
+            let subaddress = output.subaddress().map(|s| s.address()).unwrap_or(0);
+            // Money to the split address doesn't move Receive on to it.
+            if Some(subaddress) != state.split_index {
+                state.receive_index = state.receive_index.max(subaddress);
+            }
+            let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
+            if let Some(image) = &key_image {
+                images.entry(image.clone()).or_insert(state.outputs.len());
+            }
+            // An output arriving in a transaction already seen spending (our
+            // own change) is still ours to spend later.
+            state.outputs.push(Owned {
+                output: hex::encode(output.serialize()),
+                coinbase: tx == scanned.miner_tx,
+                unlock_block,
+                key,
+                tx,
+                height,
+                time,
+                amount: output.commitment().amount,
+                subaddress,
+                key_image,
+                spent_in: None,
+            });
+            changed = true;
+        }
+        if incoming || !outgoing.is_empty() {
+            self.scan_mark(height, incoming);
+        }
+        changed
+    }
+
+    /// With Manual Sync on and nothing asked for: the sync loop waits.
+    async fn waiting_to_be_asked(&self) -> bool {
+        self.inner.state.lock().await.manual_sync && !self.inner.scan_asked.load(Ordering::Relaxed)
+    }
+
+    /// Tells the sync loop to scan to the newest block, as `title`.
+    async fn ask_to_scan(&self, title: &str, from: u64) {
+        let (to, at) = {
+            let state = self.inner.state.lock().await;
+            (state.tip, state.next_block)
+        };
+        *self.inner.scan_job.lock().expect("scan lock") = Some(ScanProgress { title: title.into(), from, to, at, marks: vec![] });
+        self.inner.scan_asked.store(true, Ordering::Relaxed);
+        self.set_status(|s| {
+            s.chain_changed = false;
+            s.error = None;
+            // Asks the node where the chain is first, however it was left.
+            s.connected = false;
+        });
+        self.refresh_status().await;
+        self.tell(self.status());
+        self.inner.wake.notify_one();
+    }
+
+    /// The scan someone asked for is over.
+    async fn scan_finished(&self) {
+        self.inner.scan_asked.store(false, Ordering::Relaxed);
+        self.inner.scan_job.lock().expect("scan lock").take();
+        self.refresh_status().await;
+    }
+
+    fn scan_reached(&self, at: u64) {
+        if let Some(job) = self.inner.scan_job.lock().expect("scan lock").as_mut() {
+            job.at = at;
+            job.to = job.to.max(at);
+        }
+    }
+
+    fn scan_mark(&self, height: u64, incoming: bool) {
+        if let Some(job) = self.inner.scan_job.lock().expect("scan lock").as_mut() {
+            match job.marks.iter_mut().find(|(h, _)| *h == height) {
+                Some(mark) => mark.1 |= incoming,
+                None => job.marks.push((height, incoming)),
+            }
+        }
+    }
+
+    /// This wallet's Manual Sync settings.
+    pub async fn manual_settings(&self) -> ManualSettings {
+        let state = self.inner.state.lock().await;
+        state.manual()
+    }
+
+    /// Turns Manual Sync on or off. On, what's scanning stops after this batch,
+    /// and instant updates stop too; off, syncing carries on from the last scan.
+    pub async fn set_manual_sync(&self, on: bool) -> Result<()> {
+        {
+            let mut state = self.inner.state.lock().await;
+            state.manual_sync = on;
+            self.save_state(&state)?;
+        }
+        if on {
+            self.inner.scan_asked.store(false, Ordering::Relaxed);
+            self.inner.scan_job.lock().expect("scan lock").take();
+        }
+        self.restart_zmq().await;
+        self.refresh_status().await;
+        self.tell(self.status());
+        self.inner.wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn set_pull_mode(&self, mode: PullMode) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        state.pull_mode = mode;
+        self.save_state(&state)
+    }
+
+    /// How far back Auto's pull looks: 1 to [`manual::INCOMING_MAX`] blocks.
+    pub async fn set_incoming_scan_blocks(&self, blocks: u32) -> Result<()> {
+        if !(1..=manual::INCOMING_MAX).contains(&blocks) {
+            return Err(FobError::BadAmount);
+        }
+        let mut state = self.inner.state.lock().await;
+        state.incoming_scan_blocks = blocks;
+        self.save_state(&state)
+    }
+
+    /// When a coin can be spent, and a payment is no longer checked: within
+    /// [`manual::SETTLED_MIN`] and [`manual::SETTLED_MAX`] confirmations.
+    pub async fn set_settled_confirmations(&self, confirmations: u32) -> Result<()> {
+        if !(manual::SETTLED_MIN..=manual::SETTLED_MAX).contains(&confirmations) {
+            return Err(FobError::BadAmount);
+        }
+        let mut state = self.inner.state.lock().await;
+        state.settled_confirmations = confirmations;
+        self.save_state(&state)
+    }
+
+    /// Payments this wallet sent that aren't settled yet.
+    fn unsettled_sent(state: &State) -> Vec<(String, Option<u64>)> {
+        let settled = u64::from(state.settled_confirmations);
+        state.sent.iter().filter(|s| !s.released && s.height.is_none_or(|h| confirmations(state, h) < settled)).map(|s| (s.tx.clone(), s.height)).collect()
+    }
+
+    /// Asks the node where the chain has got to, quietly keeping what's known on failure.
+    pub async fn refresh_tip(&self) {
+        if let Ok(rpc) = self.rpc().await
+            && let Ok(latest) = rpc.latest_block_number().await
+        {
+            let mut state = self.inner.state.lock().await;
+            state.tip = state.tip.max(latest as u64 + 1);
+            self.inner.unsaved.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The Scan drawer's quick choices.
+    pub async fn scan_options(&self) -> Vec<ScanOption> {
+        let state = self.inner.state.lock().await;
+        let first = state.restore_height.unwrap_or(0);
+        manual::scan_options(state.manual(), Self::unsettled_sent(&state).len(), state.next_block, first, state.tip)
+    }
+
+    /// "Last scan Today, 14:20 · Block 3,811,200", or that there hasn't been one.
+    pub async fn last_scan_line(&self, clock: Clock) -> String {
+        let state = self.inner.state.lock().await;
+        if state.next_block == 0 || state.last_block_time == 0 {
+            return "No scan yet".into();
+        }
+        format!("Last scan {} · Block {}", catch_up::date_time(state.last_block_time, clock), manual::grouped(state.next_block - 1))
+    }
+
+    /// What the Block tab shows for a typed block.
+    pub async fn block_info(&self, height: u64, clock: Clock) -> manual::BlockInfo {
+        let state = self.inner.state.lock().await;
+        let network = self.network();
+        manual::BlockInfo {
+            mined: network.dated(height).map(|time| format!("~{}", catch_up::date_time(time, clock))),
+            newest: manual::grouped(state.tip.saturating_sub(1)),
+            first: manual::grouped(state.restore_height.unwrap_or(0)),
+        }
+    }
+
+    /// Starts what the Scan drawer was asked for, or a pull's words once
+    /// [`ScanRequest::Unsettled`] is done. The scan itself carries on after
+    /// this returns, in [`status`](Wallet::status)'s `scan`.
+    pub async fn start_scan(&self, request: ScanRequest) -> Result<Option<PullOutcome>> {
+        let (next_block, tip, first, newest_hash) = {
+            let state = self.inner.state.lock().await;
+            (state.next_block, state.tip, state.restore_height.unwrap_or(0), state.recent.last().cloned())
+        };
+        let (from, to, title) = match request {
+            ScanRequest::Unsettled => {
+                let mode = self.inner.state.lock().await.pull_mode;
+                // Asked for by name: Disabled is about the gesture, not this.
+                let mode = if mode == PullMode::Disabled { PullMode::Send } else { mode };
+                return self.check_payments(mode).await.map(Some);
+            }
+            ScanRequest::FromLast => {
+                // What pulls found past Last scan is put right as this passes it.
+                *self.inner.pipeline.lock().await = None;
+                self.rewind(next_block, newest_hash).await?;
+                self.ask_to_scan("Scanning from last scan", next_block).await;
+                return Ok(None);
+            }
+            ScanRequest::Whole => (first, u64::MAX, "Scanning the whole wallet".to_owned()),
+            ScanRequest::Back(blocks) => (tip.saturating_sub(blocks).max(first), u64::MAX, format!("Scanning the newest {} blocks", manual::grouped(blocks))),
+            ScanRequest::Height(height) => (height, u64::MAX, format!("Scanning from block {}", manual::grouped(height))),
+            ScanRequest::Dates { from, to } => {
+                let network = self.network();
+                // Dates only say roughly which block: a margin, so none is missed.
+                let start = network.restore_height_for(from);
+                let end = to.map_or(u64::MAX, |to| network.height_at(to) + manual::BLOCKS_A_DAY);
+                (start, end, "Scanning those dates".to_owned())
+            }
+        };
+        match manual::scan_plan(from, to, next_block, tip) {
+            ScanPlan::Rewind(from) => {
+                *self.inner.pipeline.lock().await = None;
+                self.rewind(from, None).await?;
+                self.inner.state.lock().await.lower_start(from);
+                self.ask_to_scan(&title, from).await;
+            }
+            ScanPlan::Window(from, to) => {
+                *self.inner.scan_job.lock().expect("scan lock") = Some(ScanProgress { title, from, to: to + 1, at: from, marks: vec![] });
+                self.inner.scan_stop.store(false, Ordering::Relaxed);
+                self.refresh_status().await;
+                self.tell(self.status());
+                let wallet = self.clone();
+                crate::runtime().spawn(async move {
+                    let result = wallet.scan_blocks(from, to).await;
+                    wallet.inner.scan_job.lock().expect("scan lock").take();
+                    wallet.refresh_status().await;
+                    if let Err(e) = result {
+                        wallet.set_status(|s| s.error = Some(e.to_string()));
+                    }
+                    wallet.tell(wallet.status());
+                });
+            }
+        }
+        Ok(None)
+    }
+
+    /// Stops the scan someone asked for. What it found stays.
+    pub async fn stop_scan(&self) {
+        self.inner.scan_stop.store(true, Ordering::Relaxed);
+        self.scan_finished().await;
+        self.flush().await;
+        self.tell(self.status());
+    }
+
+    /// Says something only once.
+    pub fn clear_notice(&self) {
+        self.set_status(|s| s.notice = None);
+    }
+
+    /// Pulling down on Home with Manual Sync on: what [`PullMode`] says. `None`
+    /// when it says nothing.
+    pub async fn pull_refresh(&self) -> Result<Option<PullOutcome>> {
+        let mode = self.inner.state.lock().await.pull_mode;
+        if mode == PullMode::Disabled {
+            return Ok(None);
+        }
+        let (checked, _) = tokio::join!(self.check_payments(mode), self.refresh_prices(price::alert::Asked::User));
+        checked.map(Some)
+    }
+
+    /// Finds out where the chain is and whether it changed, updates the payments
+    /// this wallet sent, and with Auto looks for new money in the pool and the
+    /// newest blocks. Received payments aren't looked up by name: that would tell
+    /// the node which ones are this wallet's. Last scan stays where it is.
+    async fn check_payments(&self, mode: PullMode) -> Result<PullOutcome> {
+        self.inner.scan_stop.store(false, Ordering::Relaxed);
+        let (_, rpc, _, _) = self.connection().await?;
+        let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
+        let newest = rpc.latest_block_number().await.map_err(node_err)? as u64;
+        let newest_hash = hex::encode(rpc.block_hash(newest as usize).await.map_err(node_err)?);
+
+        let (mark, unsettled, ready_before, outputs_before, known) = {
+            let mut state = self.inner.state.lock().await;
+            // Before the newest block counts: coins it makes ready are news.
+            let ready_before = state.spendable();
+            state.tip = state.tip.max(newest + 1);
+            let mark = state.pull_mark_height.zip(state.pull_mark_hash.clone());
+            // On its way already counts as known: it's not news again once mined.
+            let in_pool = self.inner.pool.lock().expect("pool lock").keys().cloned().collect::<Vec<_>>();
+            let known: HashSet<String> = state.outputs.iter().map(|o| o.tx.clone()).chain(in_pool).collect();
+            (mark, Self::unsettled_sent(&state), ready_before, state.outputs.len(), known)
+        };
+        let chain_changed = match mark {
+            Some((height, hash)) if height <= newest => hex::encode(rpc.block_hash(height as usize).await.map_err(node_err)?) != hash,
+            // The chain is now shorter than the block last seen.
+            Some(_) => true,
+            None => false,
+        };
+
+        let mut to_scan = vec![];
+        if !unsettled.is_empty() {
+            let hashes: Vec<&str> = unsettled.iter().map(|(tx, _)| tx.as_str()).collect();
+            let lookup = self.look_up_sent(&rpc, &hashes).await?;
+            for (tx, height) in &lookup.mined {
+                let known = unsettled.iter().find(|(hash, _)| hash == tx).and_then(|(_, h)| *h);
+                if known != Some(*height) {
+                    to_scan.push(*height);
+                }
+            }
+            self.note_missing(&lookup).await?;
+        }
+        to_scan.sort_unstable();
+        to_scan.dedup();
+        for height in to_scan {
+            self.scan_blocks(height, height).await?;
+        }
+        if mode == PullMode::Auto {
+            let blocks = u64::from(self.inner.state.lock().await.incoming_scan_blocks);
+            self.scan_blocks((newest + 1).saturating_sub(blocks), newest).await?;
+            // A nicety, as when syncing: a node that won't share it stops nothing.
+            let _ = self.scan_pool(&rpc).await;
+        }
+
+        let mut state = self.inner.state.lock().await;
+        state.pull_mark_height = Some(newest);
+        state.pull_mark_hash = Some(newest_hash);
+        let on_the_way: Vec<String> = self.inner.pool.lock().expect("pool lock").keys().cloned().collect();
+        let new = state.outputs[outputs_before.min(state.outputs.len())..]
+            .iter()
+            .filter(|o| !known.contains(&o.tx) && !state.sent.iter().any(|s| s.tx == o.tx) && !state.spends.iter().any(|s| s.tx == o.tx))
+            .map(|o| o.tx.as_str())
+            .chain(on_the_way.iter().filter(|tx| !known.contains(*tx)).map(String::as_str))
+            .collect::<HashSet<_>>()
+            .len();
+        let ready = state.spendable().checked_sub(ready_before).filter(|more| *more > 0).map(amount::format_short);
+        let missing = state.sent.iter().filter(|s| s.not_confirmed).count();
+        let words = manual::pull_words(mode, unsettled.len(), new, ready, chain_changed, missing);
+        self.save_state(&state)?;
+        drop(state);
+        self.refresh_status().await;
+        self.tell(self.status());
+        Ok(words)
+    }
+
+    /// What the node knows of these sent payments.
+    async fn look_up_sent(&self, rpc: &Daemon, hashes: &[&str]) -> Result<SentLookup> {
+        let body = serde_json::json!({ "txs_hashes": hashes, "decode_as_json": false }).to_string();
+        let response = rpc.rpc_call("get_transactions", Some(body), 16 * 1024 * 1024).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        Ok(sent_lookup(&response))
+    }
+
+    /// Marks what the node has never heard of, a day after it was sent, as not
+    /// confirmed, and puts back what it has heard of again. Only says so: the
+    /// coins stay spent until someone releases them.
+    async fn note_missing(&self, lookup: &SentLookup) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        if mark_missing(&mut state.sent, lookup, now()) {
+            self.save_state(&state)?;
+        }
+        Ok(())
+    }
+
+    /// With syncing running, looks now and then for sent payments gone quiet.
+    /// Only those over a day old are asked about.
+    async fn check_quiet_payments(&self, rpc: &Daemon) {
+        {
+            let mut checked = self.inner.quiet_checked.lock().expect("quiet lock");
+            if checked.is_some_and(|at| at.elapsed() < QUIET_CHECK_EVERY) {
+                return;
+            }
+            *checked = Some(Instant::now());
+        }
+        let old = now().saturating_sub(NOT_CONFIRMED_AFTER);
+        let quiet: Vec<String> = self.inner.state.lock().await.sent.iter().filter(|s| s.height.is_none() && !s.released && s.time <= old).map(|s| s.tx.clone()).collect();
+        if quiet.is_empty() {
+            return;
+        }
+        let hashes: Vec<&str> = quiet.iter().map(String::as_str).collect();
+        if let Ok(lookup) = self.look_up_sent(rpc, &hashes).await {
+            let _ = self.note_missing(&lookup).await;
+        }
+    }
+
+    /// Frees the coins of a payment marked not confirmed, to spend again. Only
+    /// the node's refusal can stop the same coin going twice, so if the payment
+    /// does get mined after all, the next scan shows it and any later spend fails.
+    pub async fn release_payment(&self, tx: &str) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        let Some(i) = state.sent.iter().position(|s| s.tx == tx && s.not_confirmed && s.height.is_none()) else {
+            return Err(FobError::NoSuchPayment);
+        };
+        state.sent[i].not_confirmed = false;
+        state.sent[i].released = true;
+        for output in &mut state.outputs {
+            if output.spent_in.as_deref() == Some(tx) {
+                output.spent_in = None;
+            }
+        }
+        self.save_state(&state)
+    }
+
+    /// Scans `from` to `to` without moving Last scan, adding what it finds to
+    /// what's known. Unlike syncing, the blocks needn't follow on from anything.
+    async fn scan_blocks(&self, from: u64, to: u64) -> Result<()> {
+        let _running = self.inner.scan_running.lock().await;
+        let (transport, _, _, adaptive) = self.connection().await?;
+        // get_blocks.bin can't start at the genesis block, which pays no one here.
+        let mut at = from.max(1);
+        while at <= to {
+            if self.inner.scan_stop.swap(false, Ordering::Relaxed) {
+                break;
+            }
+            let mut pipeline = Pipeline::start(transport.clone(), adaptive.clone(), at, to);
+            let blocks = pipeline.next_batch(BATCH as usize).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+            if blocks.is_empty() {
+                break;
+            }
+            let watching = Self::watched(self.inner.state.lock().await.receive_index);
+            let (scanner, prefilter) = self.scanner(watching);
+            let gpu_allowed = self.gpu_allowed().await;
+            let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, gpu_allowed))
+                .await
+                .map_err(|e| FobError::Node(format!("scanning: {e}")))?;
+            let mut state = self.inner.state.lock().await;
+            let mut images = Self::key_images(&state);
+            let sent: HashMap<String, usize> = state.sent.iter().enumerate().map(|(i, s)| (s.tx.clone(), i)).collect();
+            let mut changed = false;
+            for result in results {
+                // An address further on came into use: this block again, watching for it.
+                if Self::watched(state.receive_index) > watching {
+                    break;
+                }
+                let scanned = result.map_err(FobError::Node)?;
+                let height = scanned.height;
+                changed |= self.take_block(&mut state, &mut images, &sent, scanned);
+                at = height + 1;
+                self.scan_reached(at);
+            }
+            changed |= self.record_prices(&mut state);
+            if changed {
+                self.save_state(&state)?;
+            }
+            drop(state);
+            if last.is_some() {
+                *self.inner.last_block.lock().expect("block lock") = last;
+            }
+            self.refresh_status().await;
+            self.tell(self.status());
+        }
+        Ok(())
     }
 
     /// Looks for payments to this wallet in the node's pool, so they show
@@ -2000,26 +2557,64 @@ impl Wallet {
     /// Brings [`status`](Wallet::status) up to date with the wallet's state.
     async fn refresh_status(&self) {
         let state = self.inner.state.lock().await;
+        let manual_sync = state.manual_sync;
         let (next, tip, start, up_to) = (state.next_block, state.tip, state.restore_height.unwrap_or(state.next_block), state.last_block_time);
         drop(state);
+        let scan = self.inner.scan_job.lock().expect("scan lock").clone();
+        // Manual Sync takes the wallet as up to date, but while it's asked to scan.
+        let scanning = self.inner.scan_asked.load(Ordering::Relaxed);
         self.set_status(|s| {
             s.scanned = next;
             s.tip = tip;
             s.start = start;
-            s.synced = tip > 0 && next >= tip;
+            s.manual_sync = manual_sync;
+            s.scan = scan;
+            s.synced = (manual_sync && !scanning) || (tip > 0 && next >= tip);
             s.progress = if tip <= start { 1.0 } else { (next.saturating_sub(start)) as f32 / (tip - start) as f32 };
             s.up_to = up_to;
         });
     }
 
-    /// Forgets the last blocks after a reorganisation, to scan them again.
-    async fn rewind(&self) -> Result<()> {
+    /// Decides how to answer a reorganisation, by asking the node whether the
+    /// oldest hash kept is still on its chain, and answers it. Refuses one that
+    /// reaches past that hash: scanning only the recent blocks would leave
+    /// what came from the old chain before them in the wallet, unnoticed.
+    async fn on_reorg(&self, rpc: &Daemon) -> Result<()> {
+        let (oldest, start) = {
+            let state = self.inner.state.lock().await;
+            let Some(oldest) = state.recent.first().cloned() else { return Ok(()) };
+            (oldest, state.restore_height.unwrap_or(0))
+        };
+        let on_chain = rpc.block_hash(oldest.0 as usize).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        match reorg_reach(oldest.0, hex::encode(on_chain) == oldest.1, start) {
+            ReorgReach::Kept => self.rewind(oldest.0 + 1, Some(oldest)).await?,
+            ReorgReach::ToStart => self.rewind(start, None).await?,
+            ReorgReach::TooDeep => return Err(FobError::ReorgTooDeep),
+        }
+        self.set_status(|s| s.notice = Some("The chain changed, so Fob scanned recent blocks again.".into()));
+        Ok(())
+    }
+
+    /// Scans the whole wallet again, from its first block: the way past a
+    /// reorganisation too deep to check. Keeps what only this wallet knows
+    /// (contacts, notes, what was sent), and comes back with what's on the chain.
+    pub async fn scan_again(&self) -> Result<()> {
+        let start = self.inner.state.lock().await.restore_height.unwrap_or(0);
+        *self.inner.pipeline.lock().await = None;
+        self.rewind(start, None).await?;
+        self.ask_to_scan("Scanning the whole wallet", start).await;
+        self.sync_now().await;
+        Ok(())
+    }
+
+    /// Forgets the blocks from `from` on, to scan them again. `anchor`, the
+    /// block before them, is what the next one must follow.
+    async fn rewind(&self, from: u64, anchor: Option<(u64, String)>) -> Result<()> {
         let mut state = self.inner.state.lock().await;
-        let Some(&(from, _)) = state.recent.first() else { return Ok(()) };
         state.outputs.retain(|o| o.height < from);
         state.spends.retain(|s| s.height < from);
         let spends: HashSet<String> = state.spends.iter().map(|s| s.tx.clone()).collect();
-        let pending: HashSet<String> = state.sent.iter().filter(|s| s.height.is_none() || s.height >= Some(from)).map(|s| s.tx.clone()).collect();
+        let pending: HashSet<String> = state.sent.iter().filter(|s| !s.released && (s.height.is_none() || s.height >= Some(from))).map(|s| s.tx.clone()).collect();
         for output in &mut state.outputs {
             if output.spent_in.as_ref().is_some_and(|t| !spends.contains(t) && !pending.contains(t)) {
                 output.spent_in = None;
@@ -2030,7 +2625,7 @@ impl Wallet {
                 sent.height = None;
             }
         }
-        state.recent.clear();
+        state.recent = anchor.into_iter().collect();
         state.next_block = from;
         *self.inner.pipeline.lock().await = None;
         self.save_state(&state)
@@ -2061,6 +2656,7 @@ impl Wallet {
             s.blocks_per_second = speeds.map(|s| s.blocks_per_second);
             s.link_mb_per_second = speeds.map(|s| s.bytes_per_second / 1e6);
             s.error_local = error.as_ref().is_some_and(|(_, local)| *local);
+            s.chain_changed = matches!(failed, Some(FobError::ReorgTooDeep));
             if failed.is_some() {
                 s.connected = false;
             }
@@ -2099,6 +2695,13 @@ impl Wallet {
             let mut backoff = Duration::from_secs(2);
             let mut reported: Option<Instant> = None;
             loop {
+                // Manual Sync: nothing looks for blocks until asked.
+                if wallet.waiting_to_be_asked().await {
+                    wallet.report(listener.as_ref(), &mut pace, None).await;
+                    wallet.inner.rounds.send_modify(|n| *n += 1);
+                    wallet.wait(Duration::from_secs(3600), listener.as_ref()).await;
+                    continue;
+                }
                 match wallet.sync_step().await {
                     Ok(more) => {
                         backoff = Duration::from_secs(2);
@@ -2110,7 +2713,11 @@ impl Wallet {
                         }
                         if !more {
                             pace.reset();
+                            wallet.scan_finished().await;
                             wallet.inner.rounds.send_modify(|n| *n += 1);
+                            if wallet.inner.state.lock().await.manual_sync {
+                                continue;
+                            }
                             let poll = if wallet.status().zmq == ZmqStatus::Listening { POLL_LISTENING } else { POLL };
                             wallet.wait(poll, listener.as_ref()).await;
                         }
@@ -2250,6 +2857,15 @@ impl Wallet {
             .await?;
         // Choosing each input's decoys asks for the tip again; it is this one.
         decoys.note_tip(tip);
+        // With nothing scanning, this is how coins waiting to unlock find out.
+        {
+            let mut state = self.inner.state.lock().await;
+            let newest = tip as u64 + 1;
+            if state.tip < newest {
+                state.tip = newest;
+                self.inner.unsaved.store(true, Ordering::Relaxed);
+            }
+        }
         Ok((fee_rate, tip))
     }
 
@@ -2297,7 +2913,7 @@ impl Wallet {
                 .enumerate()
                 .filter(|(_, o)| {
                     o.spent_in.is_none()
-                        && confirmations(&state, o.height) >= o.needed()
+                        && confirmations(&state, o.height) >= state.needed(o)
                 })
                 .filter_map(|(i, o)| {
                     let bytes = hex::decode(&o.output).ok()?;
@@ -2391,7 +3007,7 @@ impl Wallet {
         let money = self.price_now().await;
         let notes = split::notes(money.as_ref().map(|(c, p)| (c, *p)));
         let state = self.inner.state.lock().await;
-        let outputs = state.outputs.iter().filter(|o| o.spent_in.is_none() && confirmations(&state, o.height) >= o.needed()).map(|o| o.amount).collect();
+        let outputs = state.outputs.iter().filter(|o| o.spent_in.is_none() && confirmations(&state, o.height) >= state.needed(o)).map(|o| o.amount).collect();
         (money, notes, split::Budget { outputs, fee_rate: *self.inner.fee_rate.lock().expect("fee lock") })
     }
 
@@ -2490,9 +3106,10 @@ impl Wallet {
         let tx = prepared.signable.sign(&mut OsRng, spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
         let hash = hex::encode(tx.hash());
         let wallet = self.clone();
+        let manual_sync = self.inner.state.lock().await.manual_sync;
         let publish = async move {
             let rpc = wallet.rpc().await?;
-            rpc.publish_transaction(&tx).await.map_err(|e| FobError::Node(format!("{e:?}")))
+            rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
         };
         self.publish_and_record(hash, fee, prepared.out, publish).await
     }
@@ -2531,6 +3148,8 @@ impl Wallet {
         let change = out.input_total.saturating_sub(out.amount).saturating_sub(fee);
         let outputs = out.back.iter().copied().chain((change > 0).then_some(change)).collect();
         state.sent.push(Sent {
+            not_confirmed: false,
+            released: false,
             tx: hash.clone(),
             to: out.to,
             amount: out.amount,
@@ -3464,6 +4083,88 @@ impl Owned {
     }
 }
 
+impl State {
+    fn manual(&self) -> ManualSettings {
+        ManualSettings {
+            on: self.manual_sync,
+            pull_mode: self.pull_mode,
+            incoming_scan_blocks: self.incoming_scan_blocks,
+            settled_confirmations: self.settled_confirmations,
+        }
+    }
+
+    /// How long `output` waits before it can be spent.
+    fn needed(&self, output: &Owned) -> u64 {
+        manual::needed(output.needed(), self.manual())
+    }
+
+    /// What can be spent now.
+    fn spendable(&self) -> u64 {
+        self.outputs.iter().filter(|o| o.spent_in.is_none() && confirmations(self, o.height) >= self.needed(o)).map(|o| o.amount).sum()
+    }
+
+    /// A scan from before the wallet's first block makes that its first block.
+    fn lower_start(&mut self, from: u64) {
+        if self.restore_height.is_none_or(|start| from < start) {
+            self.restore_height = Some(from);
+        }
+    }
+}
+
+/// Why publishing failed. With Manual Sync on, a refusal may mean a coin was
+/// spent since the last scan, whatever words the node used, so it's told apart.
+fn publish_failure(e: monero_wallet::interface::PublishTransactionError, manual_sync: bool) -> FobError {
+    use monero_wallet::interface::PublishTransactionError as E;
+    match e {
+        // Many nodes give no reason.
+        E::TransactionRejected(reason) if manual_sync => FobError::SpendRejected(if reason.trim().is_empty() { String::new() } else { format!(": {}", reason.trim()) }),
+        e => FobError::Node(format!("{e:?}")),
+    }
+}
+
+/// What a node said of some sent payments.
+#[derive(Debug, Default, PartialEq)]
+struct SentLookup {
+    /// Each with the height it was mined at.
+    mined: Vec<(String, u64)>,
+    in_pool: Vec<String>,
+    /// Those it said outright that it doesn't have. An answer it couldn't read says nothing.
+    missing: Vec<String>,
+}
+
+/// Reads a `get_transactions` answer.
+fn sent_lookup(response: &str) -> SentLookup {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(response) else { return SentLookup::default() };
+    let mut lookup = SentLookup::default();
+    for tx in value.get("txs").and_then(|t| t.as_array()).into_iter().flatten() {
+        let Some(hash) = tx.get("tx_hash").and_then(|h| h.as_str()) else { continue };
+        if tx.get("in_pool").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+            lookup.in_pool.push(hash.to_owned());
+        } else if let Some(height) = tx.get("block_height").and_then(serde_json::Value::as_u64) {
+            lookup.mined.push((hash.to_owned(), height));
+        }
+    }
+    lookup.missing = value.get("missed_tx").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
+    lookup
+}
+
+/// Applies `lookup` to the payments sent. Whether anything changed.
+fn mark_missing(sent: &mut [Sent], lookup: &SentLookup, now: u64) -> bool {
+    let mut changed = false;
+    for s in sent.iter_mut().filter(|s| s.height.is_none() && !s.released) {
+        let quiet = lookup.missing.contains(&s.tx) && now.saturating_sub(s.time) >= NOT_CONFIRMED_AFTER;
+        let heard = lookup.in_pool.contains(&s.tx) || lookup.mined.iter().any(|(tx, _)| *tx == s.tx);
+        if quiet && !s.not_confirmed {
+            s.not_confirmed = true;
+            changed = true;
+        } else if heard && s.not_confirmed {
+            s.not_confirmed = false;
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn confirmations(state: &State, height: u64) -> u64 {
     state.tip.saturating_sub(height)
 }
@@ -3519,6 +4220,8 @@ mod tests {
             spent_in: None,
         };
         let sent = |tx: &str, height: Option<u64>, change: u64| Sent {
+            not_confirmed: false,
+            released: false,
             tx: tx.into(),
             to: "86Ux3m9Pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7kQa".into(),
             amount: 1,
@@ -3786,6 +4489,8 @@ mod tests {
         state.outputs.push(received("in2", 1_700_000_100, XMR));
         state.spends.push(ChainSpend { tx: "bb".into(), height: 12, time: 1_700_000_200, fee: 30 });
         state.sent.push(Sent {
+            not_confirmed: false,
+            released: false,
             tx: "out".into(),
             to: "addr".into(),
             amount: XMR,
@@ -3891,7 +4596,7 @@ mod tests {
         drop(wallet);
         let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
         old.execute_batch(&format!(
-            "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; PRAGMA user_version = 2;",
+            "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; PRAGMA user_version = 2;",
             hex::encode([1u8; 32])
         ))
         .unwrap();
@@ -3983,7 +4688,7 @@ mod tests {
         drop(wallet);
         let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
         old.execute_batch(&format!(
-            "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; PRAGMA user_version = 1;",
+            "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; PRAGMA user_version = 1;",
             hex::encode([1u8; 32])
         ))
         .unwrap();
@@ -4159,6 +4864,8 @@ mod tests {
                         seen.height.fetch_add(1, Ordering::Relaxed);
                         tokio::time::sleep(delay).await;
                         r#"{"height":3000000,"status":"OK"}"#
+                    } else if text.contains("on_get_block_hash") {
+                        r#"{"jsonrpc":"2.0","id":0,"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
                     } else if text.contains("get_fee_estimate") {
                         seen.fee.fetch_add(1, Ordering::Relaxed);
                         r#"{"jsonrpc":"2.0","id":0,"result":{"fee":20000,"quantization_mask":10000,"status":"OK"}}"#
@@ -4190,6 +4897,247 @@ mod tests {
     async fn ready(wallet: &Wallet) -> Result<(FeeRate, usize)> {
         let (_, rpc, decoys, _) = wallet.connection().await?;
         wallet.send_ready(&rpc, &decoys).await
+    }
+
+    #[test]
+    fn the_node_says_what_it_knows_of_each_payment() {
+        let answer = r#"{"status":"OK","txs":[{"tx_hash":"aa","in_pool":false,"block_height":12},{"tx_hash":"bb","in_pool":true,"block_height":0}],"missed_tx":["cc"]}"#;
+        assert_eq!(sent_lookup(answer), SentLookup { mined: vec![("aa".into(), 12)], in_pool: vec!["bb".into()], missing: vec!["cc".into()] });
+        assert_eq!(sent_lookup("not json"), SentLookup::default(), "no answer says nothing is missing");
+        assert_eq!(sent_lookup(r#"{"status":"Failed"}"#), SentLookup::default());
+    }
+
+    #[tokio::test]
+    async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_released() {
+        let wallet = a_used_wallet(&dir("dropped")).await;
+        let t = now();
+        let tx = "out";
+        let coin = {
+            let mut state = wallet.inner.state.lock().await;
+            state.sent[0].height = None;
+            state.sent[0].time = t - NOT_CONFIRMED_AFTER + 60;
+            state.sent[0].change = 7;
+            state.outputs.truncate(1);
+            state.outputs[0].amount = 100;
+            state.outputs[0].spent_in = Some(tx.into());
+            state.outputs[0].amount
+        };
+        let missing = SentLookup { missing: vec![tx.into()], ..Default::default() };
+        assert!(wallet.release_payment(tx).await.is_err(), "not until it's marked");
+        wallet.note_missing(&missing).await.unwrap();
+        assert!(!wallet.inner.state.lock().await.sent[0].not_confirmed, "under a day: it may yet arrive");
+
+        wallet.inner.state.lock().await.sent[0].time = t - NOT_CONFIRMED_AFTER;
+        wallet.note_missing(&missing).await.unwrap();
+        {
+            let state = wallet.inner.state.lock().await;
+            assert!(state.sent[0].not_confirmed);
+            assert_eq!(state.outputs[0].spent_in.as_deref(), Some(tx), "nothing's released by itself");
+        }
+        assert_eq!(wallet.activity().await.iter().find(|a| a.tx == tx).map(|a| a.not_confirmed), Some(true));
+
+        // Heard of again: back to waiting.
+        wallet.note_missing(&SentLookup { in_pool: vec![tx.into()], ..Default::default() }).await.unwrap();
+        assert!(!wallet.inner.state.lock().await.sent[0].not_confirmed);
+        wallet.note_missing(&missing).await.unwrap();
+
+        let before = wallet.balance().await.total;
+        wallet.release_payment(tx).await.unwrap();
+        {
+            let state = wallet.inner.state.lock().await;
+            assert!(state.sent[0].released && !state.sent[0].not_confirmed);
+            assert_eq!(state.outputs[0].spent_in, None);
+        }
+        assert_eq!(wallet.balance().await.total, before + coin - 7, "the coin back, the change it was to bring gone");
+        assert!(wallet.release_payment(tx).await.is_err(), "once");
+        let row = wallet.activity().await.into_iter().find(|a| a.tx == tx).unwrap();
+        assert!(row.released);
+        // Not asked about any more.
+        assert!(Wallet::unsettled_sent(&*wallet.inner.state.lock().await).iter().all(|(hash, _)| hash != tx));
+    }
+
+    #[test]
+    fn a_refusal_is_told_apart_only_with_manual_sync_on() {
+        use monero_wallet::interface::PublishTransactionError as E;
+        assert_eq!(publish_failure(E::TransactionRejected("double spend".into()), true).to_string(), "your node refused this payment: double spend");
+        assert_eq!(publish_failure(E::TransactionRejected(" ".into()), true).to_string(), "your node refused this payment", "no reason, no colon");
+        assert!(matches!(publish_failure(E::TransactionRejected("double spend".into()), false), FobError::Node(_)));
+    }
+
+    #[tokio::test]
+    async fn manual_sync_settings_are_kept_and_kept_within_their_limits() {
+        let path = dir("manual-settings");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let settings = wallet.manual_settings().await;
+        assert_eq!(settings, ManualSettings { on: false, pull_mode: PullMode::Auto, incoming_scan_blocks: 5, settled_confirmations: 10 });
+        assert!(wallet.set_settled_confirmations(9).await.is_err());
+        assert!(wallet.set_settled_confirmations(721).await.is_err());
+        assert!(wallet.set_incoming_scan_blocks(0).await.is_err());
+        wallet.set_manual_sync(true).await.unwrap();
+        wallet.set_pull_mode(PullMode::Send).await.unwrap();
+        wallet.set_incoming_scan_blocks(20).await.unwrap();
+        wallet.set_settled_confirmations(720).await.unwrap();
+        drop(wallet);
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(reopened.manual_settings().await, ManualSettings { on: true, pull_mode: PullMode::Send, incoming_scan_blocks: 20, settled_confirmations: 720 });
+        assert!(reopened.status().synced, "taken as up to date");
+        assert!(reopened.status().manual_sync);
+    }
+
+    #[tokio::test]
+    async fn with_manual_sync_on_nothing_scans_until_asked() {
+        let wallet = Wallet::create(&dir("manual-idle"), [1; 32], Network::Stagenet).unwrap();
+        assert!(!wallet.waiting_to_be_asked().await, "off: the loop scans");
+        wallet.set_manual_sync(true).await.unwrap();
+        assert!(wallet.waiting_to_be_asked().await);
+        wallet.ask_to_scan("Scanning", 0).await;
+        assert!(!wallet.waiting_to_be_asked().await);
+        assert!(!wallet.status().synced, "not up to date while it scans");
+        assert_eq!(wallet.status().scan.unwrap().title, "Scanning");
+        wallet.scan_finished().await;
+        assert!(wallet.waiting_to_be_asked().await);
+        assert!(wallet.status().scan.is_none());
+        // Turning it on stops one under way.
+        wallet.ask_to_scan("Scanning", 0).await;
+        wallet.set_manual_sync(true).await.unwrap();
+        assert!(wallet.waiting_to_be_asked().await);
+    }
+
+    #[tokio::test]
+    async fn manual_sync_spends_at_settled_confirmations_and_says_what_is_waiting() {
+        let wallet = a_used_wallet(&dir("manual-settled")).await;
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.truncate(1);
+        state.outputs[0].coinbase = false;
+        state.outputs[0].unlock_block = 0;
+        state.outputs[0].spent_in = None;
+        state.outputs[0].height = 100;
+        state.tip = 115;
+        let amount = state.outputs[0].amount;
+        assert_eq!(state.spendable(), amount, "15 confirmations are enough without it");
+        state.manual_sync = true;
+        state.settled_confirmations = 20;
+        assert_eq!(state.spendable(), 0, "not until it's settled");
+        state.tip = 120;
+        assert_eq!(state.spendable(), amount);
+    }
+
+    #[tokio::test]
+    async fn scanning_from_last_scan_replaces_what_pulls_found_past_it() {
+        let wallet = a_used_wallet(&dir("manual-from-last")).await;
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.manual_sync = true;
+            let mut found = state.outputs[0].clone();
+            found.height = 500;
+            found.key = "found".into();
+            state.outputs.push(found);
+            state.tip = 600;
+        }
+        assert_eq!(wallet.start_scan(ScanRequest::FromLast).await.unwrap(), None);
+        let state = wallet.inner.state.lock().await;
+        assert!(state.outputs.iter().all(|o| o.key != "found"), "found again if it's still on the chain");
+        assert_eq!(state.next_block, 14);
+        assert_eq!(state.recent.last(), Some(&(13, "hash".to_owned())), "the next block must follow it");
+        drop(state);
+        assert!(!wallet.waiting_to_be_asked().await);
+    }
+
+    #[tokio::test]
+    async fn a_pull_in_send_mode_checks_the_chain_and_says_when_it_changed() {
+        let (url, _) = counting_node(Duration::ZERO).await;
+        let wallet = Wallet::create(&dir("manual-pull"), [1; 32], Network::Stagenet).unwrap();
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.node = url;
+            state.manual_sync = true;
+            state.pull_mode = PullMode::Send;
+        }
+        let words = wallet.pull_refresh().await.unwrap().unwrap();
+        assert_eq!(words.title, "Nothing new");
+        assert_eq!(words.line, "Sync to look for new payments.");
+        {
+            let state = wallet.inner.state.lock().await;
+            assert_eq!(state.tip, 3_000_000, "coins waiting can now count down");
+            assert_eq!(state.pull_mark_hash.as_deref(), Some("a".repeat(64).as_str()));
+            assert_eq!(state.next_block, 0, "Last scan stays");
+        }
+        // Same hash again: nothing to say. Another hash at that height: the chain changed.
+        assert_eq!(wallet.pull_refresh().await.unwrap().unwrap().title, "Nothing new");
+        wallet.inner.state.lock().await.pull_mark_hash = Some("b".repeat(64));
+        assert_eq!(wallet.pull_refresh().await.unwrap().unwrap().title, "The chain changed");
+        // Disabled does nothing at all.
+        wallet.set_pull_mode(PullMode::Disabled).await.unwrap();
+        assert_eq!(wallet.pull_refresh().await.unwrap(), None);
+    }
+
+    #[test]
+    fn a_reorganisation_is_only_followed_as_far_as_it_can_be_checked() {
+        assert_eq!(reorg_reach(100, true, 50), ReorgReach::Kept);
+        assert_eq!(reorg_reach(100, false, 50), ReorgReach::TooDeep);
+        assert_eq!(reorg_reach(50, false, 50), ReorgReach::ToStart, "nothing older to be wrong");
+        assert_eq!(reorg_reach(50, true, 50), ReorgReach::Kept);
+    }
+
+    /// `a_used_wallet`'s state, with hashes from block 12 on.
+    async fn wallet_with_hashes(name: &str, node: &str, oldest_hash: &str) -> (Wallet, serde_json::Value) {
+        let wallet = a_used_wallet(&dir(name)).await;
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.node = node.into();
+            state.recent = vec![(12, oldest_hash.into()), (13, "hash".into())];
+        }
+        let before = saved(&wallet).await;
+        (wallet, before)
+    }
+
+    #[tokio::test]
+    async fn a_reorganisation_within_the_hashes_scans_on_from_the_oldest_still_there() {
+        let (url, _) = counting_node(Duration::ZERO).await;
+        let (wallet, _) = wallet_with_hashes("reorg-kept", &url, &"aa".repeat(32)).await;
+        let (_, rpc, _, _) = wallet.connection().await.unwrap();
+        wallet.on_reorg(&rpc).await.unwrap();
+        let state = wallet.inner.state.lock().await;
+        assert_eq!(state.next_block, 13);
+        assert_eq!(state.recent, [(12, "aa".repeat(32))], "the next block must follow it");
+        assert_eq!(state.spends.len(), 1, "the spend in block 12 stands");
+        assert_eq!(state.sent[0].height, None, "the payment in block 13 is found again");
+    }
+
+    #[tokio::test]
+    async fn a_reorganisation_past_the_hashes_is_refused_and_changes_nothing() {
+        let (url, _) = counting_node(Duration::ZERO).await;
+        let (wallet, before) = wallet_with_hashes("reorg-deep", &url, &"bb".repeat(32)).await;
+        let (_, rpc, _, _) = wallet.connection().await.unwrap();
+        assert!(matches!(wallet.on_reorg(&rpc).await, Err(FobError::ReorgTooDeep)));
+        assert_eq!(saved(&wallet).await, before);
+    }
+
+    #[tokio::test]
+    async fn a_reorganisation_to_the_wallet_s_first_block_scans_it_all_again() {
+        let (url, _) = counting_node(Duration::ZERO).await;
+        let (wallet, _) = wallet_with_hashes("reorg-start", &url, &"bb".repeat(32)).await;
+        wallet.inner.state.lock().await.restore_height = Some(12);
+        let (_, rpc, _, _) = wallet.connection().await.unwrap();
+        wallet.on_reorg(&rpc).await.unwrap();
+        let state = wallet.inner.state.lock().await;
+        assert_eq!((state.next_block, state.recent.len()), (12, 0));
+    }
+
+    #[tokio::test]
+    async fn scanning_again_goes_back_to_the_start_keeping_what_only_the_wallet_knows() {
+        let (url, _) = counting_node(Duration::ZERO).await;
+        let (wallet, _) = wallet_with_hashes("reorg-again", &url, &"bb".repeat(32)).await;
+        wallet.set_status(|s| {
+            s.chain_changed = true;
+            s.error = Some("the chain changed".into());
+        });
+        wallet.scan_again().await.unwrap();
+        assert!(!wallet.status().chain_changed);
+        let state = wallet.inner.state.lock().await;
+        assert_eq!(state.next_block, 1, "from the wallet's first block");
+        assert!(state.outputs.iter().all(|o| o.height < 1) && state.spends.is_empty(), "found again from the chain");
+        assert_eq!((state.sent.len(), state.sent[0].height, state.sent[0].note.as_deref()), (1, None, Some("Rent")));
     }
 
     #[tokio::test]
@@ -4302,7 +5250,7 @@ mod tests {
         {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t - 120, XMR / 2));
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None });
+            state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None });
             assert!(wallet.record_prices(&mut state));
             wallet.save_state(&state).unwrap();
         }
@@ -4772,7 +5720,7 @@ mod tests {
             state.outputs.push(Owned { height: 20, ..received("in", t, 2 * XMR) });
             // Not ready: not counted.
             state.outputs.push(Owned { height: 95, key: "late".into(), ..received("late", t, XMR) });
-            state.sent.push(Sent { tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None });
+            state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None });
         }
         assert_eq!(wallet.ready_line(t).await, "2 XMR ready to spend");
         wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
@@ -4797,7 +5745,7 @@ mod tests {
             let mut state = wallet.inner.state.lock().await;
             state.outputs.push(received("in", t, XMR / 2));
             state.outputs.push(Owned { key: "in-2".into(), output: "2".into(), ..received("in", t, XMR / 4) });
-            state.sent.push(Sent { tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None });
+            state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None });
         }
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let shown = wallet.payment("in", clock).await.unwrap();
@@ -4815,6 +5763,8 @@ mod tests {
         let wallet = Wallet::create(&dir("split"), [1; 32], Network::Stagenet).unwrap();
         let t = now();
         let sent = |tx: &str, amount: u64, time: u64, pieces: Option<u32>| Sent {
+            not_confirmed: false,
+            released: false,
             tx: tx.into(),
             to: "86Ux".into(),
             amount,
@@ -5047,8 +5997,8 @@ mod tests {
         assert!(wallet.edit_contact(sam.id, contacts::Draft { name: String::new(), ..Default::default() }).await.is_err());
         {
             let mut state = wallet.inner.state.lock().await;
-            state.sent.push(Sent { tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch".into()), pieces: None, back: vec![], recipient_name: None });
-            state.sent.push(Sent { tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None });
+            state.sent.push(Sent { not_confirmed: false, released: false, tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch".into()), pieces: None, back: vec![], recipient_name: None });
+            state.sent.push(Sent { not_confirmed: false, released: false, tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None });
             wallet.save_state(&state).unwrap();
         }
         let reopened = Wallet::open(&path, [1; 32]).unwrap();
@@ -5079,6 +6029,8 @@ mod tests {
         let (sam_address, code, henry, plain) = (wallet.inner.keys.address(7), wallet.inner.keys.address(8), wallet.inner.keys.address(9), wallet.inner.keys.address(10));
         let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), send_address: Some(sam_address.clone()), ..Default::default() }).await.unwrap();
         let sent = |tx: &str, to: &str, time: u64, name: Option<&str>| Sent {
+            not_confirmed: false,
+            released: false,
             tx: tx.into(),
             to: to.into(),
             amount: 1,

@@ -128,6 +128,7 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
             }
             detail?.let { d ->
                 if (d.priced) PriceBoxes(d)
+                if (d.canRelease) ReleaseCoins(model, activity.tx)
                 PaymentDetails(d)
             }
             detail?.footer?.let { Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp)) }
@@ -225,12 +226,18 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                     val walletRefused by produceState(false) { value = model.wallet.value?.scanGpuCheckFailed() ?: false }
                     val gpuFailed = remember { scanGpuFailed() } || walletRefused
                     ValueRow("Scanning", if (gpuFailed && scanning != ScanChoice.CPU) "${scanning.label}: using the CPU" else scanning.label) { choosingScanning = true }
-                    val zmqOn = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
-                    SettingRow(
-                        "Instant updates (ZMQ)", status?.zmqText ?: "Off", onClick = { nav.go(Screen.Zmq) },
-                        // Turning on with nothing Rust accepts opens the address to fix.
-                        checked = zmqOn, onChecked = { on -> scope.launch { runCatching { model.setZmq(on) }.onFailure { nav.go(Screen.Zmq) } } },
-                    )
+                    val manual by model.manual.collectAsState()
+                    // Manual Sync listens for nothing.
+                    if (manual?.on != true) {
+                        val zmqOn = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
+                        SettingRow(
+                            "Instant updates (ZMQ)", status?.zmqText ?: "Off", onClick = { nav.go(Screen.Zmq) },
+                            // Turning on with nothing Rust accepts opens the address to fix.
+                            checked = zmqOn, onChecked = { on -> scope.launch { runCatching { model.setZmq(on) }.onFailure { nav.go(Screen.Zmq) } } },
+                        )
+                    }
+                    SettingRow("Rescan", "Look through past blocks again", onClick = model::openScan)
+                    ValueRow("Manual Sync", if (manual?.on == true) "On" else "Off") { nav.go(Screen.ManualSync) }
                 }
             }
             Column {

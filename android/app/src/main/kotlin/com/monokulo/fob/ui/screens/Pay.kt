@@ -90,6 +90,7 @@ import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
+import com.monokulo.fob.ui.Warning
 import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.short
 import kotlinx.coroutines.launch
@@ -540,6 +541,8 @@ fun ConfirmScreen(
     val amountText = prepared?.amountText ?: preview?.amountText ?: ""
     val to = prepared?.to ?: preview?.to ?: ""
     val title = split?.title ?: receipt?.merchant?.let { "Pay $it" } ?: "Send"
+    var failed by remember { mutableStateOf(false) }
+    var refused by remember { mutableStateOf(false) }
     val sending by rememberUpdatedState(busy)
     DisposableEffect(prepared?.id) {
         onDispose { if (prepared != null && !sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
@@ -566,7 +569,8 @@ fun ConfirmScreen(
                 runCatching { model.send(ready) }
                     // Sent: neither this nor the filled form under it is a step back from Paid.
                     .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(ready, tx)) }
-                    .onFailure { error = it.reason() }
+                    // Trying used up the prepared payment: back to the form to make another.
+                    .onFailure { error = it.reason(); failed = true; refused = it is uniffi.fob.FobException.SpendRejected }
             }
             busy = false
         }
@@ -574,13 +578,15 @@ fun ConfirmScreen(
     // Made again while the phone's lock was asked for: its answer comes here.
     LaunchedEffect(Unit) { if (identityPending()) swiped() }
     Page(bottom = {
-        ErrorText(error)
+        if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = model::openScan)
+        else ErrorText(error)
         val label = when {
             busy -> "Sending…"
+            failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
             else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
         }
-        SwipeToSend(label, enabled = !busy && prepared != null, waiting = prepared == null && error == null) { swiped() }
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
     }) {
         TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {

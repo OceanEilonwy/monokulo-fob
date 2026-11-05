@@ -57,7 +57,9 @@ import com.monokulo.fob.ui.screens.ContactScanScreen
 import com.monokulo.fob.ui.screens.ContactScreen
 import com.monokulo.fob.ui.screens.ContactsScreen
 import com.monokulo.fob.ui.screens.HomeScreen
+import com.monokulo.fob.ui.screens.ManualSyncScreen
 import com.monokulo.fob.ui.screens.MeetScreen
+import com.monokulo.fob.ui.screens.ScanOverlays
 import com.monokulo.fob.ui.screens.KeysScreen
 import com.monokulo.fob.ui.screens.NodeScreen
 import com.monokulo.fob.ui.screens.PaidScreen
@@ -177,6 +179,7 @@ sealed interface Screen {
     data object ShowWalletCode : Screen
     data object Node : Screen
     data object Zmq : Screen
+    data object ManualSync : Screen
 }
 
 class Nav(start: Screen) {
@@ -412,7 +415,10 @@ class MainActivity : FragmentActivity() {
         // Each entry on the stack keeps its own state: two Send screens in a
         // row (one empty, one from a link) mustn't share text fields.
         val screen = nav.current
-        key(nav.stack.size, screen) { Route(nav, screen, wallet != null) }
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize()) {
+            key(nav.stack.size, screen) { Route(nav, screen, wallet != null) }
+            if (wallet != null) ScanOverlays(model)
+        }
     }
 
     @Composable
@@ -455,6 +461,7 @@ class MainActivity : FragmentActivity() {
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)
             Screen.Zmq -> ZmqScreen(model, nav)
+            Screen.ManualSync -> ManualSyncScreen(model, nav)
         }
     }
 }

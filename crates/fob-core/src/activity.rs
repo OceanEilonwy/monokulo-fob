@@ -111,6 +111,8 @@ pub(crate) fn waiting(activity: &Activity) -> Option<String> {
     let out = activity.direction == Direction::Out;
     let (c, needed) = (activity.confirmations, activity.needed);
     match () {
+        _ if activity.released => Some("Didn't go through".to_owned()),
+        _ if activity.not_confirmed => Some("Not confirmed".to_owned()),
         _ if activity.height.is_none() => Some(if out { "Sending".to_owned() } else { "On the way".to_owned() }),
         _ if c < needed => Some(format!("{} · {c} of {needed}", if out { "Confirming" } else { "Not ready" })),
         _ => None,
@@ -208,6 +210,8 @@ pub struct Detail {
     pub tx_short: String,
     /// "Prices from Kraken.", when a price shows.
     pub footer: Option<String>,
+    /// Sent, not confirmed: its coins can be released.
+    pub can_release: bool,
 }
 
 /// Pieces as "2 · 0.3 + 0.2", largest first; past four, "+ 3 more".
@@ -280,6 +284,7 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, priced:
         pieces: pieces(&activity.pieces),
         fee: activity.fee.filter(|_| out).map(|f| format!("{} XMR", amount::format(f))),
         tx_short: if tx.len() > 12 { format!("{} … {}", &tx[..6], &tx[tx.len() - 6..]) } else { tx.clone() },
+        can_release: activity.not_confirmed,
         footer: shown.then(|| format!("Prices from {provider}.")),
     }
 }
@@ -450,6 +455,8 @@ mod tests {
 
     fn activity(direction: Direction, amount: u64, time: u64, confirmations: u64) -> Activity {
         Activity {
+            not_confirmed: false,
+            released: false,
             tx: format!("{time}"),
             direction,
             amount,

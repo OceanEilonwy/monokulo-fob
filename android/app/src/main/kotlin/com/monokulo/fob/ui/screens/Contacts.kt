@@ -511,6 +511,7 @@ fun ContactEditScreen(model: WalletModel, nav: Nav, id: ULong?, prefill: Contact
 internal fun LabelledInput(
     label: String, value: String, onChange: (String) -> Unit, placeholder: String, fontSize: Int = 16,
     capitalization: KeyboardCapitalization = KeyboardCapitalization.Sentences,
+    keyboardOptions: KeyboardOptions = KeyboardOptions(capitalization = capitalization),
 ) {
     var focused by remember { mutableStateOf(false) }
     val style = TextStyle(fontSize = fontSize.sp, color = Fob.ink)
@@ -518,7 +519,7 @@ internal fun LabelledInput(
         Text(label, color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(start = 4.dp))
         BasicTextField(
             value = value, onValueChange = onChange, singleLine = true, textStyle = style, cursorBrush = SolidColor(Fob.ink),
-            keyboardOptions = KeyboardOptions(capitalization = capitalization),
+            keyboardOptions = keyboardOptions,
             modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.semantics { contentDescription = label },
             decorationBox = { field ->
                 Box(

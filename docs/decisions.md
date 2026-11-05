@@ -2721,3 +2721,40 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      don't reach, or one that begins later, could hide money.
      `examples/gpu_check.rs` is the long form, for development on real GPUs, and
      `--ignored` runs the wallet's payment cases through the GPU.
+335. **A reorganisation too deep to check is refused.** Rewinding used to go back to
+     the oldest of the 30 hashes kept whatever had happened, leaving anything from
+     the old chain before them in the wallet, unnoticed. Now the node is asked
+     whether that hash is still on its chain. If it is, the blocks after it are
+     scanned again and the next must follow it. If it's gone, syncing stops with
+     "Can't sync" and keeps checking, as the node may be the one in the wrong, and
+     the card offers "Scan the whole wallet again". A wallet that hasn't scanned
+     past its first 30 blocks has nothing older to be wrong, so it just starts over.
+336. **Manual Sync: a wallet that only scans when asked.** Off by default and kept
+     per wallet (`manual.rs`, database version 4). With it on, the sync loop waits,
+     instant updates stop, and the wallet takes itself as up to date. Home shows Sync
+     in the chip's place, which opens the Scan drawer; a failure still shows the chip.
+     Coins are spendable at Settled Confirmations (10 to 720, default 10).
+     Pull to refresh is Disabled, Send or Auto (the default). Send asks the node where
+     the chain is and looks up the wallet's unsettled sent payments, then scans the
+     block each was mined in to find the change. Auto also scans the pool and the
+     newest Incoming Scan Blocks (default 5). Received payments are never looked up by
+     hash, as that would tell the node which are this wallet's. Each pull compares the
+     block the last one saw, and says if the chain changed. Last scan doesn't move.
+     A scan that reaches the newest block from at or before Last scan forgets what's
+     after its start and scans again. Anything else (a closed range, or one past Last
+     scan) only adds what it finds, and From last scan replaces what those found above
+     it. A coin found that way can look unspent if its spend wasn't scanned; the node
+     then refuses a payment using it, shown as "Nothing was sent", with Sync. With
+     Manual Sync on, any refusal reads that way, since a node's reason can't be relied
+     on. On the running bar, payments are marked in the colours of Activity's arrows,
+     and a block with both shows money in. Change doesn't count as money in.
+337. **Reorganisations are followed up to at least 100 blocks**: the hashes kept are
+     the larger of 100 or Settled Confirmations + 30. When one is followed, Fob says so.
+338. **A payment that never arrives isn't left spending its coins forever.** A day
+     after sending, if the node says outright that it doesn't have the transaction,
+     the payment shows "Not confirmed", found by each pull or, while syncing, a check
+     every ten minutes. Nothing changes until someone presses Release coins, and only
+     for a marked payment, which then reads "Didn't go through". If it's mined after
+     all, the next scan restores it. An answer that can't be read says nothing. A node
+     that has been switched to may simply never have seen it, which is why releasing
+     is left to a person: re-spending is safe, as only one spend of a coin can be mined.

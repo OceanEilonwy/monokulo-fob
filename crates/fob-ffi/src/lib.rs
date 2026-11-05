@@ -25,6 +25,10 @@ pub enum FobError {
     WrongKey { reason: String },
     #[error("{reason}")]
     ViewOnly { reason: String },
+    /// With Manual Sync on, the node refused a payment: a coin in it may have
+    /// been spent since the last scan.
+    #[error("{reason}")]
+    SpendRejected { reason: String },
     #[error("{reason}")]
     Other { reason: String },
 }
@@ -41,7 +45,8 @@ impl From<fob_core::FobError> for FobError {
             E::NotEnoughFunds { .. } => FobError::NotEnoughFunds { reason },
             E::WrongKey => FobError::WrongKey { reason },
             E::ViewOnly => FobError::ViewOnly { reason },
-            E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::Price(_) | E::PriceFailed(_) => FobError::Other { reason },
+            E::SpendRejected(_) => FobError::SpendRejected { reason },
+            E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::ReorgTooDeep | E::Price(_) | E::PriceFailed(_) => FobError::Other { reason },
         }
     }
 }
@@ -710,6 +715,12 @@ pub struct SyncStatus {
     /// What TalkBack reads for the chip: "Catching up, 34%, about 6 minutes left".
     pub chip_label: String,
     pub zmq: ZmqStatus,
+    /// Manual Sync is on: Home shows Sync rather than the chip, but for a failure or a scan.
+    pub manual_sync: bool,
+    /// A scan someone asked for, while it runs.
+    pub scan: Option<ScanView>,
+    /// Something to say once.
+    pub notice: Option<String>,
     /// The subtitle for "Instant updates (ZMQ)": "host:18083 · listening", or "Off".
     pub zmq_text: String,
 }
@@ -769,6 +780,8 @@ pub struct SyncDetails {
     pub note: Option<String>,
     /// What went wrong, as the node or network said it.
     pub error: Option<String>,
+    /// "Scan the whole wallet again", when that's the way past the failure.
+    pub scan_again: Option<String>,
 }
 
 impl From<fob_core::catch_up::Details> for SyncDetails {
@@ -780,7 +793,175 @@ impl From<fob_core::catch_up::Details> for SyncDetails {
             rows: d.rows.into_iter().map(|r| SyncRow { label: r.label, value: r.value, spoken: r.spoken }).collect(),
             note: d.note,
             error: d.error,
+            scan_again: d.scan_again,
         }
+    }
+}
+
+/// The fewest Settled Confirmations can be.
+#[uniffi::export]
+pub fn manual_settled_min() -> u32 {
+    fob_core::manual::SETTLED_MIN
+}
+
+/// The most Settled Confirmations can be.
+#[uniffi::export]
+pub fn manual_settled_max() -> u32 {
+    fob_core::manual::SETTLED_MAX
+}
+
+/// The most Incoming Scan Blocks can be.
+#[uniffi::export]
+pub fn manual_incoming_max() -> u32 {
+    fob_core::manual::INCOMING_MAX
+}
+
+/// A scan someone asked for, ready to draw.
+#[derive(uniffi::Record)]
+pub struct ScanView {
+    /// "Scanning from last scan".
+    pub title: String,
+    /// "893 of 1,440 blocks".
+    pub blocks: String,
+    /// 0 to 1.
+    pub progress: f32,
+    /// Where the bar marks a payment.
+    pub marks: Vec<ScanMark>,
+}
+
+/// A payment found, on the scan's bar: money in, or money out.
+#[derive(uniffi::Record)]
+pub struct ScanMark {
+    /// 0 to 1 along the bar.
+    pub position: f32,
+    pub incoming: bool,
+}
+
+impl From<fob_core::wallet::ScanProgress> for ScanView {
+    fn from(s: fob_core::wallet::ScanProgress) -> Self {
+        let total = s.to.saturating_sub(s.from).max(1);
+        let done = s.at.saturating_sub(s.from).min(total);
+        let position = |height: u64| (height.saturating_sub(s.from) as f32 / total as f32).clamp(0.0, 1.0);
+        ScanView {
+            title: s.title,
+            blocks: format!("{} of {} blocks", fob_core::manual::grouped(done), fob_core::manual::grouped(total)),
+            progress: done as f32 / total as f32,
+            marks: s.marks.iter().map(|(height, incoming)| ScanMark { position: position(*height), incoming: *incoming }).collect(),
+        }
+    }
+}
+
+/// What pulling down on Home does with Manual Sync on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PullMode {
+    Disabled,
+    Send,
+    Auto,
+}
+
+impl From<PullMode> for fob_core::manual::PullMode {
+    fn from(m: PullMode) -> Self {
+        match m {
+            PullMode::Disabled => Self::Disabled,
+            PullMode::Send => Self::Send,
+            PullMode::Auto => Self::Auto,
+        }
+    }
+}
+
+impl From<fob_core::manual::PullMode> for PullMode {
+    fn from(m: fob_core::manual::PullMode) -> Self {
+        match m {
+            fob_core::manual::PullMode::Disabled => Self::Disabled,
+            fob_core::manual::PullMode::Send => Self::Send,
+            fob_core::manual::PullMode::Auto => Self::Auto,
+        }
+    }
+}
+
+/// A wallet's Manual Sync settings.
+#[derive(uniffi::Record)]
+pub struct ManualSettings {
+    pub on: bool,
+    pub pull_mode: PullMode,
+    pub incoming_scan_blocks: u32,
+    pub settled_confirmations: u32,
+}
+
+/// What the Scan drawer can be asked for.
+#[derive(Clone, Copy, uniffi::Enum)]
+pub enum ScanRequest {
+    Unsettled,
+    FromLast,
+    Back { blocks: u64 },
+    Whole,
+    Height { height: u64 },
+    Dates { from: u64, to: Option<u64> },
+}
+
+impl From<ScanRequest> for fob_core::manual::ScanRequest {
+    fn from(r: ScanRequest) -> Self {
+        match r {
+            ScanRequest::Unsettled => Self::Unsettled,
+            ScanRequest::FromLast => Self::FromLast,
+            ScanRequest::Back { blocks } => Self::Back(blocks),
+            ScanRequest::Whole => Self::Whole,
+            ScanRequest::Height { height } => Self::Height(height),
+            ScanRequest::Dates { from, to } => Self::Dates { from, to },
+        }
+    }
+}
+
+impl From<fob_core::manual::ScanRequest> for ScanRequest {
+    fn from(r: fob_core::manual::ScanRequest) -> Self {
+        use fob_core::manual::ScanRequest as R;
+        match r {
+            R::Unsettled => Self::Unsettled,
+            R::FromLast => Self::FromLast,
+            R::Back(blocks) => Self::Back { blocks },
+            R::Whole => Self::Whole,
+            R::Height(height) => Self::Height { height },
+            R::Dates { from, to } => Self::Dates { from, to },
+        }
+    }
+}
+
+/// One of the Scan drawer's quick choices.
+#[derive(uniffi::Record)]
+pub struct ScanOption {
+    pub request: ScanRequest,
+    pub label: String,
+    pub note: String,
+    pub cost: String,
+    pub action: String,
+}
+
+/// The Scan drawer's words as it opens.
+#[derive(uniffi::Record)]
+pub struct ScanDrawer {
+    /// "Last scan Today, 14:20 · Block 3,811,200".
+    pub last_scan: String,
+    pub options: Vec<ScanOption>,
+}
+
+/// The Block tab's facts about a typed block.
+#[derive(uniffi::Record)]
+pub struct BlockInfo {
+    pub mined: Option<String>,
+    pub newest: String,
+    pub first: String,
+}
+
+/// What a pull found, in words.
+#[derive(uniffi::Record)]
+pub struct PullOutcome {
+    pub title: String,
+    pub line: String,
+}
+
+impl From<fob_core::manual::PullOutcome> for PullOutcome {
+    fn from(p: fob_core::manual::PullOutcome) -> Self {
+        PullOutcome { title: p.title, line: p.line }
     }
 }
 
@@ -802,6 +983,9 @@ impl From<fob_core::SyncStatus> for SyncStatus {
             chip_label: chip.label,
             zmq: s.zmq.into(),
             zmq_text: s.zmq_text,
+            manual_sync: s.manual_sync,
+            scan: s.scan.map(Into::into),
+            notice: s.notice,
         }
     }
 }
@@ -1453,6 +1637,81 @@ impl FobWallet {
         self.inner.sync_details(activity::Clock { now, utc_offset, hours_24 }).into()
     }
 
+    /// Frees the coins of a payment marked not confirmed.
+    pub async fn release_payment(&self, tx: String) -> Result<()> {
+        Ok(self.inner.release_payment(&tx).await?)
+    }
+
+    /// This wallet's Manual Sync settings.
+    pub async fn manual_settings(&self) -> ManualSettings {
+        let s = self.inner.manual_settings().await;
+        ManualSettings { on: s.on, pull_mode: s.pull_mode.into(), incoming_scan_blocks: s.incoming_scan_blocks, settled_confirmations: s.settled_confirmations }
+    }
+
+    pub async fn set_manual_sync(&self, on: bool) -> Result<()> {
+        Ok(self.inner.set_manual_sync(on).await?)
+    }
+
+    pub async fn set_pull_mode(&self, mode: PullMode) -> Result<()> {
+        Ok(self.inner.set_pull_mode(mode.into()).await?)
+    }
+
+    pub async fn set_incoming_scan_blocks(&self, blocks: u32) -> Result<()> {
+        Ok(self.inner.set_incoming_scan_blocks(blocks).await?)
+    }
+
+    pub async fn set_settled_confirmations(&self, confirmations: u32) -> Result<()> {
+        Ok(self.inner.set_settled_confirmations(confirmations).await?)
+    }
+
+    /// The Scan drawer's words, having asked the node where the chain is.
+    pub async fn scan_drawer(&self, now: u64, utc_offset: i32, hours_24: bool) -> ScanDrawer {
+        self.inner.refresh_tip().await;
+        ScanDrawer {
+            last_scan: self.inner.last_scan_line(activity::Clock { now, utc_offset, hours_24 }).await,
+            options: self
+                .inner
+                .scan_options()
+                .await
+                .into_iter()
+                .map(|o| ScanOption { request: o.request.into(), label: o.label, note: o.note, cost: o.cost, action: o.action })
+                .collect(),
+        }
+    }
+
+    /// What the Block tab shows for a typed block.
+    pub async fn block_info(&self, height: u64, now: u64, utc_offset: i32, hours_24: bool) -> BlockInfo {
+        let info = self.inner.block_info(height, activity::Clock { now, utc_offset, hours_24 }).await;
+        BlockInfo { mined: info.mined, newest: info.newest, first: info.first }
+    }
+
+    /// Starts what the Scan drawer was asked for. A check of payments is done
+    /// when this returns, with its words; a scan of blocks carries on, in
+    /// `status`'s `scan`.
+    pub async fn start_scan(&self, request: ScanRequest) -> Result<Option<PullOutcome>> {
+        Ok(self.inner.start_scan(request.into()).await?.map(Into::into))
+    }
+
+    /// Stops the scan someone asked for. What it found stays.
+    pub async fn stop_scan(&self) {
+        self.inner.stop_scan().await;
+    }
+
+    /// Pulling down on Home with Manual Sync on. None when it's disabled.
+    pub async fn pull_refresh(&self) -> Result<Option<PullOutcome>> {
+        Ok(self.inner.pull_refresh().await?.map(Into::into))
+    }
+
+    /// `status`'s notice has been said.
+    pub fn clear_notice(&self) {
+        self.inner.clear_notice();
+    }
+
+    /// Scans the whole wallet again, past a reorganisation too deep to check.
+    pub async fn scan_again(&self) -> Result<()> {
+        Ok(self.inner.scan_again().await?)
+    }
+
     /// Keeps the wallet synced in the background until `stop_sync`.
     pub fn start_sync(&self, observer: Arc<dyn SyncObserver>) {
         self.inner.start_sync(Arc::new(Observer(observer)));
@@ -1665,6 +1924,7 @@ impl FobWallet {
             tx_short: d.tx_short,
             tx,
             footer: d.footer,
+            can_release: d.can_release,
         })
     }
 
@@ -2694,6 +2954,8 @@ pub struct PaymentDetail {
     pub tx: String,
     /// "Prices from Kraken."
     pub footer: Option<String>,
+    /// Sent, not confirmed: its coins can be released.
+    pub can_release: bool,
 }
 
 /// Receive's note as typed, cut to what a payment code holds.

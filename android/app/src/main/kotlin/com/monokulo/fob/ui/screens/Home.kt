@@ -82,6 +82,7 @@ import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
 import com.monokulo.fob.ui.Warning
+import com.monokulo.fob.ui.SyncButton
 import com.monokulo.fob.ui.display
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -122,20 +123,26 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
     var touchNotice by remember { mutableStateOf<String?>(null) }
     rememberPayReading(model, touch, enabled = canSpend && payCode == null, onProblem = { touchNotice = it }) { code -> touchNotice = null; payCode = code }
     Box(Modifier.fillMaxSize()) {
-    Page(refreshing = refreshing, onRefresh = {
+    val manual by model.manual.collectAsState()
+    // Manual Sync can turn the gesture off altogether.
+    val pullOff = manual?.on == true && manual?.pullMode == uniffi.fob.PullMode.DISABLED
+    Page(refreshing = refreshing, onRefresh = if (pullOff) null else ({
         refreshing = true
         scope.launch {
             model.syncNow()
             refreshing = false
         }
-    }) {
+    })) {
         // Tapping the chip opens Rust's details card under it, Node settings on it.
         var syncOpen by rememberSaveable { mutableStateOf(false) }
         // Meet takes the place your photo had, beside the cog; your profile is in Settings.
         // Fob's name until there's a second wallet to tell this one from.
         val title = current?.name?.takeIf { wallets.size > 1 }
         TopBar(network == Network.STAGENET, title, onWallets = { nav.go(Screen.Wallets) }, onMeet = { nav.go(Screen.Meet) }, onSettings = { nav.go(Screen.Settings) }) {
-            SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails) { nav.go(Screen.Node) }
+            val s = status
+            // Manual Sync: a button in the chip's place, but when something's wrong.
+            if (s?.manualSync == true && s.error == null) SyncButton(s, model::openScan)
+            else SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails, onScanAgain = model::scanAgain) { nav.go(Screen.Node) }
         }
 
         // The balance on one line: what goes first large on the left, the

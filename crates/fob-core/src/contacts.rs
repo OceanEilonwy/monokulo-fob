@@ -938,6 +938,8 @@ mod tests {
 
     fn paid(to: &str, amount: u64, time: u64) -> Activity {
         Activity {
+            not_confirmed: false,
+            released: false,
             tx: format!("{to}-{time}"),
             direction: Direction::Out,
             amount,

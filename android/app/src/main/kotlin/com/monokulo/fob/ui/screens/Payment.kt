@@ -39,6 +39,13 @@ import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import kotlinx.coroutines.launch
+import androidx.compose.material3.AlertDialog
+import androidx.compose.runtime.rememberCoroutineScope
+import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.ErrorText
+import com.monokulo.fob.ui.OutlineButton
+import com.monokulo.fob.ui.TextButton
+import com.monokulo.fob.ui.reason
 import uniffi.fob.Activity
 import uniffi.fob.PaymentDetail
 
@@ -69,9 +76,40 @@ fun PaymentScreen(model: WalletModel, nav: Nav, activity: Activity) {
                 Text(d.`when`, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center)
             }
             if (d.priced) PriceBoxes(d)
+            if (d.canRelease) ReleaseCoins(model, activity.tx)
             PaymentDetails(d)
             d.footer?.let { Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp)) }
         }
+    }
+}
+
+/** A payment the node has never heard of, a day on: what that means, and freeing its coins, asked first. */
+@Composable
+fun ReleaseCoins(model: WalletModel, tx: String) {
+    val scope = rememberCoroutineScope()
+    var asking by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Not confirmed", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text("Your node has no record of this payment a day after it was sent, so it probably didn't go through. Its coins stay held until you release them.", color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp)
+            ErrorText(error)
+            OutlineButton("Release coins", { asking = true }, Modifier.fillMaxWidth())
+        }
+    }
+    if (asking) {
+        AlertDialog(
+            onDismissRequest = { asking = false },
+            title = { Text("Release these coins?") },
+            text = { Text("You can spend them again. If this payment does go through after all, Fob shows it at its next scan, and a later payment using the same coins is refused. Check with whoever you were paying first.") },
+            confirmButton = {
+                TextButton("Release", {
+                    asking = false
+                    scope.launch { runCatching { model.releasePayment(tx) }.onFailure { error = it.reason() } }
+                })
+            },
+            dismissButton = { TextButton("Cancel", { asking = false }, color = Fob.ink) },
+        )
     }
 }
 

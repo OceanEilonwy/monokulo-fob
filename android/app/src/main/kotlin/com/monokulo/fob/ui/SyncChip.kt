@@ -74,7 +74,7 @@ import uniffi.fob.SyncStatus
  * card's words, again whenever [status] changes while it's open.
  */
 @Composable
-fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, details: () -> SyncDetails?, onNode: () -> Unit) {
+fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, details: () -> SyncDetails?, onScanAgain: () -> Unit, onNode: () -> Unit) {
     val look = status?.chipLook ?: ChipLook.RING
     val text = status?.chipText ?: "Starting"
     val label = status?.chipLabel ?: "Starting"
@@ -149,13 +149,45 @@ fun SyncChip(status: SyncStatus?, open: Boolean, onOpen: (Boolean) -> Unit, deta
                     // at a big font it scrolls within the room under the chip rather than
                     // covering the chip or running under the gesture bar.
                     Box(Modifier.heightIn(max = room).padding(start = 12.dp, end = 12.dp, bottom = 16.dp)) {
-                        SyncCard(d, Modifier.widthIn(max = 300.dp).fillMaxWidth()) {
+                        SyncCard(d, Modifier.widthIn(max = 300.dp).fillMaxWidth(), onScanAgain = { onOpen(false); onScanAgain() }) {
                             onOpen(false)
                             onNode()
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Manual Sync's place for the chip: Sync, which opens the Scan drawer, or
+ * while a scan runs how far it's got, which opens that.
+ */
+@Composable
+fun SyncButton(status: SyncStatus, onClick: () -> Unit) {
+    val scan = status.scan
+    if (scan == null) {
+        Row(
+            Modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(Fob.orange).clickable(role = Role.Button, onClick = onClick).padding(start = 12.dp, end = 16.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            StrokeIcon(Icons.refresh, tint = Fob.onOrange, size = 18.dp, width = 2.2f)
+            Text("Sync", color = Fob.onOrange, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+    } else {
+        val percent = (scan.progress * 100).toInt()
+        Row(
+            Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).background(Fob.onPaper).clickable(role = Role.Button, onClickLabel = "Show the scan", onClick = onClick).padding(start = 12.dp, end = 14.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val (track, arc) = Fob.track to Fob.orangeText
+            Canvas(Modifier.size(16.dp)) {
+                val stroke = Stroke(2.4.dp.toPx(), cap = StrokeCap.Round)
+                drawArc(track, 0f, 360f, false, style = stroke)
+                drawArc(arc, -90f, 360f * scan.progress.coerceIn(0.02f, 1f), false, style = stroke)
+            }
+            Text("$percent%", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
         }
     }
 }
@@ -170,7 +202,7 @@ private object BelowAtEnd : PopupPositionProvider {
 
 /** The details card: Rust's title, percent, rows and line, a bar while catching up, and a way to Node. */
 @Composable
-private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
+private fun SyncCard(d: SyncDetails, modifier: Modifier, onScanAgain: () -> Unit, onNode: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     Column(
         modifier.shadow(8.dp, shape).clip(shape).background(Fob.card).semantics { paneTitle = d.title }
@@ -194,6 +226,14 @@ private fun SyncCard(d: SyncDetails, modifier: Modifier, onNode: () -> Unit) {
         }
         d.note?.let { Text(it, fontSize = 12.5.sp, color = Fob.muted) }
         d.error?.let { Text(it, fontSize = 13.sp, color = Fob.red) }
+        d.scanAgain?.let { words ->
+            Box(
+                Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onScanAgain).padding(horizontal = 4.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(words, color = Fob.orangeText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
         Box(
             Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onNode).padding(horizontal = 4.dp),
             contentAlignment = Alignment.CenterStart,

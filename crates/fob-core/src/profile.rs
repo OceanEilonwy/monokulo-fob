@@ -548,6 +548,8 @@ mod tests {
 
     fn paid_in(subaddress: u32, amount: u64, time: u64, price: Option<u64>) -> Activity {
         Activity {
+            not_confirmed: false,
+            released: false,
             tx: format!("in-{subaddress}-{time}"),
             direction: Direction::In,
             amount,

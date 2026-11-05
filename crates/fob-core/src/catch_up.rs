@@ -267,7 +267,11 @@ pub struct Chip {
 /// The card's title (and the chip's label) for a failure: the node's, or
 /// the phone's own.
 fn failed_title(status: &SyncStatus) -> &'static str {
-    if status.error_local { "Can't save the wallet" } else { "Can't reach node" }
+    match () {
+        _ if status.chain_changed => "Can't sync",
+        _ if status.error_local => "Can't save the wallet",
+        _ => "Can't reach node",
+    }
 }
 
 /// Percent done, never 100 before the end: "34%".
@@ -279,7 +283,11 @@ fn percent(status: &SyncStatus) -> String {
 impl SyncStatus {
     pub fn chip(&self) -> Chip {
         if self.error.is_some() {
-            let text = if self.error_local { "Can't save" } else { "Can't reach node" };
+            let text = match () {
+                _ if self.chain_changed => "Can't sync",
+                _ if self.error_local => "Can't save",
+                _ => "Can't reach node",
+            };
             return Chip { look: Look::Offline, text: text.into(), label: failed_title(self).into() };
         }
         // First: Synced from before the node has answered would be a guess.
@@ -333,10 +341,12 @@ pub struct Details {
     pub note: Option<String>,
     /// What went wrong, as the node or the network said it.
     pub error: Option<String>,
+    /// "Scan the whole wallet again", when that's the way past the failure.
+    pub scan_again: Option<String>,
 }
 
 /// "Today, 14:20", "Yesterday, 14:20", "29 Oct, 14:20", "29 Oct 2025, 14:20".
-fn date_time(time: u64, clock: Clock) -> String {
+pub(crate) fn date_time(time: u64, clock: Clock) -> String {
     let (day, seconds) = activity::local(time, clock);
     let (today, _) = activity::local(clock.now, clock);
     let date = match day {
@@ -391,6 +401,9 @@ pub fn details(status: &SyncStatus, clock: Clock) -> Details {
         _ => "Catching up",
     };
     let note = match () {
+        _ if status.chain_changed && status.error.is_some() => {
+            Some("Your node may be on the wrong chain, so Fob keeps checking. If the chain really did change, scan again to put your balance right.".to_owned())
+        }
         _ if status.error.is_some() => Some("Fob keeps trying on its own.".to_owned()),
         _ if !status.connected => Some("Asking the node how far the chain has got.".to_owned()),
         _ if waiting => Some(format!("The node hasn't sent any blocks for {}. Fob keeps asking, and another node may be quicker.", waited(status.waiting_seconds))),
@@ -404,6 +417,7 @@ pub fn details(status: &SyncStatus, clock: Clock) -> Details {
         rows,
         note,
         error: status.error.clone(),
+        scan_again: (status.chain_changed && status.error.is_some()).then(|| "Scan the whole wallet again".to_owned()),
     }
 }
 
@@ -765,5 +779,16 @@ mod tests {
         assert_eq!((d.title.as_str(), d.note.as_deref()), ("Can't save the wallet", Some("Fob keeps trying on its own.")));
         let chip = s.chip();
         assert_eq!((chip.look, chip.text.as_str(), chip.label.as_str()), (Look::Offline, "Can't save", "Can't save the wallet"));
+        assert_eq!(d.scan_again, None);
+
+        // A chain that changed too far back says so, and how to get past it.
+        s.error_local = false;
+        s.chain_changed = true;
+        s.error = Some("The chain changed further back than Fob can check".into());
+        let d = details(&s, clock());
+        assert_eq!((d.title.as_str(), d.scan_again.as_deref()), ("Can't sync", Some("Scan the whole wallet again")));
+        assert!(d.note.unwrap().contains("wrong chain"));
+        let chip = s.chip();
+        assert_eq!((chip.look, chip.text.as_str()), (Look::Offline, "Can't sync"));
     }
 }

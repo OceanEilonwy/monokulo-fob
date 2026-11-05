@@ -39,6 +39,7 @@ import com.monokulo.fob.ui.InfoRow
 import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.display
+import com.monokulo.fob.ui.Warning
 import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.short
 import kotlinx.coroutines.launch
@@ -87,6 +88,8 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     }
 
     val title = request?.recipientName?.let { "Pay $it" } ?: "Send"
+    var failed by remember { mutableStateOf(false) }
+    var refused by remember { mutableStateOf(false) }
     fun swiped() {
         val ready = prepared ?: return
         busy = true
@@ -97,7 +100,8 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             } else {
                 runCatching { model.send(ready) }
                     .onSuccess { tx -> onClose(); nav.go(Screen.Paid(ready, tx)) }
-                    .onFailure { error = it.reason() }
+                    // Trying used up the prepared payment: another touch makes another.
+                    .onFailure { error = it.reason(); failed = true; refused = it is uniffi.fob.FobException.SpendRejected }
             }
             busy = false
         }
@@ -127,12 +131,14 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             Divider()
             InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
         }
-        ErrorText(error)
+        if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
+        else ErrorText(error)
         val label = when {
             busy -> "Sending…"
+            failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
             else -> "Swipe to send ${prepared!!.amountText} XMR"
         }
-        SwipeToSend(label, enabled = !busy && prepared != null, waiting = prepared == null && error == null) { swiped() }
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
     }
 }

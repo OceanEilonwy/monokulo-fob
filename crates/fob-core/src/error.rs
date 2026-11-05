@@ -52,6 +52,14 @@ pub enum FobError {
     WrongKey,
     #[error("that payment was already sent or has expired")]
     NoSuchPayment,
+    /// A reorganisation reaches further back than the block hashes kept, so
+    /// what's known from before them can't be trusted without scanning again.
+    #[error("the chain changed further back than Fob can check")]
+    ReorgTooDeep,
+    /// With Manual Sync on, the node refused a payment. A coin in it may have
+    /// been spent since the last scan.
+    #[error("your node refused this payment{0}")]
+    SpendRejected(String),
 }
 
 pub type Result<T> = std::result::Result<T, FobError>;

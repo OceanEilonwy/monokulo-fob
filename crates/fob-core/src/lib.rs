@@ -27,6 +27,7 @@ mod decoys;
 pub mod error;
 pub mod fetch;
 pub mod keys;
+pub mod manual;
 pub mod network;
 pub mod pattern;
 pub mod price;
