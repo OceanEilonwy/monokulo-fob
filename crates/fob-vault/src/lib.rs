@@ -4,5 +4,6 @@
 pub mod db;
 pub mod error;
 pub mod keys;
+pub mod passphrase;
 pub mod store;
 pub mod wallets;

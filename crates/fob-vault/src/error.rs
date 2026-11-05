@@ -13,6 +13,10 @@ pub enum VaultError {
     Sealing,
     NotAWalletFile,
     WrongKey,
+    WrongPassphrase,
+    PassphraseTooShort { min: usize },
+    /// Making another would lose every wallet the first one opens.
+    PassphraseExists,
     NameEmpty,
     NameTooLong { max: usize },
     NameTaken { name: String },
