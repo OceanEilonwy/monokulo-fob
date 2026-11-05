@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     amount::{ATOMIC_PER_XMR, grouped},
-    error::{FobError, Result},
+    error::{MoneroError, MoneroErrorResult as Result},
 };
 
 /// Prices are millionths of the currency per XMR.
@@ -165,12 +165,12 @@ pub fn parse(text: &str, currency: &Currency) -> Result<u64> {
         || !frac.chars().all(|c| c.is_ascii_digit())
         || frac.len() > currency.decimals as usize
     {
-        return Err(FobError::BadAmount);
+        return Err(MoneroError::BadAmount);
     }
     let unit = 10u64.pow(currency.decimals);
-    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| FobError::BadAmount)? };
-    let frac: u64 = if frac.is_empty() { 0 } else { format!("{frac:0<width$}", width = currency.decimals as usize).parse().map_err(|_| FobError::BadAmount)? };
-    whole.checked_mul(unit).and_then(|w| w.checked_add(frac)).ok_or(FobError::BadAmount)
+    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| MoneroError::BadAmount)? };
+    let frac: u64 = if frac.is_empty() { 0 } else { format!("{frac:0<width$}", width = currency.decimals as usize).parse().map_err(|_| MoneroError::BadAmount)? };
+    whole.checked_mul(unit).and_then(|w| w.checked_add(frac)).ok_or(MoneroError::BadAmount)
 }
 
 /// The change between a payment's value then and now: "Up $3.63 (4.6%)

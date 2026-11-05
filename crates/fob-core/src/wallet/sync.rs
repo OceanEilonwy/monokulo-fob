@@ -376,8 +376,8 @@ impl Wallet {
         let (seconds_left, speeds) = pace.report(Instant::now(), received, next, tip.saturating_sub(next), failed.is_some());
         // As the Node checks would say it, the certificate included.
         let error = failed.map(|e| match &link {
-            Some((setting, transport)) => node::sync_failure(e, transport.certificate(), setting.self_signed),
-            None => node::sync_failure(e, None, false),
+            Some((setting, transport)) => sync_failure(e, transport.certificate(), setting.self_signed),
+            None => sync_failure(e, None, false),
         });
         if error.as_ref().is_some_and(|(_, local)| !local) {
             // A failing sync is newer than the last check of the node.

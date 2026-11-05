@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::{Failure, Source, Transport, micro_number};
 use crate::fiat::currencies;
-use crate::error::{FobError, Result};
+use crate::error::{PriceError, PriceErrorResult as Result};
 
 const API: &str = "https://api.coingecko.com/api/v3";
 /// The most days back the keyless API gives.
@@ -22,11 +22,11 @@ pub struct CoinGecko;
 /// The answer as JSON, or busy when its body says it's rate limited (as
 /// it does alongside a 429).
 fn json(body: &[u8]) -> Result<Value> {
-    let v: Value = serde_json::from_slice(body).map_err(|_| FobError::PriceFailed(Failure::BadAnswer))?;
+    let v: Value = serde_json::from_slice(body).map_err(|_| PriceError::Failed(Failure::BadAnswer))?;
     let code = v.get("status").or_else(|| v.get("error")?.get("status")).and_then(|s| s.get("error_code")).and_then(Value::as_u64);
     match code {
-        Some(429) => Err(FobError::PriceFailed(Failure::Busy)),
-        Some(_) => Err(FobError::PriceFailed(Failure::NotAnswering)),
+        Some(429) => Err(PriceError::Failed(Failure::Busy)),
+        Some(_) => Err(PriceError::Failed(Failure::NotAnswering)),
         None => Ok(v),
     }
 }
@@ -38,7 +38,7 @@ pub(crate) fn parse_simple(body: &[u8], currency: &str) -> Result<u64> {
         .and_then(|m| m.get(currency.to_ascii_lowercase()))
         .and_then(micro_number)
         .filter(|p| *p > 0)
-        .ok_or(FobError::PriceFailed(Failure::BadAnswer))
+        .ok_or(PriceError::Failed(Failure::BadAnswer))
 }
 
 /// `market_chart`'s `prices`, `[milliseconds, price]` each, one at the
@@ -46,7 +46,7 @@ pub(crate) fn parse_simple(body: &[u8], currency: &str) -> Result<u64> {
 /// price): the price as the day began, the first one in a day.
 pub(crate) fn parse_chart(body: &[u8]) -> Result<Vec<(i64, u64)>> {
     let v = json(body)?;
-    let rows = v.get("prices").and_then(Value::as_array).ok_or(FobError::PriceFailed(Failure::BadAnswer))?;
+    let rows = v.get("prices").and_then(Value::as_array).ok_or(PriceError::Failed(Failure::BadAnswer))?;
     let mut days: Vec<(i64, u64)> = rows
         .iter()
         .filter_map(|row| {

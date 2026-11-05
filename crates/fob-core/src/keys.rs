@@ -12,7 +12,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::error::{FobError, Result};
+use crate::error::{MoneroError, VaultError, VaultErrorResult as Result};
 use crate::network::Network;
 
 /// Which kind of seed phrase a wallet was made from, so Backup shows the
@@ -67,11 +67,11 @@ fn scalar_bytes(s: &Scalar) -> Zeroizing<[u8; 32]> {
 
 /// A 32-byte hex key as written in wallet codes; refuses non-canonical ones.
 fn parse_scalar(hex_key: &str) -> Result<Zeroizing<Scalar>> {
-    let bytes = Zeroizing::new(hex::decode(hex_key.trim()).map_err(|_| FobError::BadKey)?);
+    let bytes = Zeroizing::new(hex::decode(hex_key.trim()).map_err(|_| VaultError::BadKey)?);
     if bytes.len() != 32 {
-        return Err(FobError::BadKey);
+        return Err(VaultError::BadKey);
     }
-    Scalar::read(&mut bytes.as_slice()).map(Zeroizing::new).map_err(|_| FobError::BadKey)
+    Scalar::read(&mut bytes.as_slice()).map(Zeroizing::new).map_err(|_| VaultError::BadKey)
 }
 
 impl Keys {
@@ -96,20 +96,20 @@ impl Keys {
         let words = Zeroizing::new(words.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>().join(" "));
         match words.split(' ').count() {
             16 => {
-                let seed = Polyseed::from_string(PolyLanguage::English, words.clone()).map_err(|_| FobError::BadSeed)?;
+                let seed = Polyseed::from_string(PolyLanguage::English, words.clone()).map_err(|_| VaultError::BadSeed)?;
                 Ok(Restored {
                     birthday: Some(seed.birthday()),
                     keys: Keys::from_spend(network, reduce(&seed.key()), Some((SeedKind::Polyseed, seed.to_string()))),
                 })
             }
             25 => {
-                let seed = Seed::from_string(SeedLanguage::English, words.clone()).map_err(|_| FobError::BadSeed)?;
+                let seed = Seed::from_string(SeedLanguage::English, words.clone()).map_err(|_| VaultError::BadSeed)?;
                 Ok(Restored {
                     birthday: None,
                     keys: Keys::from_spend(network, reduce(&seed.entropy()), Some((SeedKind::Classic, seed.to_string()))),
                 })
             }
-            _ => Err(FobError::BadSeed),
+            _ => Err(VaultError::BadSeed),
         }
     }
 
@@ -121,20 +121,20 @@ impl Keys {
         if let Some(view_hex) = view_hex
             && *parse_scalar(view_hex)? != *keys.view
         {
-            return Err(FobError::BadKey);
+            return Err(VaultError::BadKey);
         }
         Ok(keys)
     }
 
     /// A view-only wallet: the primary address and its private view key.
     pub fn view_only(network: Network, address: &str, view_hex: &str) -> Result<Keys> {
-        let address = MoneroAddress::from_str(network.monero(), address.trim()).map_err(|_| FobError::BadAddress(network.name()))?;
+        let address = MoneroAddress::from_str(network.monero(), address.trim()).map_err(|_| VaultError::Monero(MoneroError::BadAddress(network.name())))?;
         if address.is_subaddress() {
-            return Err(FobError::BadAddress(network.name()));
+            return Err(VaultError::Monero(MoneroError::BadAddress(network.name())));
         }
         let view = parse_scalar(view_hex)?;
         if public(&view) != address.view() {
-            return Err(FobError::BadKey);
+            return Err(VaultError::BadKey);
         }
         Ok(Keys { network, spend: None, view, spend_pub: address.spend(), seed: None })
     }
@@ -144,7 +144,7 @@ impl Keys {
     }
 
     pub(crate) fn spend(&self) -> Result<&Zeroizing<Scalar>> {
-        self.spend.as_ref().ok_or(FobError::ViewOnly)
+        self.spend.as_ref().ok_or(VaultError::ViewOnly)
     }
 
     /// The view key's bytes, for the prefilter.
@@ -282,8 +282,8 @@ impl StoredKeys {
         let view = parse_scalar(&stored.view)?;
         let spend = stored.spend.as_deref().map(parse_scalar).transpose()?;
         let spend_pub_bytes: [u8; 32] =
-            hex::decode(&stored.spend_pub).ok().and_then(|b| b.try_into().ok()).ok_or(FobError::BadKey)?;
-        let spend_pub = monero_wallet::ed25519::CompressedPoint::from(spend_pub_bytes).decompress().ok_or(FobError::BadKey)?;
+            hex::decode(&stored.spend_pub).ok().and_then(|b| b.try_into().ok()).ok_or(VaultError::BadKey)?;
+        let spend_pub = monero_wallet::ed25519::CompressedPoint::from(spend_pub_bytes).decompress().ok_or(VaultError::BadKey)?;
         Ok(Keys {
             network: stored.network,
             spend,
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn wrong_words_are_refused() {
-        assert!(matches!(Keys::from_words(Network::Mainnet, "not a seed"), Err(FobError::BadSeed)));
+        assert!(matches!(Keys::from_words(Network::Mainnet, "not a seed"), Err(VaultError::BadSeed)));
         let swapped = CLASSIC.replacen("washing", "thirsty", 1);
         assert!(Keys::from_words(Network::Mainnet, &swapped).is_err());
     }

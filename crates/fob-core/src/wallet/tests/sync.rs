@@ -180,3 +180,11 @@ async fn scanning_again_goes_back_to_the_start_keeping_what_only_the_wallet_know
     assert!(state.outputs.iter().all(|o| o.height < 1) && state.spends.is_empty(), "found again from the chain");
     assert_eq!((state.sent.len(), state.sent[0].height, state.sent[0].note.as_deref()), (1, None, Some("Rent")));
 }
+
+#[test]
+fn a_failure_of_this_device_is_told_apart_from_the_node_s() {
+    let storage = FobError::Storage("disk full".into());
+    assert_eq!(sync_failure(&storage, None, false), ("Couldn't read or save the wallet: disk full".into(), true));
+    let offline = FobError::Node("InterfaceError(\"dns error: failed to lookup address information\")".into());
+    assert_eq!(sync_failure(&offline, None, false), ("Address not found".into(), false));
+}

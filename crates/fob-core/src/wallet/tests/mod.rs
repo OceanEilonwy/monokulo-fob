@@ -204,17 +204,17 @@ impl price::Source for FakePrices {
         transport == price::Transport::Web
     }
 
-    async fn current(&self, _: &str, _: price::Transport) -> Result<u64> {
+    async fn current(&self, _: &str, _: price::Transport) -> std::result::Result<u64, PriceError> {
         self.asked_now.fetch_add(1, Ordering::Relaxed);
         if let Some(hold) = &self.hold {
             hold.notified().await;
         }
-        if self.fail { Err(FobError::Price("no answer".into())) } else { Ok(self.now) }
+        if self.fail { Err(PriceError::Price("no answer".into())) } else { Ok(self.now) }
     }
 
-    async fn daily(&self, _: &str, days: std::ops::Range<i64>, _: price::Transport) -> Result<Vec<(i64, u64)>> {
+    async fn daily(&self, _: &str, days: std::ops::Range<i64>, _: price::Transport) -> std::result::Result<Vec<(i64, u64)>, PriceError> {
         self.asked_days.fetch_add(1, Ordering::Relaxed);
-        if self.fail { Err(FobError::Price("no answer".into())) } else { Ok(self.days.iter().copied().filter(|d| days.contains(&d.0)).collect()) }
+        if self.fail { Err(PriceError::Price("no answer".into())) } else { Ok(self.days.iter().copied().filter(|d| days.contains(&d.0)).collect()) }
     }
 
     fn history_days(&self) -> i64 {

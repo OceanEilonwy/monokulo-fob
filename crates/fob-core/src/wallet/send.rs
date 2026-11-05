@@ -62,7 +62,7 @@ impl Wallet {
                     decoys.update(tip).await.map_err(node_err)?;
                     Ok::<_, FobError>(tip)
                 });
-                Ok((fee_rate?, tip?))
+                Ok::<_, FobError>((fee_rate?, tip?))
             })
             .await?;
         // Choosing each input's decoys asks for the tip again; it is this one.

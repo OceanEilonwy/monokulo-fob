@@ -8,7 +8,7 @@ use crate::address::check_address;
 use crate::amount;
 
 pub use orf_codec::Receipt;
-use crate::error::{FobError, Result};
+use crate::error::{CodeError, CodeErrorResult as Result};
 use crate::network::Network;
 
 /// A request to pay, read from a payment code.
@@ -203,7 +203,7 @@ pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
 fn read_profile(network: Network, text: &str, nameless_too: bool) -> Result<ProfileCode> {
     use base64::Engine;
     use crate::contacts::{PHOTO_MAX, check_photo};
-    let not = |why: &str| Err(FobError::Profile(why.into()));
+    let not = |why: &str| Err(CodeError::Profile(why.into()));
     let payment = parse_payment(network, text)?;
     if payment.amount.is_some() || payment.description.is_some() || payment.receipt.is_some() {
         return not("That's a payment code, not a profile.");
@@ -305,7 +305,7 @@ pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
         if words == 16 || words == 25 {
             return Ok(WalletCode::Words { words: Zeroizing::new(text.to_owned()), height: None });
         }
-        return Err(FobError::BadCode);
+        return Err(CodeError::BadCode);
     };
     let (address, pairs) = split_query(rest);
     let pairs = Zeroizing::new(pairs);
@@ -313,7 +313,7 @@ pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
     if let Some(a) = &address {
         check_address(network, a)?;
     }
-    let height = get(&pairs, &["height", "restore_height", "restoreheight"]).map(|h| h.parse().map_err(|_| FobError::BadCode)).transpose()?;
+    let height = get(&pairs, &["height", "restore_height", "restoreheight"]).map(|h| h.parse().map_err(|_| CodeError::BadCode)).transpose()?;
     let secret = |keys: &[&str]| get(&pairs, keys).map(|s| Zeroizing::new(s.to_owned()));
     if let Some(words) = secret(&["seed", "mnemonic_seed", "mnemonic"]) {
         return Ok(WalletCode::Words { words, height });
@@ -324,7 +324,7 @@ pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
     }
     match (address, view) {
         (Some(address), Some(view)) => Ok(WalletCode::ViewOnly { address, view, height }),
-        _ => Err(FobError::BadCode),
+        _ => Err(CodeError::BadCode),
     }
 }
 
@@ -359,6 +359,7 @@ pub fn wallet_code(address: &str, spend_hex: Option<&str>, view_hex: &str, heigh
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::MoneroError;
     use crate::address::{address_groups, short};
     use crate::keys::Keys;
 
@@ -462,8 +463,8 @@ mod tests {
     fn a_mainnet_code_on_a_stagenet_wallet_says_which_network() {
         let mainnet = Keys::generate(Network::Mainnet).keys.primary_address();
         let err = parse_payment(Network::Stagenet, &format!("monero:{mainnet}")).unwrap_err();
-        assert!(matches!(err, FobError::WrongNetwork { expected: "stagenet", found: "mainnet" }));
-        assert!(matches!(parse_payment(Network::Stagenet, "monero:hello"), Err(FobError::BadAddress(_))));
+        assert!(matches!(err, CodeError::Monero(MoneroError::WrongNetwork { expected: "stagenet", found: "mainnet" })));
+        assert!(matches!(parse_payment(Network::Stagenet, "monero:hello"), Err(CodeError::Monero(MoneroError::BadAddress(_)))));
     }
 
     #[test]

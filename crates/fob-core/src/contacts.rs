@@ -14,7 +14,7 @@ use crate::{
     address::{self, short_title},
     amount,
     clock::{self, Clock},
-    error::{FobError, Result},
+    error::{ScreenError, ScreenErrorResult as Result},
     network::Network,
     requests, uri,
 };
@@ -138,7 +138,7 @@ impl Book {
     }
 
     fn get_mut(&mut self, id: u64) -> Result<&mut Contact> {
-        self.contacts.iter_mut().find(|c| c.id == id).ok_or_else(|| FobError::Contact("That contact was deleted.".into()))
+        self.contacts.iter_mut().find(|c| c.id == id).ok_or_else(|| ScreenError::Contact("That contact was deleted.".into()))
     }
 
     /// The contact `address` belongs to (send address or paid at), the
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!((sam.id, sam.name.as_str(), sam.send_address.as_deref(), sam.created), (1, "Sam", Some(sam_address.as_str()), NOW));
         // Another network's address, a bad photo, no name: refused, nothing added.
         let mainnet = Keys::generate(Network::Mainnet).keys.address(0);
-        assert!(matches!(book.add(Network::Stagenet, Draft { send_address: Some(mainnet), ..draft("Mum") }, NOW), Err(FobError::WrongNetwork { .. })));
+        assert!(matches!(book.add(Network::Stagenet, Draft { send_address: Some(mainnet), ..draft("Mum") }, NOW), Err(ScreenError::Code(crate::error::CodeError::Monero(crate::error::MoneroError::WrongNetwork { .. })))));
         assert!(book.add(Network::Stagenet, Draft { photo: Some(webp(PHOTO_MAX + 1)), ..draft("Mum") }, NOW).is_err());
         assert!(book.add(Network::Stagenet, draft(""), NOW).is_err());
         assert_eq!(book.all().len(), 1);

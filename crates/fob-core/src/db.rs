@@ -25,15 +25,15 @@ use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use crate::{
-    error::{FobError, Result},
+    error::{VaultError, VaultErrorResult as Result},
     keys::StoredKeys,
 };
 
 /// `PRAGMA user_version` for this layout.
 const VERSION: i32 = 5;
 
-fn failed(e: impl std::fmt::Display) -> FobError {
-    FobError::Storage(e.to_string())
+fn failed(e: impl std::fmt::Display) -> VaultError {
+    VaultError::Storage(e.to_string())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -421,7 +421,7 @@ impl Db {
         // The first read is what finds out whether the key is right.
         match connection.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)) {
             Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::NotADatabase => return Err(FobError::WrongKey),
+            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::NotADatabase => return Err(VaultError::WrongKey),
             Err(e) => return Err(failed(e)),
         }
         // A commit is on the disk when it returns: what's in here is money's

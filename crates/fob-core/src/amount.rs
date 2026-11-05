@@ -1,6 +1,6 @@
 //! XMR amounts: atomic units (piconero, 10^-12 XMR) to and from text.
 
-use crate::error::{FobError, Result};
+use crate::error::{MoneroError, MoneroErrorResult as Result};
 
 pub const ATOMIC_PER_XMR: u64 = 1_000_000_000_000;
 /// The Monero sign in common use, before an amount typed in XMR.
@@ -36,14 +36,14 @@ pub fn parse(text: &str) -> Result<u64> {
         || !frac.chars().all(|c| c.is_ascii_digit())
         || frac.len() > DECIMALS
     {
-        return Err(FobError::BadAmount);
+        return Err(MoneroError::BadAmount);
     }
-    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| FobError::BadAmount)? };
-    let frac: u64 = format!("{frac:0<12}").parse().map_err(|_| FobError::BadAmount)?;
+    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| MoneroError::BadAmount)? };
+    let frac: u64 = format!("{frac:0<12}").parse().map_err(|_| MoneroError::BadAmount)?;
     whole
         .checked_mul(ATOMIC_PER_XMR)
         .and_then(|w| w.checked_add(frac))
-        .ok_or(FobError::BadAmount)
+        .ok_or(MoneroError::BadAmount)
 }
 
 /// Digits with a comma every three: "1,234".
