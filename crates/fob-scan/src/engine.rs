@@ -170,23 +170,16 @@ pub(crate) fn derive(digits: &Digits, keys: &[[u8; 32]]) -> Option<Points> {
 mod tests {
     use super::*;
 
-    fn is_gpu(route: Route) -> Option<bool> {
-        match route {
-            Route::Cpu => None,
-            Route::Gpu { cpu_too } => Some(cpu_too),
-        }
-    }
-
     #[test]
     fn each_mode_goes_where_it_says() {
-        assert_eq!(is_gpu(route_for(Mode::Cpu, 100_000, true)), None);
-        assert_eq!(is_gpu(route_for(Mode::Gpu, 1, true)), Some(false), "the GPU, even for a little");
-        assert_eq!(is_gpu(route_for(Mode::Gpu, 100_000, true)), Some(false), "and only the GPU for a lot");
-        assert_eq!(is_gpu(route_for(Mode::Auto, 1, true)), None, "a little: the CPU costs less");
-        assert_eq!(is_gpu(route_for(Mode::Auto, AutoSyncModePolicy::CHOSEN.gpu_from, true)), Some(false));
-        assert_eq!(is_gpu(route_for(Mode::Auto, AutoSyncModePolicy::CHOSEN.both_from, true)), Some(true), "a lot of blocks: the cores too");
+        assert_eq!(route_for(Mode::Cpu, 100_000, true), Route::Cpu);
+        assert_eq!(route_for(Mode::Gpu, 1, true), Route::Gpu, "the GPU, even for a little");
+        assert_eq!(route_for(Mode::Gpu, 100_000, true), Route::Gpu, "and for a lot");
+        assert_eq!(route_for(Mode::Auto, 1, true), Route::Cpu, "a little: the CPU costs less");
+        assert_eq!(route_for(Mode::Auto, AutoSyncModePolicy::CHOSEN.gpu_from, true), Route::Gpu);
+        assert_eq!(route_for(Mode::Auto, 100_000, true), Route::Gpu, "a lot of blocks: still only the GPU");
         for mode in [Mode::Auto, Mode::Gpu, Mode::Cpu] {
-            assert_eq!(is_gpu(route_for(mode, 100_000, false)), None, "no GPU, no choice");
+            assert_eq!(route_for(mode, 100_000, false), Route::Cpu, "no GPU, no choice");
         }
     }
 }
