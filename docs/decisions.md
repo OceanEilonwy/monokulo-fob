@@ -4,7 +4,7 @@ Calls made while building the first version, with why. Newest last.
 
 ## Shape
 
-1. **All wallet logic is in Rust (`crates/fob-core`, split up by decision 334);
+1. **All wallet logic is in Rust (`crates/fob-core`, split up by decision 339);
    the Android app is a thin layer.** Keys, seeds, syncing, scanning, sending, fees, payment and
    wallet codes, ORF receipts, the wallet file format, amount and money
    formatting, and QR modules are all in fob-core. `crates/fob-ffi` only
@@ -2774,7 +2774,7 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      flattening into `FobError` with the same variants and words, so an app sees no
      change. A second client depends on `fob-ffi` alone, so anything it needs has to
      be added where Android gets it too.
-335. **The library describes scenarios; `fob-words` says them.** Every error is an
+340. **The library describes scenarios; `fob-words` says them.** Every error is an
      enum now, and `FobError` shows the same words as before. `fob-words` is the only
      crate meant to hold sentences, and takes the device (`Phone`, `Computer`) as a
      process-wide setting, as it doesn't change while running. This reverses "every
@@ -2783,24 +2783,24 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      field names, so `fob-ffi`'s records and Kotlin's bindings didn't change. That
      boundary is where sentences begin: `fob-ffi` holds strings because its callers
      draw them. Data stays text: names, amounts, month names, currency names.
-336. **`fob-app` is the core a desktop client draws.** Like tern's `tern-app`, it
+341. **`fob-app` is the core a desktop client draws.** Like tern's `tern-app`, it
      holds what's unlocked, which wallet is open, the sync lifecycle, locking when
      left alone and saving who you met, and publishes to a listener. The rules of
      Send's form live lower, in `fob-ffi`, because Android uses them too. Android's
      `WalletModel` still holds its own state in Kotlin: that's flows and a phone's
      lifecycle, not wallet rules, and nothing could run a rewrite of it here.
-337. **The desktop's wallet key is sealed under a passphrase**, not put in the
+342. **The desktop's wallet key is sealed under a passphrase**, not put in the
      desktop's keyring, which any program running as the same user can read once it's
      unlocked. Argon2id at 128 MiB, sealing a random key, so changing the passphrase
      touches no wallet file. It's asked for again before spending or showing keys.
      The desktop can't hide secrets from screenshots, and says so.
-338. **`fob-gtk` draws with Relm4 and libadwaita, through a small bridge** as tern is
+343. **`fob-gtk` draws with Relm4 and libadwaita, through a small bridge** as tern is
      trying (`bridge.rs`): the engine's updates become the root component's input, a
      screen's model is its latest view, and what it does goes to the engine. No
      camera: a code is pasted or read from a picture. No NFC, so Meet is two codes,
      or a link. A photo from someone's code is drawn by `image-webp`, in safe Rust;
      libwebp, in C, only encodes a picture you chose yourself.
-339. **The desktop locks when left alone** (15 minutes unless changed) and when the
+344. **The desktop locks when left alone** (15 minutes unless changed) and when the
      desktop's session locks, never during a payment going out. Locking closes
      any dialog that's open, so a seed phrase doesn't stay on screen behind the lock.
      A passphrase is wiped once it reaches Rust; what GTK's own copy of the typed
