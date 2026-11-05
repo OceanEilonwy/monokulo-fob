@@ -535,10 +535,35 @@ pub struct Activity {
     /// "0.1421", without a sign.
     pub amount_text: String,
     pub receipt: Option<Receipt>,
+    pub status: PaymentStatus,
+}
+
+/// Where a payment stands, for a client to act on. Its words are in a row's line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PaymentStatus {
+    Sending,
+    OnTheWay,
+    Confirming { done: u64, needed: u64 },
+    NotReady { done: u64, needed: u64 },
+    Confirmed { confirmations: u64 },
+}
+
+impl From<activity::PaymentStatus> for PaymentStatus {
+    fn from(s: activity::PaymentStatus) -> Self {
+        use activity::PaymentStatus as S;
+        match s {
+            S::Sending => PaymentStatus::Sending,
+            S::OnTheWay => PaymentStatus::OnTheWay,
+            S::Confirming { done, needed } => PaymentStatus::Confirming { done, needed },
+            S::NotReady { done, needed } => PaymentStatus::NotReady { done, needed },
+            S::Confirmed { confirmations } => PaymentStatus::Confirmed { confirmations },
+        }
+    }
 }
 
 fn activity(a: fob_wallet::Activity) -> Activity {
     Activity {
+        status: activity::payment_status(&a).into(),
         outgoing: a.direction == fob_wallet::Direction::Out,
         amount_text: xmr(a.amount),
         tx: a.tx,

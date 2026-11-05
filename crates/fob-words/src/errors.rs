@@ -159,6 +159,36 @@ pub fn code_not_taken(why: NotTaken) -> String {
     }
 }
 
+/// The two passphrases typed aren't the same.
+pub fn passphrases_differ() -> String {
+    "Those passphrases aren't the same".into()
+}
+
+pub fn passphrase_changed() -> String {
+    "Passphrase changed".into()
+}
+
+pub fn nothing_to_paste() -> String {
+    "Nothing to paste.".into()
+}
+
+pub fn no_code_in_picture() -> String {
+    "Fob couldn't find a code in that picture.".into()
+}
+
+pub fn profile_not_payment() -> String {
+    "That's a profile, not a payment code. Add them from Contacts.".into()
+}
+
+/// Above a seed phrase on a computer, where nothing stops a screenshot.
+pub fn seed_warning(words: usize) -> String {
+    format!("These {words} words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored. Fob can't keep them out of a screenshot on a computer.")
+}
+
+pub fn wallet_code_warning() -> String {
+    "Anyone who scans this can use this wallet. Fob can't keep it out of a screenshot on a computer.".into()
+}
+
 /// Why two Fobs couldn't swap profiles by touching.
 pub fn swap_failed(problem: &swap::Problem) -> String {
     match problem {

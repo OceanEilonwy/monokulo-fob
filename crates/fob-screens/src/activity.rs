@@ -41,6 +41,33 @@ pub struct Day {
     pub rows: Vec<Row>,
 }
 
+/// Where a payment stands, for a client to act on. Its words are in `line`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaymentStatus {
+    /// Out, and not in a block yet.
+    Sending,
+    /// In, and not in a block yet.
+    OnTheWay,
+    /// Out, and in a block with too few confirmations to count as settled.
+    Confirming { done: u64, needed: u64 },
+    /// In, and not spendable yet.
+    NotReady { done: u64, needed: u64 },
+    Confirmed { confirmations: u64 },
+}
+
+/// Where `activity` stands.
+pub fn payment_status(activity: &Activity) -> PaymentStatus {
+    let out = activity.direction == Direction::Out;
+    let (done, needed) = (activity.confirmations, activity.needed);
+    match () {
+        _ if activity.height.is_none() && out => PaymentStatus::Sending,
+        _ if activity.height.is_none() => PaymentStatus::OnTheWay,
+        _ if done < needed && out => PaymentStatus::Confirming { done, needed },
+        _ if done < needed => PaymentStatus::NotReady { done, needed },
+        _ => PaymentStatus::Confirmed { confirmations: done },
+    }
+}
+
 /// While a payment isn't settled: "Sending", "On the way",
 /// "Confirming · 3 of 10" (out) or "Not ready · 3 of 10" (in; "20 of 60"
 /// for a mined reward, as many as its outputs need to be spent).
@@ -707,5 +734,16 @@ mod tests {
         assert_eq!((p[0].line.as_str(), p[0].address.as_str()), ("Yesterday · 0.001 XMR", address('e').as_str()));
         assert_eq!(p[1].line, "3 Oct · 0.3 XMR");
         assert!(paid_before(&[], c).is_empty());
+    }
+
+    #[test]
+    fn a_payment_says_where_it_stands_without_words() {
+        let at = |direction, height: Option<u64>, confirmations| Activity { height, ..activity(direction, 1, NOW, confirmations) };
+        let status = |a: &Activity| payment_status(a);
+        assert_eq!(status(&at(Direction::Out, None, 0)), PaymentStatus::Sending);
+        assert_eq!(status(&at(Direction::In, None, 0)), PaymentStatus::OnTheWay);
+        assert_eq!(status(&at(Direction::Out, Some(1), 3)), PaymentStatus::Confirming { done: 3, needed: 10 });
+        assert_eq!(status(&at(Direction::In, Some(1), 3)), PaymentStatus::NotReady { done: 3, needed: 10 });
+        assert_eq!(status(&at(Direction::In, Some(1), 24)), PaymentStatus::Confirmed { confirmations: 24 });
     }
 }

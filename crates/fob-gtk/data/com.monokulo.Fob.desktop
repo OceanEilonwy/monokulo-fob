@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Fob
+Comment=A small Monero wallet
+Exec=fob %u
+Icon=com.monokulo.Fob
+Terminal=false
+Type=Application
+Categories=GNOME;GTK;Office;Finance;
+Keywords=monero;xmr;wallet;money;
+MimeType=x-scheme-handler/monero;
+StartupNotify=true

@@ -1,0 +1,15 @@
+[package]
+name = "fob-gtk"
+description = "Fob for the Linux desktop: Relm4 and libadwaita, drawing what fob-app publishes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "fob"
+path = "src/main.rs"
+
+[dependencies]
+fob-app = { path = "../fob-app" }
+relm4 = { version = "0.11", features = ["libadwaita", "gnome_48"] }

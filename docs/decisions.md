@@ -2774,3 +2774,24 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      flattening into `FobError` with the same variants and words, so an app sees no
      change. A second client depends on `fob-ffi` alone, so anything it needs has to
      be added where Android gets it too.
+335. **The library describes scenarios; `fob-words` says them.** Every error is an
+     enum now, and `FobError` shows the same words as before. `fob-words` is the only
+     crate meant to hold sentences, and takes the device (`Phone`, `Computer`) as a
+     process-wide setting, as it doesn't change while running. This reverses "every
+     word is Rust's" only in where in Rust: apps still never write a word. The move
+     isn't finished. `fob-screens` still builds its rows' text, so about 250 fields
+     across `fob-ffi` are still strings. Those screens go one at a time, each gaining
+     an enum as `PaymentStatus` has beside its text.
+336. **`fob-app` is the core a desktop client draws.** Like tern's `tern-app`, it
+     holds what's unlocked, which wallet is open, the sync lifecycle and form rules,
+     and publishes to a listener. Android's `WalletModel` does the same in Kotlin for
+     now, and could move onto it.
+337. **The desktop's wallet key is sealed under a passphrase**, not put in the
+     desktop's keyring, which any program running as the same user can read once it's
+     unlocked. Argon2id at 128 MiB, sealing a random key, so changing the passphrase
+     touches no wallet file. It's asked for again before spending or showing keys.
+     The desktop can't hide secrets from screenshots, and says so.
+338. **`fob-gtk` draws with Relm4 and libadwaita, through a small bridge** as tern is
+     trying (`bridge.rs`): the engine's updates become the root component's input, a
+     screen's model is its latest view, and what it does goes to the engine. No
+     camera: a code is pasted or read from a picture. No NFC.

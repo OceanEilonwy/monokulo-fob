@@ -1,0 +1,509 @@
+//! Settings: wallets and networks, the node, prices, scanning, backup and the
+//! passphrase. Seeing keys or the wallet code asks for the passphrase first.
+
+use fob_app::{
+    Engine,
+    views::{BackupHub, HubItem, KeyGroup, Network, ScanMode, Screens, SeedPhrase, SyncStatus, WalletEntry},
+};
+use relm4::{
+    adw::{self, prelude::*},
+    gtk,
+    prelude::*,
+};
+
+use crate::{
+    bridge::View,
+    root::{Go, Msg as RootMsg},
+    widgets,
+};
+
+/// Every wallet, the one open, and the network.
+pub struct Wallets {
+    pub all: Vec<WalletEntry>,
+    pub current: Option<WalletEntry>,
+    pub network: Network,
+}
+
+#[derive(Debug)]
+pub enum Input {
+    Screens(View<Screens>),
+    Status(View<SyncStatus>),
+    Wallets(View<Wallets>),
+    Opened,
+    Hub(View<BackupHub>),
+    Switch(String),
+    Network(u32),
+    AddWallet,
+    Rename(String, String),
+    Forget,
+    SetNode,
+    Scan(u32),
+    Currency,
+    Lock,
+    ChangePassphrase,
+    /// Asks for the passphrase, then shows `HubItem`.
+    Reveal(HubItem),
+    Show(HubItem),
+    Keys(View<Vec<KeyGroup>>),
+    WalletCode(String),
+    BackedUp,
+    Say(String),
+}
+
+pub struct Settings {
+    engine: Engine,
+    wallets_group: adw::PreferencesGroup,
+    wallet_rows: Vec<gtk::Widget>,
+    network_row: adw::ComboRow,
+    backup_group: adw::PreferencesGroup,
+    backup_rows: Vec<adw::ActionRow>,
+    node_line: String,
+    backup_line: String,
+    currency_line: String,
+    zmq_line: String,
+}
+
+#[relm4::component(pub)]
+impl SimpleComponent for Settings {
+    type Init = Engine;
+    type Input = Input;
+    type Output = RootMsg;
+
+    view! {
+        adw::ToolbarView {
+            add_top_bar = &adw::HeaderBar {},
+            #[wrap(Some)]
+            set_content = &gtk::ScrolledWindow {
+                set_hscrollbar_policy: gtk::PolicyType::Never,
+                #[wrap(Some)]
+                set_child = &adw::Clamp {
+                    set_maximum_size: 600,
+                    #[wrap(Some)]
+                    set_child = &gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_spacing: 18,
+                        set_margin_all: 16,
+
+                        #[local_ref]
+                        wallets_group -> adw::PreferencesGroup {
+                            set_title: "Wallets",
+                            #[wrap(Some)]
+                            set_header_suffix = &gtk::Button {
+                                add_css_class: "flat",
+                                set_label: "Add",
+                                connect_clicked => Input::AddWallet,
+                            },
+                        },
+                        adw::PreferencesGroup {
+                            #[local_ref]
+                            add = network_row -> adw::ComboRow {
+                                set_title: "Network",
+                                set_model: Some(&gtk::StringList::new(&["Stagenet, test coins", "Mainnet, real money"])),
+                                connect_selected_notify[sender] => move |row| sender.input(Input::Network(row.selected())),
+                            },
+                        },
+                        #[local_ref]
+                        backup_group -> adw::PreferencesGroup {
+                            set_title: "Backup and keys",
+                            #[watch]
+                            set_description: Some(gtk::glib::markup_escape_text(&model.backup_line).as_str()),
+                        },
+                        adw::PreferencesGroup {
+                            set_title: "Connection",
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: "Node",
+                                set_activatable: true,
+                                #[watch]
+                                set_subtitle: &gtk::glib::markup_escape_text(&model.node_line),
+                                connect_activated => Input::SetNode,
+                            },
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: "Instant updates (ZMQ)",
+                                #[watch]
+                                set_subtitle: &gtk::glib::markup_escape_text(&model.zmq_line),
+                            },
+                            add = &adw::ComboRow {
+                                set_title: "Scanning",
+                                set_model: Some(&gtk::StringList::new(&["Auto: the main cores for a few blocks, the graphics chip for more", "GPU: the graphics chip", "CPU: only the main cores"])),
+                                set_selected: match model.engine.scan_mode() { ScanMode::Auto => 0, ScanMode::Gpu => 1, ScanMode::Cpu => 2 },
+                                connect_selected_notify[sender] => move |row| sender.input(Input::Scan(row.selected())),
+                            },
+                        },
+                        adw::PreferencesGroup {
+                            set_title: "Prices",
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: "Default currency",
+                                set_activatable: true,
+                                #[watch]
+                                set_subtitle: &gtk::glib::markup_escape_text(&model.currency_line),
+                                connect_activated => Input::Currency,
+                            },
+                        },
+                        adw::PreferencesGroup {
+                            set_title: "This computer",
+                            add = &adw::ButtonRow { set_title: "Change passphrase", connect_activated => Input::ChangePassphrase },
+                            add = &adw::ButtonRow { set_title: "Lock now", connect_activated => Input::Lock },
+                            add = &adw::ButtonRow {
+                                set_title: "Remove this wallet from this computer",
+                                add_css_class: "destructive-action",
+                                connect_activated => Input::Forget,
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    }
+
+    fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+        let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
+        let network_row = adw::ComboRow::new();
+        let model = Settings {
+            engine,
+            wallets_group: wallets_group.clone(),
+            wallet_rows: vec![],
+            network_row: network_row.clone(),
+            backup_group: backup_group.clone(),
+            backup_rows: vec![],
+            node_line: String::new(),
+            backup_line: String::new(),
+            currency_line: String::new(),
+            zmq_line: String::new(),
+        };
+        let (wallets_group, backup_group, network_row) = (&wallets_group, &backup_group, &network_row);
+        let widgets = view_output!();
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, input: Input, sender: ComponentSender<Self>) {
+        match input {
+            Input::Screens(View(screens)) => {
+                self.node_line = screens.node_line.clone();
+                self.backup_line = screens.backup_line.clone();
+                self.currency_line = screens.prices.currency_text.clone();
+            }
+            Input::Status(View(status)) => self.zmq_line = status.zmq_text.clone(),
+            Input::Wallets(View(wallets)) => self.draw_wallets(&wallets, &sender),
+            Input::Opened => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Some(hub) = engine.read(|wallet, _| async move { wallet.backup_hub(false).await }).await {
+                        sender.input(Input::Hub(View(hub.into())));
+                    }
+                });
+            }
+            Input::Hub(View(hub)) => self.draw_hub(&hub, &sender),
+            Input::Switch(file) => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Err(e) = engine.switch_wallet(file).await {
+                        sender.input(Input::Say(e.to_string()));
+                    }
+                });
+            }
+            Input::Network(i) => {
+                let network = if i == 1 { Network::Mainnet } else { Network::Stagenet };
+                // The row following the engine, not someone choosing.
+                if network == self.engine.network() {
+                    return;
+                }
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Err(e) = engine.switch_network(network).await {
+                        sender.input(Input::Say(e.to_string()));
+                    }
+                });
+            }
+            Input::AddWallet => {
+                let _ = sender.output(RootMsg::Go(Go::AddWallet));
+            }
+            Input::Rename(file, name) => {
+                if let Err(e) = self.engine.rename_wallet(file, name) {
+                    sender.input(Input::Say(e.to_string()));
+                }
+            }
+            Input::Forget => self.ask_forget(&sender),
+            Input::SetNode => self.ask_node(&sender),
+            Input::Scan(i) => {
+                let mode = match i {
+                    1 => ScanMode::Gpu,
+                    2 => ScanMode::Cpu,
+                    _ => ScanMode::Auto,
+                };
+                if let Err(e) = self.engine.set_scan(mode) {
+                    sender.input(Input::Say(e.to_string()));
+                }
+            }
+            Input::Currency => self.ask_currency(&sender),
+            Input::Lock => self.engine.lock(),
+            Input::ChangePassphrase => self.ask_new_passphrase(&sender),
+            Input::Reveal(item) => {
+                let (engine, then) = (self.engine.clone(), sender.clone());
+                widgets::ask_passphrase(self.backup_group.upcast_ref(), "Show these?", "Anyone who sees them can use this wallet. Type your passphrase to go on.", move |typed| {
+                    let Some(typed) = typed else { return };
+                    let (engine, then) = (engine.clone(), then.clone());
+                    relm4::spawn(async move {
+                        match engine.confirm(typed).await {
+                            Ok(()) => then.input(Input::Show(item)),
+                            Err(e) => then.input(Input::Say(e.to_string())),
+                        }
+                    });
+                });
+            }
+            Input::Show(item) => self.show(item, &sender),
+            Input::Keys(View(groups)) => self.show_keys(&groups),
+            Input::WalletCode(code) => self.show_wallet_code(&code),
+            Input::BackedUp => {
+                let engine = self.engine.clone();
+                let then = sender.clone();
+                relm4::spawn(async move {
+                    let _ = engine.change(|wallet| async move { wallet.backup_done().await }).await;
+                    then.input(Input::Opened);
+                });
+            }
+            Input::Say(text) => {
+                let _ = sender.output(RootMsg::Say(text));
+            }
+        }
+    }
+}
+
+impl Settings {
+    fn draw_wallets(&mut self, wallets: &Wallets, sender: &ComponentSender<Self>) {
+        self.network_row.set_selected(if wallets.network == Network::Mainnet { 1 } else { 0 });
+        for row in self.wallet_rows.drain(..) {
+            self.wallets_group.remove(&row);
+        }
+        for wallet in &wallets.all {
+            let network = match wallet.network {
+                Network::Mainnet => "Mainnet",
+                Network::Stagenet => "Stagenet, test coins",
+            };
+            let open = wallets.current.as_ref().is_some_and(|c| c.file == wallet.file);
+            let row = widgets::row(&wallet.name, network);
+            if open {
+                row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
+            } else {
+                row.set_activatable(true);
+                let (file, sender) = (wallet.file.clone(), sender.clone());
+                row.connect_activated(move |_| sender.input(Input::Switch(file.clone())));
+            }
+            let rename = gtk::Button::builder().icon_name("document-edit-symbolic").valign(gtk::Align::Center).tooltip_text("Rename").css_classes(["flat"]).build();
+            let (file, name, then, parent) = (wallet.file.clone(), wallet.name.clone(), sender.clone(), self.wallets_group.clone());
+            rename.connect_clicked(move |_| {
+                let entry = adw::EntryRow::builder().title("Name").text(&name).build();
+                let holder = widgets::list();
+                holder.append(&entry);
+                let dialog = adw::AlertDialog::builder().heading("Rename wallet").extra_child(&holder).build();
+                dialog.add_responses(&[("cancel", "_Cancel"), ("save", "_Save")]);
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+                let (file, then) = (file.clone(), then.clone());
+                dialog.connect_response(Some("save"), move |_, _| then.input(Input::Rename(file.clone(), entry.text().to_string())));
+                dialog.present(Some(&parent));
+            });
+            row.add_suffix(&rename);
+            self.wallets_group.add(&row);
+            self.wallet_rows.push(row.upcast());
+        }
+    }
+
+    fn draw_hub(&mut self, hub: &BackupHub, sender: &ComponentSender<Self>) {
+        for row in self.backup_rows.drain(..) {
+            self.backup_group.remove(&row);
+        }
+        self.backup_line = hub.warning.clone();
+        for item in hub.backup.iter().chain(&hub.other) {
+            let row = widgets::row(&item.title, &item.line);
+            row.set_activatable(true);
+            row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+            let (what, sender) = (item.item, sender.clone());
+            row.connect_activated(move |_| sender.input(Input::Reveal(what)));
+            self.backup_group.add(&row);
+            self.backup_rows.push(row);
+        }
+    }
+
+    fn show(&self, item: HubItem, sender: &ComponentSender<Self>) {
+        match item {
+            HubItem::SeedPhrase => {
+                if let Some(seed) = self.engine.wallet().and_then(|wallet| wallet.seed_phrase()) {
+                    self.show_seed(&seed, sender);
+                }
+            }
+            HubItem::WalletCode => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Some(code) = engine.read(|wallet, _| async move { wallet.wallet_code().await }).await {
+                        sender.input(Input::WalletCode(code));
+                    }
+                });
+            }
+            HubItem::Keys => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Some(keys) = engine.read(|wallet, _| async move { wallet.keys_page().await }).await {
+                        sender.input(Input::Keys(View(keys.into())));
+                    }
+                });
+            }
+        }
+    }
+
+    fn show_seed(&self, seed: &SeedPhrase, sender: &ComponentSender<Self>) {
+        let grid = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).min_children_per_line(3).max_children_per_line(4).homogeneous(true).build();
+        for (i, word) in seed.words.iter().enumerate() {
+            let label = gtk::Label::builder().label(format!("{}. {word}", i + 1)).xalign(0.0).build();
+            label.add_css_class("seed-word");
+            grid.insert(&label, -1);
+        }
+        let dialog = adw::AlertDialog::builder().heading(&seed.kind).body(fob_app::words::errors::seed_warning(seed.words.len())).extra_child(&grid).prefer_wide_layout(true).build();
+        dialog.add_responses(&[("close", "_Close"), ("done", "I've _written them down")]);
+        dialog.set_close_response("close");
+        dialog.set_response_appearance("done", adw::ResponseAppearance::Suggested);
+        let sender = sender.clone();
+        dialog.connect_response(Some("done"), move |_, _| sender.input(Input::BackedUp));
+        dialog.present(Some(&self.backup_group));
+    }
+
+    fn show_keys(&self, groups: &[KeyGroup]) {
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        for group in groups {
+            let list = adw::PreferencesGroup::builder().title(gtk::glib::markup_escape_text(&group.title).as_str()).build();
+            for key in &group.keys {
+                let row = widgets::row(&key.title, &key.value);
+                row.set_subtitle_selectable(true);
+                row.add_css_class("property");
+                let copy = gtk::Button::builder().icon_name("edit-copy-symbolic").valign(gtk::Align::Center).css_classes(["flat"]).tooltip_text(&key.copy).build();
+                let clip = key.clip.clone();
+                copy.connect_clicked(move |button| widgets::copy_secret(button, &clip));
+                row.add_suffix(&copy);
+                list.add(&row);
+            }
+            column.append(&list);
+        }
+        let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).min_content_height(420).child(&column).build();
+        let dialog = adw::AlertDialog::builder().heading("Keys").extra_child(&scroll).prefer_wide_layout(true).build();
+        dialog.add_response("close", "_Close");
+        dialog.present(Some(&self.backup_group));
+    }
+
+    fn show_wallet_code(&self, code: &str) {
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        if let Some(qr) = widgets::qr(code, 300) {
+            column.append(&qr);
+        }
+        let dialog = adw::AlertDialog::builder().heading("Wallet code").body(fob_app::words::errors::wallet_code_warning()).extra_child(&column).build();
+        dialog.add_response("close", "_Close");
+        dialog.present(Some(&self.backup_group));
+    }
+
+    fn ask_forget(&self, sender: &ComponentSender<Self>) {
+        let dialog = adw::AlertDialog::builder().heading("Remove this wallet from this computer?").body("Its money stays on the chain, but only its seed phrase or keys can bring it back. Make sure you've written them down.").build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("remove", "_Remove")]);
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        dialog.connect_response(Some("remove"), move |_, _| {
+            let (engine, sender) = (engine.clone(), sender.clone());
+            relm4::spawn(async move {
+                match engine.forget_wallet().await {
+                    Ok(()) => {
+                        let _ = sender.output(RootMsg::Go(Go::Back));
+                    }
+                    Err(e) => sender.input(Input::Say(e.to_string())),
+                }
+            });
+        });
+        dialog.present(Some(&self.backup_group));
+    }
+
+    fn ask_node(&self, sender: &ComponentSender<Self>) {
+        let (url, trusted) = (adw::EntryRow::builder().title("Node address").build(), adw::SwitchRow::builder().title("Accept its self-signed certificate").build());
+        let form = widgets::list();
+        form.append(&url);
+        form.append(&trusted);
+        let dialog = adw::AlertDialog::builder().heading("Use another node").body(self.node_line.as_str()).extra_child(&form).build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("use", "_Use")]);
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("use", adw::ResponseAppearance::Suggested);
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        dialog.connect_response(Some("use"), move |_, _| {
+            let (engine, sender, url, trusted) = (engine.clone(), sender.clone(), url.text().to_string(), trusted.is_active());
+            relm4::spawn(async move {
+                if let Err(e) = engine.change(move |wallet| async move { wallet.set_node(url, trusted).await }).await {
+                    sender.input(Input::Say(e.to_string()));
+                }
+            });
+        });
+        dialog.present(Some(&self.backup_group));
+    }
+
+    fn ask_currency(&self, sender: &ComponentSender<Self>) {
+        let holder = gtk::ListBox::new();
+        holder.add_css_class("boxed-list");
+        holder.set_selection_mode(gtk::SelectionMode::None);
+        let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).min_content_height(380).child(&holder).build();
+        let dialog = adw::AlertDialog::builder().heading("Default currency").extra_child(&scroll).build();
+        dialog.add_response("close", "_Close");
+        dialog.present(Some(&self.backup_group));
+        let (engine, sender, dialog_ref) = (self.engine.clone(), sender.clone(), dialog.clone());
+        gtk::glib::spawn_future_local(async move {
+            let lookup = engine.clone();
+            let list = relm4::spawn(async move { lookup.read(|wallet, _| async move { wallet.currency_list(None, String::new()).await }).await }).await.ok().flatten();
+            let Some(list) = list else { return };
+            for group in &list.groups {
+                for currency in &group.rows {
+                    let row = widgets::row(&currency.name, &currency.line);
+                    row.set_activatable(true);
+                    if currency.chosen {
+                        row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
+                    }
+                    let (code, engine, sender, dialog) = (currency.code.clone(), engine.clone(), sender.clone(), dialog_ref.clone());
+                    row.connect_activated(move |_| {
+                        let (code, engine, sender) = (code.clone(), engine.clone(), sender.clone());
+                        relm4::spawn(async move {
+                            match engine.change(move |wallet| async move { wallet.set_currency(code).await }).await {
+                                Ok(Some(said)) => sender.input(Input::Say(said)),
+                                Ok(None) => {}
+                                Err(e) => sender.input(Input::Say(e.to_string())),
+                            }
+                        });
+                        dialog.close();
+                    });
+                    holder.append(&row);
+                }
+            }
+        });
+    }
+
+    fn ask_new_passphrase(&self, sender: &ComponentSender<Self>) {
+        let (old, new, again) = (adw::PasswordEntryRow::builder().title("Passphrase now").build(), adw::PasswordEntryRow::builder().title("New passphrase").build(), adw::PasswordEntryRow::builder().title("New passphrase again").build());
+        let form = widgets::list();
+        form.append(&old);
+        form.append(&new);
+        form.append(&again);
+        let dialog = adw::AlertDialog::builder().heading("Change passphrase").extra_child(&form).build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("change", "_Change")]);
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("change", adw::ResponseAppearance::Suggested);
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        dialog.connect_response(Some("change"), move |_, _| {
+            if new.text() != again.text() {
+                sender.input(Input::Say(fob_app::words::errors::passphrases_differ()));
+                return;
+            }
+            let (engine, sender, old, new) = (engine.clone(), sender.clone(), old.text().to_string(), new.text().to_string());
+            relm4::spawn(async move {
+                match engine.change_passphrase(old, new).await {
+                    Ok(()) => sender.input(Input::Say(fob_app::words::errors::passphrase_changed())),
+                    Err(e) => sender.input(Input::Say(e.to_string())),
+                }
+            });
+        });
+        dialog.present(Some(&self.backup_group));
+    }
+}
