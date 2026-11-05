@@ -53,18 +53,6 @@ pub enum CertProblem {
 }
 
 impl CertProblem {
-    /// "self-signed", for "self-signed, not accepted".
-    pub fn words(self) -> &'static str {
-        match self {
-            CertProblem::SelfSigned => "self-signed",
-            CertProblem::Expired => "expired",
-            CertProblem::NotYetValid => "not valid yet",
-            CertProblem::OtherName => "for another address",
-            CertProblem::BadSignature => "signature doesn't match",
-            CertProblem::Invalid => "not valid",
-        }
-    }
-
     /// Whether a node marked to accept a self-signed certificate takes one
     /// with this problem: only what a node's own certificate can have.
     pub fn acceptable(self) -> bool {
@@ -257,7 +245,7 @@ impl Transport {
     /// older wallet file, say): there's no Tor to reach it through.
     pub fn new(url: &str, self_signed: bool) -> Result<Transport, InterfaceError> {
         crate::node::reachable(url).map_err(|e| InterfaceError::InternalError(match e {
-            crate::error::EndpointProblem::Onion => crate::node::NO_ONION.to_owned(),
+            crate::error::EndpointProblem::Onion => crate::node::ONION_REFUSED.to_owned(),
             other => format!("{other:?}"),
         }))?;
         let certificate = Seen::default();

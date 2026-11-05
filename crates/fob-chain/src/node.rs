@@ -21,12 +21,12 @@ use monero_wallet::interface::InterfaceError;
 use tokio::time::Instant;
 
 pub use fob_monero::network::is_onion;
-use fob_monero::{amount::grouped, network::{Network, link_speed}};
+use fob_monero::network::Network;
 use crate::error::EndpointProblem;
 use crate::{fetch, transport::{CertProblem, Transport}};
 
 /// How long the node has to answer `get_info` (and say its last block).
-const ANSWER: Duration = Duration::from_secs(5);
+pub const ANSWER: Duration = Duration::from_secs(5);
 /// How long the sample of blocks may take.
 const BLOCKS: Duration = Duration::from_secs(10);
 /// Blocks fetched to measure a node: a few requests' worth.
@@ -40,10 +40,11 @@ const STALE: u64 = 3600;
 /// Monero's target block time.
 const BLOCK_SECONDS: u64 = 120;
 
-/// What Fob says when asked for a node on an onion service. It has no Tor
-/// yet, and looking the name up through the phone's DNS would tell whoever
+/// Marks an onion node's refusal in the interface error's text, which is only
+/// a string: [`sync_failure`] reads it back, and `fob-words` says it. It has no
+/// Tor yet, and looking the name up through the phone's DNS would tell whoever
 /// answers which onion service this wallet uses.
-pub const NO_ONION: &str = "Fob can't reach .onion nodes yet";
+pub const ONION_REFUSED: &str = "onion node refused";
 
 /// Refuses a node Fob can't reach without leaking it: one on an onion
 /// service. Checked before anything connects (or looks a name up).
@@ -87,29 +88,6 @@ pub enum Step {
     Blocks,
 }
 
-impl Step {
-    pub fn title(self) -> &'static str {
-        match self {
-            Step::Certificate => "Certificate",
-            Step::Answers => "Answers",
-            Step::Network => "Right network",
-            Step::UpToDate => "Up to date",
-            Step::Blocks => "Sends blocks to Fob",
-        }
-    }
-
-    /// The verdict when this check is the first to fail.
-    fn failed(self) -> &'static str {
-        match self {
-            Step::Certificate => "Certificate not accepted",
-            Step::Answers => "Doesn't answer",
-            Step::Network => "Wrong network",
-            Step::UpToDate => "Not up to date",
-            Step::Blocks => "Doesn't send blocks",
-        }
-    }
-}
-
 /// How a check came out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
@@ -120,31 +98,70 @@ pub enum Mark {
     Skipped,
 }
 
+/// What a check found.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outcome {
+    Checking,
+    /// Not run: one it needs failed.
+    Skipped,
+    /// The certificate's fine, or has this problem and was accepted anyway.
+    Certificate(Option<CertProblem>),
+    /// How long `get_info` took.
+    Latency(u64),
+    /// The node is on the wallet's network.
+    Network(String),
+    /// The node's network, empty when it didn't say, and the wallet's.
+    WrongNetwork { theirs: String, ours: String },
+    /// Its last block, and how many seconds ago that was.
+    Block { height: u64, age: u64 },
+    Behind { seconds: u64 },
+    /// A request failed; `limit` is how many seconds it had.
+    Failed { failure: Failure, limit: u64 },
+    /// It answered with none.
+    NoBlocks,
+    /// None within the time allowed.
+    NoBlocksWithin { seconds: u64 },
+    Speed { blocks_per_second: f64, bytes_per_second: f64 },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub step: Step,
-    /// "84 ms", "stagenet", "block 1,792,004 · 1 min ago", "2 days behind".
-    pub result: String,
-    /// A line of its own under the result, never beside it: Sends blocks
-    /// to Fob's link speed, "1.8 MB/s", under "31 blocks/s".
-    pub second: Option<String>,
+    pub outcome: Outcome,
     pub mark: Mark,
 }
 
-impl Row {
-    pub fn title(&self) -> &'static str {
-        self.step.title()
-    }
+/// A node's verdict over all its checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Checking,
+    Working,
+    /// The first check to fail.
+    Failed(Step),
+}
 
-    /// For TalkBack: "Up to date: 2 days behind", "Answers: not checked",
-    /// "Sends blocks to Fob: 31 blocks/s, 1.8 MB/s".
-    pub fn label(&self) -> String {
-        match (self.mark, &self.second) {
-            (Mark::Skipped, _) => format!("{}: not checked", self.title()),
-            (_, Some(second)) => format!("{}: {}, {second}", self.title(), self.result),
-            (_, None) => format!("{}: {}", self.title(), self.result),
-        }
-    }
+/// One line for the list of other nodes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Line {
+    Checking,
+    InSync { ms: u64, fastest: bool },
+    /// Its certificate failed, with what's wrong with it.
+    Certificate(Outcome),
+    /// It didn't answer, with why.
+    NoAnswer(Outcome),
+    /// Its network, empty when it didn't say, and the wallet's.
+    OtherNetwork { theirs: String, ours: String },
+    /// It answers but is behind or won't send blocks.
+    Poor { ms: u64, outcome: Outcome },
+}
+
+/// Why a node can't be switched to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SwitchRefused {
+    Endpoint(EndpointProblem),
+    Failed(Failure),
+    /// Its network, empty when it didn't say, and the wallet's.
+    OtherNetwork { theirs: String, ours: String },
 }
 
 /// Whether a checked node can be switched to.
@@ -180,7 +197,7 @@ impl Report {
         let rows = steps
             .into_iter()
             .filter(|s| https || *s != Step::Certificate)
-            .map(|step| Row { step, result: "checking…".into(), second: None, mark: Mark::Checking })
+            .map(|step| Row { step, outcome: Outcome::Checking, mark: Mark::Checking })
             .collect();
         Report {
             address: address(&url),
@@ -198,12 +215,12 @@ impl Report {
         self.rows.iter().any(|r| r.mark == Mark::Checking)
     }
 
-    /// "Working", "Checking…", or the first failed check's words.
-    pub fn verdict(&self) -> &'static str {
+    /// Still checking, working, or the first check to fail.
+    pub fn verdict(&self) -> Verdict {
         if self.checking() {
-            return "Checking…";
+            return Verdict::Checking;
         }
-        self.rows.iter().find(|r| r.mark == Mark::Fail).map_or("Working", |r| r.step.failed())
+        self.rows.iter().find(|r| r.mark == Mark::Fail).map_or(Verdict::Working, |r| Verdict::Failed(r.step))
     }
 
     /// The verdict's mark: Checking, Fail when any check failed, else Pass.
@@ -225,37 +242,27 @@ impl Report {
         }
     }
 
-    /// One line for the list of other nodes: "120 ms · in sync · fastest",
-    /// "Didn't answer in 5 s", "Mainnet node: this wallet is stagenet".
-    pub fn line(&self, fastest: bool) -> String {
+    /// What this node's line in the list of other nodes says.
+    pub fn line(&self, fastest: bool) -> Line {
         if self.checking() {
-            return "Checking…".into();
+            return Line::Checking;
         }
         let ms = self.latency_ms.unwrap_or(0);
         let Some(failed) = self.rows.iter().find(|r| r.mark == Mark::Fail) else {
-            return format!("{ms} ms · in sync{}", if fastest { " · fastest" } else { "" });
+            return Line::InSync { ms, fastest };
         };
         match failed.step {
-            Step::Certificate => format!("Certificate {}", failed.result),
-            Step::Answers => capitalized(&failed.result),
-            Step::Network => match self.nettype.as_deref() {
-                Some(n) if !n.is_empty() => format!("{} node: this wallet is {}", capitalized(n), self.network.name()),
-                _ => format!("Unknown network: this wallet is {}", self.network.name()),
-            },
-            Step::UpToDate | Step::Blocks => format!("{ms} ms · {}", failed.result),
+            Step::Certificate => Line::Certificate(failed.outcome.clone()),
+            Step::Answers => Line::NoAnswer(failed.outcome.clone()),
+            Step::Network => Line::OtherNetwork { theirs: self.nettype.clone().unwrap_or_default(), ours: self.network.name().to_owned() },
+            Step::UpToDate | Step::Blocks => Line::Poor { ms, outcome: failed.outcome.clone() },
         }
     }
 
-    fn set(&mut self, step: Step, mark: Mark, result: impl Into<String>) {
-        self.set_lines(step, mark, result.into(), None);
-    }
-
-    /// A result with a `second` line under it.
-    fn set_lines(&mut self, step: Step, mark: Mark, result: String, second: Option<String>) {
+    fn set(&mut self, step: Step, mark: Mark, outcome: Outcome) {
         if let Some(row) = self.rows.iter_mut().find(|r| r.step == step) {
             row.mark = mark;
-            row.result = result;
-            row.second = second;
+            row.outcome = outcome;
         }
     }
 
@@ -263,7 +270,7 @@ impl Report {
     fn stop(mut self) -> Report {
         for row in self.rows.iter_mut().filter(|r| r.mark == Mark::Checking) {
             row.mark = Mark::Skipped;
-            row.result.clear();
+            row.outcome = Outcome::Skipped;
         }
         self
     }
@@ -271,41 +278,28 @@ impl Report {
     /// The node didn't answer: its certificate (if that's why) or Answers fails.
     fn unanswered(mut self, failure: Failure) -> Report {
         let step = if matches!(failure, Failure::Certificate(_)) { Step::Certificate } else { Step::Answers };
-        self.set(step, Mark::Fail, failure.words(ANSWER));
+        self.set(step, Mark::Fail, Outcome::Failed { failure, limit: ANSWER.as_secs() });
         self.stop()
     }
 }
 
-/// The sync card's words for a failed sync step, and whether the failure
-/// is the phone's own rather than the node's: what the node checks would
-/// say ("Address not found", "Refused to connect", "Certificate expired,
-/// not accepted"), from the error and the certificate the connection's
-/// last handshake saw, not the transport's own error text.
-pub fn sync_failure(text: &str, certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> String {
-    // Sync errors are the interface error's debug text: its variant first.
-    let failure = match Failure::refused(certificate, self_signed) {
+/// Why a sync step failed, as the node checks would see it: from the error
+/// and the certificate the connection's last handshake saw. The error is the
+/// interface error's debug text, a string upstream, so it's read here and goes
+/// no further than this enum.
+pub fn sync_failure(text: &str, certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> Failure {
+    // Its variant first.
+    match Failure::refused(certificate, self_signed) {
         Some(refused) => refused,
-        None if text.contains(NO_ONION) => Failure::Onion,
+        None if text.contains(ONION_REFUSED) => Failure::Onion,
         None if text.starts_with("InvalidInterface(") || text.starts_with("scanning") => Failure::Unreadable,
         None => Failure::from_text(text),
-    };
-    match failure {
-        // Syncing's limits are its own (15 s to connect, 30 s quiet).
-        Failure::TimedOut => "Stopped answering".into(),
-        Failure::Certificate(_) => format!("Certificate {}", failure.words(ANSWER)),
-        failure => capitalized(&failure.words(ANSWER)),
     }
 }
 
-/// "Didn't answer in 5 s" from "didn't answer in 5 s".
-pub fn capitalized(s: &str) -> String {
-    let mut chars = s.chars();
-    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
-}
-
-/// Why a request to the node failed, in words for a check's row.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Failure {
+/// Why a request to the node failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
     Onion,
     BadAddress,
     /// The certificate didn't verify (and the node isn't marked to accept that).
@@ -323,24 +317,6 @@ pub(crate) enum Failure {
 }
 
 impl Failure {
-    /// "didn't answer in 5 s", "self-signed, not accepted".
-    fn words(&self, limit: Duration) -> String {
-        match self {
-            Failure::Onion => "needs Tor, not in Fob yet".into(),
-            Failure::BadAddress => "not an address Fob can read".into(),
-            Failure::Certificate(problem) => format!("{}, not accepted", problem.words()),
-            Failure::TimedOut => format!("didn't answer in {} s", limit.as_secs()),
-            Failure::Refused => "refused to connect".into(),
-            Failure::NotFound => "address not found".into(),
-            Failure::NotMonero => "not a Monero node".into(),
-            // monerod started with --rpc-login.
-            Failure::Status(401) => "wants a login".into(),
-            Failure::Status(code) => format!("answered {code}"),
-            Failure::Unreadable => "sent blocks Fob can't read".into(),
-            Failure::Other => "couldn't connect".into(),
-        }
-    }
-
     /// The node's certificate, if that's why a request failed: one with a
     /// problem the node isn't marked to accept, or one no mark accepts.
     fn refused(certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> Option<Failure> {
@@ -461,44 +437,17 @@ impl Probe for Live {
     }
 }
 
-/// "just now", "1 min ago", "2 h ago".
-fn ago(seconds: u64) -> String {
-    match seconds {
-        0..60 => "just now".into(),
-        60..3600 => format!("{} min ago", seconds / 60),
-        _ => format!("{} h ago", seconds / 3600),
-    }
-}
-
-/// "20 min behind", "5 h behind", "2 days behind".
-fn behind(seconds: u64) -> String {
-    match seconds {
-        0..3600 => format!("{} min behind", (seconds / 60).max(1)),
-        3600..172_800 => format!("{} h behind", seconds / 3600),
-        _ => format!("{} days behind", seconds / 86_400),
-    }
-}
-
-/// Up to date's mark and words, from the node's info and last block, the
+/// Up to date's mark and outcome, from the node's info and last block, the
 /// tip this wallet last saw, and the time now (seconds since the epoch).
-fn up_to_date(info: &Info, (last_height, timestamp): (u64, u64), known_tip: u64, now: u64) -> (Mark, String) {
+fn up_to_date(info: &Info, (last_height, timestamp): (u64, u64), known_tip: u64, now: u64) -> (Mark, Outcome) {
     let blocks_behind = info.target_height.max(known_tip).saturating_sub(info.height);
     let age = now.saturating_sub(timestamp);
     if blocks_behind > BEHIND_BLOCKS || age > STALE {
         let stuck = if age > STALE { age } else { 0 };
-        (Mark::Fail, behind((blocks_behind * BLOCK_SECONDS).max(stuck)))
+        (Mark::Fail, Outcome::Behind { seconds: (blocks_behind * BLOCK_SECONDS).max(stuck) })
     } else {
-        (Mark::Pass, format!("block {} · {}", grouped(last_height), ago(age)))
+        (Mark::Pass, Outcome::Block { height: last_height, age })
     }
-}
-
-/// "31 blocks/s" and "1.8 MB/s", or "0.8 blocks/s" and "40 kB/s" for slow
-/// going: two lines, so a phone never wraps one inside its value.
-fn speed(blocks: u64, bytes: u64, elapsed: Duration) -> (String, String) {
-    let secs = elapsed.as_secs_f64().max(0.001);
-    let per_second = blocks as f64 / secs;
-    let blocks = if per_second >= 9.95 { grouped(per_second.round() as u64) } else { format!("{per_second:.1}") };
-    (format!("{blocks} blocks/s"), link_speed(bytes as f64 / secs))
 }
 
 /// Runs the checks on `probe`, telling `progress` after each one.
@@ -511,49 +460,49 @@ pub(crate) async fn run<P: Probe>(probe: &P, mut report: Report, known_tip: u64,
     };
     let latency = started.elapsed().as_millis() as u64;
     let certificate = match probe.certificate() {
-        Some(Err(problem)) => format!("{}, accepted", problem.words()),
-        _ => "valid".into(),
+        Some(Err(problem)) => Some(problem),
+        _ => None,
     };
-    report.set(Step::Certificate, Mark::Pass, certificate);
-    report.set(Step::Answers, Mark::Pass, format!("{latency} ms"));
+    report.set(Step::Certificate, Mark::Pass, Outcome::Certificate(certificate));
+    report.set(Step::Answers, Mark::Pass, Outcome::Latency(latency));
     report.latency_ms = Some(latency);
     report.nettype = Some(info.nettype.clone());
     progress(&report);
 
     let network = report.network.name();
     if info.nettype != network {
-        let theirs = if info.nettype.is_empty() { "unknown network" } else { &info.nettype };
-        report.set(Step::Network, Mark::Fail, format!("{theirs}, not {network}"));
+        report.set(Step::Network, Mark::Fail, Outcome::WrongNetwork { theirs: info.nettype.clone(), ours: network.to_owned() });
         return report.stop();
     }
-    report.set(Step::Network, Mark::Pass, network);
+    report.set(Step::Network, Mark::Pass, Outcome::Network(network.to_owned()));
     progress(&report);
 
     // A node behind can still send blocks: both are checked.
-    let (mark, words) = match tokio::time::timeout(ANSWER, probe.last_block()).await {
+    let unanswered = |failure| Outcome::Failed { failure, limit: ANSWER.as_secs() };
+    let (mark, outcome) = match tokio::time::timeout(ANSWER, probe.last_block()).await {
         Ok(Ok(last)) => up_to_date(&info, last, known_tip, now),
-        Ok(Err(failure)) => (Mark::Fail, failure.words(ANSWER)),
-        Err(_) => (Mark::Fail, Failure::TimedOut.words(ANSWER)),
+        Ok(Err(failure)) => (Mark::Fail, unanswered(failure)),
+        Err(_) => (Mark::Fail, unanswered(Failure::TimedOut)),
     };
-    report.set(Step::UpToDate, mark, words);
+    report.set(Step::UpToDate, mark, outcome);
     progress(&report);
 
     // Recent blocks, short of the newest (which may not be served yet).
     let end = info.height.saturating_sub(2).max(1);
     let start = end.saturating_sub(SAMPLE - 1).max(1);
     let started = Instant::now();
-    let (mark, words, link) = match tokio::time::timeout(BLOCKS, probe.blocks(start, end)).await {
-        Ok(Ok((0, _))) => (Mark::Fail, "sent no blocks".into(), None),
+    let (mark, outcome) = match tokio::time::timeout(BLOCKS, probe.blocks(start, end)).await {
+        Ok(Ok((0, _))) => (Mark::Fail, Outcome::NoBlocks),
         Ok(Ok((blocks, bytes))) => {
-            let elapsed = started.elapsed();
-            report.blocks_per_second = Some(blocks as f64 / elapsed.as_secs_f64().max(0.001));
-            let (blocks, link) = speed(blocks, bytes, elapsed);
-            (Mark::Pass, blocks, Some(link))
+            let secs = started.elapsed().as_secs_f64().max(0.001);
+            let blocks_per_second = blocks as f64 / secs;
+            report.blocks_per_second = Some(blocks_per_second);
+            (Mark::Pass, Outcome::Speed { blocks_per_second, bytes_per_second: bytes as f64 / secs })
         }
-        Ok(Err(failure)) => (Mark::Fail, failure.words(BLOCKS), None),
-        Err(_) => (Mark::Fail, format!("no blocks in {} s", BLOCKS.as_secs()), None),
+        Ok(Err(failure)) => (Mark::Fail, Outcome::Failed { failure, limit: BLOCKS.as_secs() }),
+        Err(_) => (Mark::Fail, Outcome::NoBlocksWithin { seconds: BLOCKS.as_secs() }),
     };
-    report.set_lines(Step::Blocks, mark, words, link);
+    report.set(Step::Blocks, mark, outcome);
     report
 }
 
@@ -570,7 +519,7 @@ pub async fn check(network: Network, node: &Setting, known_tip: u64, now: u64, p
 
 /// Checks several nodes at once, with each one's line for the list (the
 /// fastest of two or more that pass says so).
-pub async fn check_all(network: Network, nodes: &[Setting], known_tip: u64, now: u64) -> Vec<(Report, String)> {
+pub async fn check_all(network: Network, nodes: &[Setting], known_tip: u64, now: u64) -> Vec<(Report, Line)> {
     let handles: Vec<_> = nodes
         .iter()
         .map(|node| {
@@ -588,7 +537,7 @@ pub async fn check_all(network: Network, nodes: &[Setting], known_tip: u64, now:
 
 /// Each report's line, "fastest" on the quickest at sending blocks when
 /// two or more pass.
-fn lines(reports: &[Report]) -> Vec<String> {
+fn lines(reports: &[Report]) -> Vec<Line> {
     let speed = |r: &Report| r.blocks_per_second.unwrap_or(0.0);
     let passing: Vec<usize> = (0..reports.len()).filter(|&i| reports[i].usable() == Usable::Use).collect();
     let fastest = if passing.len() > 1 { passing.iter().copied().max_by(|&a, &b| speed(&reports[a]).total_cmp(&speed(&reports[b]))) } else { None };
@@ -596,15 +545,12 @@ fn lines(reports: &[Report]) -> Vec<String> {
 }
 
 /// Whether `node` is on `network`, before switching to it.
-pub async fn on_network(network: Network, node: &Setting) -> Result<(), String> {
-    reachable(&node.url).map_err(|e| match e {
-        EndpointProblem::Onion => NO_ONION.to_owned(),
-        other => format!("{other:?}"),
-    })?;
-    let live = Live::new(node).map_err(|f| f.words(ANSWER))?;
-    let info = live.info().await.map_err(|f| f.words(ANSWER))?;
+pub async fn on_network(network: Network, node: &Setting) -> Result<(), SwitchRefused> {
+    reachable(&node.url).map_err(SwitchRefused::Endpoint)?;
+    let live = Live::new(node).map_err(SwitchRefused::Failed)?;
+    let info = live.info().await.map_err(SwitchRefused::Failed)?;
     if info.nettype != network.name() {
-        return Err(format!("that node is on {}, and this wallet is on {}", if info.nettype.is_empty() { "an unknown network" } else { &info.nettype }, network.name()));
+        return Err(SwitchRefused::OtherNetwork { theirs: info.nettype, ours: network.name().to_owned() });
     }
     Ok(())
 }

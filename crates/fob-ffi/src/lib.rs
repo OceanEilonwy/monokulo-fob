@@ -811,7 +811,7 @@ impl From<fob_wallet::ZmqStatus> for ZmqStatus {
             fob_wallet::ZmqStatus::Off => ZmqStatus::Off,
             fob_wallet::ZmqStatus::Connecting => ZmqStatus::Connecting,
             fob_wallet::ZmqStatus::Listening => ZmqStatus::Listening,
-            fob_wallet::ZmqStatus::CantConnect(reason) => ZmqStatus::CantConnect { reason },
+            fob_wallet::ZmqStatus::CantConnect(problem) => ZmqStatus::CantConnect { reason: fob_wallet::words::node::zmq_problem(&problem) },
         }
     }
 }
@@ -1669,7 +1669,7 @@ impl FobWallet {
             .into_iter()
             .map(|n| {
                 let report = fob_wallet::node::Report::pending(network, &n);
-                NodeChoice::new(&report, report.line(false), &custom)
+                NodeChoice::new(&report, fob_wallet::words::node::line(&report.line(false)), &custom)
             })
             .collect()
     }
@@ -1678,7 +1678,7 @@ impl FobWallet {
     pub async fn check_nodes(&self, nodes: Vec<NodeSetting>) -> Vec<NodeChoice> {
         let nodes: Vec<_> = nodes.into_iter().map(Into::into).collect();
         let custom = self.inner.custom_nodes().await;
-        self.inner.check_nodes(&nodes).await.iter().map(|(report, line)| NodeChoice::new(report, line.clone(), &custom)).collect()
+        self.inner.check_nodes(&nodes).await.iter().map(|(report, line)| NodeChoice::new(report, fob_wallet::words::node::line(line), &custom)).collect()
     }
 
     /// Keeps a node on this wallet's list, to change to later.
@@ -3235,7 +3235,7 @@ impl From<fob_wallet::node::Report> for NodeReport {
     fn from(r: fob_wallet::node::Report) -> Self {
         use fob_wallet::node::Usable;
         NodeReport {
-            verdict: r.verdict().into(),
+            verdict: fob_wallet::words::node::verdict(r.verdict()).into(),
             mark: r.mark().into(),
             usable: match r.usable() {
                 Usable::Use => NodeUse::Use,
@@ -3243,7 +3243,14 @@ impl From<fob_wallet::node::Report> for NodeReport {
                 Usable::No => NodeUse::No,
             },
             checking: r.checking(),
-            rows: r.rows.iter().map(|row| NodeCheckRow { title: row.title().into(), result: row.result.clone(), second: row.second.clone(), mark: row.mark.into(), label: row.label() }).collect(),
+            rows: r
+                .rows
+                .iter()
+                .map(|row| {
+                    use fob_wallet::words::node as said;
+                    NodeCheckRow { title: said::title(row.step).into(), result: said::result(&row.outcome), second: said::second(&row.outcome), mark: row.mark.into(), label: said::label(row) }
+                })
+                .collect(),
             address: r.address,
             node: NodeSetting { url: r.url, self_signed: r.self_signed },
         }

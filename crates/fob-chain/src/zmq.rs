@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use fob_monero::network::{Network, ZmqStatus};
+use fob_monero::network::{Network, ZmqProblem, ZmqStatus};
 
 use crate::error::EndpointProblem;
 
@@ -98,15 +98,19 @@ pub trait Events: Send + Sync {
     fn pool(&self);
 }
 
-/// A failure in a few words, for Settings.
-fn reason(error: &std::io::Error) -> String {
+/// What stopped the connection. Anything else is the protocol's or the
+/// system's own text, which has no scenario to name.
+fn reason(error: &std::io::Error) -> ZmqProblem {
     use std::io::ErrorKind as K;
+    if error.get_ref().is_some_and(|e| e.is::<crate::zmtp::OnionRefused>()) {
+        return ZmqProblem::Onion;
+    }
     match error.kind() {
-        K::ConnectionRefused => "nothing listening on that port".into(),
-        K::TimedOut => "no answer".into(),
-        K::UnexpectedEof | K::ConnectionReset => "the node closed the connection".into(),
-        K::NotFound => "host not found".into(),
-        _ => error.to_string(),
+        K::ConnectionRefused => ZmqProblem::NothingListening,
+        K::TimedOut => ZmqProblem::NoAnswer,
+        K::UnexpectedEof | K::ConnectionReset => ZmqProblem::NodeClosed,
+        K::NotFound => ZmqProblem::HostNotFound,
+        _ => ZmqProblem::Other(error.to_string()),
     }
 }
 
@@ -124,7 +128,7 @@ pub async fn listen(endpoint: String, events: impl Events) {
 }
 
 /// One connection: when it ends, for whatever reason, so does the session.
-async fn session(endpoint: &str, events: &impl Events, retry: &mut Duration) -> String {
+async fn session(endpoint: &str, events: &impl Events, retry: &mut Duration) -> ZmqProblem {
     let mut subscriber = match crate::zmtp::connect(endpoint, &[POOL_TOPIC, CHAIN_TOPIC]).await {
         Ok(subscriber) => subscriber,
         Err(error) => return reason(&error),
@@ -197,7 +201,7 @@ mod tests {
         assert_eq!(endpoint(onion, "tcp://xmrnode.onion:18083"), Err(EndpointProblem::Onion));
         assert_eq!(endpoint(onion, "XMRNODE.ONION.:18083"), Err(EndpointProblem::Onion));
         let refused = crate::zmtp::connect("tcp://xmrnode.onion:18083", &[CHAIN_TOPIC]).await.err().expect("refused");
-        assert_eq!((refused.kind(), refused.to_string()), (std::io::ErrorKind::InvalidData, crate::node::NO_ONION.to_owned()));
+        assert_eq!(reason(&refused), ZmqProblem::Onion);
     }
 
     #[test]
@@ -271,7 +275,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(heard.said().last().unwrap().contains("closed the connection"), "{:?}", heard.said());
+        assert!(heard.said().last().unwrap().contains("NodeClosed"), "{:?}", heard.said());
         listener.abort();
     }
 
@@ -289,6 +293,6 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         listener.abort();
-        assert_eq!(heard.said()[..2], ["Connecting".to_owned(), r#"CantConnect("nothing listening on that port")"#.to_owned()]);
+        assert_eq!(heard.said()[..2], ["Connecting".to_owned(), "CantConnect(NothingListening)".to_owned()]);
     }
 }

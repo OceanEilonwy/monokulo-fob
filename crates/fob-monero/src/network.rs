@@ -132,9 +132,22 @@ pub enum ZmqStatus {
     Connecting,
     /// Connected and subscribed.
     Listening,
-    /// The last try failed, and why, in a few words. Retried with a
-    /// growing pause, up to a minute.
-    CantConnect(String),
+    /// The last try failed, and why. Retried with a growing pause, up to a
+    /// minute.
+    CantConnect(ZmqProblem),
+}
+
+/// Why instant updates couldn't connect, or stopped.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ZmqProblem {
+    NothingListening,
+    NoAnswer,
+    NodeClosed,
+    HostNotFound,
+    /// On an onion service, never looked up.
+    Onion,
+    /// The protocol's or the system's own text.
+    Other(String),
 }
 
 /// Whether `host` is an onion service's (`….onion`, any case, with or

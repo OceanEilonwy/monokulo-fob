@@ -19,7 +19,7 @@ impl Wallet {
         let status = self.status();
         let verdict = match checked {
             // A failed round drops the check before it: what's here is newer.
-            Some((checked, verdict)) if checked == setting => Some(verdict),
+            Some((checked, verdict)) if checked == setting => Some(fob_words::node::verdict(verdict)),
             _ if status.error.is_some() && !status.error_local && !status.chain_changed => Some(fob_words::catch_up::NODE_FAILING),
             _ if status.connected => Some(fob_words::catch_up::NODE_WORKING),
             _ => None,
@@ -106,7 +106,7 @@ impl Wallet {
     }
 
     /// Checks the other nodes at once, each with its line for the list.
-    pub async fn check_nodes(&self, nodes: &[node::Setting]) -> Vec<(node::Report, String)> {
+    pub async fn check_nodes(&self, nodes: &[node::Setting]) -> Vec<(node::Report, node::Line)> {
         let tip = self.inner.state.lock().await.tip;
         node::check_all(self.network(), nodes, tip, now()).await
     }
@@ -129,7 +129,7 @@ impl Wallet {
                 self.save_state(&state)?;
             }
         }
-        crate::node::on_network(self.network(), &setting).await.map_err(FobError::Node)?;
+        crate::node::on_network(self.network(), &setting).await.map_err(|refused| FobError::Node(fob_words::node::switch_refused(&refused)))?;
         let zmq_dropped = {
             let mut state = self.inner.state.lock().await;
             // Instant updates belong to a node's host: on another host they
