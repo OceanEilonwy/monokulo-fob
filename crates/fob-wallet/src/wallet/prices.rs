@@ -28,7 +28,7 @@ impl Wallet {
     pub async fn price_from_line(&self, clock: Clock) -> (String, bool) {
         match self.price_toast(clock).await {
             Some(toast) => (toast.line, true),
-            None => (self.price_settings().await.source_text(), false),
+            None => (fob_words::prices::source_text(&self.price_settings().await), false),
         }
     }
 
@@ -60,13 +60,13 @@ impl Wallet {
     /// "Default currency" `code`, one of the 45, or XMR (`None`),
     /// when Fob never asks for a price. Moves to a provider that prices it
     /// when the chosen one doesn't, and returns the words saying so.
-    pub async fn set_currency(&self, code: Option<&str>) -> Result<Option<String>> {
+    pub async fn set_currency(&self, code: Option<&str>) -> Result<Option<price::Moved>> {
         self.change_prices(|s| s.choose_currency(code).map_err(Into::into)).await
     }
 
     /// Prices from `provider`, one that prices the currency. Moves to the
     /// web when it doesn't answer over Tor, and returns the words saying so.
-    pub async fn set_price_provider(&self, provider: price::Provider) -> Result<Option<String>> {
+    pub async fn set_price_provider(&self, provider: price::Provider) -> Result<Option<price::Moved>> {
         self.change_prices(|s| s.choose_provider(provider).map_err(Into::into)).await
     }
 
@@ -204,7 +204,7 @@ impl Wallet {
     ) -> T {
         let age = shown.as_ref().and_then(|c| crate::price_alert::age(c.at, clock));
         let price = match (&wanted, &shown) {
-            (Some(c), Some(now)) => price::FieldPrice::At(c, now.price, age.as_deref()),
+            (Some(c), Some(now)) => price::FieldPrice::At(c, now.price, age.as_ref()),
             (Some(c), None) => price::FieldPrice::Missing(c),
             (None, _) => price::FieldPrice::None,
         };

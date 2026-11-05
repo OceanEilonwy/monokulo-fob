@@ -362,16 +362,17 @@ pub struct CurrencyList {
 
 impl From<price::CurrencyList> for CurrencyList {
     fn from(l: price::CurrencyList) -> Self {
+        let empty = fob_wallet::words::prices::no_match(&l);
         CurrencyList {
             groups: l
                 .groups
                 .into_iter()
                 .map(|g| CurrencyGroup {
                     title: fob_wallet::words::prices::currency_heading(g.heading),
-                    rows: g.rows.into_iter().map(|r| CurrencyRow { code: r.code, sign: r.sign, name: r.name, line: r.line, chosen: r.chosen }).collect(),
+                    rows: g.rows.into_iter().map(|r| CurrencyRow { code: r.code, sign: r.sign, name: r.name, line: fob_wallet::words::prices::currency_line(&r.line), chosen: r.chosen }).collect(),
                 })
                 .collect(),
-            empty: l.empty,
+            empty,
         }
     }
 }
@@ -1479,10 +1480,10 @@ impl FobWallet {
         let s = self.inner.price_settings().await;
         let sources = price::transport_rows(&s)
             .into_iter()
-            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: fob_wallet::words::prices::transport_note(r.note), available: r.available, chosen: r.chosen })
+            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: fob_wallet::words::prices::transport_name(r.transport).into(), line: fob_wallet::words::prices::transport_note(r.note), available: r.available, chosen: r.chosen })
             .collect();
         let (source_text, failing) = self.inner.price_from_line(clock::Clock { now, utc_offset, hours_24 }).await;
-        let intro = price::price_from_intro(&s);
+        let intro = fob_wallet::words::prices::intro(price::price_from_intro(&s));
         PriceSettings {
             currency_text: price::default_currency_text(&s),
             currency_name: price::default_currency_name(&s),
@@ -1844,23 +1845,24 @@ impl FobWallet {
     /// to change for it: "Kraken doesn't price New Zealand dollars, so Fob
     /// now asks CoinGecko".
     pub async fn set_currency(&self, code: Option<String>) -> Result<Option<String>> {
-        Ok(self.inner.set_currency(code.as_deref()).await?)
+        Ok(self.inner.set_currency(code.as_deref()).await?.map(fob_wallet::words::prices::moved))
     }
 
     /// Prices from `provider`, one that prices the currency. Returns words
     /// to show when the transport had to change for it.
     pub async fn set_price_provider(&self, provider: PriceProvider) -> Result<Option<String>> {
-        Ok(self.inner.set_price_provider(provider.into()).await?)
+        Ok(self.inner.set_price_provider(provider.into()).await?.map(fob_wallet::words::prices::moved))
     }
 
     /// Price from, as it opens: every provider that prices the chosen
     /// currency asked at once (8 s each at most); none with XMR.
     pub async fn check_prices(&self) -> Option<PriceChecks> {
         let checks = self.inner.check_prices().await?;
-        let summary = price::checks_summary(&checks);
+        let summary = fob_wallet::words::prices::checks_summary(&checks);
         let lines = checks
             .into_iter()
             .filter_map(|c| {
+                let label = fob_wallet::words::prices::check_label(&c);
                 Some(PriceCheck {
                     provider: price::Provider::named(c.name)?.into(),
                     name: c.name.into(),
@@ -1868,9 +1870,9 @@ impl FobWallet {
                     tor: c.tor,
                     chosen: c.chosen,
                     rate: c.rate,
-                    failure: c.failure,
+                    failure: c.failure.map(|f| fob_wallet::words::prices::failure(f).to_owned()),
                     can_pick: c.can_pick,
-                    label: c.label,
+                    label,
                 })
             })
             .collect();
@@ -2710,6 +2712,7 @@ pub struct AmountEntry {
 
 impl From<price::AmountField> for AmountEntry {
     fn from(f: price::AmountField) -> Self {
+        let f = fob_wallet::words::prices::field(f);
         AmountEntry {
             in_fiat: f.in_fiat,
             sign: f.sign,

@@ -125,22 +125,6 @@ impl Transport {
         self == Transport::Web
     }
 
-    /// "over the internet", "over Tor".
-    pub fn text(self) -> &'static str {
-        match self {
-            Transport::Web => "over the internet",
-            Transport::Tor => "over Tor",
-        }
-    }
-
-    /// "Web", "Tor": its title on Price from's Ask over rows.
-    pub fn name(self) -> &'static str {
-        match self {
-            Transport::Web => "Web",
-            Transport::Tor => "Tor",
-        }
-    }
-
     /// The body at `url`, an `https://` address (never an onion one: Fob
     /// would resolve it through the phone's DNS).
     pub async fn get(self, url: &str) -> Result<Vec<u8>> {
@@ -151,7 +135,7 @@ impl Transport {
     }
 }
 
-/// Why a provider gave no price, in words for its line on Price from.
+/// Why a provider gave no price.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// Couldn't be reached, didn't answer in time, or answered with an error.
@@ -165,18 +149,6 @@ pub enum Failure {
     /// Kept over Tor in a wallet file for a provider that doesn't answer
     /// over it: never asked over the web instead without the user's pick.
     NotOverTor,
-}
-
-impl Failure {
-    pub fn text(self) -> &'static str {
-        match self {
-            Failure::NotAnswering => "Not answering",
-            Failure::Busy => "Busy, try again soon",
-            Failure::BadAnswer => "Answered without a price",
-            Failure::TorNotYet => "Tor isn't built yet",
-            Failure::NotOverTor => "Doesn't answer over Tor",
-        }
-    }
 }
 
 static CLIENT: LazyLock<std::result::Result<reqwest::Client, String>> = LazyLock::new(|| {
@@ -340,20 +312,20 @@ impl From<Stored> for Settings {
     }
 }
 
+/// What a choice moved besides what was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moved {
+    /// `from` doesn't price `currency` (its plural), so `to` is asked, over
+    /// the web too (`to_web`) when `to` doesn't answer otherwise.
+    NotPriced { from: &'static str, currency: &'static str, to: &'static str, to_web: bool },
+    /// `provider` doesn't answer over `transport`, so it's asked over the web.
+    NotOverTransport { provider: &'static str, transport: Transport },
+}
+
 impl Settings {
     /// The currency's code, or `None` for XMR only.
     pub fn code(&self) -> Option<&str> {
         self.currency.as_deref()
-    }
-
-    /// "Kraken · web", "CoinGecko · Tor": the provider and the Ask over
-    /// row picked, by that row's name.
-    pub fn source_text(&self) -> String {
-        let transport = match self.transport {
-            Transport::Web => "web",
-            Transport::Tor => self.transport.name(),
-        };
-        format!("{} · {transport}", self.provider.name())
     }
 
     /// Moves the provider to the first that prices the currency, and the
@@ -380,10 +352,9 @@ impl Settings {
         false
     }
 
-    /// "Default currency" `code`, or XMR (`None`). Moves to a
-    /// provider that prices it when this one doesn't, and says so: "Kraken
-    /// doesn't price New Zealand dollars, so Fob now asks CoinGecko".
-    pub fn choose_currency(&mut self, code: Option<&str>) -> Result<Option<String>> {
+    /// "Default currency" `code`, or XMR (`None`). Moves to a provider that
+    /// prices it when this one doesn't, and says it did.
+    pub fn choose_currency(&mut self, code: Option<&str>) -> Result<Option<Moved>> {
         let Some(code) = code else {
             self.currency = None;
             return Ok(None);
@@ -392,16 +363,12 @@ impl Settings {
         let before = self.provider;
         self.currency = Some(code.to_owned());
         let (provider, transport) = self.fit();
-        Ok(provider.then(|| {
-            let over = if transport { " over the web" } else { "" };
-            format!("{} doesn't price {}, so Fob now asks {}{over}", before.name(), info.plural, self.provider.name())
-        }))
+        Ok(provider.then_some(Moved::NotPriced { from: before.name(), currency: info.plural, to: self.provider.name(), to_web: transport }))
     }
 
     /// Prices from `provider`, one that prices the currency. Moves to the
-    /// web when it doesn't answer over Tor, and says so: "Kraken doesn't
-    /// answer over Tor, so Fob now asks over the web".
-    pub fn choose_provider(&mut self, provider: Provider) -> Result<Option<String>> {
+    /// web when it doesn't answer over Tor, and says it did.
+    pub fn choose_provider(&mut self, provider: Provider) -> Result<Option<Moved>> {
         if let Some(code) = self.code()
             && !provider.prices(code)
         {
@@ -410,7 +377,7 @@ impl Settings {
         let transport = self.transport;
         self.provider = provider;
         let (_, moved) = self.fit();
-        Ok(moved.then(|| format!("{} doesn't answer {}, so Fob now asks over the web", provider.name(), transport.text())))
+        Ok(moved.then_some(Moved::NotOverTransport { provider: provider.name(), transport }))
     }
 
     /// Asks `transport`, one that's built and the provider answers over.
@@ -535,50 +502,25 @@ pub fn balance_order(settings: &Settings, priced: bool) -> BalanceOrder {
     BalanceOrder { can_swap, fiat_first: can_swap && settings.fiat_first }
 }
 
-const NEVER_LOOKS: &str = "Fob never looks up a price";
-
-/// Price from's words above its providers: the intro, its currency's
-/// plural in bold between `before` and `after` ("Prices in **Australian
-/// dollars**, checked as this page opens. Tap a provider to pick it."),
-/// or with XMR only the one sentence in `before`.
+/// What Price from says above its providers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PriceFromIntro {
-    pub before: String,
-    pub bold: Option<String>,
-    pub after: String,
+pub enum PriceFromIntro {
+    XmrOnly,
+    /// Prices in this currency, by its plural, or its code without one.
+    In(String),
 }
 
 pub fn price_from_intro(settings: &Settings) -> PriceFromIntro {
     match settings.code().map(currency) {
-        Some(c) => PriceFromIntro {
-            before: "Prices in ".into(),
-            bold: Some(if c.plural.is_empty() { c.code.clone() } else { c.plural.to_owned() }),
-            after: ", checked as this page opens. Tap a provider to pick it.".into(),
-        },
-        None => PriceFromIntro { before: format!("With XMR as the default currency, {}.", NEVER_LOOKS), bold: None, after: String::new() },
+        Some(c) => PriceFromIntro::In(if c.plural.is_empty() { c.code.clone() } else { c.plural.to_owned() }),
+        None => PriceFromIntro::XmrOnly,
     }
-}
-
-/// What TalkBack says once Price from's checks are in: "Kraken A$845.10,
-/// CoinGecko not answering".
-pub fn checks_summary(checks: &[Check]) -> String {
-    checks
-        .iter()
-        .map(|c| match (&c.rate, &c.failure) {
-            (Some(rate), _) => format!("{} {rate}", c.name),
-            (None, Some(failure)) => format!("{} {}", c.name, failure.to_lowercase()),
-            (None, None) => format!("{} not asked", c.name),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// One way to ask on Price from's "Ask over".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportRow {
     pub transport: Transport,
-    /// "Web", "Tor"
-    pub title: &'static str,
     /// What choosing it means. `fob-words` says it.
     pub note: TransportNote,
     /// It can be picked: built, and the provider answers over it.
@@ -611,7 +553,7 @@ pub fn transport_rows(settings: &Settings) -> Vec<TransportRow> {
                 Transport::Tor if !t.available() => TransportNote::NotBuilt,
                 Transport::Tor => TransportNote::HidesAddress,
             };
-            TransportRow { transport: t, title: t.name(), note, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
+            TransportRow { transport: t, note, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
         })
         .collect()
 }
@@ -625,9 +567,17 @@ pub struct CurrencyRow {
     pub sign: String,
     /// "Australian dollar", "Monero (XMR)".
     pub name: String,
-    /// "AUD · Kraken, CoinGecko", "Fob never looks up a price".
-    pub line: String,
+    pub line: CurrencyLine,
     pub chosen: bool,
+}
+
+/// What a row of the list says under its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CurrencyLine {
+    /// XMR: no price is ever asked for.
+    NeverLooksUp,
+    /// Its code, and who prices it.
+    PricedBy { code: &'static str, providers: Vec<&'static str> },
 }
 
 /// What a part of the list holds. `fob-words` says it.
@@ -651,18 +601,16 @@ pub struct CurrencyGroup {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrencyList {
     pub groups: Vec<CurrencyGroup>,
-    /// Instead of the groups when a search finds nothing: "No currency
-    /// matches “xyz”".
-    pub empty: Option<String>,
+    /// Instead of the groups when a search finds nothing: what was searched for.
+    pub no_match: Option<String>,
 }
 
 fn currency_row(info: &currencies::Info, chosen: Option<&str>) -> CurrencyRow {
-    let names: Vec<&str> = providers_for(info.code).iter().map(|p| p.name()).collect();
     CurrencyRow {
         code: Some(info.code.to_owned()),
         sign: currency(info.code).sign(),
         name: info.name.to_owned(),
-        line: format!("{} · {}", info.code, names.join(", ")),
+        line: CurrencyLine::PricedBy { code: info.code, providers: providers_for(info.code).iter().map(|p| p.name()).collect() },
         chosen: chosen == Some(info.code),
     }
 }
@@ -681,7 +629,7 @@ pub fn currency_list(chosen: Option<&str>, phone: Option<&str>, query: &str) -> 
             code: None,
             sign: amount::SIGN.into(),
             name: MONERO.into(),
-            line: NEVER_LOOKS.into(),
+            line: CurrencyLine::NeverLooksUp,
             chosen: chosen.is_none(),
         };
         groups.push(CurrencyGroup { heading: CurrencyHeading::Monero, rows: vec![row] });
@@ -694,8 +642,8 @@ pub fn currency_list(chosen: Option<&str>, phone: Option<&str>, query: &str) -> 
         let heading = if searching { CurrencyHeading::Found { count: rows.len(), of: currencies::TABLE.len() } } else { CurrencyHeading::All { count: currencies::TABLE.len() } };
         groups.push(CurrencyGroup { heading, rows });
     }
-    let empty = groups.is_empty().then(|| format!("No currency matches “{}”", query.trim()));
-    CurrencyList { groups, empty }
+    let no_match = groups.is_empty().then(|| query.trim().to_owned());
+    CurrencyList { groups, no_match }
 }
 
 /// One provider's line on Price from, checked as it opens.
@@ -711,13 +659,13 @@ pub struct Check {
     /// What it says XMR is worth: "A$845.10"; `None` when it failed or
     /// wasn't asked.
     pub rate: Option<String>,
-    /// Why it gave no price: "Not answering", "Busy, try again soon".
-    pub failure: Option<String>,
+    /// Why it gave no price.
+    pub failure: Option<Failure>,
     /// It can be picked: it answered, or it wasn't asked because it
     /// doesn't answer over Tor (picking it moves to the web).
     pub can_pick: bool,
-    /// For TalkBack: "Kraken, web only, A$845.10".
-    pub label: String,
+    /// How it was asked, or would have been.
+    pub transport: Transport,
 }
 
 /// Asks each of `sources` (those pricing `currency`) for XMR's price now,
@@ -754,28 +702,12 @@ pub async fn check<S: Source + Clone + 'static>(sources: Vec<S>, currency: &Curr
             let (web, tor) = (source.answers_over(Transport::Web), source.answers_over(Transport::Tor));
             let rate = answer.and_then(|a| a.ok()).map(|p| value(ATOMIC_PER_XMR, p, currency));
             let failure = match answer {
-                Some(Err(f)) => Some(f.text().to_owned()),
+                Some(Err(f)) => Some(f),
                 // Asked but lost (its task panicked): as good as silent.
-                None if source.answers_over(transport) => Some(Failure::NotAnswering.text().to_owned()),
+                None if source.answers_over(transport) => Some(Failure::NotAnswering),
                 _ => None,
             };
-            let ways = match (web, tor) {
-                (true, true) => "web and Tor",
-                (true, false) => "web only",
-                (false, true) => "Tor only",
-                (false, false) => "no way to ask",
-            };
-            let said = rate.clone().or_else(|| failure.as_ref().map(|f| f.to_lowercase())).unwrap_or_else(|| format!("not asked {}", transport.text()));
-            Check {
-                name: source.name(),
-                web,
-                tor,
-                chosen: source.name() == chosen,
-                can_pick: failure.is_none(),
-                label: format!("{}, {ways}, {said}", source.name()),
-                rate,
-                failure,
-            }
+            Check { name: source.name(), web, tor, chosen: source.name() == chosen, can_pick: failure.is_none(), rate, failure, transport }
         })
         .collect()
 }
@@ -795,9 +727,8 @@ pub(crate) fn micro_number(n: &Value) -> Option<u64> {
 }
 
 
-/// An amount field (toggle B), every word ready to draw: a sign before
-/// what's typed, a chip naming the unit that switches it while there's a
-/// price, and a line under it.
+/// An amount field (toggle B): a sign before what's typed, a chip naming the
+/// unit that switches it while there's a price, and what's under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AmountField {
     /// Typing in money: there's a price and the field is switched to it.
@@ -809,17 +740,11 @@ pub struct AmountField {
     pub unit: String,
     /// The chip switches: there's a price to convert with.
     pub can_switch: bool,
-    /// Under the field: "≈ 0.1204 XMR · 1 XMR = $166.10", "≈ $20.00 · 1
-    /// XMR = $166.10", the rate alone while it's empty, "That isn't an
-    /// amount"; nothing in XMR without a price.
-    pub line: Option<String>,
-    /// The line without the rate: "≈ 0.1204 XMR", "That isn't an amount", or
-    /// nothing while it's empty. For a field with no room for the rate.
-    pub conversion: Option<String>,
-    /// For TalkBack: "Amount in US dollars", "Amount in XMR".
-    pub label: String,
-    /// The chip for TalkBack: "Amount in XMR. Switch to US dollars".
-    pub switch_label: Option<String>,
+    pub under: UnderField,
+    /// What the field is typed in: "US dollars", "XMR".
+    pub unit_name: String,
+    /// What the chip switches to, while there's a price.
+    pub other_unit_name: Option<String>,
     /// What's typed comes to more than nothing: Send can review it.
     pub sendable: bool,
     /// The text and unit asked about: the field is only this while they're
@@ -827,6 +752,32 @@ pub struct AmountField {
     /// so nothing is sent or shared from one that's behind.
     pub for_text: String,
     pub for_in_fiat: bool,
+}
+
+/// What's under an amount field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnderField {
+    /// XMR with no price: nothing.
+    Nothing,
+    /// Nothing typed yet: the rate, and how old it is once it's aged.
+    Rate { rate: String, from: Option<PriceFrom> },
+    /// What's typed in the other unit ("0.1204 XMR", "$20.00"), with the rate
+    /// and how old the price is once it's aged.
+    Converts { to: String, rate: String, from: Option<PriceFrom> },
+    /// A currency chosen with no price for it: type XMR.
+    NoPrice { code: String },
+    NotAnAmount,
+}
+
+/// When a price is from, by the device's clock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PriceFrom {
+    /// At this time today.
+    Today(String),
+    /// At this time yesterday.
+    Yesterday(String),
+    /// On this day before that: "29 Oct".
+    Date(String),
 }
 
 /// What an amount field converts with.
@@ -837,8 +788,8 @@ pub enum FieldPrice<'a> {
     /// A currency chosen, but no price for it, or only one over a day old:
     /// the field takes XMR only, and says so.
     Missing(&'a Currency),
-    /// A price, with its age once it isn't just asked ("price from 14:02").
-    At(&'a Currency, u64, Option<&'a str>),
+    /// A price, with when it's from once it isn't just asked.
+    At(&'a Currency, u64, Option<&'a PriceFrom>),
 }
 
 /// The field as a form opens it, nothing typed: in money while there's a
@@ -868,30 +819,22 @@ pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField
         Some((c, _)) if fiat => c.plural.to_owned(),
         _ => "XMR".to_owned(),
     };
-    // The rate; once the price is aged, when it's from in its place, so
-    // the line stays short.
-    let from = |p: u64, c: &Currency| age.map_or_else(|| rate(p, c), str::to_owned);
-    // What's typed in the other unit, with how old the price is once it's aged.
-    let aged = |said: String| age.map_or_else(|| said.clone(), |age| format!("{said} · {age}"));
-    let conversion = match price {
-        Some(_) if text.is_empty() => None,
-        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| aged(format!("≈ {} XMR", amount::format(a)))),
-        Some((c, p)) => amount::parse(text).ok().map(|a| aged(format!("≈ {}", value(a, p, c)))),
-        None => missing.map(|c| format!("No {} price now · type the amount in XMR", c.code)),
-    };
-    let line = match price {
-        Some((c, p)) if text.is_empty() => Some(age.map_or_else(|| rate(p, c), |age| format!("{} · {age}", rate(p, c)))),
-        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| format!("≈ {} XMR · {}", amount::format(a), from(p, c))),
-        Some((c, p)) => amount::parse(text).ok().map(|a| format!("≈ {} · {}", value(a, p, c), from(p, c))),
-        // Money can't be typed: why.
-        None => missing.map(|c| format!("No {} price now · type the amount in XMR", c.code)),
-    };
     // What it comes to in XMR, the way Send converts it.
     let atomic = match price {
         Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)),
         _ => amount::parse(text).ok(),
     };
-    let valid = text.is_empty() || atomic.is_some();
+    let under = match price {
+        Some((c, p)) if text.is_empty() => UnderField::Rate { rate: rate(p, c), from: age.cloned() },
+        _ if !text.is_empty() && atomic.is_none() => UnderField::NotAnAmount,
+        Some((c, p)) => UnderField::Converts {
+            to: if in_fiat { format!("{} XMR", amount::format(atomic.unwrap_or(0))) } else { value(atomic.unwrap_or(0), p, c) },
+            rate: rate(p, c),
+            from: age.cloned(),
+        },
+        // Money can't be typed: why.
+        None => missing.map_or(UnderField::Nothing, |c| UnderField::NoPrice { code: c.code.clone() }),
+    };
     AmountField {
         in_fiat,
         sendable: atomic.is_some_and(|a| a > 0),
@@ -904,10 +847,9 @@ pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField
             _ => "XMR".into(),
         },
         can_switch: price.is_some(),
-        line: if valid { line } else { Some("That isn't an amount".into()) },
-        conversion: if valid { conversion } else { Some("That isn't an amount".into()) },
-        label: format!("Amount in {}", unit_name(in_fiat)),
-        switch_label: price.map(|_| format!("Amount in {}. Switch to {}", unit_name(in_fiat), unit_name(!in_fiat))),
+        under,
+        unit_name: unit_name(in_fiat),
+        other_unit_name: price.map(|_| unit_name(!in_fiat)),
         for_text,
         for_in_fiat,
     }
@@ -967,77 +909,102 @@ mod tests {
 
     const XMR: u64 = ATOMIC_PER_XMR;
 
-    fn usd() -> Currency {
-        currency("USD")
-    }
-
-    fn eur() -> Currency {
-        currency("EUR")
-    }
-
-    #[test]
-    fn the_amount_field_reads_like_toggle_b() {
-        let (usd, eur, chf) = (usd(), eur(), currency("CHF"));
-        let p = 166_100_000;
-        // In dollars, as the board: "$ 20 [USD ⇅]", "≈ 0.1204 XMR · 1 XMR = $166.10".
-        let f = amount_field("20", true, FieldPrice::At(&usd, p, None));
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch), (Some("$"), "USD", true, true));
-        assert_eq!(f.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
-        assert_eq!((f.label.as_str(), f.switch_label.as_deref()), ("Amount in US dollars", Some("Amount in US dollars. Switch to XMR")));
-        // In XMR: the sign becomes ɱ.
-        let f = amount_field("0.1204", false, FieldPrice::At(&usd, p, None));
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat), (Some("ɱ"), "XMR", false));
-        assert_eq!(f.line.as_deref(), Some("≈ $20.00 · 1 XMR = $166.10"));
-        assert_eq!((f.label.as_str(), f.switch_label.as_deref()), ("Amount in XMR", Some("Amount in XMR. Switch to US dollars")));
-        // Empty: the rate alone. Not an amount: says so.
-        assert_eq!(amount_field(" ", true, FieldPrice::At(&usd, p, None)).line.as_deref(), Some("1 XMR = $166.10"));
-        assert_eq!(amount_field("20.123", true, FieldPrice::At(&usd, p, None)).line.as_deref(), Some("That isn't an amount"));
-        assert_eq!(amount_field("abc", false, FieldPrice::At(&usd, p, None)).line.as_deref(), Some("That isn't an amount"));
-        // Euros, and a currency without a symbol: the chip names it, no sign.
-        let f = amount_field("5", true, FieldPrice::At(&eur, p, None));
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.label.as_str()), (Some("€"), "EUR", "Amount in euros"));
-        let f = amount_field("5", true, FieldPrice::At(&chf, p, None));
-        assert_eq!((f.sign, f.unit.as_str(), f.label.as_str()), (None, "CHF", "Amount in Swiss francs"));
-        assert_eq!(f.line.as_deref(), Some("≈ 0.0301 XMR · 1 XMR = 166.10 CHF"));
-        // No price: XMR only, no switch, nothing under it unless it's wrong.
-        let f = amount_field("20", true, FieldPrice::None);
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch, f.line, f.switch_label), (Some("ɱ"), "XMR", false, false, None, None));
-        assert_eq!(amount_field("x", false, FieldPrice::None).line.as_deref(), Some("That isn't an amount"));
-        // A currency chosen without a price to use: XMR only, saying why.
-        let f = amount_field("", true, FieldPrice::Missing(&usd));
-        assert_eq!((f.unit.as_str(), f.can_switch, f.line.as_deref()), ("XMR", false, Some("No USD price now · type the amount in XMR")));
-        assert_eq!(amount_field("0.5", false, FieldPrice::Missing(&usd)).line.as_deref(), Some("No USD price now · type the amount in XMR"));
-        assert_eq!(amount_field("x", false, FieldPrice::Missing(&usd)).line.as_deref(), Some("That isn't an amount"));
-        // An aged price says when it's from, in place of the rate once there's an amount.
-        let aged = FieldPrice::At(&usd, p, Some("price from 14:02"));
-        assert_eq!(amount_field("", true, aged).line.as_deref(), Some("1 XMR = $166.10 · price from 14:02"));
-        assert_eq!(amount_field("20", true, aged).line.as_deref(), Some("≈ 0.1204 XMR · price from 14:02"));
-        assert_eq!(amount_field("0.1204", false, aged).line.as_deref(), Some("≈ $20.00 · price from 14:02"));
-        assert!(amount_field("20", true, aged).can_switch);
-    }
-
     /// A form opens blank, in money while there's a price: the whole field
     /// (sign, chip, rate) is there to draw on the first frame.
-    #[test]
-    fn a_blank_field_opens_in_money_only_with_a_price() {
-        let usd = usd();
-        let f = blank_field(FieldPrice::At(&usd, 166_100_000, None));
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.can_switch), (Some("$"), "USD", true, true));
-        assert_eq!(f.line.as_deref(), Some("1 XMR = $166.10"));
-        assert_eq!((f.for_text.as_str(), f.for_in_fiat, f.sendable), ("", true, false));
-        // No price yet: XMR, saying why; XMR chosen: XMR, nothing under it.
-        let f = blank_field(FieldPrice::Missing(&usd));
-        assert_eq!((f.unit.as_str(), f.in_fiat, f.can_switch, f.for_in_fiat), ("XMR", false, false, false));
-        assert_eq!(f.line.as_deref(), Some("No USD price now · type the amount in XMR"));
-        let f = blank_field(FieldPrice::None);
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.in_fiat, f.line), (Some("ɱ"), "XMR", false, None));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    /// A provider for checking: an answer after a wait, or a failure.
+    #[derive(Clone)]
+    struct Fake {
+        name: &'static str,
+        tor: bool,
+        answer: std::result::Result<u64, Failure>,
+        wait: Duration,
+        asked: std::sync::Arc<std::sync::atomic::AtomicU64>,
     }
 
-    #[test]
-    fn settings_name_a_currency_or_give_its_code() {
-        assert_eq!(usd().text(), "US dollar");
-        assert_eq!(currency("XYZ").text(), "XYZ");
-        assert_eq!((currency("CHF").sign(), currency("AUD").sign()), ("CHF".to_owned(), "A$".to_owned()));
+    impl Fake {
+        fn new(name: &'static str, tor: bool, answer: std::result::Result<u64, Failure>) -> Fake {
+            Fake { name, tor, answer, wait: Duration::from_millis(10), asked: Default::default() }
+        }
+    }
+
+    impl Source for Fake {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn currencies(&self) -> &'static [&'static str] {
+            &["AUD"]
+        }
+
+        fn answers_over(&self, transport: Transport) -> bool {
+            transport == Transport::Web || self.tor
+        }
+
+        async fn current(&self, _: &str, _: Transport) -> Result<u64> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(self.wait).await;
+            self.answer.map_err(PriceError::Failed)
+        }
+
+        async fn daily(&self, _: &str, _: Range<i64>, _: Transport) -> Result<Vec<(i64, u64)>> {
+            Ok(vec![])
+        }
+
+        fn history_days(&self) -> i64 {
+            1
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn price_from_checks_every_provider_at_once() {
+        let aud = currency("AUD");
+        let slow = Fake { wait: Duration::from_secs(60), ..Fake::new("Slow", true, Ok(1)) };
+        let sources = vec![Fake::new("Kraken", false, Ok(845_100_000)), Fake::new("CoinGecko", true, Ok(845_020_000)), Fake::new("Busy", true, Err(Failure::Busy)), slow];
+        let started = tokio::time::Instant::now();
+        let lines = check(sources, &aud, Transport::Web, "Kraken", CHECK_TIMEOUT).await;
+        assert_eq!(started.elapsed(), CHECK_TIMEOUT, "all at once, the slow one cut off");
+        type Line<'a> = (&'a str, Option<&'a str>, Option<Failure>, bool, bool);
+        let view: Vec<Line> = lines.iter().map(|l| (l.name, l.rate.as_deref(), l.failure, l.chosen, l.can_pick)).collect();
+        assert_eq!(
+            view,
+            [
+                ("Kraken", Some("A$845.10"), None, true, true),
+                ("CoinGecko", Some("A$845.02"), None, false, true),
+                ("Busy", None, Some(Failure::Busy), false, false),
+                ("Slow", None, Some(Failure::NotAnswering), false, false),
+            ]
+        );
+        assert_eq!((lines[0].web, lines[0].tor, lines[1].tor), (true, false, true));
+    }
+
+
+    #[tokio::test(start_paused = true)]
+    async fn over_tor_a_provider_without_it_is_never_asked() {
+        let kraken = Fake::new("Kraken", false, Ok(845_100_000));
+        let asked = kraken.asked.clone();
+        let lines = check(vec![kraken, Fake::new("CoinGecko", true, Ok(845_020_000))], &currency("AUD"), Transport::Tor, "CoinGecko", CHECK_TIMEOUT).await;
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 0, "no request over the web while Tor is chosen");
+        assert_eq!((lines[0].rate.as_deref(), lines[0].failure, lines[0].can_pick), (None, None, true));
+        assert_eq!(lines[1].rate.as_deref(), Some("A$845.02"));
     }
 
     #[test]
@@ -1078,23 +1045,6 @@ mod tests {
         assert_eq!(balance_order(&Settings { fiat_first: false, ..aud.clone() }, true), BalanceOrder { can_swap: true, fiat_first: false });
         // No price yet: nothing to swap to.
         assert_eq!(balance_order(&aud, false), BalanceOrder { can_swap: false, fiat_first: false });
-    }
-
-    #[test]
-    fn the_amount_field_says_when_send_can_review_it() {
-        let usd = usd();
-        let p = 166_100_000;
-        let sendable = |text: &str, in_fiat: bool, price: FieldPrice| amount_field(text, in_fiat, price).sendable;
-        assert!(sendable("20", true, FieldPrice::At(&usd, p, None)));
-        assert!(sendable("0.1204", false, FieldPrice::At(&usd, p, None)));
-        // Typed in money without a price, it's read as XMR.
-        assert!(sendable("20", true, FieldPrice::None));
-        // It says what it was asked about, as asked.
-        let f = amount_field(" 20", true, FieldPrice::None);
-        assert_eq!((f.for_text.as_str(), f.for_in_fiat, f.in_fiat), (" 20", true, false));
-        for (text, in_fiat) in [("", true), (" ", false), ("0", false), ("0.00", true), ("20.123", true), ("abc", false)] {
-            assert!(!sendable(text, in_fiat, FieldPrice::At(&usd, p, None)), "{text:?}");
-        }
     }
 
     #[test]
@@ -1170,6 +1120,86 @@ mod tests {
     }
 
     #[test]
+    fn a_wallet_file_from_before_currencies_opens_as_it_was() {
+        let read = |json: &str| serde_json::from_str::<Settings>(json).unwrap();
+        // Prices off: XMR only, whatever currency it had.
+        let off = read(r#"{"on":false,"currency":"EUR","provider":"kraken","transport":"web","fiat_first":true}"#);
+        assert_eq!(off, Settings { currency: None, provider: Provider::Kraken, transport: Transport::Web, fiat_first: true });
+        // On, in dollars or euros: that currency, from Kraken.
+        let on = read(r#"{"on":true,"currency":"EUR","provider":"kraken","transport":"web","fiat_first":false}"#);
+        assert_eq!((on.code(), on.provider), (Some("EUR"), Provider::Kraken));
+        assert_eq!(read(r#"{"on":true,"currency":"USD"}"#).code(), Some("USD"));
+        // Written back the new way, without the switch, and read the same.
+        let json = serde_json::to_string(&off).unwrap();
+        assert_eq!(json, r#"{"currency":null,"provider":"kraken","transport":"web","fiat_first":true}"#);
+        assert_eq!(read(&json), off);
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(!json.contains("\"on\""), "{json}");
+        assert_eq!(read(&json), on);
+        // What no longer fits moves as choosing would.
+        assert_eq!(read(r#"{"currency":"NZD","provider":"kraken"}"#).provider, Provider::CoinGecko);
+        assert_eq!(read(r#"{"currency":"XYZ"}"#).code(), None);
+        assert_eq!(read(r#"{"currency":"USD","provider":"coingecko"}"#).provider, Provider::CoinGecko);
+    }
+
+    #[test]
+    fn tor_is_refused_until_built_and_for_a_provider_without_it() {
+        let mut s = Settings::default();
+        assert_eq!(s.choose_transport(Transport::Tor).unwrap_err(), PriceError::TorNotYet);
+        s.choose_transport(Transport::Web).unwrap();
+        assert!(Provider::CoinGecko.answers_over(Transport::Tor) && !Provider::Kraken.answers_over(Transport::Tor));
+        assert!(Provider::ALL.iter().all(|p| p.answers_over(Transport::Web)));
+    }
+
+    #[test]
+    fn each_currency_says_who_prices_it() {
+        assert_eq!(providers_for("AUD"), [Provider::Kraken, Provider::CoinGecko]);
+        assert_eq!(providers_for("NZD"), [Provider::CoinGecko]);
+        assert!(providers_for("XYZ").is_empty());
+        // Every currency has a provider, and every provider's are in the table.
+        assert!(currencies::CODES.iter().all(|c| !providers_for(c).is_empty()));
+        assert!(Provider::ALL.iter().flat_map(|p| p.currencies()).all(|c| currencies::find(c).is_some()));
+        assert_eq!(Provider::named("CoinGecko"), Some(Provider::CoinGecko));
+        assert_eq!(Provider::named("Bitstamp"), None);
+    }
+
+    #[test]
+    fn json_numbers_become_millionths() {
+        let n = |text: &str| micro_number(&serde_json::from_str(text).unwrap());
+        assert_eq!(n("844.02"), Some(844_020_000));
+        assert_eq!(n("93477"), Some(93_477_000_000));
+        assert_eq!(n("51561.32217818517"), Some(51_561_322_178));
+        assert_eq!(n("1.5e-7"), Some(0));
+        assert_eq!(n("2.5e-6"), Some(3));
+        assert_eq!(n("1e3"), Some(1_000_000_000));
+        assert_eq!(n("-1"), None);
+        assert_eq!(n("\"1\""), None);
+    }
+
+    #[tokio::test]
+    async fn tor_says_it_isnt_there_yet_and_onions_are_refused() {
+        let tor = Transport::Tor.get("https://api.kraken.com/0/public/Time").await.unwrap_err();
+        assert_eq!(tor, PriceError::Failed(Failure::TorNotYet));
+        let onion = Transport::Web.get("https://pricesxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion/x").await.unwrap_err();
+        assert_eq!(onion, PriceError::OnionSource);
+        let plain = Transport::Web.get("http://api.kraken.com/0/public/Time").await.unwrap_err();
+        assert_eq!(plain, PriceError::HttpsOnly);
+    }
+
+    #[test]
+    fn a_field_says_what_it_converts_to_without_words() {
+        let usd = currency("USD");
+        let at = FieldPrice::At(&usd, 166_100_000, None);
+        assert_eq!(amount_field("", true, at).under, UnderField::Rate { rate: rate(166_100_000, &usd), from: None });
+        assert_eq!(amount_field("1", false, at).under, UnderField::Converts { to: "$166.10".into(), rate: rate(166_100_000, &usd), from: None });
+        assert_eq!(amount_field("nope", false, at).under, UnderField::NotAnAmount);
+        assert_eq!(amount_field("1", false, FieldPrice::Missing(&usd)).under, UnderField::NoPrice { code: "USD".into() });
+        assert_eq!(amount_field("1", false, FieldPrice::None).under, UnderField::Nothing);
+        let list = currency_list(None, None, "zzzz");
+        assert_eq!(list.no_match.as_deref(), Some("zzzz"));
+    }
+
+    #[test]
     fn whole_yen_and_thousandths_of_a_dinar_work_like_cents() {
         let (jpy, kwd) = (currency("JPY"), currency("KWD"));
         // 1 XMR at ¥93,477.40: whole yen, rounded half up.
@@ -1195,260 +1225,5 @@ mod tests {
             let atomic = to_atomic(minor, p, &kwd).unwrap();
             assert_eq!(to_minor(atomic, p, &kwd), minor, "{minor}");
         }
-        // The amount field takes them as typed.
-        let f = amount_field("1500", true, FieldPrice::At(&jpy, 93_477_400_000, None));
-        assert_eq!((f.sign.as_deref(), f.unit.as_str(), f.label.as_str()), (Some("¥"), "JPY", "Amount in Japanese yen"));
-        assert_eq!(f.line.as_deref(), Some("≈ 0.01605 XMR · 1 XMR = ¥93,477"));
-        assert_eq!(amount_field("1500.5", true, FieldPrice::At(&jpy, 93_477_400_000, None)).line.as_deref(), Some("That isn't an amount"));
-        let f = amount_field("1.5", true, FieldPrice::At(&kwd, p, None));
-        assert_eq!((f.sign, f.label.as_str(), f.line.as_deref()), (None, "Amount in Kuwaiti dinars", Some("≈ 0.02673 XMR · 1 XMR = 56.123 KWD")));
-        assert!(f.sendable);
-    }
-
-    #[test]
-    fn a_wallet_file_from_before_prices_gets_the_defaults() {
-        let settings: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(settings, Settings::default());
-        assert_eq!(settings.code(), Some("USD"), "dollars unless XMR only is chosen");
-        assert_eq!(settings.source_text(), "Kraken · web");
-        let coingecko_tor = Settings { provider: Provider::CoinGecko, transport: Transport::Tor, ..Settings::default() };
-        assert_eq!(coingecko_tor.source_text(), "CoinGecko · Tor", "the Ask over row's name");
-        let cache: Cache = serde_json::from_str("{}").unwrap();
-        assert_eq!(cache, Cache::default());
-    }
-
-    #[test]
-    fn a_wallet_file_from_before_currencies_opens_as_it_was() {
-        let read = |json: &str| serde_json::from_str::<Settings>(json).unwrap();
-        // Prices off: XMR only, whatever currency it had.
-        let off = read(r#"{"on":false,"currency":"EUR","provider":"kraken","transport":"web","fiat_first":true}"#);
-        assert_eq!(off, Settings { currency: None, provider: Provider::Kraken, transport: Transport::Web, fiat_first: true });
-        // On, in dollars or euros: that currency, from Kraken.
-        let on = read(r#"{"on":true,"currency":"EUR","provider":"kraken","transport":"web","fiat_first":false}"#);
-        assert_eq!((on.code(), on.provider), (Some("EUR"), Provider::Kraken));
-        assert_eq!(read(r#"{"on":true,"currency":"USD"}"#).code(), Some("USD"));
-        // Written back the new way, without the switch, and read the same.
-        let json = serde_json::to_string(&off).unwrap();
-        assert_eq!(json, r#"{"currency":null,"provider":"kraken","transport":"web","fiat_first":true}"#);
-        assert_eq!(read(&json), off);
-        let json = serde_json::to_string(&on).unwrap();
-        assert!(!json.contains("\"on\""), "{json}");
-        assert_eq!(read(&json), on);
-        // What no longer fits moves as choosing would.
-        assert_eq!(read(r#"{"currency":"NZD","provider":"kraken"}"#).provider, Provider::CoinGecko);
-        assert_eq!(read(r#"{"currency":"XYZ"}"#).code(), None);
-        assert_eq!(read(r#"{"currency":"USD","provider":"coingecko"}"#).provider, Provider::CoinGecko);
-    }
-
-    #[test]
-    fn ask_over_says_why_tor_is_greyed() {
-        let mut s = Settings::default();
-        let rows = transport_rows(&s);
-        assert_eq!(rows.iter().map(|r| (r.title, r.available, r.chosen)).collect::<Vec<_>>(), [("Web", true, true), ("Tor", false, false)]);
-        assert_eq!(rows[0].note, TransportNote::SeesAddress);
-        assert_eq!(rows[1].note, TransportNote::NotAnswered { provider: "Kraken", transport: Transport::Tor });
-        // CoinGecko answers over Tor, but Fob hasn't Tor built in: still
-        // greyed, saying so.
-        s.choose_provider(Provider::CoinGecko).unwrap();
-        let tor = &transport_rows(&s)[1];
-        assert_eq!((tor.note, tor.available), (TransportNote::NotBuilt, false));
-    }
-
-    #[test]
-    fn choosing_a_currency_moves_to_a_provider_that_prices_it() {
-        let mut s = Settings::default();
-        assert_eq!(s.choose_currency(Some("AUD")).unwrap(), None, "Kraken prices it");
-        assert_eq!(s.provider, Provider::Kraken);
-        assert_eq!(s.choose_currency(Some("NZD")).unwrap().as_deref(), Some("Kraken doesn't price New Zealand dollars, so Fob now asks CoinGecko"));
-        assert_eq!((s.code(), s.provider), (Some("NZD"), Provider::CoinGecko));
-        // CoinGecko prices all 45, so it stays.
-        assert_eq!(s.choose_currency(Some("USD")).unwrap(), None);
-        assert_eq!(s.provider, Provider::CoinGecko);
-        // XMR only keeps the provider for later.
-        assert_eq!(s.choose_currency(None).unwrap(), None);
-        assert_eq!((s.code(), s.provider), (None, Provider::CoinGecko));
-        assert!(s.choose_currency(Some("XYZ")).is_err());
-        assert_eq!(s.code(), None, "unchanged by a refusal");
-    }
-
-    #[test]
-    fn choosing_a_provider_without_tor_moves_to_the_web() {
-        // Tor isn't built, so only a file can hold it: as it would be chosen.
-        let mut s = Settings { currency: Some("EUR".into()), provider: Provider::CoinGecko, transport: Transport::Tor, fiat_first: false };
-        assert_eq!(s.choose_provider(Provider::Kraken).unwrap().as_deref(), Some("Kraken doesn't answer over Tor, so Fob now asks over the web"));
-        assert_eq!((s.provider, s.transport), (Provider::Kraken, Transport::Web));
-        assert_eq!(s.choose_provider(Provider::CoinGecko).unwrap(), None);
-        // One that doesn't price the currency is refused.
-        s.choose_currency(Some("NZD")).unwrap();
-        assert_eq!(s.choose_provider(Provider::Kraken).unwrap_err(), PriceError::NotPriced { provider: "Kraken", currency: "New Zealand dollars" });
-        assert_eq!(s.provider, Provider::CoinGecko);
-        // With XMR only, any.
-        s.choose_currency(None).unwrap();
-        assert_eq!(s.choose_provider(Provider::Kraken).unwrap(), None);
-    }
-
-    #[test]
-    fn tor_is_refused_until_built_and_for_a_provider_without_it() {
-        let mut s = Settings::default();
-        assert_eq!(s.choose_transport(Transport::Tor).unwrap_err(), PriceError::TorNotYet);
-        s.choose_transport(Transport::Web).unwrap();
-        assert!(Provider::CoinGecko.answers_over(Transport::Tor) && !Provider::Kraken.answers_over(Transport::Tor));
-        assert!(Provider::ALL.iter().all(|p| p.answers_over(Transport::Web)));
-    }
-
-    #[test]
-    fn each_currency_says_who_prices_it() {
-        assert_eq!(providers_for("AUD"), [Provider::Kraken, Provider::CoinGecko]);
-        assert_eq!(providers_for("NZD"), [Provider::CoinGecko]);
-        assert!(providers_for("XYZ").is_empty());
-        // Every currency has a provider, and every provider's are in the table.
-        assert!(currencies::CODES.iter().all(|c| !providers_for(c).is_empty()));
-        assert!(Provider::ALL.iter().flat_map(|p| p.currencies()).all(|c| currencies::find(c).is_some()));
-        assert_eq!(Provider::named("CoinGecko"), Some(Provider::CoinGecko));
-        assert_eq!(Provider::named("Bitstamp"), None);
-    }
-
-    #[test]
-    fn the_currency_list_puts_monero_and_the_phone_s_first() {
-        let list = currency_list(Some("AUD"), Some("aud"), "");
-        let headings: Vec<_> = list.groups.iter().map(|g| g.heading).collect();
-        assert_eq!(headings, [CurrencyHeading::Monero, CurrencyHeading::ThisDevice, CurrencyHeading::All { count: 45 }]);
-        let xmr = &list.groups[0].rows[0];
-        assert_eq!((xmr.code.as_deref(), xmr.sign.as_str(), xmr.name.as_str(), xmr.line.as_str(), xmr.chosen), (None, "ɱ", "Monero (XMR)", "Fob never looks up a price", false));
-        let phone = &list.groups[1].rows[0];
-        assert_eq!((phone.sign.as_str(), phone.name.as_str(), phone.line.as_str(), phone.chosen), ("A$", "Australian dollar", "AUD · Kraken, CoinGecko", true));
-        let all = &list.groups[2].rows;
-        assert_eq!(all.len(), 45);
-        assert_eq!(all[0].name, "Argentine peso");
-        assert_eq!(all[0].line, "ARS · CoinGecko");
-        assert_eq!(all.iter().filter(|r| r.chosen).count(), 1);
-        // A phone currency Fob doesn't have, or none: no such row.
-        assert_eq!(currency_list(None, Some("XOF"), "").groups.len(), 2);
-        assert!(currency_list(None, None, "").groups[0].rows[0].chosen, "XMR chosen");
-        // Searching: matches only, no phone row.
-        let found = currency_list(Some("AUD"), Some("AUD"), "dollar");
-        assert_eq!(found.groups.len(), 1);
-        assert_eq!(found.groups[0].heading, CurrencyHeading::Found { count: found.groups[0].rows.len(), of: 45 });
-        assert!(found.groups[0].rows.iter().all(|r| r.name.contains("dollar")));
-        let zloty = currency_list(None, None, "ZLOTY");
-        assert_eq!(zloty.groups[0].rows.iter().map(|r| r.code.as_deref()).collect::<Vec<_>>(), [Some("PLN")]);
-        assert_eq!(currency_list(None, None, "xmr").groups[0].heading, CurrencyHeading::Monero);
-        assert_eq!(currency_list(None, None, "monero").groups[0].rows[0].code, None);
-        assert_eq!(currency_list(None, None, "ɱ").groups[0].heading, CurrencyHeading::Monero);
-        let none = currency_list(None, None, " qqq ");
-        assert_eq!((none.groups.len(), none.empty.as_deref()), (0, Some("No currency matches “qqq”")));
-    }
-
-    /// A provider for checking: an answer after a wait, or a failure.
-    #[derive(Clone)]
-    struct Fake {
-        name: &'static str,
-        tor: bool,
-        answer: std::result::Result<u64, Failure>,
-        wait: Duration,
-        asked: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    }
-
-    impl Fake {
-        fn new(name: &'static str, tor: bool, answer: std::result::Result<u64, Failure>) -> Fake {
-            Fake { name, tor, answer, wait: Duration::from_millis(10), asked: Default::default() }
-        }
-    }
-
-    impl Source for Fake {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn currencies(&self) -> &'static [&'static str] {
-            &["AUD"]
-        }
-
-        fn answers_over(&self, transport: Transport) -> bool {
-            transport == Transport::Web || self.tor
-        }
-
-        async fn current(&self, _: &str, _: Transport) -> Result<u64> {
-            self.asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            tokio::time::sleep(self.wait).await;
-            self.answer.map_err(PriceError::Failed)
-        }
-
-        async fn daily(&self, _: &str, _: Range<i64>, _: Transport) -> Result<Vec<(i64, u64)>> {
-            Ok(vec![])
-        }
-
-        fn history_days(&self) -> i64 {
-            1
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn price_from_checks_every_provider_at_once() {
-        let aud = currency("AUD");
-        let slow = Fake { wait: Duration::from_secs(60), ..Fake::new("Slow", true, Ok(1)) };
-        let sources = vec![Fake::new("Kraken", false, Ok(845_100_000)), Fake::new("CoinGecko", true, Ok(845_020_000)), Fake::new("Busy", true, Err(Failure::Busy)), slow];
-        let started = tokio::time::Instant::now();
-        let lines = check(sources, &aud, Transport::Web, "Kraken", CHECK_TIMEOUT).await;
-        assert_eq!(started.elapsed(), CHECK_TIMEOUT, "all at once, the slow one cut off");
-        type Line<'a> = (&'a str, Option<&'a str>, Option<&'a str>, bool, bool);
-        let view: Vec<Line> = lines.iter().map(|l| (l.name, l.rate.as_deref(), l.failure.as_deref(), l.chosen, l.can_pick)).collect();
-        assert_eq!(
-            view,
-            [
-                ("Kraken", Some("A$845.10"), None, true, true),
-                ("CoinGecko", Some("A$845.02"), None, false, true),
-                ("Busy", None, Some("Busy, try again soon"), false, false),
-                ("Slow", None, Some("Not answering"), false, false),
-            ]
-        );
-        assert_eq!((lines[0].web, lines[0].tor, lines[1].tor), (true, false, true));
-        assert_eq!(lines[0].label, "Kraken, web only, A$845.10");
-        assert_eq!(lines[3].label, "Slow, web and Tor, not answering");
-        // Said once they're in, for TalkBack.
-        assert_eq!(checks_summary(&lines), "Kraken A$845.10, CoinGecko A$845.02, Busy busy, try again soon, Slow not answering");
-    }
-
-    #[test]
-    fn price_from_s_intro_is_rust_s() {
-        let mut s = Settings { currency: Some("AUD".into()), ..Settings::default() };
-        let intro = price_from_intro(&s);
-        assert_eq!((intro.before.as_str(), intro.bold.as_deref(), intro.after.as_str()), ("Prices in ", Some("Australian dollars"), ", checked as this page opens. Tap a provider to pick it."));
-        s.currency = None;
-        assert_eq!(price_from_intro(&s), PriceFromIntro { before: "With XMR as the default currency, Fob never looks up a price.".into(), bold: None, after: String::new() });
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn over_tor_a_provider_without_it_is_never_asked() {
-        let kraken = Fake::new("Kraken", false, Ok(845_100_000));
-        let asked = kraken.asked.clone();
-        let lines = check(vec![kraken, Fake::new("CoinGecko", true, Ok(845_020_000))], &currency("AUD"), Transport::Tor, "CoinGecko", CHECK_TIMEOUT).await;
-        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 0, "no request over the web while Tor is chosen");
-        assert_eq!((lines[0].rate.as_deref(), lines[0].failure.as_deref(), lines[0].can_pick), (None, None, true));
-        assert_eq!(lines[0].label, "Kraken, web only, not asked over Tor");
-        assert_eq!(lines[1].rate.as_deref(), Some("A$845.02"));
-    }
-
-    #[test]
-    fn json_numbers_become_millionths() {
-        let n = |text: &str| micro_number(&serde_json::from_str(text).unwrap());
-        assert_eq!(n("844.02"), Some(844_020_000));
-        assert_eq!(n("93477"), Some(93_477_000_000));
-        assert_eq!(n("51561.32217818517"), Some(51_561_322_178));
-        assert_eq!(n("1.5e-7"), Some(0));
-        assert_eq!(n("2.5e-6"), Some(3));
-        assert_eq!(n("1e3"), Some(1_000_000_000));
-        assert_eq!(n("-1"), None);
-        assert_eq!(n("\"1\""), None);
-    }
-
-    #[tokio::test]
-    async fn tor_says_it_isnt_there_yet_and_onions_are_refused() {
-        let tor = Transport::Tor.get("https://api.kraken.com/0/public/Time").await.unwrap_err();
-        assert_eq!(tor, PriceError::Failed(Failure::TorNotYet));
-        let onion = Transport::Web.get("https://pricesxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion/x").await.unwrap_err();
-        assert_eq!(onion, PriceError::OnionSource);
-        let plain = Transport::Web.get("http://api.kraken.com/0/public/Time").await.unwrap_err();
-        assert_eq!(plain, PriceError::HttpsOnly);
     }
 }

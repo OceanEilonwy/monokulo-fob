@@ -80,6 +80,10 @@ impl Wallet {
         fob_words::catch_up::zmq_text(&status.zmq, status.zmq_endpoint.as_deref())
     }
 
+    pub(super) async fn said_field(&self, text: &str, in_fiat: bool, clock: Clock) -> fob_words::prices::Field {
+        fob_words::prices::field(self.amount_field(text, in_fiat, clock).await)
+    }
+
     pub(super) async fn said_payment(&self, tx: &str, clock: Clock) -> Option<fob_words::activity::Detail> {
         self.payment(tx, clock).await.map(fob_words::activity::detail)
     }
