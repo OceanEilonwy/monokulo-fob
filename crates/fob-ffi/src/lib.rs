@@ -548,12 +548,16 @@ pub enum PaymentStatus {
     Confirming { done: u64, needed: u64 },
     NotReady { done: u64, needed: u64 },
     Confirmed { confirmations: u64 },
+    NotConfirmed,
+    Released,
 }
 
 impl From<activity::PaymentStatus> for PaymentStatus {
     fn from(s: activity::PaymentStatus) -> Self {
         use activity::PaymentStatus as S;
         match s {
+            S::Released => PaymentStatus::Released,
+            S::NotConfirmed => PaymentStatus::NotConfirmed,
             S::Sending => PaymentStatus::Sending,
             S::OnTheWay => PaymentStatus::OnTheWay,
             S::Confirming { done, needed } => PaymentStatus::Confirming { done, needed },
@@ -597,6 +601,12 @@ pub struct ActivityRow {
 
 impl From<activity::Row> for ActivityRow {
     fn from(r: activity::Row) -> Self {
+        fob_wallet::words::activity::row(r).into()
+    }
+}
+
+impl From<fob_wallet::words::activity::Row> for ActivityRow {
+    fn from(r: fob_wallet::words::activity::Row) -> Self {
         ActivityRow { activity: r.activity.map(activity), request: r.request, share: r.share, title: r.title, line: r.line, amount_text: r.amount, fiat_text: r.fiat }
     }
 }
@@ -1601,11 +1611,11 @@ impl FobWallet {
     pub async fn screens(&self, now: u64, utc_offset: i32, hours_24: bool, phone_lock: bool) -> Screens {
         let clock = clock::Clock { now, utc_offset, hours_24 };
         let lists = self.inner.lists(clock).await;
-        let paid = |p: Vec<activity::PaidBefore>| p.into_iter().map(|p| PaidBefore { address: p.address, name: p.name, line: p.line }).collect();
+        let paid = |p: Vec<activity::PaidBefore>| p.into_iter().map(fob_wallet::words::activity::paid_before).map(|p| PaidBefore { address: p.address, name: p.name, line: p.line }).collect();
         Screens {
             prices: self.price_settings(now, utc_offset, hours_24).await,
             balance: self.balance(now).await,
-            activity: lists.days.into_iter().map(|day| ActivityDay { label: day.label, rows: day.rows.into_iter().map(Into::into).collect() }).collect(),
+            activity: lists.days.into_iter().map(|day| ActivityDay { label: fob_wallet::words::clock::heading(&day.label), rows: day.rows.into_iter().map(Into::into).collect() }).collect(),
             not_ready: self.not_ready(now, utc_offset, hours_24).await,
             reminder: self.backup_reminder().await,
             node_line: self.inner.node_line().await,
@@ -1959,7 +1969,7 @@ impl FobWallet {
 
     /// The payment `tx` for its own screen; the clock as for `activity_days`.
     pub async fn payment(&self, tx: String, now: u64, utc_offset: i32, hours_24: bool) -> Option<PaymentDetail> {
-        let d = self.inner.payment(&tx, clock::Clock { now, utc_offset, hours_24 }).await?;
+        let d = fob_wallet::words::activity::detail(self.inner.payment(&tx, clock::Clock { now, utc_offset, hours_24 }).await?);
         Some(PaymentDetail {
             amount_text: d.amount,
             amount_exact: d.exact,
@@ -1998,7 +2008,7 @@ impl FobWallet {
 
     /// A contact's card, or none once it's deleted.
     pub async fn contact_card(&self, id: u64, now: u64, utc_offset: i32, hours_24: bool) -> Option<ContactCard> {
-        let c = self.inner.contact_card(id, clock::Clock { now, utc_offset, hours_24 }).await?;
+        let c = fob_wallet::words::contacts::card(self.inner.contact_card(id, clock::Clock { now, utc_offset, hours_24 }).await?);
         Some(ContactCard {
             contact: c.contact.into(),
             send_label: c.send_label,
@@ -2050,7 +2060,7 @@ impl FobWallet {
     /// Save as a contact; none for a split or an address that's already a
     /// contact's.
     pub async fn save_offer(&self, tx: String) -> Option<SaveOffer> {
-        let o = self.inner.save_offer(&tx).await?;
+        let o = fob_wallet::words::contacts::offer(self.inner.save_offer(&tx).await?);
         Some(SaveOffer {
             address: o.address,
             add_to: o.add_to.map(Into::into),
@@ -2097,7 +2107,7 @@ impl FobWallet {
     /// A request's own screen, or none once it's deleted; the clock as for
     /// `activity_days`.
     pub async fn request(&self, id: u64, now: u64, utc_offset: i32, hours_24: bool) -> Option<RequestDetail> {
-        let d = self.inner.request(id, clock::Clock { now, utc_offset, hours_24 }).await?;
+        let d = fob_wallet::words::requests::detail(self.inner.request(id, clock::Clock { now, utc_offset, hours_24 }).await?);
         Some(RequestDetail {
             id: d.request.id,
             address: d.request.address,
@@ -2145,7 +2155,7 @@ impl FobWallet {
     /// Settings' row: "Your profile" over "Henry · share as a code", or
     /// only "Add a shareable Fob contact" before there's a name.
     pub async fn profile_row(&self) -> ProfileRow {
-        let row = self.inner.profile_row().await;
+        let row = fob_wallet::words::profile::settings_row(self.inner.profile_row().await);
         ProfileRow { title: row.title, name: row.name, suffix: row.suffix }
     }
 
@@ -2194,7 +2204,7 @@ impl FobWallet {
     /// anything went out; their profile when it came (once).
     pub async fn end_swap(&self, swap: Arc<TouchSwap>) -> Result<Option<Swapped>> {
         Ok(self.inner.end_swap(&swap.inner).await?.map(|(share, scanned, sure)| {
-            let (title, line) = profile::swapped_words(&scanned.code.name, sure);
+            let (title, line) = fob_wallet::words::profile::swapped_words(&scanned.code.name, sure);
             let text = if scanned.code.name.is_empty() {
                 uri::nameless_uri(&scanned.code.address, false)
             } else {
@@ -2211,6 +2221,7 @@ impl FobWallet {
             .profile_shares(clock)
             .await
             .into_iter()
+            .map(fob_wallet::words::profile::line)
             .map(|l| ShareLine { id: l.id, address: l.address, kind: l.kind.into(), title: l.title, when: l.when, received: l.received, any: l.any })
             .collect()
     }
@@ -2572,6 +2583,7 @@ pub struct ScannedProfile {
 
 impl From<profile::Scanned> for ScannedProfile {
     fn from(s: profile::Scanned) -> Self {
+        let s = fob_wallet::words::profile::scanned(s);
         ScannedProfile {
             reply: s.code.reply,
             address: s.code.address,
@@ -2782,7 +2794,7 @@ pub struct SaveOffer {
 /// with them, not as their send address."
 #[uniffi::export]
 pub fn contact_paid_at_note(addresses: Vec<String>) -> Option<String> {
-    contacts::paid_at_note(&addresses)
+    contacts::paid_at_note(&addresses).as_ref().map(fob_wallet::words::contacts::paid_at_note)
 }
 
 impl From<ContactDraft> for contacts::Draft {
@@ -2805,6 +2817,7 @@ pub struct ContactRow {
 
 impl From<contacts::Row> for ContactRow {
     fn from(r: contacts::Row) -> Self {
+        let r = fob_wallet::words::contacts::row(r);
         ContactRow { id: r.id, name: r.name, initial: r.initial, photo: r.photo, send_address: r.send_address, line: r.line }
     }
 }
@@ -2933,7 +2946,7 @@ pub struct ContactEditTexts {
 
 #[uniffi::export]
 pub fn contact_edit_texts(name: String, new: bool) -> ContactEditTexts {
-    let t = contacts::edit_texts(&name, new);
+    let t = fob_wallet::words::contacts::edit_texts(&name, new);
     ContactEditTexts { title: t.title, address_hint: t.address_hint, delete_title: t.delete_title, delete_body: t.delete_body }
 }
 
@@ -2947,7 +2960,7 @@ pub struct SendAddressScan {
 
 #[uniffi::export]
 pub fn send_address_scan(name: Option<String>) -> SendAddressScan {
-    let t = contacts::scan_texts(name.as_deref());
+    let t = fob_wallet::words::contacts::scan_texts(name.as_deref());
     SendAddressScan { title: t.title, hint: t.hint }
 }
 
@@ -2969,7 +2982,7 @@ pub struct FoundAddress {
 /// isn't an address of this network.
 #[uniffi::export]
 pub fn found_send_address(network: Network, name: Option<String>, current: Option<String>, text: String) -> Result<FoundAddress> {
-    let f = contacts::found(network.into(), name.as_deref(), current.as_deref(), &text)?;
+    let f = fob_wallet::words::contacts::found(contacts::found(network.into(), current.as_deref(), &text)?, name.as_deref());
     Ok(FoundAddress { address: f.address, title: f.title, short: f.short, warning: f.warning })
 }
 

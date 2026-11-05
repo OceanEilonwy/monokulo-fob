@@ -170,23 +170,28 @@ pub fn parse(text: &str, currency: &Currency) -> Result<u64> {
     whole.checked_mul(unit).and_then(|w| w.checked_add(frac)).ok_or(MoneroError::BadAmount)
 }
 
-/// The change between a payment's value then and now: "Up $3.63 (4.6%)
-/// since then", "Down $1.20 (0.8%) since then", "No change since then",
-/// and whether it went up.
-pub fn change(then: u64, now: u64, currency: &Currency) -> (String, bool) {
+/// How a payment's value moved since it moved, for a client to say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    Same,
+    /// By how much, and in tenths of a percent as "4.6"; `None` from nothing.
+    Up { by: String, percent: Option<String> },
+    Down { by: String, percent: Option<String> },
+}
+
+/// The change between a payment's value then and now.
+pub fn change(then: u64, now: u64, currency: &Currency) -> Change {
     if then == now {
-        return ("No change since then".into(), false);
+        return Change::Same;
     }
-    let up = now > then;
     let diff = now.abs_diff(then);
-    let percent = if then == 0 {
-        String::new()
-    } else {
+    let percent = (then != 0).then(|| {
         // Tenths of a percent, rounded half up.
         let tenths = (diff as u128 * 1000 + then as u128 / 2) / then as u128;
-        format!(" ({}.{}%)", tenths / 10, tenths % 10)
-    };
-    (format!("{} {}{percent} since then", if up { "Up" } else { "Down" }, format(diff, currency)), up)
+        format!("{}.{}", tenths / 10, tenths % 10)
+    });
+    let by = format(diff, currency);
+    if now > then { Change::Up { by, percent } } else { Change::Down { by, percent } }
 }
 
 #[cfg(test)]
@@ -269,9 +274,10 @@ mod tests {
     }
 
     #[test]
-    fn changes_since_then_read_as_words() {
-        assert_eq!(change(7_900, 8_263, &usd()), ("Up $3.63 (4.6%) since then".into(), true));
-        assert_eq!(change(15_000, 14_880, &usd()), ("Down $1.20 (0.8%) since then".into(), false));
-        assert_eq!(change(100, 100, &usd()).0, "No change since then");
+    fn changes_since_then_say_by_how_much() {
+        assert_eq!(change(7_900, 8_263, &usd()), Change::Up { by: "$3.63".into(), percent: Some("4.6".into()) });
+        assert_eq!(change(15_000, 14_880, &usd()), Change::Down { by: "$1.20".into(), percent: Some("0.8".into()) });
+        assert_eq!(change(100, 100, &usd()), Change::Same);
+        assert_eq!(change(0, 100, &usd()), Change::Up { by: "$1.00".into(), percent: None });
     }
 }

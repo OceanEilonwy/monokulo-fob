@@ -5,11 +5,23 @@
 //! English only for now. Words differ by the device they're read on
 //! ([`Device`]), which an app sets once as it starts.
 
+pub mod activity;
 pub mod backup;
+pub mod clock;
+pub mod contacts;
 pub mod errors;
 pub mod prices;
+pub mod profile;
+pub mod requests;
+pub mod split;
 
 use std::sync::atomic::{AtomicU8, Ordering};
+
+/// `text` with its first letter a capital.
+pub(crate) fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
 
 /// What Fob runs on, for sentences that name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -247,7 +247,7 @@ async fn a_wallet_file_from_before_contacts_opens_with_none() {
     old_file(&path, &file);
     let old = Wallet::open(&path, [1; 32]).unwrap();
     let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
-    assert!(old.contacts("", clock).await.is_empty());
+    assert!(old.said_contacts("", clock).await.is_empty());
     assert_eq!(old.add_contact(contacts::Draft { name: "Mum".into(), ..Default::default() }).await.unwrap().id, 1);
 }
 
@@ -261,7 +261,7 @@ async fn a_wallet_file_from_before_profiles_opens_with_none() {
     old_file(&path, &file);
     let old = Wallet::open(&path, [1; 32]).unwrap();
     assert!(old.profile().await.is_none());
-    assert!(old.profile_shares(Clock { now: now(), utc_offset: 0, hours_24: true }).await.is_empty());
+    assert!(old.said_shares(Clock { now: now(), utc_offset: 0, hours_24: true }).await.is_empty());
 }
 
 #[tokio::test]

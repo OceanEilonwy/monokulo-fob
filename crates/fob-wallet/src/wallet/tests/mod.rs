@@ -44,6 +44,62 @@ async fn unreachable(name: &str) -> Wallet {
     wallet
 }
 
+/// What the wallet's views say, for tests that read them as a person would.
+pub(super) struct SaidLists {
+    pub days: Vec<fob_words::activity::Day>,
+    pub unsaved: Vec<fob_words::activity::PaidBefore>,
+    pub on_send: Vec<fob_words::contacts::Row>,
+    pub paid_before: Vec<fob_words::activity::PaidBefore>,
+}
+
+impl Wallet {
+    pub(super) async fn said_lists(&self, clock: Clock) -> SaidLists {
+        let lists = self.lists(clock).await;
+        SaidLists {
+            days: lists.days.into_iter().map(fob_words::activity::day).collect(),
+            unsaved: lists.unsaved.into_iter().map(fob_words::activity::paid_before).collect(),
+            on_send: lists.on_send.into_iter().map(fob_words::contacts::row).collect(),
+            paid_before: lists.paid_before.into_iter().map(fob_words::activity::paid_before).collect(),
+        }
+    }
+
+    pub(super) async fn said_payment(&self, tx: &str, clock: Clock) -> Option<fob_words::activity::Detail> {
+        self.payment(tx, clock).await.map(fob_words::activity::detail)
+    }
+
+    pub(super) async fn said_request(&self, id: u64, clock: Clock) -> Option<fob_words::requests::Detail> {
+        self.request(id, clock).await.map(fob_words::requests::detail)
+    }
+
+    pub(super) async fn said_card(&self, id: u64, clock: Clock) -> Option<fob_words::contacts::Card> {
+        self.contact_card(id, clock).await.map(fob_words::contacts::card)
+    }
+
+    pub(super) async fn said_offer(&self, tx: &str) -> Option<fob_words::contacts::Offer> {
+        self.save_offer(tx).await.map(fob_words::contacts::offer)
+    }
+
+    pub(super) async fn said_profile_row(&self) -> fob_words::profile::SettingsRow {
+        fob_words::profile::settings_row(self.profile_row().await)
+    }
+
+    pub(super) async fn said_shares(&self, clock: Clock) -> Vec<fob_words::profile::Line> {
+        self.profile_shares(clock).await.into_iter().map(fob_words::profile::line).collect()
+    }
+
+    pub(super) async fn said_scanned(&self, text: &str) -> Result<fob_words::profile::Scanned> {
+        self.scanned_profile(text).await.map(fob_words::profile::scanned)
+    }
+
+    pub(super) async fn said_contacts(&self, search: &str, clock: Clock) -> Vec<fob_words::contacts::Row> {
+        self.contacts(search, clock).await.into_iter().map(fob_words::contacts::row).collect()
+    }
+
+    pub(super) async fn said_request_contacts(&self) -> Vec<fob_words::contacts::Row> {
+        self.request_contacts().await.into_iter().map(fob_words::contacts::row).collect()
+    }
+}
+
 /// Every part of a wallet that has been used, for the database's tests.
 async fn a_used_wallet(path: &Path) -> Wallet {
     let wallet = Wallet::create(path, [1; 32], Network::Stagenet).unwrap();

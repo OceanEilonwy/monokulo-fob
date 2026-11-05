@@ -1,5 +1,6 @@
 //! The device's clock, which only the app knows, and dates and times written
-//! the way Fob writes them.
+//! the way Fob writes them. Which day it is comes as a [`Day`], for the words
+//! crate to name; a date itself ("27 Oct") and a time ("9:12 am") are values.
 
 /// The phone's clock, which only the app knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +11,23 @@ pub struct Clock {
     pub utc_offset: i32,
     /// "09:12" rather than "9:12 am".
     pub hours_24: bool,
+}
+
+/// A day as a line names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Day {
+    Today,
+    Yesterday,
+    /// "27 Oct", "27 Oct 2025".
+    Date(String),
+}
+
+/// A day and a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct When {
+    pub day: Day,
+    /// "08:40", "9:12 am".
+    pub time: String,
 }
 
 const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
@@ -33,18 +51,13 @@ fn civil(days: i64) -> (i64, usize, i64) {
     (yoe + era * 400 + i64::from(m <= 2), m as usize, d)
 }
 
-pub(crate) fn day_label(day: i64, clock: Clock) -> String {
+pub(crate) fn day_label(day: i64, clock: Clock) -> Day {
     let (today, _) = local(clock.now, clock);
-    if day == today {
-        return "TODAY".into();
+    match day {
+        _ if day == today => Day::Today,
+        _ if day == today - 1 => Day::Yesterday,
+        _ => Day::Date(date(day, today)),
     }
-    if day == today - 1 {
-        return "YESTERDAY".into();
-    }
-    let (year, month, d) = civil(day);
-    let (this_year, _, _) = civil(today);
-    let date = format!("{d} {}", MONTHS[month - 1]);
-    if year == this_year { date } else { format!("{date} {year}") }
 }
 
 pub fn time_of_day(seconds: i64, clock: Clock) -> String {
@@ -75,17 +88,10 @@ fn month_name(month: usize) -> String {
     format!("{}{}", &name[..1], name[1..].to_lowercase())
 }
 
-/// When, for a payment's own screen: "Today 08:40", "Yesterday 08:40",
-/// "27 Oct 08:40", "27 Oct 2025 08:40".
-pub fn when(time: u64, clock: Clock) -> String {
+/// When, for a payment's own screen.
+pub fn when(time: u64, clock: Clock) -> When {
     let (day, seconds) = local(time, clock);
-    let (today, _) = local(clock.now, clock);
-    let date = match day {
-        _ if day == today => "Today".to_owned(),
-        _ if day == today - 1 => "Yesterday".to_owned(),
-        _ => date(day, today),
-    };
-    format!("{date} {}", time_of_day(seconds, clock))
+    When { day: day_label(day, clock), time: time_of_day(seconds, clock) }
 }
 
 /// When, short, for a line under something else: the time today ("08:40"),
@@ -96,15 +102,9 @@ pub(crate) fn short_when(time: u64, clock: Clock) -> String {
     if day == today { time_of_day(seconds, clock) } else { date(day, today) }
 }
 
-/// The day of `time`, for a line: "Today", "Yesterday", "27 Oct".
-pub(crate) fn day_name(time: u64, clock: Clock) -> String {
-    let (day, _) = local(time, clock);
-    let (today, _) = local(clock.now, clock);
-    match day {
-        _ if day == today => "Today".to_owned(),
-        _ if day == today - 1 => "Yesterday".to_owned(),
-        _ => date(day, today),
-    }
+/// The day of `time`, for a line.
+pub(crate) fn day_name(time: u64, clock: Clock) -> Day {
+    day_label(local(time, clock).0, clock)
 }
 
 #[cfg(test)]
@@ -123,5 +123,14 @@ mod tests {
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(-1), (1969, 12, 31));
         assert_eq!(civil(19_782), (2024, 2, 29));
+    }
+
+    #[test]
+    fn a_day_is_today_yesterday_or_a_date() {
+        let c = clock(0);
+        assert_eq!(day_name(NOW, c), Day::Today);
+        assert_eq!(day_name(NOW - 86_400, c), Day::Yesterday);
+        assert_eq!(day_name(NOW - 4 * 86_400, c), Day::Date("27 Oct".into()));
+        assert_eq!(when(NOW - 400 * 86_400, c), When { day: Day::Date("26 Sep 2025".into()), time: "12:00".into() });
     }
 }

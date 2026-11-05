@@ -1,9 +1,8 @@
-//! Activity as Home shows it: grouped by day under "TODAY", "YESTERDAY",
-//! "27 OCT", each row with its title, one line of status and time, and its
-//! amount, so the apps only draw.
+//! Activity as Home shows it: grouped by day, each row with what its title
+//! and line describe and its amount. `fob-words` says them.
 
 use fob_monero::{address::short_title, amount, fiat};
-use crate::{clock::{Clock, day_label, day_name, local, time_of_day, when}, split};
+use crate::clock::{self, Clock, When, day_label, day_name, local, time_of_day, when};
 use fob_codes::receipt::ReceiptView;
 
 /// One row of Activity, ready to draw: a payment, or a request to be paid
@@ -18,30 +17,88 @@ pub struct Row {
     pub share: Option<u64>,
     /// When it moved, or the request or share was made.
     pub time: u64,
-    /// The shop, who was paid ("86Ux … 7kQa"), "From Sam", "Received",
-    /// "Request to Sam", "Shared your profile", "Via your profile".
-    pub title: String,
-    /// Note, status, receipt and time, no date: "Receipt, 3 items · 09:12",
-    /// "Pizza · not ready · 3 of 10 · 08:40", "Sent · 10:15".
-    pub line: String,
+    pub title: RowTitle,
+    pub line: RowLine,
     /// With its sign: "+0.5", "−0.1421"; for a request, what it asked:
     /// "$80.00", "0.5 XMR" (blank for any amount).
     pub amount: String,
-    /// The receipt's total, when it came with one: "$13.50"; otherwise what
-    /// it was worth when it moved, when that's known: "$83.03"; "asked" under
-    /// a request's amount.
-    pub fiat: Option<String>,
+    pub fiat: Option<RowFiat>,
+}
+
+/// What a row is titled by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowTitle {
+    /// The contact paid, the shop on the receipt, or the address cut to its ends.
+    Name(String),
+    /// Paid to a request made for this contact.
+    From(String),
+    Split,
+    /// Paid to a share of your profile.
+    ViaProfile,
+    Sent,
+    Received,
+    /// A request, for this contact if it's for one.
+    Request(Option<String>),
+    Met(String),
+    SharedProfile,
+}
+
+/// Where a payment on a row stands, once it's said at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineStatus {
+    Waiting(PaymentStatus),
+    Sent,
+}
+
+/// What a row's line describes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowLine {
+    Payment {
+        /// What a payment in was for.
+        note: Option<String>,
+        /// Without a note, when the share it came through was made: "09:15", "22 Oct".
+        shared: Option<String>,
+        status: Option<LineStatus>,
+        /// A split's number of pieces.
+        coins: Option<u32>,
+        /// The number of items on its receipt.
+        receipt_items: Option<u32>,
+        time: String,
+    },
+    Request {
+        named: bool,
+        note: Option<String>,
+        /// What came to it: "$83.03"; `None` while nothing has.
+        received: Option<String>,
+        time: String,
+    },
+    Share {
+        time: String,
+    },
+    /// A payment on its request's own screen.
+    RequestPayment {
+        when: When,
+        waiting: Option<PaymentStatus>,
+    },
+}
+
+/// What's under a row's amount.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowFiat {
+    /// A receipt's total, or what it was worth when it moved: "$83.03".
+    Worth(String),
+    /// Under a request's amount.
+    Asked,
 }
 
 /// A day's rows, newest first, under its label.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Day {
-    /// "TODAY", "YESTERDAY", "27 OCT", "27 OCT 2025".
-    pub label: String,
+    pub label: clock::Day,
     pub rows: Vec<Row>,
 }
 
-/// Where a payment stands, for a client to act on. Its words are in `line`.
+/// Where a payment stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaymentStatus {
     /// Out, and not in a block yet.
@@ -53,6 +110,10 @@ pub enum PaymentStatus {
     /// In, and not spendable yet.
     NotReady { done: u64, needed: u64 },
     Confirmed { confirmations: u64 },
+    /// Sent, and a day on the node has never heard of it.
+    NotConfirmed,
+    /// Sent, and its coins released: as far as anyone knows, it didn't go through.
+    Released,
 }
 
 /// Where `activity` stands.
@@ -60,6 +121,8 @@ pub fn payment_status(activity: &Activity) -> PaymentStatus {
     let out = activity.direction == Direction::Out;
     let (done, needed) = (activity.confirmations, activity.needed);
     match () {
+        _ if activity.released => PaymentStatus::Released,
+        _ if activity.not_confirmed => PaymentStatus::NotConfirmed,
         _ if activity.height.is_none() && out => PaymentStatus::Sending,
         _ if activity.height.is_none() => PaymentStatus::OnTheWay,
         _ if done < needed && out => PaymentStatus::Confirming { done, needed },
@@ -68,94 +131,82 @@ pub fn payment_status(activity: &Activity) -> PaymentStatus {
     }
 }
 
-/// While a payment isn't settled: "Sending", "On the way",
-/// "Confirming · 3 of 10" (out) or "Not ready · 3 of 10" (in; "20 of 60"
-/// for a mined reward, as many as its outputs need to be spent).
-pub(crate) fn waiting(activity: &Activity) -> Option<String> {
-    let out = activity.direction == Direction::Out;
-    let (c, needed) = (activity.confirmations, activity.needed);
-    match () {
-        _ if activity.released => Some("Didn't go through".to_owned()),
-        _ if activity.not_confirmed => Some("Not confirmed".to_owned()),
-        _ if activity.height.is_none() => Some(if out { "Sending".to_owned() } else { "On the way".to_owned() }),
-        _ if c < needed => Some(format!("{} · {c} of {needed}", if out { "Confirming" } else { "Not ready" })),
-        _ => None,
+/// Where a payment stands while it isn't settled.
+pub fn waiting(activity: &Activity) -> Option<PaymentStatus> {
+    match payment_status(activity) {
+        PaymentStatus::Confirmed { .. } => None,
+        status => Some(status),
     }
 }
 
-/// A payment's status on its own screen: as in Activity while it waits,
-/// then "Confirmed · 24".
-pub fn status(activity: &Activity) -> String {
-    waiting(activity).unwrap_or_else(|| format!("Confirmed · {}", activity.confirmations))
-}
-
-/// The words for "Not available", where a price can't be had.
-pub const NOT_AVAILABLE: &str = "Not available";
-
-/// A payment's own screen, every word ready to draw.
+/// A payment's own screen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Detail {
     /// With its sign and every digit: "+0.5", "−0.1421".
     pub amount: String,
     /// Every digit, for the details: "0.142135791113 XMR".
     pub exact: String,
-    /// "Today 08:40 · Coffee beans"
-    pub when: String,
+    pub when: When,
+    pub note: Option<String>,
+    pub out: bool,
     /// A default currency besides XMR: the two price boxes show.
     pub priced: bool,
-    /// What it's worth now: "$83.03", or "Not available".
-    pub worth_now: String,
+    /// What it's worth now: "$83.03"; `None` with no price to be had.
+    pub worth_now: Option<String>,
     /// "1 XMR = $166.06", with a current price.
     pub rate_now: Option<String>,
-    /// "When received", "When sent".
-    pub then_label: String,
-    /// What it was worth then, or "Not available".
-    pub worth_then: String,
+    /// What it was worth then.
+    pub worth_then: Option<String>,
     pub rate_then: Option<String>,
-    /// "Up $3.63 (4.6%) since then", when both values are known.
-    pub change: Option<String>,
-    /// The change is up (drawn green; down is muted).
-    pub up: bool,
-    /// "Not ready · 3 of 10", "Confirmed · 24".
-    pub status: String,
+    /// When both values are known.
+    pub change: Option<fiat::Change>,
+    pub status: PaymentStatus,
     /// While it can't be spent or isn't settled: confirmations ÷ needed.
     pub progress: Option<f32>,
-    /// "From" or "To".
-    pub party_label: String,
-    /// "Address 3 · Coffee beans", "Main address", "86Ux … 7kQa"; `None`
-    /// when not known (on its way in the pool, or a restored wallet's send).
-    pub party: Option<String>,
-    /// "Coins" (received) or "Coins spent".
-    pub pieces_label: String,
-    /// "2 · 0.3 + 0.2"
-    pub pieces: Option<String>,
+    /// `None` when not known (on its way in the pool, or a restored wallet's send).
+    pub party: Option<Party>,
+    pub pieces: Option<Pieces>,
     /// The network fee of a payment out: "0.00003 XMR".
     pub fee: Option<String>,
     /// The transaction id cut to its ends: "a1b2c3 … d4e5f6".
     pub tx_short: String,
-    /// "Prices from Kraken.", when a price shows.
-    pub footer: Option<String>,
+    /// Who prices come from, when a price shows.
+    pub prices_from: Option<String>,
     /// Sent, not confirmed: its coins can be released.
     pub can_release: bool,
 }
 
-/// Pieces as "2 · 0.3 + 0.2", largest first; past four, "+ 3 more".
-fn pieces(amounts: &[u64]) -> Option<String> {
+/// Who's on the other end of a payment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Party {
+    /// A split: it paid this wallet.
+    ThisWallet,
+    /// A contact, or the address cut to its ends.
+    Named(String),
+    /// A payment in, by the address it came to; 0 is the main address.
+    Received { subaddress: u32, contact: Option<String>, via_share: bool, note: Option<String> },
+}
+
+/// A payment's pieces: how many, the four largest, and how many more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pieces {
+    pub count: usize,
+    pub shown: Vec<String>,
+    pub more: usize,
+}
+
+fn pieces(amounts: &[u64]) -> Option<Pieces> {
     if amounts.is_empty() {
         return None;
     }
     let mut sorted = amounts.to_vec();
     sorted.sort_unstable_by(|a, b| b.cmp(a));
-    let mut parts: Vec<String> = sorted.iter().take(4).map(|a| amount::format_short(*a)).collect();
-    if sorted.len() > 4 {
-        parts.push(format!("{} more", sorted.len() - 4));
-    }
-    Some(format!("{} · {}", sorted.len(), parts.join(" + ")))
+    Some(Pieces { count: sorted.len(), shown: sorted.iter().take(4).map(|a| amount::format_short(*a)).collect(), more: sorted.len().saturating_sub(4) })
 }
 
-/// The words of a payment's own screen. `now` is the current price shown
-/// (none with XMR only or none asked within the hour); `priced` says
-/// whether prices show at all; `provider` names where they come from.
+/// A payment's own screen. `now` is the current price shown (none with XMR
+/// only or none asked within the hour); `priced` says whether prices show at
+/// all; `provider` names where they come from.
 pub fn detail(activity: &Activity, now: Option<(&fiat::Currency, u64)>, priced: bool, provider: &str, clock: Clock) -> Detail {
     let out = activity.direction == Direction::Out;
     let worth = |price: u64, currency: &fiat::Currency| fiat::value(activity.amount, price, currency);
@@ -167,50 +218,34 @@ pub fn detail(activity: &Activity, now: Option<(&fiat::Currency, u64)>, priced: 
         _ => None,
     };
     let party = if activity.split.is_some() {
-        Some("This wallet".to_owned())
+        Some(Party::ThisWallet)
     } else if out {
-        activity.contact.clone().or_else(|| activity.to.as_deref().map(short_title))
+        activity.contact.clone().or_else(|| activity.to.as_deref().map(short_title)).map(Party::Named)
     } else {
-        activity.subaddress.map(|i| {
-            let address = if i == 0 { "Main address".to_owned() } else { format!("Address {i}") };
-            // Paid to a request made for a contact: who it was for first.
-            let address = match &activity.contact {
-                Some(name) => format!("{name} · {address}"),
-                None => address,
-            };
-            // Paid to a share's address.
-            let address = if activity.shared.is_some() { format!("{address} · via your profile") } else { address };
-            match &activity.note {
-                Some(note) => format!("{address} · {note}"),
-                None => address,
-            }
-        })
+        activity.subaddress.map(|subaddress| Party::Received { subaddress, contact: activity.contact.clone(), via_share: activity.shared.is_some(), note: activity.note.clone() })
     };
-    let note = activity.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default();
     let shown = priced && (now.is_some() || then.is_some());
     let tx = &activity.tx;
     Detail {
         amount: format!("{}{}", if out { "−" } else { "+" }, amount::format_short(activity.amount)),
         exact: format!("{} XMR", amount::format(activity.amount)),
-        when: format!("{}{note}", when(activity.time, clock)),
+        when: when(activity.time, clock),
+        note: activity.note.clone(),
+        out,
         priced,
-        worth_now: now.map(|(c, p)| worth(p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
+        worth_now: now.map(|(c, p)| worth(p, c)),
         rate_now: now.map(|(c, p)| fiat::rate(p, c)),
-        then_label: if out { "When sent" } else { "When received" }.into(),
-        worth_then: then.as_ref().map(|(c, p)| worth(*p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
+        worth_then: then.as_ref().map(|(c, p)| worth(*p, c)),
         rate_then: then.as_ref().map(|(c, p)| fiat::rate(*p, c)),
-        up: change.as_ref().is_some_and(|c| c.1),
-        change: change.map(|c| c.0),
-        status: status(activity),
+        change,
+        status: payment_status(activity),
         progress: waiting(activity).map(|_| (activity.confirmations as f32 / activity.needed.max(1) as f32).min(1.0)),
-        party_label: if out { "To" } else { "From" }.into(),
         party,
-        pieces_label: if out { "Coins spent" } else { "Coins" }.into(),
         pieces: pieces(&activity.pieces),
         fee: activity.fee.filter(|_| out).map(|f| format!("{} XMR", amount::format(f))),
         tx_short: if tx.len() > 12 { format!("{} … {}", &tx[..6], &tx[tx.len() - 6..]) } else { tx.clone() },
         can_release: activity.not_confirmed,
-        footer: shown.then(|| format!("Prices from {provider}.")),
+        prices_from: shown.then(|| provider.to_owned()),
     }
 }
 
@@ -219,36 +254,30 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
     let (_, time) = local(activity.time, clock);
     let out = activity.direction == Direction::Out;
     let title = match (&activity.receipt, &activity.to) {
-        _ if activity.split.is_some() => split::TITLE.into(),
+        _ if activity.split.is_some() => RowTitle::Split,
         // The name this wallet gave whoever was paid comes first.
-        _ if out && activity.contact.is_some() => activity.contact.clone().unwrap_or_default(),
+        _ if out && activity.contact.is_some() => RowTitle::Name(activity.contact.clone().unwrap_or_default()),
         // Paid to a request made for a contact.
-        _ if !out && activity.contact.is_some() => format!("From {}", activity.contact.as_deref().unwrap_or_default()),
+        _ if !out && activity.contact.is_some() => RowTitle::From(activity.contact.clone().unwrap_or_default()),
         // Paid to a share of your profile.
-        _ if !out && activity.shared.is_some() => crate::profile::VIA.into(),
-        (Some(r), _) => r.merchant.clone(),
-        (None, Some(to)) if out => short_title(to),
-        _ if out => "Sent".into(),
-        _ => "Received".into(),
+        _ if !out && activity.shared.is_some() => RowTitle::ViaProfile,
+        (Some(r), _) => RowTitle::Name(r.merchant.clone()),
+        (None, Some(to)) if out => RowTitle::Name(short_title(to)),
+        _ if out => RowTitle::Sent,
+        _ => RowTitle::Received,
     };
     let status = match waiting(&activity) {
-        Some(waiting) => Some(waiting),
+        Some(waiting) => Some(LineStatus::Waiting(waiting)),
         // A receipt says it was a payment, and a split's pieces what it
         // was; "Sent" would only repeat it.
-        None if out && activity.receipt.is_none() && activity.split.is_none() => Some("Sent".into()),
+        None if out && activity.receipt.is_none() && activity.split.is_none() => Some(LineStatus::Sent),
         None => None,
     };
-    let pieces = activity.split.map(split::pieces_text);
-    let receipt = activity.receipt.as_ref().map(|r| {
-        let items = format!("{} item{}", r.item_count, if r.item_count == 1 { "" } else { "s" });
-        if status.is_none() { format!("Receipt, {items}") } else { format!("receipt, {items}") }
-    });
-    // What a payment in was for (its request's note, or the note put in
-    // Receive's code, or when the share it came through was made) comes
-    // first, and the status after it in lower case.
-    let note = activity.note.clone().or_else(|| activity.shared.map(|t| crate::profile::shared_text(t, clock))).filter(|_| !out);
-    let status = if note.is_some() { status.map(|s| s.to_lowercase()) } else { status };
-    let line = [note, status, pieces, receipt, Some(time_of_day(time, clock))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    // What a payment in was for: its request's note, or the note put in
+    // Receive's code, or when the share it came through was made.
+    let note = activity.note.clone().filter(|_| !out);
+    let shared = activity.shared.filter(|_| !out && note.is_none()).map(|t| clock::short_when(t, clock));
+    let line = RowLine::Payment { note, shared, status, coins: activity.split, receipt_items: activity.receipt.as_ref().map(|r| r.item_count), time: time_of_day(time, clock) };
     Row {
         request: None,
         share: None,
@@ -258,8 +287,8 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         amount: format!("{}{}", if out { "−" } else { "+" }, amount::format_short(activity.amount)),
         // A receipt's own total; otherwise what it was worth when it moved.
         fiat: match (&activity.receipt, &activity.price) {
-            (Some(r), _) => Some(r.total.clone()),
-            (None, Some(p)) => Some(fiat::value(activity.amount, p.price, &fiat::currency(&p.currency))),
+            (Some(r), _) => Some(RowFiat::Worth(r.total.clone())),
+            (None, Some(p)) => Some(RowFiat::Worth(fiat::value(activity.amount, p.price, &fiat::currency(&p.currency)))),
             (None, None) => None,
         },
         activity: Some(activity),
@@ -301,9 +330,18 @@ pub struct PaidBefore {
     /// The shop on the last payment's receipt, else the address cut to its
     /// ends: "Corner Café", "86Ux … 7kQa".
     pub name: String,
-    /// The last payment: its note and day ("Lunch money · 27 Oct"), or its
-    /// day and amount ("Today · $24.50", "3 Oct · 0.1421 XMR").
-    pub line: String,
+    pub line: PaidLine,
+}
+
+/// One line about a payment out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaidLine {
+    /// Its note and day.
+    NoteDay { note: String, day: clock::Day },
+    /// Its day and amount.
+    DayAmount { day: clock::Day, amount: String },
+    /// For an address no contact has: when it was paid and how much.
+    PaidDayAmount { day: clock::Day, amount: String },
 }
 
 /// How many people Send's sheet lists as paid before.
@@ -319,13 +357,12 @@ pub(crate) fn paid_amount(payment: &Activity) -> String {
     }
 }
 
-/// One line about a payment out: its note and day ("Lunch money · 27
-/// Oct"), or its day and amount ("Today · $24.50").
-pub(crate) fn last_line(payment: &Activity, clock: Clock) -> String {
+/// One line about a payment out: its note and day, or its day and amount.
+pub(crate) fn last_line(payment: &Activity, clock: Clock) -> PaidLine {
     let day = day_name(payment.time, clock);
     match &payment.note {
-        Some(note) => format!("{note} · {day}"),
-        None => format!("{day} · {}", paid_amount(payment)),
+        Some(note) => PaidLine::NoteDay { note: note.clone(), day },
+        None => PaidLine::DayAmount { day, amount: paid_amount(payment) },
     }
 }
 
@@ -428,14 +465,11 @@ impl Activity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fob_codes::receipt::ReceiptView;
-    use fob_monero::network::UNLOCK;
+        use fob_monero::network::UNLOCK;
 
     /// 2026-10-31 12:00 UTC.
     const NOW: u64 = 1_793_448_000;
     const HOUR: u64 = 3600;
-    const DAY: u64 = 86_400;
-
     fn clock(utc_offset: i32) -> Clock {
         Clock { now: NOW, utc_offset, hours_24: true }
     }
@@ -467,228 +501,6 @@ mod tests {
         }
     }
 
-    fn receipt(items: u32) -> ReceiptView {
-        ReceiptView {
-            merchant: "Kiosk Café".into(),
-            issued: "2026-10-31T09:12:00Z".into(),
-            lines: vec![],
-            item_count: items,
-            tax: None,
-            total: "$13.50".into(),
-            currency: "USD".into(),
-        }
-    }
-
-    #[test]
-    fn days_are_labelled_today_yesterday_then_dates() {
-        let c = clock(0);
-        let rows = vec![
-            activity(Direction::In, 1, NOW - HOUR, 20),
-            activity(Direction::In, 1, NOW - DAY, 20),
-            activity(Direction::In, 1, NOW - 4 * DAY, 20),
-            activity(Direction::In, 1, NOW - 400 * DAY, 20),
-        ];
-        let labels: Vec<_> = by_day(rows, vec![], c).into_iter().map(|d| d.label).collect();
-        assert_eq!(labels, ["TODAY", "YESTERDAY", "27 OCT", "26 SEP 2025"]);
-    }
-
-    #[test]
-    fn the_phones_offset_decides_the_day() {
-        // 23:30 UTC on the 30th is the 31st an hour east.
-        let late = NOW - 12 * HOUR - HOUR / 2;
-        assert_eq!(by_day(vec![activity(Direction::In, 1, late, 20)], vec![], clock(0))[0].label, "YESTERDAY");
-        let east = by_day(vec![activity(Direction::In, 1, late, 20)], vec![], clock(3600));
-        assert_eq!(east[0].label, "TODAY");
-        assert_eq!(east[0].rows[0].line, "00:30");
-    }
-
-    #[test]
-    fn rows_of_a_day_stay_together_and_in_order() {
-        // An unconfirmed payment from yesterday sorts first in the wallet's
-        // list but belongs under its own day.
-        let mut pending = activity(Direction::Out, 1, NOW - DAY, 0);
-        pending.height = None;
-        let rows = vec![pending, activity(Direction::In, 2, NOW - HOUR, 20), activity(Direction::In, 3, NOW - 2 * HOUR, 20)];
-        let days = by_day(rows, vec![], clock(0));
-        assert_eq!(days.len(), 2);
-        assert_eq!((days[0].label.as_str(), days[0].rows.len()), ("TODAY", 2));
-        assert_eq!(days[0].rows[0].amount, "+0.000000000002");
-        assert_eq!((days[1].label.as_str(), days[1].rows[0].line.as_str()), ("YESTERDAY", "Sending · 12:00"));
-    }
-
-    #[test]
-    fn lines_read_like_the_designs() {
-        let at = |h: u64, m: u64| NOW - 12 * HOUR + h * HOUR + m * 60;
-        let mut paid = activity(Direction::Out, 142_100_000_000, at(9, 12), 20);
-        paid.receipt = Some(receipt(3));
-        let mut sent = activity(Direction::Out, 500_000_000_000, at(10, 15), 20);
-        sent.to = Some("86Ux3m9Pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7kQa".into());
-        let arriving = activity(Direction::In, 653_000_000_000, at(8, 40), 3);
-        let mut on_the_way = activity(Direction::In, 1_000_000_000_000, at(11, 5), 0);
-        on_the_way.height = None;
-        let mut confirming = activity(Direction::Out, 1, at(7, 0), 4);
-        confirming.receipt = Some(receipt(1));
-
-        let rows = by_day(vec![sent, paid, arriving, on_the_way, confirming], vec![], clock(0)).remove(0).rows;
-        let shown: Vec<_> = rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.amount.as_str(), r.fiat.as_deref())).collect();
-        assert_eq!(
-            shown,
-            [
-                ("86Ux … 7kQa", "Sent · 10:15", "−0.5", None),
-                ("Kiosk Café", "Receipt, 3 items · 09:12", "−0.1421", Some("$13.50")),
-                ("Received", "Not ready · 3 of 10 · 08:40", "+0.653", None),
-                ("Received", "On the way · 11:05", "+1", None),
-                ("Kiosk Café", "Confirming · 4 of 10 · receipt, 1 item · 07:00", "−0.000000000001", Some("$13.50")),
-            ]
-        );
-    }
-
-    #[test]
-    fn payments_to_a_request_say_who_and_what_for_and_requests_sit_among_them() {
-        let at = |h: u64, m: u64| NOW - 12 * HOUR + h * HOUR + m * 60;
-        let mut from_sam = activity(Direction::In, 500_000_000_000, at(8, 40), 3);
-        from_sam.contact = Some("Sam".into());
-        from_sam.note = Some("Concert tickets".into());
-        from_sam.subaddress = Some(9);
-        let mut unnamed = activity(Direction::In, 1, at(8, 20), 20);
-        unnamed.note = Some("Bike".into());
-        let mut pending = activity(Direction::In, 2, at(6, 0), 0);
-        pending.height = None;
-        let cafe = activity(Direction::Out, 3, at(7, 58), 20);
-        let request = |id: u64, time: u64| Row {
-            activity: None,
-            request: Some(id),
-            share: None,
-            time,
-            title: "Request".into(),
-            line: String::new(),
-            amount: String::new(),
-            fiat: None,
-        };
-        let rows = by_day(vec![pending, from_sam.clone(), unnamed, cafe], vec![request(1, at(8, 30)), request(2, at(8, 12)), request(3, NOW - DAY)], clock(0));
-        let today: Vec<_> = rows[0].rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.request)).collect();
-        assert_eq!(
-            today,
-            [
-                // Not yet mined: on top, whatever its time.
-                ("Received", "On the way · 06:00", None),
-                ("From Sam", "Concert tickets · not ready · 3 of 10 · 08:40", None),
-                ("Request", "", Some(1)),
-                ("Received", "Bike · 08:20", None),
-                ("Request", "", Some(2)),
-                ("Sent", "Sent · 07:58", None),
-            ]
-        );
-        assert_eq!((rows[1].label.as_str(), rows[1].rows[0].request), ("YESTERDAY", Some(3)));
-        let d = detail(&from_sam, None, false, "Kraken", clock(0));
-        assert_eq!(d.party.as_deref(), Some("Sam · Address 9 · Concert tickets"));
-    }
-
-    #[test]
-    fn a_row_shows_what_it_was_worth_or_its_receipt_s_total() {
-        let record = |price| fob_monero::fiat::Record { currency: "USD".into(), price, provider: "Kraken".into(), at: NOW, daily: false };
-        let mut priced = activity(Direction::In, 500_000_000_000, NOW - HOUR, 20);
-        priced.price = Some(record(166_060_000));
-        let mut paid = activity(Direction::Out, 142_100_000_000, NOW - 2 * HOUR, 20);
-        paid.receipt = Some(receipt(3));
-        paid.price = Some(record(95_000_000));
-        let unpriced = activity(Direction::In, 1, NOW - 3 * HOUR, 20);
-        let rows = by_day(vec![priced, paid, unpriced], vec![], clock(0)).remove(0).rows;
-        let fiat: Vec<_> = rows.iter().map(|r| r.fiat.as_deref()).collect();
-        assert_eq!(fiat, [Some("$83.03"), Some("$13.50"), None]);
-    }
-
-    #[test]
-    fn a_payment_s_own_screen_reads_like_the_designs() {
-        let usd = fob_monero::fiat::currency("USD");
-        let c = clock(0);
-        let at = |h: u64, m: u64| NOW - 12 * HOUR + h * HOUR + m * 60;
-        let mut received = activity(Direction::In, 500_000_000_000, at(8, 40), 3);
-        received.tx = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90".into();
-        received.price = Some(fob_monero::fiat::Record { currency: "USD".into(), price: 158_800_000, provider: "Kraken".into(), at: at(8, 40), daily: false });
-        received.subaddress = Some(3);
-        received.note = Some("Coffee beans".into());
-        received.pieces = vec![200_000_000_000, 300_000_000_000];
-        let d = detail(&received, Some((&usd, 166_060_000)), true, "Kraken", c);
-        assert_eq!((d.amount.as_str(), d.when.as_str()), ("+0.5", "Today 08:40 · Coffee beans"));
-        assert_eq!(d.exact, "0.5 XMR");
-        assert_eq!((d.worth_now.as_str(), d.rate_now.as_deref()), ("$83.03", Some("1 XMR = $166.06")));
-        assert_eq!((d.then_label.as_str(), d.worth_then.as_str(), d.rate_then.as_deref()), ("When received", "$79.40", Some("1 XMR = $158.80")));
-        assert_eq!((d.change.as_deref(), d.up), (Some("Up $3.63 (4.6%) since then"), true));
-        assert_eq!((d.status.as_str(), d.progress), ("Not ready · 3 of 10", Some(0.3)));
-        assert_eq!((d.party_label.as_str(), d.party.as_deref()), ("From", Some("Address 3 · Coffee beans")));
-        assert_eq!((d.pieces_label.as_str(), d.pieces.as_deref()), ("Coins", Some("2 · 0.3 + 0.2")));
-        assert_eq!((d.fee, d.tx_short.as_str(), d.footer.as_deref()), (None, "a1b2c3 … 7e8f90", Some("Prices from Kraken.")));
-
-        // Sent days ago, no price recorded, prices now unavailable.
-        let mut sent = activity(Direction::Out, 100_000_000_000, NOW - 4 * DAY, 30);
-        sent.fee = Some(30_000_000);
-        sent.to = Some("86Ux3m9Pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7kQa".into());
-        sent.pieces = (1..=6).map(|i| i * 100_000_000_000).collect();
-        let d = detail(&sent, None, true, "Kraken", c);
-        assert_eq!((d.amount.as_str(), d.when.as_str()), ("−0.1", "27 Oct 12:00"));
-        assert_eq!((d.worth_now.as_str(), d.worth_then.as_str(), d.then_label.as_str()), ("Not available", "Not available", "When sent"));
-        assert_eq!((d.change, d.progress, d.footer), (None, None, None));
-        assert_eq!((d.party_label.as_str(), d.party.as_deref()), ("To", Some("86Ux … 7kQa")));
-        assert_eq!(d.pieces.as_deref(), Some("6 · 0.6 + 0.5 + 0.4 + 0.3 + 2 more"));
-        assert_eq!(d.fee.as_deref(), Some("0.00003 XMR"));
-        // Down since then, in muted words.
-        let mut fell = received.clone();
-        fell.price.as_mut().unwrap().price = 170_000_000;
-        let d = detail(&fell, Some((&usd, 166_060_000)), true, "Kraken", c);
-        assert_eq!((d.change.as_deref(), d.up), (Some("Down $1.97 (2.3%) since then"), false));
-        // Main address, XMR only.
-        received.subaddress = Some(0);
-        received.note = None;
-        let d = detail(&received, None, false, "Kraken", c);
-        assert_eq!((d.party.as_deref(), d.priced, d.footer), (Some("Main address"), false, None));
-        assert_eq!(when(NOW - 400 * DAY, c), "26 Sep 2025 12:00");
-        assert_eq!(when(NOW - DAY, c), "Yesterday 12:00");
-    }
-
-    #[test]
-    fn a_payment_s_own_screen_says_where_it_is() {
-        let mut sending = activity(Direction::Out, 1, NOW, 0);
-        sending.height = None;
-        let mut on_the_way = activity(Direction::In, 1, NOW, 0);
-        on_the_way.height = None;
-        let shown: Vec<_> = [
-            sending,
-            on_the_way,
-            activity(Direction::Out, 1, NOW, 3),
-            activity(Direction::In, 1, NOW, 9),
-            activity(Direction::In, 1, NOW, 24),
-            activity(Direction::Out, 1, NOW, 10),
-        ]
-        .iter()
-        .map(status)
-        .collect();
-        assert_eq!(shown, ["Sending", "On the way", "Confirming · 3 of 10", "Not ready · 9 of 10", "Confirmed · 24", "Confirmed · 10"]);
-    }
-
-    #[test]
-    fn money_locked_longer_stays_not_ready_past_ten() {
-        // A mined reward needs 60: at 24 it isn't ready, on its row or its screen.
-        let reward = Activity { needed: 60, ..activity(Direction::In, 1, NOW, 24) };
-        assert_eq!(status(&reward), "Not ready · 24 of 60");
-        let row = by_day(vec![reward.clone()], vec![], clock(0)).remove(0).rows.remove(0);
-        assert_eq!(row.line, "Not ready · 24 of 60 · 12:00");
-        let d = detail(&reward, None, false, "Kraken", clock(0));
-        assert_eq!((d.status.as_str(), d.progress), ("Not ready · 24 of 60", Some(0.4)));
-        let ready = Activity { confirmations: 60, ..reward };
-        assert_eq!((status(&ready).as_str(), detail(&ready, None, false, "Kraken", clock(0)).progress), ("Confirmed · 60", None));
-    }
-
-    #[test]
-    fn a_split_reads_as_its_pieces() {
-        let split = Activity { split: Some(12), to: Some("5".repeat(95)), fee: Some(150_000_000), ..activity(Direction::Out, 150_000_000, NOW - HOUR, 20) };
-        let confirming = Activity { confirmations: 3, ..split.clone() };
-        let rows = by_day(vec![split.clone(), confirming], vec![], clock(0)).remove(0).rows;
-        let shown: Vec<_> = rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.amount.as_str())).collect();
-        assert_eq!(shown, [("Split up", "12 coins · 11:00", "−0.0001"), ("Split up", "Confirming · 3 of 10 · 12 coins · 11:00", "−0.0001")]);
-        assert_eq!(detail(&split, None, false, "Kraken", clock(0)).party.as_deref(), Some("This wallet"));
-    }
-
     #[test]
     fn a_twelve_hour_clock_says_am_and_pm() {
         let c = Clock { hours_24: false, ..clock(0) };
@@ -696,44 +508,6 @@ mod tests {
         assert_eq!(time_of_day(9 * 3600 + 12 * 60, c), "9:12 am");
         assert_eq!(time_of_day(12 * 3600, c), "12:00 pm");
         assert_eq!(time_of_day(22 * 3600 + 5 * 60, c), "10:05 pm");
-    }
-
-    #[test]
-    fn paid_before_lists_each_address_once_newest_first() {
-        let c = clock(0);
-        let address = |end: char| format!("86Ux{}7kQ{end}", "q".repeat(87));
-        let paid = |to: String, amount: u64, time: u64| Activity { to: Some(to), ..activity(Direction::Out, amount, time, 20) };
-        let mut cafe = paid(address('a'), 142_100_000_000, NOW - HOUR);
-        cafe.receipt = Some(receipt(3));
-        let mut sam = paid(address('b'), 100_000_000_000, NOW - 4 * DAY);
-        sam.note = Some("Lunch money".into());
-        let mut mum = paid(address('c'), 300_000_000_000, NOW - 28 * DAY);
-        mum.price = Some(fob_monero::fiat::Record { currency: "USD".into(), price: 166_666_666, provider: "Kraken".into(), at: NOW, daily: false });
-        // Sam again, earlier: only the last payment to Sam shows.
-        let sam_before = paid(address('b'), 1, NOW - 9 * DAY);
-        let split = Activity { split: Some(4), ..paid(address('d'), 1, NOW) };
-        let received = activity(Direction::In, 1, NOW, 20);
-        // A restored wallet's send: no address known.
-        let unknown = activity(Direction::Out, 1, NOW, 20);
-        let fourth = paid(address('e'), 1_000_000_000, NOW - 400 * DAY);
-        let rows = [sam_before, received, mum.clone(), split, sam, unknown, cafe, fourth];
-        let shown: Vec<_> = paid_before(&rows, c).into_iter().map(|p| (p.name, p.line)).collect();
-        assert_eq!(
-            shown,
-            [
-                // The shop's name from its receipt, but what was paid, not the receipt's $13.50.
-                ("Kiosk Café".to_owned(), "Today · 0.1421 XMR".to_owned()),
-                ("86Ux … 7kQb".to_owned(), "Lunch money · 27 Oct".to_owned()),
-                ("86Ux … 7kQc".to_owned(), "3 Oct · $50.00".to_owned()),
-            ]
-        );
-        // Without a price, the XMR.
-        mum.price = None;
-        let yesterday = paid(address('e'), 1_000_000_000, NOW - DAY);
-        let p = paid_before(&[mum, yesterday], c);
-        assert_eq!((p[0].line.as_str(), p[0].address.as_str()), ("Yesterday · 0.001 XMR", address('e').as_str()));
-        assert_eq!(p[1].line, "3 Oct · 0.3 XMR");
-        assert!(paid_before(&[], c).is_empty());
     }
 
     #[test]
@@ -745,5 +519,36 @@ mod tests {
         assert_eq!(status(&at(Direction::Out, Some(1), 3)), PaymentStatus::Confirming { done: 3, needed: 10 });
         assert_eq!(status(&at(Direction::In, Some(1), 3)), PaymentStatus::NotReady { done: 3, needed: 10 });
         assert_eq!(status(&at(Direction::In, Some(1), 24)), PaymentStatus::Confirmed { confirmations: 24 });
+    }
+
+    #[test]
+    fn a_row_says_what_it_is_without_words() {
+        let mut sam = activity(Direction::In, 1, NOW - HOUR, 3);
+        sam.contact = Some("Sam".into());
+        sam.note = Some("Tickets".into());
+        let row = payment_row(sam, clock(0));
+        assert_eq!(row.title, RowTitle::From("Sam".into()));
+        assert_eq!(
+            row.line,
+            RowLine::Payment {
+                note: Some("Tickets".into()),
+                shared: None,
+                status: Some(LineStatus::Waiting(PaymentStatus::NotReady { done: 3, needed: 10 })),
+                coins: None,
+                receipt_items: None,
+                time: "11:00".into(),
+            }
+        );
+        let split = Activity { split: Some(12), ..activity(Direction::Out, 1, NOW, 20) };
+        let row = payment_row(split, clock(0));
+        assert_eq!(row.title, RowTitle::Split);
+        assert!(matches!(row.line, RowLine::Payment { status: None, coins: Some(12), .. }));
+    }
+
+    #[test]
+    fn a_payment_gone_quiet_stands_above_how_far_it_got() {
+        let sent = activity(Direction::Out, 5, 100, 0);
+        assert_eq!(payment_status(&Activity { not_confirmed: true, height: None, ..sent.clone() }), PaymentStatus::NotConfirmed);
+        assert_eq!(payment_status(&Activity { not_confirmed: true, released: true, ..sent }), PaymentStatus::Released);
     }
 }
