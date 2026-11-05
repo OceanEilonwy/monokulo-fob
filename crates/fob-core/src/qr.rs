@@ -2,7 +2,7 @@
 
 use qrcode::{EcLevel, QrCode, Version};
 
-use crate::error::{FobError, Result};
+use crate::error::{CodeError, CodeErrorResult as Result};
 
 pub struct QrMatrix {
     /// Modules per side, without a quiet zone.
@@ -27,7 +27,7 @@ pub fn encode(text: &str) -> Result<QrMatrix> {
     let at = |level| QrCode::with_error_correction_level(text.as_bytes(), level).ok();
     let code = match at(EcLevel::M) {
         Some(code) if matches!(code.version(), Version::Normal(v) if v <= DENSE) => code,
-        medium => at(EcLevel::L).or(medium).ok_or(FobError::BadCode)?,
+        medium => at(EcLevel::L).or(medium).ok_or(CodeError::BadCode)?,
     };
     let size = code.width() as u32;
     let dark = code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect();

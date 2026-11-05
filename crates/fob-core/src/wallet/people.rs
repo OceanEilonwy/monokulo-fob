@@ -75,12 +75,12 @@ impl Wallet {
 
     /// Sets your name and photo ("Make it yours", or Edit).
     pub async fn set_profile(&self, name: &str, photo: Option<Vec<u8>>) -> Result<profile::Profile> {
-        self.change_profile(|book| book.set(name, photo)).await
+        self.change_profile(|book| book.set(name, photo).map_err(Into::into)).await
     }
 
     /// "Name in payment requests", on or off.
     pub async fn set_name_in_requests(&self, on: bool) -> Result<()> {
-        self.change_profile(|book| book.set_name_in_requests(on)).await
+        self.change_profile(|book| book.set_name_in_requests(on).map_err(Into::into)).await
     }
 
     /// "Share my profile": a share on a subaddress no one has had, recorded
@@ -218,7 +218,7 @@ impl Wallet {
                 return Err(FobError::Contact(format!("You have a contact named {}: choose Update or Add as new contact.", named.name)));
             }
             let added = book.add(network, profile::new_contact(&code), now())?;
-            if met { Ok(added) } else { book.set_half(added.id, true) }
+            if met { Ok(added) } else { Ok(book.set_half(added.id, true)?) }
         })
         .await
     }
@@ -231,7 +231,7 @@ impl Wallet {
         self.change_contacts(|book, network, paid| {
             let contact = book.get(id).ok_or_else(|| FobError::Contact("That contact was deleted.".into()))?;
             let edited = book.edit(network, id, profile::updated(contact, &code), paid)?;
-            if met { book.set_half(id, false) } else { Ok(edited) }
+            if met { Ok(book.set_half(id, false)?) } else { Ok(edited) }
         })
         .await
     }
@@ -342,22 +342,22 @@ impl Wallet {
     }
 
     pub async fn add_contact(&self, draft: contacts::Draft) -> Result<Contact> {
-        self.change_contacts(|book, network, _| book.add(network, draft, now())).await
+        self.change_contacts(|book, network, _| book.add(network, draft, now()).map_err(Into::into)).await
     }
 
     pub async fn edit_contact(&self, id: u64, draft: contacts::Draft) -> Result<Contact> {
-        self.change_contacts(|book, network, paid| book.edit(network, id, draft, paid)).await
+        self.change_contacts(|book, network, paid| book.edit(network, id, draft, paid).map_err(Into::into)).await
     }
 
     /// A contact's send address, scanned or pasted (a payment code's
     /// address is taken).
     pub async fn set_contact_send_address(&self, id: u64, text: &str) -> Result<Contact> {
-        self.change_contacts(|book, network, paid| book.set_send_address(network, id, text, paid)).await
+        self.change_contacts(|book, network, paid| book.set_send_address(network, id, text, paid).map_err(Into::into)).await
     }
 
     /// Keeps an address paid (from a code named for the contact) with it.
     pub async fn add_contact_paid_at(&self, id: u64, address: &str) -> Result<Contact> {
-        self.change_contacts(|book, network, _| book.add_paid_at(network, id, address)).await
+        self.change_contacts(|book, network, _| book.add_paid_at(network, id, address).map_err(Into::into)).await
     }
 
     /// The payment to `address` a contact made from it would be named by:

@@ -182,7 +182,7 @@ impl Wallet {
         let sync = |to_sync: &Path| std::fs::File::open(to_sync).and_then(|file| file.sync_all()).map_err(|e| FobError::Storage(e.to_string()));
         sync(path)?;
         sync(path.parent().ok_or_else(|| FobError::Storage("a wallet's database has no folder".into()))?)?;
-        crate::wallets::remove_sealed_file(path)
+        crate::wallets::remove_sealed_file(path).map_err(Into::into)
     }
 
     /// Makes the database at `path` from the sealed file beside it. It takes
@@ -204,7 +204,7 @@ impl Wallet {
             return Err(FobError::Storage("the keys read back from the new database aren't the same".into()));
         }
         db.close()?;
-        crate::db::rename(&making, path)
+        crate::db::rename(&making, path).map_err(Into::into)
     }
 
     pub(super) fn state_value(state: &State) -> Result<serde_json::Value> {
@@ -237,7 +237,7 @@ impl Wallet {
         let mut db = self.inner.db.lock().expect("db lock");
         *db = None;
         let _ = std::fs::remove_file(self.inner.path.with_extension("db.migrating"));
-        crate::wallets::remove_files(&self.inner.path)
+        crate::wallets::remove_files(&self.inner.path).map_err(Into::into)
     }
 
     pub fn network(&self) -> Network {

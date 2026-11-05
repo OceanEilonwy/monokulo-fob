@@ -39,7 +39,7 @@ use crate::fetch::{Adaptive, Pipeline, Tuning};
 
 /// A node, as a raw transport, a daemon, a decoy source and what's been learned about it.
 type Connection = (Transport, Daemon, Decoys, Arc<Adaptive>);
-use crate::transport::{Daemon, Transport};
+use crate::transport::{self, Daemon, Transport};
 use monero_wallet::{
     OutputWithDecoys, Scanner, WalletOutput,
     address::{MoneroAddress, SubaddressIndex},
@@ -61,7 +61,7 @@ use crate::{
     catch_up,
     amount,
     contacts::{self, Contact},
-    error::{FobError, Result},
+    error::{FobError, PriceError, Result},
     backup,
     keys::{Keys, SeedKind, StoredKeys},
     manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest},
@@ -484,5 +484,15 @@ pub fn preview_wallet_code(network: Network, code: &str) -> Result<CodePreview> 
             let keys = Keys::view_only(network, &address, &view)?;
             Ok(CodePreview { address: keys.primary_address(), can_spend: false, restore_height: height })
         }
+    }
+}
+
+/// What a sync failure says, and whether it's this device's own fault: the
+/// node's words for a node's failure, otherwise the error's own (saving the
+/// wallet, say, which is nothing to do with the node).
+fn sync_failure(e: &FobError, certificate: Option<std::result::Result<(), transport::CertProblem>>, self_signed: bool) -> (String, bool) {
+    match e {
+        FobError::Node(text) => (node::sync_failure(text, certificate, self_signed), false),
+        e => (node::capitalized(&e.to_string()), matches!(e, FobError::Storage(_))),
     }
 }

@@ -2,7 +2,7 @@
 //! or read from someone else's code.
 
 use crate::{
-    error::{FobError, Result},
+    error::{CodeError, CodeErrorResult as Result},
     uri,
 };
 
@@ -138,8 +138,8 @@ pub fn check_name(text: &str) -> Result<String> {
     let kept = clean(text);
     let name = kept.trim();
     match name.chars().count() {
-        0 => Err(FobError::Contact("A contact needs a name.".into())),
-        n if n > NAME_MAX => Err(FobError::Contact(format!("A name can be up to {NAME_MAX} characters."))),
+        0 => Err(CodeError::Contact("A contact needs a name.".into())),
+        n if n > NAME_MAX => Err(CodeError::Contact(format!("A name can be up to {NAME_MAX} characters."))),
         _ => Ok(name.to_owned()),
     }
 }
@@ -149,7 +149,7 @@ pub fn check_note(text: Option<&str>) -> Result<Option<String>> {
     let kept: Option<String> = text.map(clean);
     let Some(note) = kept.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
     if note.chars().count() > NOTE_MAX {
-        return Err(FobError::Contact(format!("A note can be up to {NOTE_MAX} characters.")));
+        return Err(CodeError::Contact(format!("A note can be up to {NOTE_MAX} characters.")));
     }
     Ok(Some(note.to_owned()))
 }
@@ -211,11 +211,11 @@ fn webp_size(bytes: &[u8]) -> Option<(u32, u32)> {
 /// draw).
 pub fn check_photo(bytes: &[u8]) -> Result<()> {
     if bytes.len() > PHOTO_MAX {
-        return Err(FobError::Contact(format!("That photo is {} bytes; a contact's photo can be at most {PHOTO_MAX}.", bytes.len())));
+        return Err(CodeError::Contact(format!("That photo is {} bytes; a contact's photo can be at most {PHOTO_MAX}.", bytes.len())));
     }
-    let Some((width, height)) = webp_size(bytes) else { return Err(FobError::Contact("That photo isn't a WebP image Fob can show.".into())) };
+    let Some((width, height)) = webp_size(bytes) else { return Err(CodeError::Contact("That photo isn't a WebP image Fob can show.".into())) };
     if width == 0 || height == 0 || width > PHOTO_SIDE_MAX || height > PHOTO_SIDE_MAX {
-        return Err(FobError::Contact(format!("That photo is {width} × {height}; a contact's photo can be at most {PHOTO_SIDE_MAX} × {PHOTO_SIDE_MAX}.")));
+        return Err(CodeError::Contact(format!("That photo is {width} × {height}; a contact's photo can be at most {PHOTO_SIDE_MAX} × {PHOTO_SIDE_MAX}.")));
     }
     Ok(())
 }

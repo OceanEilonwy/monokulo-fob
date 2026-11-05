@@ -22,7 +22,6 @@ use tokio::time::Instant;
 
 pub use crate::network::is_onion;
 use crate::{
-    FobError,
     amount::grouped,
     fetch,
     network::{Network, link_speed},
@@ -285,11 +284,7 @@ impl Report {
 /// say ("Address not found", "Refused to connect", "Certificate expired,
 /// not accepted"), from the error and the certificate the connection's
 /// last handshake saw, not the transport's own error text.
-pub(crate) fn sync_failure(e: &FobError, certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> (String, bool) {
-    let FobError::Node(text) = e else {
-        // Saving the wallet, say: nothing to do with the node.
-        return (capitalized(&e.to_string()), matches!(e, FobError::Storage(_)));
-    };
+pub fn sync_failure(text: &str, certificate: Option<Result<(), CertProblem>>, self_signed: bool) -> String {
     // Sync errors are the interface error's debug text: its variant first.
     let failure = match Failure::refused(certificate, self_signed) {
         Some(refused) => refused,
@@ -297,17 +292,16 @@ pub(crate) fn sync_failure(e: &FobError, certificate: Option<Result<(), CertProb
         None if text.starts_with("InvalidInterface(") || text.starts_with("scanning") => Failure::Unreadable,
         None => Failure::from_text(text),
     };
-    let words = match failure {
+    match failure {
         // Syncing's limits are its own (15 s to connect, 30 s quiet).
         Failure::TimedOut => "Stopped answering".into(),
         Failure::Certificate(_) => format!("Certificate {}", failure.words(ANSWER)),
         failure => capitalized(&failure.words(ANSWER)),
-    };
-    (words, false)
+    }
 }
 
 /// "Didn't answer in 5 s" from "didn't answer in 5 s".
-fn capitalized(s: &str) -> String {
+pub fn capitalized(s: &str) -> String {
     let mut chars = s.chars();
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }

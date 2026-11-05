@@ -21,7 +21,7 @@ use std::{sync::Mutex, time::Instant};
 
 use crate::{
     nfc,
-    error::Result,
+    error::CodeErrorResult as Result,
     ndef,
     network::Network,
     uri,

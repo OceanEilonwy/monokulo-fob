@@ -36,7 +36,7 @@ use std::{
 
 use crate::{
     nfc,
-    error::Result,
+    error::CodeErrorResult as Result,
     network::Network,
     uri::{self, ProfileCode},
 };

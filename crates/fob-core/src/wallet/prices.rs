@@ -61,19 +61,19 @@ impl Wallet {
     /// when Fob never asks for a price. Moves to a provider that prices it
     /// when the chosen one doesn't, and returns the words saying so.
     pub async fn set_currency(&self, code: Option<&str>) -> Result<Option<String>> {
-        self.change_prices(|s| s.choose_currency(code)).await
+        self.change_prices(|s| s.choose_currency(code).map_err(Into::into)).await
     }
 
     /// Prices from `provider`, one that prices the currency. Moves to the
     /// web when it doesn't answer over Tor, and returns the words saying so.
     pub async fn set_price_provider(&self, provider: price::Provider) -> Result<Option<String>> {
-        self.change_prices(|s| s.choose_provider(provider)).await
+        self.change_prices(|s| s.choose_provider(provider).map_err(Into::into)).await
     }
 
     /// How price requests travel. Tor isn't available yet, and is refused,
     /// as is a way the provider doesn't answer over.
     pub async fn set_price_transport(&self, transport: price::Transport) -> Result<()> {
-        self.change_prices(|s| s.choose_transport(transport)).await
+        self.change_prices(|s| s.choose_transport(transport).map_err(Into::into)).await
     }
 
     /// Price from, as it opens: every provider that prices the chosen
@@ -337,8 +337,8 @@ impl Wallet {
             return Ok(false);
         }
         // A failure in a word: the current price's first, else the day's.
-        let kind = |e: &FobError| match e {
-            FobError::PriceFailed(f) => *f,
+        let kind = |e: &PriceError| match e {
+            PriceError::Failed(f) => *f,
             _ => price::Failure::NotAnswering,
         };
         let failure = match (&current, &history) {
@@ -370,7 +370,7 @@ impl Wallet {
             self.save_state(&state)?;
         }
         match error {
-            Some(e) => Err(e),
+            Some(e) => Err(e.into()),
             None => Ok(changed),
         }
     }

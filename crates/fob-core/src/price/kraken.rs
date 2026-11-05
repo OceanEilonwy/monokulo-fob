@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::{Failure, Source, Transport, micro};
 use crate::fiat::MICRO;
-use crate::error::{FobError, Result};
+use crate::error::{PriceError, PriceErrorResult as Result};
 
 const API: &str = "https://api.kraken.com/0/public";
 
@@ -75,17 +75,17 @@ const CARRY_DAYS: i64 = 4;
 pub struct Kraken;
 
 fn route(currency: &str) -> Result<Route> {
-    ROUTES.iter().find(|r| r.0 == currency).map(|r| r.1).ok_or_else(|| FobError::Price(format!("Kraken has no XMR price in {currency}")))
+    ROUTES.iter().find(|r| r.0 == currency).map(|r| r.1).ok_or_else(|| PriceError::Price(format!("Kraken has no XMR price in {currency}")))
 }
 
 /// The answer's `result`, or what Kraken said went wrong: busy for its rate
 /// limits, not answering for anything else it refused.
 fn result(body: &[u8]) -> Result<Value> {
-    let bad = || FobError::PriceFailed(Failure::BadAnswer);
+    let bad = || PriceError::Failed(Failure::BadAnswer);
     let mut v: Value = serde_json::from_slice(body).map_err(|_| bad())?;
     if let Some(errors) = v.get("error").and_then(Value::as_array).filter(|e| !e.is_empty()) {
         let busy = errors.iter().filter_map(Value::as_str).any(|e| e.contains("Rate limit") || e.contains("Too many requests"));
-        return Err(FobError::PriceFailed(if busy { Failure::Busy } else { Failure::NotAnswering }));
+        return Err(PriceError::Failed(if busy { Failure::Busy } else { Failure::NotAnswering }));
     }
     v.get_mut("result").map(Value::take).ok_or_else(bad)
 }
@@ -93,14 +93,14 @@ fn result(body: &[u8]) -> Result<Value> {
 /// `Ticker`'s middle of the best ask (`a[0]`) and bid (`b[0]`), in
 /// millionths, when the spread is at most `spread` millionths of it.
 pub(crate) fn parse_ticker(body: &[u8], key: &str, spread: u64) -> Result<u64> {
-    let bad = FobError::PriceFailed(Failure::BadAnswer);
+    let bad = PriceError::Failed(Failure::BadAnswer);
     let result = result(body)?;
     let side = |s: &str| result.get(key)?.get(s)?.get(0)?.as_str().and_then(micro).filter(|p| *p > 0);
     let (ask, bid) = side("a").zip(side("b")).filter(|(a, b)| a >= b).ok_or(bad)?;
     let middle = (ask + bid).div_ceil(2);
     // Wider than allowed: a quiet market's quotes say little of the rate.
     if ((ask - bid) as u128) * (MICRO as u128) > (spread as u128) * (middle as u128) {
-        return Err(FobError::PriceFailed(Failure::BadAnswer));
+        return Err(PriceError::Failed(Failure::BadAnswer));
     }
     Ok(middle)
 }
@@ -111,7 +111,7 @@ pub(crate) fn parse_ticker(body: &[u8], key: &str, spread: u64) -> Result<u64> {
 /// for a day with no trades. A day with fewer than `min_trades` is left out.
 pub(crate) fn parse_ohlc(body: &[u8], key: &str, min_trades: u64) -> Result<Vec<(i64, u64)>> {
     let result = result(body)?;
-    let rows = result.get(key).and_then(Value::as_array).ok_or(FobError::PriceFailed(Failure::BadAnswer))?;
+    let rows = result.get(key).and_then(Value::as_array).ok_or(PriceError::Failed(Failure::BadAnswer))?;
     Ok(rows
         .iter()
         .filter_map(|row| {
@@ -180,7 +180,7 @@ impl Source for Kraken {
             Route::Direct { pair, key } => ticker(pair, key, XMR_SPREAD, transport).await,
             Route::ViaUsd { pair, key, per_dollar } => {
                 let (xmr_usd, rate) = tokio::try_join!(ticker(XMR_USD.0, XMR_USD.1, XMR_SPREAD, transport), ticker(pair, key, RATE_SPREAD, transport))?;
-                through(xmr_usd, rate, per_dollar).ok_or(FobError::PriceFailed(Failure::BadAnswer))
+                through(xmr_usd, rate, per_dollar).ok_or(PriceError::Failed(Failure::BadAnswer))
             }
         }
     }

@@ -46,7 +46,7 @@ use serde_json::Value;
 
 use crate::{
     amount::{self, ATOMIC_PER_XMR},
-    error::{FobError, Result},
+    error::{PriceError, PriceErrorResult as Result},
     fiat::{Currency, MICRO, Record, currencies, currency, parse, rate, to_atomic, value},
     network::is_onion,
 };
@@ -149,7 +149,7 @@ impl Transport {
     /// would resolve it through the phone's DNS).
     pub async fn get(self, url: &str) -> Result<Vec<u8>> {
         match self {
-            Transport::Tor => Err(FobError::PriceFailed(Failure::TorNotYet)),
+            Transport::Tor => Err(PriceError::Failed(Failure::TorNotYet)),
             Transport::Web => web(url).await,
         }
     }
@@ -195,8 +195,8 @@ static CLIENT: LazyLock<std::result::Result<reqwest::Client, String>> = LazyLock
 });
 
 async fn web(url: &str) -> Result<Vec<u8>> {
-    let err = |e: String| FobError::Price(e);
-    let failed = |f: Failure| FobError::PriceFailed(f);
+    let err = |e: String| PriceError::Price(e);
+    let failed = |f: Failure| PriceError::Failed(f);
     let parsed = reqwest::Url::parse(url).map_err(|_| err(format!("{url} isn't an address")))?;
     if parsed.scheme() != "https" {
         return Err(err("prices are only asked over https".into()));
@@ -393,7 +393,7 @@ impl Settings {
             self.currency = None;
             return Ok(None);
         };
-        let info = currencies::find(code).ok_or_else(|| FobError::Price(format!("Fob has no prices in {code}")))?;
+        let info = currencies::find(code).ok_or_else(|| PriceError::Price(format!("Fob has no prices in {code}")))?;
         let before = self.provider;
         self.currency = Some(code.to_owned());
         let (provider, transport) = self.fit();
@@ -410,7 +410,7 @@ impl Settings {
         if let Some(code) = self.code()
             && !provider.prices(code)
         {
-            return Err(FobError::Price(format!("{} doesn't price {}", provider.name(), currency(code).plural)));
+            return Err(PriceError::Price(format!("{} doesn't price {}", provider.name(), currency(code).plural)));
         }
         let transport = self.transport;
         self.provider = provider;
@@ -421,10 +421,10 @@ impl Settings {
     /// Asks `transport`, one that's built and the provider answers over.
     pub fn choose_transport(&mut self, transport: Transport) -> Result<()> {
         if !transport.available() {
-            return Err(FobError::Price(TOR_NOT_YET.into()));
+            return Err(PriceError::Price(TOR_NOT_YET.into()));
         }
         if !self.provider.answers_over(transport) {
-            return Err(FobError::Price(format!("{} doesn't answer {}", self.provider.name(), transport.text())));
+            return Err(PriceError::Price(format!("{} doesn't answer {}", self.provider.name(), transport.text())));
         }
         self.transport = transport;
         Ok(())
@@ -717,7 +717,7 @@ pub async fn check<S: Source + Clone + 'static>(sources: Vec<S>, currency: &Curr
                 let answer = match tokio::time::timeout(timeout, source.current(&code, transport)).await {
                     Ok(Ok(p)) if p > 0 => Ok(p),
                     Ok(Ok(_)) => Err(Failure::BadAnswer),
-                    Ok(Err(FobError::PriceFailed(f))) => Err(f),
+                    Ok(Err(PriceError::Failed(f))) => Err(f),
                     Ok(Err(_)) | Err(_) => Err(Failure::NotAnswering),
                 };
                 (i, answer)
@@ -1342,7 +1342,7 @@ mod tests {
         async fn current(&self, _: &str, _: Transport) -> Result<u64> {
             self.asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tokio::time::sleep(self.wait).await;
-            self.answer.map_err(FobError::PriceFailed)
+            self.answer.map_err(PriceError::Failed)
         }
 
         async fn daily(&self, _: &str, _: Range<i64>, _: Transport) -> Result<Vec<(i64, u64)>> {

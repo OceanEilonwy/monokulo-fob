@@ -3,7 +3,7 @@
 use monero_wallet::address::MoneroAddress;
 
 use crate::{
-    error::{FobError, Result},
+    error::{MoneroError, MoneroErrorResult as Result},
     network::Network,
 };
 
@@ -17,9 +17,9 @@ pub fn check_address(network: Network, address: &str) -> Result<()> {
         Network::Stagenet => Network::Mainnet,
     };
     if MoneroAddress::from_str(other.monero(), address).is_ok() {
-        return Err(FobError::WrongNetwork { expected: network.name(), found: other.name() });
+        return Err(MoneroError::WrongNetwork { expected: network.name(), found: other.name() });
     }
-    Err(FobError::BadAddress(network.name()))
+    Err(MoneroError::BadAddress(network.name()))
 }
 
 /// A piece of an address as Receive shows it.

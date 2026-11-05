@@ -51,6 +51,18 @@ impl From<fob_core::FobError> for FobError {
     }
 }
 
+/// The kinds of error fob-core's parts raise, as fob-core's own.
+macro_rules! from_kind {
+    ($($kind:ident),*) => {$(
+        impl From<fob_core::error::$kind> for FobError {
+            fn from(e: fob_core::error::$kind) -> Self {
+                fob_core::FobError::from(e).into()
+            }
+        }
+    )*};
+}
+from_kind!(MoneroError, VaultError, CodeError, ScreenError, PriceError);
+
 type Result<T> = std::result::Result<T, FobError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]

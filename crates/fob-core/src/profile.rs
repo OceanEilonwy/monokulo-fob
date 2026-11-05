@@ -16,7 +16,7 @@ use crate::{
     amount,
     clock::{self, Clock},
     contacts::{self, Contact},
-    error::{FobError, Result},
+    error::{ScreenError, ScreenErrorResult as Result},
     fiat, uri,
 };
 
@@ -111,8 +111,8 @@ pub struct Book {
 pub fn check_name(text: &str) -> Result<String> {
     let kept = contacts::clean(text);
     match kept.trim().chars().count() {
-        0 => Err(FobError::Profile("Your profile needs a name.".into())),
-        n if n > contacts::NAME_MAX => Err(FobError::Profile(format!("A name can be up to {} characters.", contacts::NAME_MAX))),
+        0 => Err(ScreenError::Profile("Your profile needs a name.".into())),
+        n if n > contacts::NAME_MAX => Err(ScreenError::Profile(format!("A name can be up to {} characters.", contacts::NAME_MAX))),
         _ => Ok(kept.trim().to_owned()),
     }
 }
@@ -127,7 +127,7 @@ impl Book {
     pub fn set(&mut self, name: &str, photo: Option<Vec<u8>>) -> Result<Profile> {
         let name = check_name(name)?;
         if let Some(photo) = &photo {
-            contacts::check_photo(photo).map_err(|_| FobError::Profile(format!("Your photo must be a WebP of at most {} bytes.", contacts::PHOTO_MAX)))?;
+            contacts::check_photo(photo).map_err(|_| ScreenError::Profile(format!("Your photo must be a WebP of at most {} bytes.", contacts::PHOTO_MAX)))?;
         }
         let name_in_requests = self.profile.as_ref().is_none_or(|p| p.name_in_requests);
         let profile = Profile { name, photo, name_in_requests };
@@ -149,7 +149,7 @@ impl Book {
 
     /// "Name in payment requests", on or off.
     pub fn set_name_in_requests(&mut self, on: bool) -> Result<()> {
-        let profile = self.profile.as_mut().ok_or_else(|| FobError::Profile("Set up your profile first.".into()))?;
+        let profile = self.profile.as_mut().ok_or_else(|| ScreenError::Profile("Set up your profile first.".into()))?;
         profile.name_in_requests = on;
         Ok(())
     }
@@ -163,7 +163,7 @@ impl Book {
     /// needs no profile: Meet goes without a name.
     pub fn share(&mut self, subaddress: u32, address: String, kind: ShareKind, now: u64) -> Result<Share> {
         if self.at(subaddress).is_some() {
-            return Err(FobError::Profile("That address was already given to a share.".into()));
+            return Err(ScreenError::Profile("That address was already given to a share.".into()));
         }
         let id = self.next_id.max(self.shares.iter().map(|s| s.id + 1).max().unwrap_or(1)).max(1);
         self.next_id = id + 1;

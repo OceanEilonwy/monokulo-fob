@@ -15,7 +15,7 @@ use std::{
 use monero_wallet::interface::FeeRate;
 use tokio::sync::Mutex;
 
-use crate::{error::Result, node::Setting};
+use crate::node::Setting;
 
 /// How long an answer stands in for asking the node again: well under a
 /// block's two minutes.
@@ -51,7 +51,7 @@ impl SendContext {
 
     /// The answer kept for `node` if it is fresh, else what `ask` gets (and
     /// keeps). An answer from another node is never taken for this one's.
-    pub(crate) async fn get<F: Future<Output = Result<Ready>>>(&self, node: &Setting, ask: impl FnOnce() -> F) -> Result<Ready> {
+    pub(crate) async fn get<E, F: Future<Output = Result<Ready, E>>>(&self, node: &Setting, ask: impl FnOnce() -> F) -> Result<Ready, E> {
         let mut kept = self.kept.lock().await;
         if let Some(k) = kept.as_ref()
             && k.node == *node
@@ -70,7 +70,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-    use crate::error::FobError;
+    use crate::error::{FobError, Result as FobResult};
 
     fn node(url: &str) -> Setting {
         Setting { url: url.into(), self_signed: false }
@@ -81,7 +81,7 @@ mod tests {
     }
 
     /// An asker that counts itself, and takes `wait` to answer.
-    async fn asked(count: &AtomicU32, wait: Duration, tip: usize) -> Result<Ready> {
+    async fn asked(count: &AtomicU32, wait: Duration, tip: usize) -> FobResult<Ready> {
         count.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(wait).await;
         Ok(ready(tip))
