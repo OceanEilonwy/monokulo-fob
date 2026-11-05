@@ -113,9 +113,9 @@ impl Wallet {
     /// address someone already has.
     pub async fn start_swap(&self, id: u64) -> Result<Arc<swap::Session>> {
         let state = self.inner.state.lock().await;
-        let share = state.profile.get(id).ok_or_else(|| FobError::Profile("That share was deleted.".into()))?;
+        let share = state.profile.get(id).ok_or(FobError::Screen(ScreenError::ShareDeleted))?;
         if !self.can_touch(share) {
-            return Err(FobError::Profile("NFC works on a new Share my profile only.".into()));
+            return Err(ScreenError::ShareNotFresh.into());
         }
         let session = Arc::new(swap::Session::new(
             self.network(),
@@ -212,10 +212,10 @@ impl Wallet {
         let code = uri::parse_profile(self.network(), text)?;
         self.change_contacts(|book, network, _| {
             if let Some(owner) = book.owner(&code.address) {
-                return Err(FobError::Contact(format!("That address is {}'s already: update {} instead.", owner.name, owner.name)));
+                return Err(ScreenError::AddressIsContacts { name: owner.name.clone() }.into());
             }
             if let Some(named) = book.named(&code.name).filter(|_| !as_new) {
-                return Err(FobError::Contact(format!("You have a contact named {}: choose Update or Add as new contact.", named.name)));
+                return Err(ScreenError::NameIsContacts { name: named.name.clone() }.into());
             }
             let added = book.add(network, profile::new_contact(&code), now())?;
             if met { Ok(added) } else { Ok(book.set_half(added.id, true)?) }
@@ -229,7 +229,7 @@ impl Wallet {
     pub async fn update_contact_from_profile(&self, id: u64, text: &str, met: bool) -> Result<Contact> {
         let code = uri::parse_profile(self.network(), text)?;
         self.change_contacts(|book, network, paid| {
-            let contact = book.get(id).ok_or_else(|| FobError::Contact("That contact was deleted.".into()))?;
+            let contact = book.get(id).ok_or(FobError::Screen(ScreenError::ContactDeleted))?;
             let edited = book.edit(network, id, profile::updated(contact, &code), paid)?;
             if met { Ok(book.set_half(id, false)?) } else { Ok(edited) }
         })
@@ -260,7 +260,7 @@ impl Wallet {
         };
         let mut state = self.inner.state.lock().await;
         if contact.is_some_and(|id| state.contacts.get(id).is_none()) {
-            return Err(FobError::Contact("That contact was deleted.".into()));
+            return Err(FobError::Screen(ScreenError::ContactDeleted));
         }
         let name = Self::name_in_requests(&state);
         let ask = requests::Draft { subaddress: 0, address: String::new(), contact, note: note.map(Into::into), asked, name };

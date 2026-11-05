@@ -3,6 +3,8 @@
 
 use zeroize::Zeroizing;
 
+use crate::{Device, device};
+
 /// What Keys' page writes out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyValues {
@@ -107,6 +109,10 @@ pub struct Hub {
 /// phone with a screen lock set or not (`phone_lock`: without one, Backup
 /// and keys opens straight away, so the warning doesn't promise a lock).
 pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
+    hub_on(device(), words, backed, phone_lock)
+}
+
+fn hub_on(device: Device, words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
     let row = |item, title: &str, line: String| HubRow { item, title: title.to_owned(), line };
     let mut backup = Vec::new();
     if let Some(n) = words {
@@ -117,14 +123,15 @@ pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
         };
         backup.push(row(HubItem::SeedPhrase, "Seed phrase", format!("{n} words that restore everything{state}")));
     }
-    backup.push(row(HubItem::WalletCode, "Wallet code", "A QR code another phone can scan".into()));
+    backup.push(row(HubItem::WalletCode, "Wallet code", format!("A QR code another {} can scan", device.noun())));
     let other = vec![row(HubItem::Keys, "Keys", "View and spend keys, address, restore height".into())];
     let spends = words.is_some();
     let who = if spends { "Anyone who sees these can take or watch your money." } else { "Anyone who sees these can watch your money." };
-    let hides = if phone_lock {
-        "Fob hides them from screenshots and asks for your phone's lock first."
-    } else {
-        "Fob hides them from screenshots."
+    let hides = match device {
+        Device::Phone if phone_lock => "Fob hides them from screenshots and asks for your phone's lock first.",
+        Device::Phone => "Fob hides them from screenshots.",
+        // No desktop can promise to keep them out of a screenshot.
+        Device::Computer => "Fob asks for your passphrase first, but can't keep them out of a screenshot.",
     };
     Hub {
         warning: format!("{who} {hides}"),
@@ -323,5 +330,12 @@ mod tests {
         assert_eq!(*watch[0].keys[0].value, VIEW);
         // It still shows both public keys, from the address it was given.
         assert_eq!(watch[1], page(values(true, None))[1]);
+    }
+
+    #[test]
+    fn on_a_computer_the_hub_promises_only_what_a_computer_can_do() {
+        let hub = hub_on(Device::Computer, Some(16), Backed::Up, false);
+        assert_eq!(hub.backup[1].line, "A QR code another computer can scan");
+        assert_eq!(hub.warning, "Anyone who sees these can take or watch your money. Fob asks for your passphrase first, but can't keep them out of a screenshot.");
     }
 }

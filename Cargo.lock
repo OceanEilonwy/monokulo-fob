@@ -475,7 +475,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
- "thiserror 2.0.21",
  "unicode-normalization",
  "zeroize",
 ]
@@ -497,7 +496,6 @@ dependencies = [
  "monero-wallet",
  "serde",
  "sha3",
- "thiserror 2.0.21",
  "unicode-normalization",
 ]
 
@@ -509,7 +507,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -537,8 +534,6 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
- "zeroize",
 ]
 
 [[package]]
@@ -556,7 +551,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "zeroize",
 ]
 
@@ -572,6 +566,7 @@ dependencies = [
  "fob-scanner",
  "fob-screens",
  "fob-vault",
+ "fob-words",
  "hex",
  "monero-daemon-rpc",
  "monero-epee",
@@ -582,8 +577,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
- "thiserror 2.0.21",
  "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "fob-words"
+version = "0.1.10"
+dependencies = [
+ "fob-chain",
+ "fob-codes",
+ "fob-monero",
+ "fob-price",
+ "fob-screens",
+ "fob-vault",
  "zeroize",
 ]
 

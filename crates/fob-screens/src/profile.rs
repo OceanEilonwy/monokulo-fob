@@ -106,8 +106,8 @@ pub struct Book {
 pub fn check_name(text: &str) -> Result<String> {
     let kept = contacts::clean(text);
     match kept.trim().chars().count() {
-        0 => Err(ScreenError::Profile("Your profile needs a name.".into())),
-        n if n > contacts::NAME_MAX => Err(ScreenError::Profile(format!("A name can be up to {} characters.", contacts::NAME_MAX))),
+        0 => Err(ScreenError::ProfileNameEmpty),
+        n if n > contacts::NAME_MAX => Err(ScreenError::ProfileNameTooLong { max: contacts::NAME_MAX }),
         _ => Ok(kept.trim().to_owned()),
     }
 }
@@ -122,7 +122,7 @@ impl Book {
     pub fn set(&mut self, name: &str, photo: Option<Vec<u8>>) -> Result<Profile> {
         let name = check_name(name)?;
         if let Some(photo) = &photo {
-            contacts::check_photo(photo).map_err(|_| ScreenError::Profile(format!("Your photo must be a WebP of at most {} bytes.", contacts::PHOTO_MAX)))?;
+            contacts::check_photo(photo).map_err(|_| ScreenError::ProfilePhotoBad { max: contacts::PHOTO_MAX })?;
         }
         let name_in_requests = self.profile.as_ref().is_none_or(|p| p.name_in_requests);
         let profile = Profile { name, photo, name_in_requests };
@@ -144,7 +144,7 @@ impl Book {
 
     /// "Name in payment requests", on or off.
     pub fn set_name_in_requests(&mut self, on: bool) -> Result<()> {
-        let profile = self.profile.as_mut().ok_or_else(|| ScreenError::Profile("Set up your profile first.".into()))?;
+        let profile = self.profile.as_mut().ok_or(ScreenError::ProfileNotSetUp)?;
         profile.name_in_requests = on;
         Ok(())
     }
@@ -158,7 +158,7 @@ impl Book {
     /// needs no profile: Meet goes without a name.
     pub fn share(&mut self, subaddress: u32, address: String, kind: ShareKind, now: u64) -> Result<Share> {
         if self.at(subaddress).is_some() {
-            return Err(ScreenError::Profile("That address was already given to a share.".into()));
+            return Err(ScreenError::ShareAddressUsed);
         }
         let id = self.next_id.max(self.shares.iter().map(|s| s.id + 1).max().unwrap_or(1)).max(1);
         self.next_id = id + 1;
@@ -385,12 +385,21 @@ pub fn settings_row(profile: Option<&Profile>) -> SettingsRow {
 /// what it would be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
+    pub kind: ChangeKind,
     /// "Name", "Photo", "Send address"
     pub label: String,
     /// "Sam", "No photo", "84Bv9 … 2kLmQ … 99fQ2", "None"
     pub now: String,
     /// "Henry", "Their new photo", "89Hn2 … Tq4Lp … 6wKeR"
     pub new: String,
+}
+
+/// What a change is to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeKind {
+    Name,
+    Photo,
+    SendAddress,
 }
 
 /// A contact a scanned profile matches (the same address, else the same
@@ -436,17 +445,17 @@ pub struct Scanned {
 fn changes(contact: &Contact, code: &uri::ProfileCode) -> (Vec<Change>, bool) {
     let mut changes = vec![];
     if contact.name != code.name {
-        changes.push(Change { label: "Name".into(), now: contact.name.clone(), new: code.name.clone() });
+        changes.push(Change { kind: ChangeKind::Name, label: "Name".into(), now: contact.name.clone(), new: code.name.clone() });
     }
     // A profile without a photo leaves the contact's.
     let photo_changes = code.photo.is_some() && code.photo != contact.photo;
     if photo_changes {
         let now = if contact.photo.is_some() { "Their photo now" } else { "No photo" };
-        changes.push(Change { label: "Photo".into(), now: now.into(), new: "The profile's photo".into() });
+        changes.push(Change { kind: ChangeKind::Photo, label: "Photo".into(), now: now.into(), new: "The profile's photo".into() });
     }
     if contact.send_address.as_deref() != Some(code.address.as_str()) {
         let now = contact.send_address.as_deref().map(contacts::three_part).unwrap_or_else(|| "None".into());
-        changes.push(Change { label: "Send address".into(), now, new: contacts::three_part(&code.address) });
+        changes.push(Change { kind: ChangeKind::SendAddress, label: "Send address".into(), now, new: contacts::three_part(&code.address) });
     }
     (changes, photo_changes)
 }
@@ -724,9 +733,9 @@ mod tests {
         assert_eq!(
             c.changes,
             [
-                Change { label: "Name".into(), now: "Sam".into(), new: "sam".into() },
-                Change { label: "Photo".into(), now: "No photo".into(), new: "The profile's photo".into() },
-                Change { label: "Send address".into(), now: contacts::three_part(&sam_at), new: contacts::three_part(&henry_at) },
+                Change { kind: ChangeKind::Name, label: "Name".into(), now: "Sam".into(), new: "sam".into() },
+                Change { kind: ChangeKind::Photo, label: "Photo".into(), now: "No photo".into(), new: "The profile's photo".into() },
+                Change { kind: ChangeKind::SendAddress, label: "Send address".into(), now: contacts::three_part(&sam_at), new: contacts::three_part(&henry_at) },
             ]
         );
         assert!(c.photo_changes);

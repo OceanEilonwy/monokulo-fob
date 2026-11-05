@@ -209,12 +209,12 @@ impl price::Source for FakePrices {
         if let Some(hold) = &self.hold {
             hold.notified().await;
         }
-        if self.fail { Err(PriceError::Price("no answer".into())) } else { Ok(self.now) }
+        if self.fail { Err(PriceError::Client("no answer".into())) } else { Ok(self.now) }
     }
 
     async fn daily(&self, _: &str, days: std::ops::Range<i64>, _: price::Transport) -> std::result::Result<Vec<(i64, u64)>, PriceError> {
         self.asked_days.fetch_add(1, Ordering::Relaxed);
-        if self.fail { Err(PriceError::Price("no answer".into())) } else { Ok(self.days.iter().copied().filter(|d| days.contains(&d.0)).collect()) }
+        if self.fail { Err(PriceError::Client("no answer".into())) } else { Ok(self.days.iter().copied().filter(|d| days.contains(&d.0)).collect()) }
     }
 
     fn history_days(&self) -> i64 {

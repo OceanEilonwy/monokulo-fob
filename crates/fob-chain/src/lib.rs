@@ -2,6 +2,7 @@
 //! fee rate, and instant updates over ZMQ.
 
 pub mod decoys;
+pub mod error;
 pub mod fetch;
 pub mod node;
 pub mod send_context;

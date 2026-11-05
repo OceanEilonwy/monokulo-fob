@@ -65,7 +65,7 @@ impl Wallet {
     /// already; one kept already takes the certificate choice given now.
     pub async fn add_node(&self, url: &str, self_signed: bool) -> Result<()> {
         let url = node::normalize(url);
-        node::reachable(&url).map_err(FobError::BadEndpoint)?;
+        node::reachable(&url).map_err(FobError::Endpoint)?;
         let mut state = self.inner.state.lock().await;
         if self.keep_node(&mut state, node::Setting { url, self_signed }) {
             self.save_state(&state)?;
@@ -118,7 +118,7 @@ impl Wallet {
     pub async fn set_node(&self, url: &str, self_signed: bool) -> Result<()> {
         let url = crate::node::normalize(url);
         // An onion node can't be reached without Tor, and isn't looked up.
-        crate::node::reachable(&url).map_err(FobError::BadEndpoint)?;
+        crate::node::reachable(&url).map_err(FobError::Endpoint)?;
         // A node on the other network would never find this wallet's money.
         let setting = node::Setting { url: url.clone(), self_signed };
         {
@@ -195,9 +195,9 @@ impl Wallet {
                 None => None,
             };
             if let Some(typed) = typed {
-                state.zmq_endpoint = Some(zmq::endpoint(&state.node, &typed).map_err(FobError::BadEndpoint)?);
+                state.zmq_endpoint = Some(zmq::endpoint(&state.node, &typed).map_err(FobError::Endpoint)?);
             } else if on {
-                return Err(FobError::BadEndpoint("set a node first".into()));
+                return Err(FobError::Endpoint(EndpointProblem::NoNodeSet));
             }
             state.zmq_on = on;
             self.save_state(&state)?;

@@ -13,10 +13,10 @@ pub fn checksum(code: &[u8]) -> [u8; 4] {
 
 /// `code` with its protocol version, length and checksum in front; a code over
 /// `code_max` bytes is refused with `too_big`.
-pub fn frame(code: &str, version: u8, code_max: usize, too_big: &str) -> Result<Vec<u8>> {
+pub fn frame(code: &str, version: u8, code_max: usize, too_big: CodeError) -> Result<Vec<u8>> {
     let bytes = code.as_bytes();
     if bytes.len() > code_max {
-        return Err(CodeError::Profile(too_big.into()));
+        return Err(too_big);
     }
     let mut out = Vec::with_capacity(1 + 2 + 4 + bytes.len());
     out.push(version);

@@ -35,18 +35,21 @@ pub enum FobError {
 
 impl From<fob_wallet::FobError> for FobError {
     fn from(e: fob_wallet::FobError) -> Self {
-        use fob_wallet::FobError as E;
+        use fob_wallet::{
+            FobError as E,
+            error::{ScreenError, VaultError},
+        };
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) | E::Profile(_) | E::BadName(_) => {
-                FobError::Invalid { reason }
-            }
             E::Node(_) => FobError::Node { reason },
-            E::NotEnoughFunds { .. } => FobError::NotEnoughFunds { reason },
-            E::WrongKey => FobError::WrongKey { reason },
-            E::ViewOnly => FobError::ViewOnly { reason },
+            E::Screen(ScreenError::NotEnoughFunds { .. }) => FobError::NotEnoughFunds { reason },
+            E::Vault(VaultError::WrongKey) => FobError::WrongKey { reason },
+            E::Vault(VaultError::ViewOnly) => FobError::ViewOnly { reason },
             E::SpendRejected(_) => FobError::SpendRejected { reason },
-            E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::ReorgTooDeep | E::Price(_) | E::PriceFailed(_) => FobError::Other { reason },
+            E::Send(_) | E::ReorgTooDeep | E::Price(_) | E::Vault(VaultError::Storage(_) | VaultError::Sealing | VaultError::NotAWalletFile) | E::Screen(ScreenError::NoSuchPayment | ScreenError::NothingToSwap | ScreenError::NoPriceToConvert) => {
+                FobError::Other { reason }
+            }
+            E::Monero(_) | E::Vault(_) | E::Code(_) | E::Screen(_) | E::Endpoint(_) => FobError::Invalid { reason },
         }
     }
 }
@@ -61,9 +64,25 @@ macro_rules! from_kind {
         }
     )*};
 }
-from_kind!(MoneroError, VaultError, CodeError, ScreenError, PriceError);
+from_kind!(MoneroError, VaultError, CodeError, ScreenError, PriceError, EndpointProblem);
 
 type Result<T> = std::result::Result<T, FobError>;
+
+/// What Fob runs on, for sentences that name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Device {
+    Phone,
+    Computer,
+}
+
+/// Says which device Fob is on, once, as an app starts. Phone unless told.
+#[uniffi::export]
+pub fn set_device(device: Device) {
+    fob_wallet::words::set_device(match device {
+        Device::Phone => fob_wallet::words::Device::Phone,
+        Device::Computer => fob_wallet::words::Device::Computer,
+    });
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Network {
@@ -346,7 +365,7 @@ impl From<price::CurrencyList> for CurrencyList {
                 .groups
                 .into_iter()
                 .map(|g| CurrencyGroup {
-                    title: g.title,
+                    title: fob_wallet::words::prices::currency_heading(g.heading),
                     rows: g.rows.into_iter().map(|r| CurrencyRow { code: r.code, sign: r.sign, name: r.name, line: r.line, chosen: r.chosen }).collect(),
                 })
                 .collect(),
@@ -1416,7 +1435,7 @@ impl FobWallet {
         let s = self.inner.price_settings().await;
         let sources = price::transport_rows(&s)
             .into_iter()
-            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: r.line, available: r.available, chosen: r.chosen })
+            .map(|r| PriceSourceChoice { transport: r.transport.into(), title: r.title.into(), line: fob_wallet::words::prices::transport_note(r.note), available: r.available, chosen: r.chosen })
             .collect();
         let (source_text, failing) = self.inner.price_from_line(clock::Clock { now, utc_offset, hours_24 }).await;
         let intro = price::price_from_intro(&s);
@@ -2302,7 +2321,7 @@ impl TouchSwap {
         match self.inner.reader_next(&response) {
             fob_wallet::swap::Step::Send(apdu) => ReaderStep::Send { apdu },
             fob_wallet::swap::Step::Done(_) => ReaderStep::Done,
-            fob_wallet::swap::Step::Failed(problem) => ReaderStep::Failed { reason: problem.text() },
+            fob_wallet::swap::Step::Failed(problem) => ReaderStep::Failed { reason: fob_wallet::words::errors::swap_failed(&problem) },
         }
     }
 
@@ -2383,7 +2402,7 @@ impl PayReader {
         match self.inner.next(&response) {
             fob_wallet::pay::Step::Send(apdu) => PayStep::Send { apdu },
             fob_wallet::pay::Step::Done(code) => PayStep::Done { code },
-            fob_wallet::pay::Step::Failed(problem) => PayStep::Failed { reason: problem.text() },
+            fob_wallet::pay::Step::Failed(problem) => PayStep::Failed { reason: fob_wallet::words::errors::pay_failed(&problem) },
         }
     }
 
@@ -2457,10 +2476,29 @@ pub struct ShareLine {
 /// What a scanned profile would change in a contact.
 #[derive(uniffi::Record)]
 pub struct ProfileChange {
+    pub kind: ProfileChangeKind,
     /// "Name", "Photo", "Send address"
     pub label: String,
     pub now: String,
     pub new: String,
+}
+
+/// What a change to a contact is to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ProfileChangeKind {
+    Name,
+    Photo,
+    SendAddress,
+}
+
+impl From<profile::ChangeKind> for ProfileChangeKind {
+    fn from(k: profile::ChangeKind) -> Self {
+        match k {
+            profile::ChangeKind::Name => ProfileChangeKind::Name,
+            profile::ChangeKind::Photo => ProfileChangeKind::Photo,
+            profile::ChangeKind::SendAddress => ProfileChangeKind::SendAddress,
+        }
+    }
 }
 
 /// The contact a scanned profile matches, asked about before it changes.
@@ -2520,7 +2558,7 @@ impl From<profile::Scanned> for ScannedProfile {
             clash: s.clash.map(|c| ProfileClash {
                 contact: c.contact.into(),
                 why: c.why,
-                changes: c.changes.into_iter().map(|c| ProfileChange { label: c.label, now: c.now, new: c.new }).collect(),
+                changes: c.changes.into_iter().map(|c| ProfileChange { kind: c.kind.into(), label: c.label, now: c.now, new: c.new }).collect(),
                 photo_changes: c.photo_changes,
                 ask: c.ask,
                 update: c.update,
@@ -2541,14 +2579,14 @@ pub fn is_profile_code(network: Network, text: String) -> bool {
 /// Why a scanned code isn't a profile, for the contacts' scanner.
 #[uniffi::export]
 pub fn profile_code_problem(network: Network, text: String) -> Option<String> {
-    uri::parse_profile(network.into(), &text).err().map(|e| e.to_string())
+    uri::parse_profile(network.into(), &text).err().map(|e| fob_wallet::words::errors::code(&e))
 }
 
 /// Why Meet can't take a scanned code; none for a profile, or an address from
 /// someone with no profile.
 #[uniffi::export]
 pub fn meet_code_problem(network: Network, text: String) -> Option<String> {
-    uri::parse_meet_code(network.into(), &text).err().map(|e| e.to_string())
+    uri::parse_meet_code(network.into(), &text).err().map(|e| fob_wallet::words::errors::code(&e))
 }
 
 /// Whether a code Meet took came with no name, so its receiver must give one.
@@ -2617,6 +2655,8 @@ pub struct AmountEntry {
     /// copied from one that's behind (the chip just tapped, say).
     pub for_text: String,
     pub for_in_fiat: bool,
+    /// The line without the rate, for a field with no room for it.
+    pub conversion: Option<String>,
 }
 
 impl From<price::AmountField> for AmountEntry {
@@ -2632,6 +2672,7 @@ impl From<price::AmountField> for AmountEntry {
             sendable: f.sendable,
             for_text: f.for_text,
             for_in_fiat: f.for_in_fiat,
+            conversion: f.conversion,
         }
     }
 }

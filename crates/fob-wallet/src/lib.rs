@@ -5,6 +5,7 @@
 //! - [`Wallet`]: create, restore, open; sync, balance, activity; prepare and
 //!   send payments.
 //! - `fob-screens`: what each screen shows, from the wallet's records and the clock.
+//! - `fob-words`: everything Fob says, from the scenarios the others describe.
 //! - `fob-codes`: payment, wallet and profile codes, receipts, QR modules and NFC.
 //! - `fob-vault`: keys, the encrypted database, and the wallets on this device.
 //! - `fob-price`: what XMR is worth, now and when each payment moved.
@@ -23,8 +24,10 @@ pub use fob_codes::{ndef, pay, qr, receipt, swap, uri};
 pub use fob_monero::{address, amount, fiat, network, pattern};
 pub use fob_price as price;
 pub use fob_scanner as scanning;
-pub use fob_screens::{activity, backup, catch_up, clock, contacts, manual, not_ready, profile, requests, split};
+pub use fob_screens::{activity, catch_up, clock, contacts, manual, not_ready, profile, requests, split};
 pub use fob_vault::{keys, wallets};
+pub use fob_words as words;
+pub use fob_words::backup;
 
 use fob_chain::{decoys, send_context};
 use fob_scanner::scan;

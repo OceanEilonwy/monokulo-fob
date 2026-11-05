@@ -20,7 +20,7 @@ async fn a_wallet_opens_again_with_the_same_addresses() {
     let again = Wallet::open(&path, [1; 32]).unwrap();
     assert_eq!(again.primary_address(), wallet.primary_address());
     assert_eq!(again.receive_address().await.unwrap(), second);
-    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::Vault(VaultError::WrongKey))));
 }
 
 #[tokio::test]
@@ -89,7 +89,7 @@ async fn an_old_file_stays_while_its_database_will_not_open() {
     let wallet = a_used_wallet(&path).await;
     drop(wallet);
     std::fs::write(path.with_extension("fob"), b"old").unwrap();
-    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::Vault(VaultError::WrongKey))));
     assert!(path.with_extension("fob").exists(), "wrong key");
     crate::db::remove_files(&path.with_extension("db")).unwrap();
     std::fs::write(path.with_extension("db"), b"not a database, and long enough to look at its header").unwrap();
@@ -162,9 +162,9 @@ async fn the_wrong_key_opens_neither_a_file_nor_a_database() {
     let path = dir("db-key");
     let wallet = a_used_wallet(&path).await;
     let file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
-    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::Vault(VaultError::WrongKey))));
     old_file(&path, &file);
-    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+    assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::Vault(VaultError::WrongKey))));
     assert!(!path.with_extension("db").exists(), "no database from a failed migration");
     assert!(Wallet::open(&path, [1; 32]).is_ok(), "and the file is still good");
 }

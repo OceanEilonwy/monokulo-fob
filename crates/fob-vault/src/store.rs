@@ -24,7 +24,7 @@ pub fn save<T: Serialize>(path: &Path, key: &[u8; 32], value: &T) -> Result<()> 
     let plain = Zeroizing::new(serde_json::to_vec(value).map_err(|e| VaultError::Storage(e.to_string()))?);
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
-    let sealed = cipher(key).encrypt(Nonce::from_slice(&nonce), plain.as_slice()).map_err(|_| VaultError::Storage("sealing".into()))?;
+    let sealed = cipher(key).encrypt(Nonce::from_slice(&nonce), plain.as_slice()).map_err(|_| VaultError::Sealing)?;
     let mut file = Vec::with_capacity(MAGIC.len() + nonce.len() + sealed.len());
     file.extend_from_slice(MAGIC);
     file.extend_from_slice(&nonce);
@@ -37,7 +37,7 @@ pub fn save<T: Serialize>(path: &Path, key: &[u8; 32], value: &T) -> Result<()> 
 pub fn load<T: DeserializeOwned>(path: &Path, key: &[u8; 32]) -> Result<T> {
     let file = std::fs::read(path).map_err(|e| VaultError::Storage(e.to_string()))?;
     if file.len() < MAGIC.len() + 12 || &file[..4] != MAGIC {
-        return Err(VaultError::Storage("not a Fob wallet file".into()));
+        return Err(VaultError::NotAWalletFile);
     }
     let (nonce, sealed) = file[4..].split_at(12);
     let plain = Zeroizing::new(cipher(key).decrypt(Nonce::from_slice(nonce), sealed).map_err(|_| VaultError::WrongKey)?);

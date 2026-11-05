@@ -183,7 +183,7 @@ async fn scanning_again_goes_back_to_the_start_keeping_what_only_the_wallet_know
 
 #[test]
 fn a_failure_of_this_device_is_told_apart_from_the_node_s() {
-    let storage = FobError::Storage("disk full".into());
+    let storage = FobError::storage("disk full");
     assert_eq!(sync_failure(&storage, None, false), ("Couldn't read or save the wallet: disk full".into(), true));
     let offline = FobError::Node("InterfaceError(\"dns error: failed to lookup address information\")".into());
     assert_eq!(sync_failure(&offline, None, false), ("Address not found".into(), false));

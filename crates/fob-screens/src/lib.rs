@@ -3,7 +3,6 @@
 //! or a background task, so both apps draw the same thing.
 
 pub mod activity;
-pub mod backup;
 pub mod catch_up;
 pub mod clock;
 pub mod contacts;

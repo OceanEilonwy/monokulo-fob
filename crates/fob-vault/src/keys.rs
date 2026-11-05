@@ -129,9 +129,9 @@ impl Keys {
 
     /// A view-only wallet: the primary address and its private view key.
     pub fn view_only(network: Network, address: &str, view_hex: &str) -> Result<Keys> {
-        let address = MoneroAddress::from_str(network.monero(), address.trim()).map_err(|_| VaultError::Monero(MoneroError::BadAddress(network.name())))?;
+        let address = MoneroAddress::from_str(network.monero(), address.trim()).map_err(|_| VaultError::Monero(MoneroError::BadAddress(network)))?;
         if address.is_subaddress() {
-            return Err(VaultError::Monero(MoneroError::BadAddress(network.name())));
+            return Err(VaultError::Monero(MoneroError::BadAddress(network)));
         }
         let view = parse_scalar(view_hex)?;
         if public(&view) != address.view() {

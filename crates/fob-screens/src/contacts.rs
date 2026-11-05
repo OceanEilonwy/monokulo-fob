@@ -132,7 +132,7 @@ impl Book {
     }
 
     fn get_mut(&mut self, id: u64) -> Result<&mut Contact> {
-        self.contacts.iter_mut().find(|c| c.id == id).ok_or_else(|| ScreenError::Contact("That contact was deleted.".into()))
+        self.contacts.iter_mut().find(|c| c.id == id).ok_or(ScreenError::ContactDeleted)
     }
 
     /// The contact `address` belongs to (send address or paid at), the

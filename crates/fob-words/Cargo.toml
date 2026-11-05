@@ -1,0 +1,16 @@
+[package]
+name = "fob-words"
+description = "Everything Fob says, from the typed scenarios the other crates describe."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fob-chain = { path = "../fob-chain" }
+fob-codes = { path = "../fob-codes" }
+fob-monero = { path = "../fob-monero" }
+fob-price = { path = "../fob-price" }
+fob-screens = { path = "../fob-screens" }
+fob-vault = { path = "../fob-vault" }
+zeroize = "1"

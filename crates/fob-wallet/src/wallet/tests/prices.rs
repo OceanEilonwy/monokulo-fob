@@ -215,7 +215,7 @@ async fn a_wallet_file_s_tor_is_never_moved_to_the_web_on_opening() {
     assert_eq!(old.price_settings().await.transport, price::Transport::Tor);
     let fake = FakePrices::new(166_100_000, vec![]);
     let failed = old.refresh_prices_from(&fake, Asked::Background, now()).await.unwrap_err();
-    assert!(matches!(failed, FobError::PriceFailed(price::Failure::NotOverTor)));
+    assert!(matches!(failed, FobError::Price(PriceError::Failed(price::Failure::NotOverTor))));
     assert_eq!(fake.asked(), (0, 0), "nothing asked");
     assert_eq!(old.price_toast(clock_now()).await.unwrap().line, "Kraken doesn't answer over Tor · no USD price yet");
 }
@@ -424,7 +424,7 @@ async fn receive_takes_an_amount_in_money_and_asks_in_xmr() {
     let address = wallet.receive_address().await.unwrap();
     // No price yet: XMR only.
     assert!(!wallet.amount_field("", true, clock_now()).await.can_switch);
-    assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Price(_))));
+    assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
     let field = wallet.amount_field("20", true, clock_now()).await;
     assert_eq!((field.sign.as_deref(), field.unit.as_str(), field.in_fiat), (Some("$"), "USD", true));
@@ -455,17 +455,17 @@ async fn send_takes_an_amount_in_money_at_the_current_price() {
     let address = wallet.receive_address().await.unwrap();
     // No price: XMR only.
     assert_eq!(wallet.typed_amount(" 0.5 ", false).await.unwrap(), (XMR / 2, None));
-    assert!(matches!(wallet.typed_amount("20", true).await, Err(FobError::Price(_))));
-    assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Price(_))));
+    assert!(matches!(wallet.typed_amount("20", true).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
+    assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
     // The XMR the field's line showed for it.
     assert_eq!(wallet.amount_field("20", true, clock_now()).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
     assert_eq!(wallet.typed_amount("20", true).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
-    assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::BadAmount)));
+    assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::Monero(MoneroError::BadAmount))));
     // Converted before the address and amount are checked, as prepare checks them.
-    assert!(matches!(wallet.prepare_typed("86Ux", "20", true, None, None).await, Err(FobError::BadAddress(_))));
-    assert!(matches!(wallet.prepare_typed(&address, "0", true, None, None).await, Err(FobError::BadAmount)));
-    assert!(matches!(wallet.prepare_typed(&address, "abc", false, None, None).await, Err(FobError::BadAmount)));
+    assert!(matches!(wallet.prepare_typed("86Ux", "20", true, None, None).await, Err(FobError::Monero(MoneroError::BadAddress(_)))));
+    assert!(matches!(wallet.prepare_typed(&address, "0", true, None, None).await, Err(FobError::Monero(MoneroError::BadAmount))));
+    assert!(matches!(wallet.prepare_typed(&address, "abc", false, None, None).await, Err(FobError::Monero(MoneroError::BadAmount))));
 }
 
 #[tokio::test]
@@ -572,7 +572,7 @@ async fn an_old_file_s_currency_first_stays_and_xmr_never_swaps() {
     // XMR: no swap, and tapping is refused.
     old.set_currency(None).await.unwrap();
     assert_eq!(balance(&old).await, (None, order(false, false)));
-    assert!(matches!(old.set_fiat_first(false).await, Err(FobError::Price(_))));
+    assert!(matches!(old.set_fiat_first(false).await, Err(FobError::Screen(ScreenError::NothingToSwap))));
     // A currency again: its order as it was.
     old.set_currency(Some("EUR")).await.unwrap();
     assert!(Wallet::open(&path, [1; 32]).unwrap().price_settings().await.fiat_first);

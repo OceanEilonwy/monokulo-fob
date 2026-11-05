@@ -1,14 +1,14 @@
-//! What can go wrong with an amount or an address.
+//! What can be wrong with an amount or an address. `fob-words` says it.
 
-/// An amount or an address that isn't right.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+use crate::network::Network;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MoneroError {
-    #[error("that amount isn't valid")]
     BadAmount,
-    #[error("that isn't a Monero address for {0}")]
-    BadAddress(&'static str),
-    #[error("the wallet code is for {found}, but this wallet is on {expected}")]
-    WrongNetwork { expected: &'static str, found: &'static str },
+    /// Not an address on this network, or on any.
+    BadAddress(Network),
+    /// An address or code for the other network.
+    WrongNetwork { expected: Network, found: Network },
 }
 
 pub type Result<T> = std::result::Result<T, MoneroError>;

@@ -19,7 +19,7 @@
 use std::{sync::Mutex, time::Instant};
 
 
-use crate::{nfc, error::Result, ndef, uri};
+use crate::{nfc, error::{CodeError, Result}, ndef, uri};
 use fob_monero::network::Network;
 
 /// Fob's payment application on the card side: F0 and "FOBPAY!". The app
@@ -51,18 +51,7 @@ pub enum Problem {
     /// Cut short, too long or not matching its checksum.
     Garbled,
     /// Whole, but not a payment code Fob takes (another network's).
-    NotPayment(String),
-}
-
-impl Problem {
-    pub fn text(&self) -> String {
-        match self {
-            Problem::Away => "The other phone isn't on Receive, and isn't showing a Monero tag.".into(),
-            Problem::Version => "The other phone has another version of Fob. Update both, or scan its code.".into(),
-            Problem::Garbled => "That didn't come through whole. Hold the phones together again.".into(),
-            Problem::NotPayment(why) => why.clone(),
-        }
-    }
+    NotPayment(CodeError),
 }
 
 /// The name a select-by-name command asks for, if `apdu` is one.
@@ -295,7 +284,7 @@ impl PayReader {
                     return Self::fail(state, Problem::Garbled);
                 }
                 let read = ndef::parse_uri(&state.bytes).map_err(Problem::NotPayment).and_then(|text| {
-                    uri::parse_payment(self.network, &text).map(|_| text).map_err(|e| Problem::NotPayment(e.to_string()))
+                    uri::parse_payment(self.network, &text).map(|_| text).map_err(Problem::NotPayment)
                 });
                 *state = ReaderState::default();
                 match read {
@@ -363,14 +352,14 @@ impl PayReader {
         *state = ReaderState::default();
         match parsed {
             Ok(_) => Step::Done(text),
-            Err(e) => Step::Failed(Problem::NotPayment(e.to_string())),
+            Err(e) => Step::Failed(Problem::NotPayment(e)),
         }
     }
 }
 
 /// A payment code as a frame.
 pub fn frame(code: &str) -> Result<Vec<u8>> {
-    nfc::frame(code, VERSION, CODE_MAX, "That payment code is too big to send by touching phones.")
+    nfc::frame(code, VERSION, CODE_MAX, CodeError::PaymentTooBigForNfc)
 }
 
 /// The select command.

@@ -109,9 +109,9 @@ mod tests {
         assert_eq!(parse_simple(br#"{"monero":{"jpy":93477,"bhd":223.69,"vnd":15306509}}"#, "JPY").unwrap(), 93_477_000_000);
         assert_eq!(parse_simple(br#"{"monero":{"jpy":93477,"bhd":223.69,"vnd":15306509}}"#, "VND").unwrap(), 15_306_509_000_000);
         // A currency it doesn't have.
-        assert_eq!(parse_simple(br#"{"monero":{}}"#, "XYZ").unwrap_err().to_string(), "Answered without a price");
+        assert_eq!(parse_simple(br#"{"monero":{}}"#, "XYZ").unwrap_err(), PriceError::Failed(Failure::BadAnswer));
         let limited = br#"{"status":{"error_code":429,"error_message":"You've exceeded the Rate Limit. Please visit https://www.coingecko.com/en/api/pricing to subscribe to our API plans for higher rate limits."}}"#;
-        assert_eq!(parse_simple(limited, "AUD").unwrap_err().to_string(), "Busy, try again soon");
+        assert_eq!(parse_simple(limited, "AUD").unwrap_err(), PriceError::Failed(Failure::Busy));
         assert!(parse_simple(b"<html>", "AUD").is_err());
     }
 
@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(parse_chart(body).unwrap(), [(20_756, 858_416_972), (20_757, 835_487_902)]);
         // More days than the keyless API gives.
         let refused = br#"{"error":{"status":{"timestamp":"2026-10-31T12:59:45.645+00:00","error_code":10012,"error_message":"Your request exceeds the allowed time range. Public API users are limited to querying historical data within the past 365 days."}}}"#;
-        assert_eq!(parse_chart(refused).unwrap_err().to_string(), "Not answering");
+        assert_eq!(parse_chart(refused).unwrap_err(), PriceError::Failed(Failure::NotAnswering));
         assert!(parse_chart(br#"{"prices":"none"}"#).is_err());
     }
 

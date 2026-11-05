@@ -23,7 +23,7 @@ async fn a_view_only_wallet_refuses_to_prepare_payments() {
     watch.inner.state.lock().await.tip = 100;
     let coins = watch.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
     assert!(coins.ready > 0 && !coins.can_split);
-    assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::ViewOnly)));
+    assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::Vault(VaultError::ViewOnly))));
 }
 
 /// Confirm opens on a preview before the fee (round 9 › 3b): checked as
@@ -35,8 +35,8 @@ async fn a_payment_previews_without_a_node_and_refuses_what_prepare_refuses() {
     let code = format!("monero:{to}?tx_amount=0.5&tx_description=Flat%20white");
     let p = wallet.preview_typed(&format!(" {to} "), "0.5", false, Some(&code)).await.unwrap();
     assert_eq!(p, Preview { to: to.clone(), amount: 500_000_000_000, receipt: None });
-    assert!(matches!(wallet.preview_typed("86Ux", "0.5", false, None).await, Err(FobError::BadAddress(_))));
-    assert!(matches!(wallet.preview(&to, 0, None), Err(FobError::BadAmount)));
+    assert!(matches!(wallet.preview_typed("86Ux", "0.5", false, None).await, Err(FobError::Monero(MoneroError::BadAddress(_)))));
+    assert!(matches!(wallet.preview(&to, 0, None), Err(FobError::Monero(MoneroError::BadAmount))));
     let mainnet = Keys::generate(Network::Mainnet).keys.primary_address();
     assert!(wallet.preview(&mainnet, 1, None).is_err());
 }
@@ -167,7 +167,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
     assert_eq!(refused.to_string(), "15 coins is the most one split can make");
     // Only the 2 XMR ready counts: a 1 XMR piece fits once, not twice.
     let one = wallet.split_add(&[], 5).await.unwrap();
-    assert!(matches!(wallet.split_add(&one, 5).await, Err(FobError::Split(_))));
+    assert!(matches!(wallet.split_add(&one, 5).await, Err(FobError::Screen(_))));
     assert_eq!(wallet.split_remove(&one, 5).await, [0; 6]);
 
     // The split's address: the next unused, kept, and never given out on Receive.
@@ -236,7 +236,7 @@ async fn a_payment_published_is_recorded_even_if_its_caller_goes_away() {
     drop(state);
     // Its inputs spent, another payment from them is refused before anything is published.
     let never = async { panic!("not published") };
-    assert!(matches!(wallet.publish_and_record("again".into(), 30, outgoing(&to, vec![0]), never).await, Err(FobError::NoSuchPayment)));
+    assert!(matches!(wallet.publish_and_record("again".into(), 30, outgoing(&to, vec![0]), never).await, Err(FobError::Screen(ScreenError::NoSuchPayment))));
     // A node refusing it records nothing.
     wallet.inner.state.lock().await.outputs.push(received("coin-2", 1, XMR));
     let refused = async { Err(FobError::Node("rejected".into())) };

@@ -10,7 +10,6 @@ publish = false
 monero-wallet = "0.2"
 serde = { version = "1", features = ["derive"] }
 sha3 = "0.10"
-thiserror = "2"
 unicode-normalization = "0.1.25"
 
 

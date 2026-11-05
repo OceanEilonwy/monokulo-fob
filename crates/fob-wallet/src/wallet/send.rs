@@ -28,9 +28,9 @@ impl Wallet {
     /// nothing, and what `code` gives the payment.
     pub(super) fn payment_terms(&self, to: &str, amount: u64, code: Option<&str>) -> Result<(MoneroAddress, uri::CodeTerms)> {
         let network = self.network();
-        let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::BadAddress(network.name()))?;
+        let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
         if amount == 0 {
-            return Err(FobError::BadAmount);
+            return Err(FobError::Monero(MoneroError::BadAmount));
         }
         Ok((destination, uri::code_terms(network, to, amount, code)))
     }
@@ -134,7 +134,7 @@ impl Wallet {
             let available = candidates.iter().map(|c| c.1).sum::<u64>();
             (candidates, available)
         };
-        let not_enough = |needed: u64| FobError::NotEnoughFunds { available: amount::format(available), needed: amount::format(needed) };
+        let not_enough = |needed: u64| FobError::Screen(ScreenError::NotEnoughFunds { available, needed });
         if available < amount {
             return Err(not_enough(amount));
         }
@@ -262,7 +262,7 @@ impl Wallet {
     /// enough ready to spend with the fee).
     pub async fn split_add(&self, counts: &[u32], index: usize) -> Result<Vec<u32>> {
         let (_, notes, budget) = self.split_setup().await;
-        split::add(&notes, counts, index, &budget).map_err(FobError::Split)
+        split::add(&notes, counts, index, &budget).map_err(FobError::Screen)
     }
 
     /// One fewer piece of note `index`.
@@ -295,12 +295,12 @@ impl Wallet {
         let (_, notes, budget) = self.split_setup().await;
         let amounts = split::amounts(&notes, counts);
         if amounts.is_empty() {
-            return Err(FobError::Split("Add a coin to split".into()));
+            return Err(ScreenError::NoCoinToSplit.into());
         }
-        split::check(&notes, counts, &budget).map_err(FobError::Split)?;
+        split::check(&notes, counts, &budget).map_err(FobError::Screen)?;
         let address = self.split_address().await?;
         let network = self.network();
-        let destination = MoneroAddress::from_str(network.monero(), &address).map_err(|_| FobError::BadAddress(network.name()))?;
+        let destination = MoneroAddress::from_str(network.monero(), &address).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
         let n = amounts.len() as u32;
         let payments = amounts.into_iter().map(|a| (destination, a)).collect();
         let mut prepared = self.prepare_payments(&address, payments, None, None, None, Some(n)).await?;
@@ -310,7 +310,7 @@ impl Wallet {
 
     /// Signs and broadcasts a prepared payment. Returns its transaction hash.
     pub async fn send(&self, id: u64) -> Result<String> {
-        let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::NoSuchPayment)?;
+        let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
         let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
         let tx = prepared.signable.sign(&mut OsRng, spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
@@ -335,7 +335,7 @@ impl Wallet {
                 // Spent already by a payment sent in the meantime?
                 let state = wallet.inner.state.lock().await;
                 if out.inputs.iter().any(|&i| state.outputs.get(i).is_none_or(|o| o.spent_in.is_some())) {
-                    return Err(FobError::NoSuchPayment);
+                    return Err(FobError::Screen(ScreenError::NoSuchPayment));
                 }
             }
             publish.await?;
