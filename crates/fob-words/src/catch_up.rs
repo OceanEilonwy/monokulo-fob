@@ -5,6 +5,10 @@ use fob_screens::{catch_up::{self, Look, Note, SyncState, Title, rounded}, clock
 
 use crate::clock;
 
+/// Settings' node line while it's failing, and while it's answering.
+pub const NODE_FAILING: &str = "Can't reach node";
+pub const NODE_WORKING: &str = "Working";
+
 /// "20 s", "6 min", "1 h 10 min", "2 h".
 pub fn short_time(seconds: u64) -> String {
     let s = rounded(seconds);
@@ -188,22 +192,6 @@ mod tests {
         chip(status.chip())
     }
 
-    /// Block sizes vary along the chain: the speed over a few seconds wobbles
-    /// by a fifth either way. The estimate, over a longer window, doesn't
-    /// rise past the shown time enough to drop it, and the time counts down.
-
-    /// A node that slows a lot: the number isn't raised, it's dropped
-    /// ("Working it out"), and a fresh countdown starts once settled.
-
-    /// After a failure the measuring starts again from the first report
-    /// after the wait: no speed spans the wait, so the first time left
-    /// isn't hours for a minute's backoff.
-
-
-
-
-
-
     fn catching_up() -> SyncStatus {
         SyncStatus { connected: true, scanned: 1_003_360, tip: 1_009_880, start: 1_000_000, progress: 3_360.0 / 9_880.0, seconds_left: Some(240), up_to: NOW - 2 * 86_400, ..SyncStatus::default() }
     }
@@ -215,11 +203,13 @@ mod tests {
     }
 
 
-    /// Back on screen with the wallet caught up as of last time, or just on
-    /// another node: it isn't Synced until the node has said so.
-
-    /// A node that answers but sends nothing says so, in place of a time left
-    /// counting down on nothing.
+    #[test]
+    fn the_subtitle_names_the_place_and_how_it_is_doing() {
+        let at = Some("tcp://node.example:18083");
+        assert_eq!(zmq_text(&ZmqStatus::Off, at), "Off");
+        assert_eq!(zmq_text(&ZmqStatus::Listening, at), "node.example:18083 · listening");
+        assert_eq!(zmq_text(&ZmqStatus::CantConnect("no answer".into()), at), "node.example:18083 · can't connect");
+    }
 
     #[test]
     fn times_are_rounded_for_reading() {
@@ -276,6 +266,8 @@ mod tests {
         assert_eq!((said_chip(&s).look, said_chip(&s).text.as_str()), (Look::Offline, "Can't reach node"));
     }
 
+    /// Back on screen with the wallet caught up as of last time, or just on
+    /// another node: it isn't Synced until the node has said so.
     #[test]
     fn synced_from_last_time_waits_for_the_node_to_answer() {
         let mut s = catching_up();
@@ -290,6 +282,8 @@ mod tests {
         assert_eq!(said_chip(&s).text, "Synced");
     }
 
+    /// A node that answers but sends nothing says so, in place of a time left
+    /// counting down on nothing.
     #[test]
     fn a_node_keeping_it_waiting_is_named() {
         let mut s = catching_up();

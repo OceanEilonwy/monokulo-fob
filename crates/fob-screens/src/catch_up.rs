@@ -463,28 +463,6 @@ mod tests {
     }
 
 
-    /// Block sizes vary along the chain: the speed over a few seconds wobbles
-    /// by a fifth either way. The estimate, over a longer window, doesn't
-    /// rise past the shown time enough to drop it, and the time counts down.
-
-    /// A node that slows a lot: the number isn't raised, it's dropped
-    /// ("Working it out"), and a fresh countdown starts once settled.
-
-    /// After a failure the measuring starts again from the first report
-    /// after the wait: no speed spans the wait, so the first time left
-    /// isn't hours for a minute's backoff.
-
-
-
-
-
-
-    /// Back on screen with the wallet caught up as of last time, or just on
-    /// another node: it isn't Synced until the node has said so.
-
-    /// A node that answers but sends nothing says so, in place of a time left
-    /// counting down on nothing.
-
     #[test]
     fn no_speed_until_three_seconds_are_measured() {
         let t0 = Instant::now();
@@ -541,6 +519,9 @@ mod tests {
         assert!(back.last().unwrap().unwrap() < held);
     }
 
+    /// Block sizes vary along the chain: the speed over a few seconds wobbles
+    /// by a fifth either way. The estimate, over a longer window, doesn't
+    /// rise past the shown time enough to drop it, and the time counts down.
     #[test]
     fn ordinary_noise_neither_drops_nor_freezes_the_time_left() {
         let t0 = Instant::now();
@@ -554,6 +535,8 @@ mod tests {
         assert!((340..=420).contains(shown.last().unwrap()), "{}", shown.last().unwrap());
     }
 
+    /// A node that slows a lot: the number isn't raised, it's dropped
+    /// ("Working it out"), and a fresh countdown starts once settled.
     #[test]
     fn a_big_rise_drops_the_time_left_and_counts_afresh() {
         let t0 = Instant::now();
@@ -571,6 +554,9 @@ mod tests {
         assert!(slow[fresh..].iter().all(Option::is_some));
     }
 
+    /// After a failure the measuring starts again from the first report
+    /// after the wait: no speed spans the wait, so the first time left
+    /// isn't hours for a minute's backoff.
     #[test]
     fn a_failure_starts_the_measuring_again_after_the_wait() {
         let t0 = Instant::now();

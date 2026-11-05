@@ -331,27 +331,6 @@ mod tests {
         currency("EUR")
     }
 
-    /// A form opens blank, in money while there's a price: the whole field
-    /// (sign, chip, rate) is there to draw on the first frame.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     /// A provider for checking: an answer after a wait, or a failure.
     #[test]
     fn price_from_says_what_each_provider_answered() {
@@ -434,6 +413,8 @@ mod tests {
         assert!(amount_field("20", true, aged).can_switch);
     }
 
+    /// A form opens blank, in money while there's a price: the whole field
+    /// (sign, chip, rate) is there to draw on the first frame.
     #[test]
     fn a_blank_field_opens_in_money_only_with_a_price() {
         let usd = usd();

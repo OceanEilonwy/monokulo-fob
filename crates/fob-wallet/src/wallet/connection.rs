@@ -20,8 +20,8 @@ impl Wallet {
         let verdict = match checked {
             // A failed round drops the check before it: what's here is newer.
             Some((checked, verdict)) if checked == setting => Some(verdict),
-            _ if status.error.is_some() && !status.error_local && !status.chain_changed => Some("Can't reach node"),
-            _ if status.connected => Some("Working"),
+            _ if status.error.is_some() && !status.error_local && !status.chain_changed => Some(fob_words::catch_up::NODE_FAILING),
+            _ if status.connected => Some(fob_words::catch_up::NODE_WORKING),
             _ => None,
         };
         verdict.map_or(address.clone(), |v| format!("{v} · {address}"))

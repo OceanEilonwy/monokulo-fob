@@ -909,27 +909,6 @@ mod tests {
 
     const XMR: u64 = ATOMIC_PER_XMR;
 
-    /// A form opens blank, in money while there's a price: the whole field
-    /// (sign, chip, rate) is there to draw on the first frame.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     /// A provider for checking: an answer after a wait, or a failure.
     #[derive(Clone)]
     struct Fake {
