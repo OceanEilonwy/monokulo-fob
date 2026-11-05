@@ -33,3 +33,30 @@ jobs:
         run: cargo test --locked -p fob-monero -p fob-chain -p fob-price -p fob-vault -p fob-codes -p fob-screens -p fob-words -p fob-scanner -p fob-wallet -p fob-ffi -p fob-app
       - name: Clippy
         run: cargo clippy --locked -p fob-monero -p fob-chain -p fob-price -p fob-vault -p fob-codes -p fob-screens -p fob-words -p fob-scanner -p fob-wallet -p fob-ffi -p fob-app --all-targets -- -D warnings
+
+  # The desktop app, on Arch, which has the GTK and libadwaita it needs.
+  gtk:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git gtk4 libadwaita dbus rustup perl \
+            cantarell-fonts noto-fonts adwaita-icon-theme mutter
+          rustup default stable
+          rustup component add clippy
+      - uses: actions/checkout@v7
+      - name: Clippy
+        run: cargo clippy --locked -p fob-gtk --all-targets -- -D warnings
+      - name: The layers below the app stay free of any toolkit
+        run: |
+          if cargo tree --locked -p fob-app -e normal --prefix none | grep -E '^(gtk4|libadwaita|glib|relm4) '; then exit 1; fi
+      # GNOME's mutter, headless, drawn in software: the runner has no GPU.
+      - name: Window scenes
+        env:
+          XDG_RUNTIME_DIR: /tmp/runtime
+          GSK_RENDERER: cairo
+        run: |
+          mkdir -p -m 700 /tmp/runtime
+          cargo build --locked -p fob-gtk
+          dbus-run-session -- crates/fob-gtk/scenes.sh

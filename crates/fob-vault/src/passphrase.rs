@@ -221,7 +221,7 @@ mod tests {
         let file = dir.join(FILE);
         let mut sealed: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         let key = sealed["key"].as_str().unwrap().to_owned();
-        let flipped = if key.starts_with('0') { format!("1{}", &key[1..]) } else { format!("0{}", &key[1..]) };
+        let flipped = key.strip_prefix('0').map_or_else(|| format!("0{}", &key[1..]), |rest| format!("1{rest}"));
         sealed["key"] = flipped.into();
         std::fs::write(&file, serde_json::to_vec(&sealed).unwrap()).unwrap();
         assert_eq!(unlock(&dir, "correct horse").unwrap_err(), VaultError::WrongPassphrase);

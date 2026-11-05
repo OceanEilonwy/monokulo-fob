@@ -1,0 +1,61 @@
+/* Fob's orange, in place of the desktop's accent, as on Android. */
+:root {
+	--accent-bg-color: #b34700;
+	--accent-fg-color: #ffffff;
+	--accent-color: #b34700;
+}
+
+.balance {
+	font-size: 40px;
+	font-weight: 700;
+	font-feature-settings: "tnum";
+}
+
+.money {
+	font-feature-settings: "tnum";
+}
+
+.address {
+	font-family: monospace;
+}
+
+.address-mark {
+	font-family: monospace;
+	font-weight: 700;
+	color: #b34700;
+}
+
+.badge {
+	background: #ffffff;
+	border-radius: 12px;
+	padding: 8px;
+}
+
+.seed-word {
+	font-family: monospace;
+	padding: 6px 10px;
+}
+
+.sync-chip {
+	padding: 2px 10px;
+	border-radius: 999px;
+	font-size: 0.9em;
+}
+
+.sync-ring {
+	background: alpha(#b34700, 0.14);
+	color: #b34700;
+}
+
+.sync-synced {
+	background: alpha(#1f7a45, 0.14);
+	color: #1f7a45;
+}
+
+.sync-offline {
+	background: alpha(currentColor, 0.1);
+}
+
+.incoming {
+	color: #1f7a45;
+}

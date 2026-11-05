@@ -9,10 +9,12 @@ receipts that payment codes can carry (as Monokular's tills add).
   keys, payment and wallet codes, receipts, the encrypted wallet file,
   syncing and sending.
 - `crates/fob-screens`, `fob-codes`, `fob-vault`, `fob-price`, `fob-chain`,
-  `fob-scanner`, `fob-monero`: the parts `fob-wallet` is built from
+  `fob-scanner`, `fob-monero`, `fob-words`: the parts `fob-wallet` is built from
   (`docs/decisions.md`, decision 334).
 - `crates/fob-ffi`: fob-wallet for Kotlin (later Swift) through UniFFI. Types
   only.
+- `crates/fob-app`: what a client draws: unlocking, the open wallet, syncing.
+- `crates/fob-gtk`: the Linux desktop app, in Relm4 and libadwaita.
 - `android/`: the Android app, a thin Compose layer over fob-ffi.
 - `third_party/`: two vendored seed crates (see its README).
 - `docs/decisions.md`: why things are the way they are.
@@ -51,6 +53,14 @@ With three APKs on a release, Obtainium asks which; set the APK filter to
 same key and the APKs share a version code, so any installs over another
 (package `com.monokulo.fob`). The debug build above is a different package and
 sits beside it.
+
+## On the desktop
+
+`crates/fob-gtk/install.sh` builds Fob and adds it to your menu; it needs Rust,
+GTK 4.18 and libadwaita 1.7 or newer. It starts on stagenet, like the debug
+Android build. Your wallets are sealed under a passphrase you choose, in
+`~/.local/share/fob`. `crates/fob-gtk/scenes.sh` checks the windows on a headless
+display.
 
 ## Building
 
