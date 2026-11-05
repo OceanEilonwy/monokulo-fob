@@ -1,10 +1,10 @@
 //! The rules of Send's form, apart from how it's drawn.
 
-use fob_ffi::{CodeKind, Network, classify_code, is_profile_code, parse_payment};
+use crate::{CodeKind, Network, classify_code, is_profile_code, parse_payment};
 use fob_wallet::words::errors::code_not_taken;
 
 /// What a pasted, opened or linked code does to the form.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Taken {
     /// A profile: show who it is first, to pay them or add them.
     Profile,
@@ -19,7 +19,13 @@ pub enum Taken {
 
 /// What `text` does to the form.
 pub fn take(network: Network, text: &str) -> Taken {
-    if is_profile_code(network, text.to_owned()) {
+    read_code(network, text, true)
+}
+
+/// What `text` does to the form. `as_profile` is off when someone chose to pay
+/// the profile they were shown, so it's taken as the payment code it also is.
+fn read_code(network: Network, text: &str, as_profile: bool) -> Taken {
+    if as_profile && is_profile_code(network, text.to_owned()) {
         return Taken::Profile;
     }
     let refused = |kind| Taken::Refused(code_not_taken(kind));
@@ -55,6 +61,24 @@ pub fn asks_first(network: Network, to: &str, text: &str) -> Option<String> {
 /// Whether `to` is an address the form can pay as it is.
 pub fn address_is_valid(network: Network, to: &str) -> bool {
     !to.trim().is_empty() && parse_payment(network, to.to_owned()).is_ok_and(|p| p.address == to.trim())
+}
+
+/// [`take`], for the other languages Fob's apps are written in.
+#[uniffi::export]
+pub fn take_code(network: Network, text: String, as_profile: bool) -> Taken {
+    read_code(network, &text, as_profile)
+}
+
+/// [`asks_first`], for the other languages Fob's apps are written in.
+#[uniffi::export]
+pub fn code_asks_first(network: Network, to: String, text: String) -> Option<String> {
+    asks_first(network, &to, &text)
+}
+
+/// [`address_is_valid`], for the other languages Fob's apps are written in.
+#[uniffi::export]
+pub fn to_is_valid(network: Network, to: String) -> bool {
+    address_is_valid(network, &to)
 }
 
 /// The amount field while a price comes and goes. Money typed is never read as
@@ -126,7 +150,7 @@ mod tests {
         let to = address();
         assert_eq!(take(Network::Stagenet, &format!("monero:{to}?recipient_name=Sam")), Taken::Profile);
         assert_eq!(take(Network::Stagenet, "not a code"), Taken::Refused("that isn't a Monero address for stagenet".into()));
-        let wallet = fob_ffi::classify_code(Network::Stagenet, format!("monero_wallet:{to}?view_key=00"));
+        let wallet = crate::classify_code(Network::Stagenet, format!("monero_wallet:{to}?view_key=00"));
         assert!(matches!(wallet, CodeKind::Wallet));
         assert_eq!(take(Network::Stagenet, &format!("monero_wallet:{to}?view_key=00")), Taken::Refused("That's a wallet code, not a payment code.".into()));
     }

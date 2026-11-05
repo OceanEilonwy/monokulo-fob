@@ -4,7 +4,7 @@
 
 use fob_app::{
     Engine, Met,
-    views::{FobError, ProfileShare, ScannedProfile},
+    views::{FobError, ProfileShare, ScannedProfile, ShareKind},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -22,6 +22,7 @@ use crate::{
 pub enum Input {
     Opened,
     Share(View<ProfileShare>),
+    CopyLink,
     Paste,
     Picture,
     Take(String),
@@ -91,6 +92,11 @@ impl SimpleComponent for Meet {
                             #[watch]
                             set_visible: model.stage == Stage::Show,
                             gtk::Button {
+                                set_label: "Copy my link",
+                                add_css_class: "pill",
+                                connect_clicked => Input::CopyLink,
+                            },
+                            gtk::Button {
                                 set_label: "Paste their code",
                                 add_css_class: "pill",
                                 add_css_class: "suggested-action",
@@ -143,6 +149,15 @@ impl SimpleComponent for Meet {
             Input::Share(share) => {
                 self.draw_mine(&share.0);
                 self.share = Some(share);
+            }
+            Input::CopyLink => {
+                let Some(View(share)) = &self.share else { return };
+                widgets::copy(&self.body, &share.code);
+                let (engine, id) = (self.engine.clone(), share.id);
+                relm4::spawn(async move {
+                    let _ = engine.change(move |wallet| async move { wallet.share_went_out(id, ShareKind::LinkCopied).await }).await;
+                });
+                let _ = sender.output(RootMsg::Say("Copied".into()));
             }
             Input::Paste => {
                 let then = sender.clone();
@@ -208,7 +223,7 @@ impl Meet {
         if let Some(qr) = widgets::qr(&share.code, 300) {
             self.body.append(&qr);
         }
-        self.body.append(&widgets::centred("They scan this with Fob, then show you theirs. Take a picture of it and read it here, or paste its link."));
+        self.body.append(&widgets::centred("They scan this with Fob, or you send them your link, then they show you theirs. Read a picture of it here, or paste its link."));
     }
 
     /// Theirs is saved: answered if they still need ours, or met.

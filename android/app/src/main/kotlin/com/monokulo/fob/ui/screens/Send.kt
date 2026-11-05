@@ -108,7 +108,6 @@ import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import uniffi.fob.CodeKind
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentPreview
@@ -116,9 +115,11 @@ import com.monokulo.fob.ui.NfcMark
 import com.monokulo.fob.ui.rememberPayReading
 import com.monokulo.fob.ui.rememberTouchState
 import uniffi.fob.ScannedProfile
-import uniffi.fob.classifyCode
 import uniffi.fob.isProfileCode
-import uniffi.fob.parsePayment
+import uniffi.fob.Taken
+import uniffi.fob.codeAsksFirst
+import uniffi.fob.takeCode
+import uniffi.fob.toIsValid
 import uniffi.fob.shortAddress
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -237,7 +238,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         onDispose { if (nav.keepForm === keep) nav.keepForm = null }
     }
 
-    val toValid = remember(to, network) { to.isNotBlank() && runCatching { parsePayment(network, to) }.getOrNull()?.address == to.trim() }
+    val toValid = remember(to, network) { toIsValid(network, to) }
 
     fun review(address: String, typed: String, fiat: Boolean, withNote: String?) {
         busy = true
@@ -263,32 +264,29 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
      */
     fun take(text: String, asProfile: Boolean = true) {
         if (busy) return
-        if (asProfile && isProfileCode(network, text)) {
-            scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { profile = text to s; notice = null; open = false } }.onFailure { notice = it.reason() } }
-            return
+        fun fill(address: String, says: String) {
+            notice = null
+            error = null
+            pending = null
+            to = address
+            note = says
+            filledFrom = text
         }
-        when (classifyCode(network, text)) {
-            CodeKind.WALLET -> { notice = "That's a wallet code, not a payment code."; return }
-            CodeKind.UNKNOWN -> { notice = runCatching { parsePayment(network, text) }.exceptionOrNull()?.reason() ?: "That isn't a payment code."; return }
-            CodeKind.PAYMENT -> {}
-        }
-        val r = runCatching { parsePayment(network, text) }.getOrElse { notice = it.reason(); return }
-        notice = null
-        error = null
-        pending = null
-        to = r.address
-        // The note follows the code: its description, or none.
-        note = r.description ?: ""
-        filledFrom = text
-        val fixed = r.amountText
-        if (fixed != null) {
-            // Filled too, so a payment that can't be prepared (not enough ready) shows what was asked.
-            amount = fixed
-            inFiat = false
-            defaulted = true
-            review(r.address, fixed, false, r.description)
-        } else {
-            open = true
+        when (val taken = takeCode(network, text, asProfile)) {
+            is Taken.Profile -> scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { profile = text to s; notice = null; open = false } }.onFailure { notice = it.reason() } }
+            is Taken.Refused -> notice = taken.v1
+            is Taken.Fill -> {
+                fill(taken.to, taken.note)
+                open = true
+            }
+            is Taken.Review -> {
+                // Filled too, so a payment that can't be prepared (not enough ready) shows what was asked.
+                fill(taken.to, taken.note)
+                amount = taken.amount
+                inFiat = false
+                defaulted = true
+                review(taken.to, taken.amount, false, taken.note.ifEmpty { null })
+            }
         }
     }
 
@@ -301,8 +299,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         if (busy || text == lastRead) return
         lastRead = text
         if (open && to.isNotBlank() && !isProfileCode(network, text)) {
-            val found = runCatching { parsePayment(network, text) }.getOrNull()
-            if (found != null && found.address != to.trim()) pending = text to found.address
+            codeAsksFirst(network, to, text)?.let { pending = text to it }
             return
         }
         take(text)

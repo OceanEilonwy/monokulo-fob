@@ -8,6 +8,8 @@ use fob_wallet::{activity, address, amount, backup, clock, contacts, not_ready, 
 
 uniffi::setup_scaffolding!();
 
+pub mod form;
+
 /// What went wrong, for the app to show. (The field is `reason`, not
 /// `message`, which Kotlin's `Throwable` already has.)
 #[derive(Debug, thiserror::Error, uniffi::Error)]
