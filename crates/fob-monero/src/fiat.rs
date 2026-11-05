@@ -170,6 +170,14 @@ pub fn parse(text: &str, currency: &Currency) -> Result<u64> {
     whole.checked_mul(unit).and_then(|w| w.checked_add(frac)).ok_or(MoneroError::BadAmount)
 }
 
+/// How old a price is, once it's missed a refresh. Shown prices are under a
+/// day old, so never days.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PriceAge {
+    Minutes(u64),
+    Hours(u64),
+}
+
 /// How a payment's value moved since it moved, for a client to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {

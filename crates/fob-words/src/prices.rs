@@ -1,8 +1,29 @@
 //! Prices, in words.
 
+use fob_monero::fiat::PriceAge;
 use fob_price::{CurrencyHeading, TransportNote};
 
 use crate::{Device, device};
+
+/// Beside an amount converted at an old price: "40 min old", "2 h old".
+pub fn age(age: PriceAge) -> String {
+    match age {
+        PriceAge::Minutes(minutes) => format!("{minutes} min old"),
+        PriceAge::Hours(hours) => format!("{hours} h old"),
+    }
+}
+
+/// Under Send's sheet: "1.8592 XMR ready to spend · $308.70", the money only
+/// with a price from within the day, and its age once it's missed a refresh
+/// ("… · $308.70 · 2 h old").
+pub fn ready_line(amount: &str, worth: Option<(String, Option<PriceAge>)>) -> String {
+    let xmr = format!("{amount} XMR ready to spend");
+    match worth {
+        Some((worth, Some(old))) => format!("{xmr} · {worth} · {}", age(old)),
+        Some((worth, None)) => format!("{xmr} · {worth}"),
+        None => xmr,
+    }
+}
 
 /// What choosing a way of asking for prices means.
 pub fn transport_note(note: TransportNote) -> String {

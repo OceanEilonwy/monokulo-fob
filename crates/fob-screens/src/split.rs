@@ -7,11 +7,11 @@
 //! from the currency's smallest note, 5, 10, 20, 50, 100, 200 in dollars,
 //! 1,000 to 50,000 in yen, set in XMR at the price shown) or, without a
 //! price, in XMR. This
-//! module chooses them, checks them against the money and the 16 outputs a
-//! transaction may have, and writes every word of the Split up screen.
+//! module chooses them and checks them against the money and the 16 outputs a
+//! transaction may have.
 
 use crate::error::ScreenError;
-use fob_monero::{amount, fiat::{self, Currency}};
+use fob_monero::{amount, fiat::{self, Currency, PriceAge}};
 
 /// The most pieces one split makes: a transaction has at most 16 outputs,
 /// and one is the change.
@@ -27,11 +27,6 @@ const ENOUGH_PAYMENTS: usize = 3;
 /// The fee per unit of weight before the node has said: about Monero's
 /// usual normal fee.
 const USUAL_PER_WEIGHT: u64 = 20_000;
-
-pub const TITLE: &str = "Split up";
-pub const INTRO: &str = "Each payment locks what's left of a coin for about 20 minutes. More, smaller coins keep money ready to spend.";
-const AUTO: &str = "Auto";
-const AUTO_SPOKEN: &str = "Auto, fill coins like your last 30 days";
 
 /// The price pieces are set at: the currency and a price per XMR in
 /// millionths, as elsewhere in [`price`].
@@ -234,10 +229,6 @@ pub fn learned(notes: &[Note], payments: &[u64], budget: &Budget) -> Option<Vec<
 pub struct Auto {
     /// What tapping it fills, in the order of the tiles.
     pub counts: Vec<u32>,
-    /// "Auto"
-    pub label: String,
-    /// "Auto, fill coins like your last 30 days"
-    pub spoken: String,
 }
 
 /// A tile on the grid.
@@ -245,13 +236,9 @@ pub struct Auto {
 pub struct Tile {
     /// "$20", "0.25"
     pub label: String,
+    /// "$20", "0.25 XMR".
+    pub spoken: String,
     pub count: u32,
-    /// "× 4", or "tap to add".
-    pub count_text: String,
-    /// "Add a $20 coin, 4 so far"
-    pub add_label: String,
-    /// "Remove a $20 coin"
-    pub remove_label: String,
 }
 
 /// A block of the bar: one piece, or what's left over.
@@ -265,11 +252,9 @@ pub struct Block {
     pub left_over: bool,
 }
 
-/// The Split up screen, every word ready to draw.
+/// The Split up screen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
-    pub title: String,
-    pub intro: String,
     /// Auto, with 3 or more payments in the last 30 days to learn from.
     pub auto: Option<Auto>,
     /// The counts are Auto's mix: the button is lit.
@@ -279,17 +264,31 @@ pub struct View {
     pub pieces: u32,
     /// Pieces largest first, then what's left over.
     pub bar: Vec<Block>,
-    /// "11 coins · $220"; `None` with no pieces.
-    pub summary: Option<String>,
-    /// "+ $88.70 left as one coin"
+    /// What the pieces come to: "$220"; `None` with no pieces.
+    pub total: Option<String>,
+    /// What's left as one coin: "$88.70".
     pub left_over: Option<String>,
-    /// "Split into 11 coins", or "Add a coin to split".
-    pub button: String,
     pub ready: bool,
-    /// "Network fee about $0.03", and the price's age once it's old:
-    /// "Network fee about $0.03 · 23 h old price"; empty while no coin is
-    /// chosen, with no split to cost anything (board SplitAuto A).
-    pub footer: String,
+    /// About what it costs; `None` while no coin is chosen, with no split to
+    /// cost anything (board SplitAuto A).
+    pub fee: Option<SplitFee>,
+}
+
+/// About a split's network fee.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitFee {
+    pub fee: FeeAmount,
+    /// How old the price it's said at is, once it's missed a refresh.
+    pub age: Option<PriceAge>,
+}
+
+/// A fee as far as it can be said.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeeAmount {
+    /// "$0.03", "0.0002 XMR".
+    About(String),
+    /// Under the currency's smallest unit: "$0.01".
+    LessThan(String),
 }
 
 fn worth(atomic: u64, money: Money) -> String {
@@ -299,25 +298,21 @@ fn worth(atomic: u64, money: Money) -> String {
     }
 }
 
-/// The fee as the footer says it: "$0.03", "less than $0.01", "0.0002 XMR".
-fn fee_text(fee: u64, money: Money) -> String {
+/// The fee as far as it can be said.
+fn fee_amount(fee: u64, money: Money) -> FeeAmount {
     match money {
-        Some((currency, p)) if fiat::to_minor(fee, p, currency) == 0 => format!("less than {}", fiat::format(1, currency)),
-        Some((currency, p)) => fiat::value(fee, p, currency),
-        None => format!("{} XMR", amount::format(fee)),
+        Some((currency, p)) if fiat::to_minor(fee, p, currency) == 0 => FeeAmount::LessThan(fiat::format(1, currency)),
+        Some((currency, p)) => FeeAmount::About(fiat::value(fee, p, currency)),
+        None => FeeAmount::About(format!("{} XMR", amount::format(fee))),
     }
 }
 
-fn plural(n: u32) -> String {
-    if n == 1 { "1 coin".into() } else { format!("{n} coins") }
-}
-
 /// The screen for `counts` of `notes`, with Auto learned from `payments`
-/// (see [`learned`]). `price_age` is how old the price is ("23 h old") once
-/// it's missed a refresh, `None` while it's fresh.
-pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, money: Money, price_age: Option<&str>) -> View {
+/// (see [`learned`]). `price_age` is how old the price is once it's missed a
+/// refresh, `None` while it's fresh.
+pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, money: Money, price_age: Option<PriceAge>) -> View {
     let counts = sized(notes, counts);
-    let auto = learned(notes, payments, budget).map(|counts| Auto { counts, label: AUTO.into(), spoken: AUTO_SPOKEN.into() });
+    let auto = learned(notes, payments, budget).map(|counts| Auto { counts });
     let n = pieces(&counts);
     let total = value(notes, &counts);
     let (fee, left) = budget.plan(n.max(1), total);
@@ -326,13 +321,7 @@ pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, m
     let tiles = notes
         .iter()
         .zip(&counts)
-        .map(|(note, &count)| Tile {
-            label: note.label.clone(),
-            count,
-            count_text: if count > 0 { format!("× {count}") } else { "tap to add".into() },
-            add_label: format!("Add a {} coin, {} so far", note.spoken, if count == 0 { "none".to_owned() } else { count.to_string() }),
-            remove_label: format!("Remove a {} coin", note.spoken),
-        })
+        .map(|(note, &count)| Tile { label: note.label.clone(), spoken: note.spoken.clone(), count })
         .collect();
     // The pieces largest first, then what's left over.
     let mut values: Vec<(u64, bool)> = vec![];
@@ -352,23 +341,16 @@ pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, m
         Some((currency, _)) => fiat::format(notes.iter().zip(&counts).map(|(note, c)| note.minor.unwrap_or(0) * u64::from(*c)).sum(), currency),
         None => format!("{} XMR", amount::format_short(total)),
     };
-    let mut footer = if n == 0 { String::new() } else { format!("Network fee about {}", fee_text(fee, money)) };
-    if let Some(age) = price_age.filter(|_| money.is_some() && n > 0) {
-        footer.push_str(&format!(" · {age} price"));
-    }
     View {
-        title: TITLE.into(),
-        intro: INTRO.into(),
         is_auto: auto.as_ref().is_some_and(|a| a.counts == counts),
         auto,
         tiles,
         pieces: n,
         bar,
-        summary: (n > 0).then(|| format!("{} · {summary_value}", plural(n))),
-        left_over: left.filter(|l| *l > 0 && n > 0).map(|l| format!("+ {} left as one coin", worth(l, money))),
-        button: if n == 0 { "Add a coin to split".into() } else { format!("Split into {}", plural(n)) },
+        total: (n > 0).then_some(summary_value),
+        left_over: left.filter(|l| *l > 0 && n > 0).map(|l| worth(l, money)),
         ready: n > 0 && left.is_some() && n <= MAX_PIECES,
-        footer,
+        fee: (n > 0).then(|| SplitFee { fee: fee_amount(fee, money), age: price_age.filter(|_| money.is_some()) }),
         counts,
     }
 }
@@ -390,24 +372,6 @@ pub fn lines(notes: &[Note], counts: &[u32]) -> Vec<(String, String)> {
         .filter(|(_, c)| **c > 0)
         .map(|(note, &c)| (format!("{} × {c}", note.spoken), format!("{} XMR", amount::format(note.atomic * u64::from(c)))))
         .collect()
-}
-
-/// "12 coins", for Activity and the confirm screen.
-pub fn pieces_text(n: u32) -> String {
-    plural(n)
-}
-
-/// Where a split pays, on the confirm screen.
-pub const TO: &str = "This wallet";
-
-/// The confirm screen's swipe: "Swipe to split into 12 coins".
-pub fn swipe_text(n: u32) -> String {
-    format!("Swipe to split into {}", plural(n))
-}
-
-/// Under "Split up" once sent: "12 coins on their way back to this wallet".
-pub fn done_text(n: u32) -> String {
-    format!("{} on their way back to this wallet", plural(n))
 }
 
 #[cfg(test)]
@@ -514,7 +478,7 @@ mod tests {
         let mix = learned(&notes, &payments, &budget(2_000)).unwrap();
         // Shares 2 × $5, 1 × $10, 2 × $20, 2 × $50 of 7, filled to 15 in turn.
         assert_eq!(mix, [5, 2, 4, 4, 0, 0]);
-        assert_eq!(view(&notes, &mix, &payments, &budget(2_000), money, None).summary.as_deref(), Some("15 coins · $325.00"));
+        assert_eq!(view(&notes, &mix, &payments, &budget(2_000), money, None).total.as_deref(), Some("$325.00"));
         // The same payments with $90: pieces in turn while they fit, $85.
         let small = learned(&notes, &payments, &budget(300)).unwrap();
         assert_eq!(small, [3, 0, 1, 1, 0, 0]);
@@ -558,7 +522,6 @@ mod tests {
         }
         let v = view(&notes, &[], &[XMR / 10; 3], &b, None, None);
         let auto = v.auto.unwrap();
-        assert_eq!((auto.label.as_str(), auto.spoken.as_str()), ("Auto", "Auto, fill coins like your last 30 days"));
         assert_eq!(auto.counts, [0, 0, 15, 0, 0, 0]);
     }
 
@@ -571,7 +534,7 @@ mod tests {
         // The screen opens empty: no coins, Auto plain, nothing to split yet.
         let opening = view(&notes, &[], &payments, &b, None, None);
         assert_eq!((opening.counts.as_slice(), opening.pieces, opening.is_auto), (&[0; 6][..], 0, false));
-        assert_eq!((opening.button.as_str(), opening.ready), ("Add a coin to split", false));
+        assert!(!opening.ready);
         // Tapping Auto fills its mix: lit.
         let mix = opening.auto.unwrap().counts;
         assert!(lit(&mix));
@@ -590,54 +553,21 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_reads_like_the_design() {
-        let usd = usd();
-        let money = Some((&usd, PRICE));
-        let notes = notes(money);
-        // $5 × 4, $10 × 4, $20 × 3: 11 pieces, $120. With 1 XMR ($300) ready.
-        let b = budget(1_000);
-        let v = view(&notes, &[4, 4, 3], &[], &b, money, None);
-        assert_eq!(v.summary.as_deref(), Some("11 coins · $120.00"));
-        let (fee, left) = b.plan(11, value(&notes, &[4, 4, 3]));
-        assert_eq!(v.left_over, Some(format!("+ {} left as one coin", fiat::value(left.unwrap(), PRICE, &usd))));
-        assert_eq!(v.button, "Split into 11 coins");
-        assert!(v.ready);
-        assert_eq!(v.footer, format!("Network fee about {}", fiat::value(fee, PRICE, &usd)));
-        // An old price: its age after the fee, and nothing more.
-        let aged = view(&notes, &[4, 4, 3], &[], &b, money, Some("23 h old"));
-        assert_eq!(aged.footer, format!("Network fee about {} · 23 h old price", fiat::value(fee, PRICE, &usd)));
-        assert_eq!(v.counts, [4, 4, 3, 0, 0, 0]);
-        let tile = |i: usize| (v.tiles[i].label.as_str(), v.tiles[i].count_text.as_str(), v.tiles[i].add_label.as_str());
-        assert_eq!(tile(2), ("$20", "× 3", "Add a $20 coin, 3 so far"));
-        assert_eq!(tile(5), ("$200", "tap to add", "Add a $200 coin, none so far"));
-        assert_eq!(v.tiles[0].remove_label, "Remove a $5 coin");
-        // The bar: 11 pieces largest first, then what's left, lighter.
-        assert_eq!(v.bar.len(), 12);
-        assert!(v.bar[11].left_over && !v.bar[0].left_over);
-        assert!((v.bar.iter().map(|b| b.width).sum::<f32>() - 1.0).abs() < 0.001);
-        // The $180 left over is the tallest; a $20 is √(20 ÷ 180) of it.
-        assert_eq!(v.bar[11].height, 1.0);
-        assert!((v.bar[0].height - (20.0f32 / 180.0).sqrt()).abs() < 0.01, "{}", v.bar[0].height);
-
-        let empty = view(&notes, &[], &[], &b, money, Some("23 h old"));
-        assert_eq!((empty.button.as_str(), empty.ready, empty.summary, empty.left_over, empty.bar.len()), ("Add a coin to split", false, None, None, 0));
-        assert_eq!(empty.footer, "", "no fee for a split nobody has asked for");
-
-        // In XMR there's no price, so no age even if one was given.
-        let xmr = view(&super::notes(None), &[0, 0, 1], &[], &b, None, Some("23 h old"));
-        assert_eq!(xmr.summary.as_deref(), Some("1 coin · 0.1 XMR"));
-        assert!(xmr.footer.starts_with("Network fee about 0.000") && !xmr.footer.contains("old"), "{}", xmr.footer);
-        assert_eq!(xmr.button, "Split into 1 coin");
-    }
-
-    #[test]
     fn the_pieces_paid_and_listed_largest_first() {
         let notes = notes(None);
         assert_eq!(amounts(&notes, &[2, 0, 1]), [XMR / 10, XMR / 100, XMR / 100]);
         assert_eq!(lines(&notes, &[2, 0, 1]), [("0.1 XMR × 1".to_owned(), "0.1 XMR".to_owned()), ("0.01 XMR × 2".to_owned(), "0.02 XMR".to_owned())]);
-        assert_eq!(pieces_text(12), "12 coins");
-        assert_eq!(swipe_text(1), "Swipe to split into 1 coin");
-        assert_eq!(done_text(12), "12 coins on their way back to this wallet");
-        assert_eq!(fee_text(1, Some((&usd(), PRICE))), "less than $0.01");
+        assert_eq!(fee_amount(1, Some((&usd(), PRICE))), FeeAmount::LessThan("$0.01".into()));
+    }
+
+    #[test]
+    fn the_screen_says_what_it_comes_to_without_words() {
+        let budget = Budget { outputs: vec![XMR], fee_rate: None };
+        let notes = super::notes(None);
+        let blank = view(&notes, &[], &[], &budget, None, None);
+        assert_eq!((blank.pieces, blank.total, blank.left_over, blank.fee, blank.ready), (0, None, None, None, false));
+        let one = view(&notes, &[1], &[], &budget, None, None);
+        assert_eq!((one.pieces, one.total.as_deref(), one.ready), (1, Some("0.01 XMR"), true));
+        assert!(matches!(one.fee, Some(SplitFee { fee: FeeAmount::About(_), age: None })));
     }
 }

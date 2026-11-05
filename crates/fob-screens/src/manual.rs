@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::clock::When;
+
 /// The fewest confirmations a coin can be spent at, whatever the setting says:
 /// the chain's own lock.
 pub const SETTLED_MIN: u32 = 10;
@@ -77,75 +79,88 @@ pub fn scan_plan(from: u64, to: u64, next_block: u64, tip: u64) -> ScanPlan {
     if to >= newest && from <= next_block { ScanPlan::Rewind(from) } else { ScanPlan::Window(from, to.min(newest)) }
 }
 
-/// One of the Scan drawer's quick choices, every word ready to draw.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a scan someone asked for is doing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanTitle {
+    #[default]
+    FromLast,
+    WholeWallet,
+    /// The newest this many blocks.
+    Newest(u64),
+    FromBlock(u64),
+    Dates,
+}
+
+/// Which of the Scan drawer's quick choices this is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanLabel {
+    Unsettled,
+    FromLast,
+    Today,
+    PastWeek,
+    PastMonth,
+    WholeWallet,
+}
+
+/// What a quick choice covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanNote {
+    /// Payments to check, and with Auto the pool and this many newest blocks.
+    Payments { payments: usize, newest_blocks: Option<u32> },
+    Blocks(u64),
+    /// As many as it can be told.
+    AboutBlocks(u64),
+    Whole { first: u64, blocks: u64 },
+}
+
+/// One of the Scan drawer's quick choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScanOption {
     pub request: ScanRequest,
-    pub label: String,
-    pub note: String,
-    pub cost: String,
-    pub action: String,
+    pub label: ScanLabel,
+    pub note: ScanNote,
+    /// The blocks it scans; none when it only checks payments.
+    pub blocks: Option<u64>,
 }
 
 /// The Block tab's facts about a typed block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockInfo {
-    /// "~30 Oct 2026", when it can be told.
-    pub mined: Option<String>,
-    pub newest: String,
-    pub first: String,
+    /// About when it was mined, when it can be told.
+    pub mined: Option<When>,
+    pub newest: u64,
+    pub first: u64,
 }
 
-/// How long `blocks` take to scan: "~7 s", "~2 min".
-pub fn estimate(blocks: u64) -> String {
-    let seconds = (blocks / BLOCKS_A_SECOND).max(1);
-    if seconds < 60 { format!("~{seconds} s") } else { format!("~{} min", (seconds + 30) / 60) }
+/// The last scan: when the block was mined, and which it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastScan {
+    pub when: When,
+    pub block: u64,
 }
 
-/// "21,600".
-pub fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
-fn payments(n: usize) -> String {
-    if n == 1 { "1 payment".into() } else { format!("{n} payments") }
+/// About how long `blocks` take to scan, in seconds.
+pub fn seconds_to_scan(blocks: u64) -> u64 {
+    (blocks / BLOCKS_A_SECOND).max(1)
 }
 
 /// The drawer's quick choices.
 pub fn scan_options(settings: ManualSettings, unsettled: usize, next_block: u64, first_block: u64, tip: u64) -> Vec<ScanOption> {
-    let unsettled_note = match settings.pull_mode {
-        PullMode::Auto => format!("{} · Pool · Last {} blocks", payments(unsettled), settings.incoming_scan_blocks),
-        _ => payments(unsettled),
-    };
-    let blocks_option = |request, label: &str, note: String, blocks: u64| ScanOption {
-        request,
-        label: label.into(),
-        note,
-        cost: estimate(blocks),
-        action: format!("Scan {} blocks", grouped(blocks)),
-    };
+    let newest_blocks = (settings.pull_mode == PullMode::Auto).then_some(settings.incoming_scan_blocks);
     let behind = tip.saturating_sub(next_block);
     let whole = tip.saturating_sub(first_block);
     // Nothing before the wallet's first block is looked at.
-    let back = |request, label: &str, blocks: u64| {
-        let blocks = blocks.min(whole);
-        blocks_option(request, label, format!("~{} blocks", grouped(blocks)), blocks)
+    let back = |label, blocks: u64| {
+        let about = blocks.min(whole);
+        ScanOption { request: ScanRequest::Back(blocks), label, note: ScanNote::AboutBlocks(about), blocks: Some(about) }
     };
     vec![
-        ScanOption { request: ScanRequest::Unsettled, label: "Unsettled payments".into(), note: unsettled_note, cost: "~1 s".into(), action: "Check payments".into() },
-        blocks_option(ScanRequest::FromLast, "From last scan", format!("{} blocks", grouped(behind)), behind),
-        back(ScanRequest::Back(BLOCKS_A_DAY), "Today", BLOCKS_A_DAY),
-        back(ScanRequest::Back(BLOCKS_A_DAY * 7), "Past week", BLOCKS_A_DAY * 7),
-        back(ScanRequest::Back(BLOCKS_A_DAY * 30), "Past month", BLOCKS_A_DAY * 30),
-        blocks_option(ScanRequest::Whole, "The whole wallet", format!("From block {} · ~{} blocks", grouped(first_block), grouped(whole)), whole),
+        ScanOption { request: ScanRequest::Unsettled, label: ScanLabel::Unsettled, note: ScanNote::Payments { payments: unsettled, newest_blocks }, blocks: None },
+        ScanOption { request: ScanRequest::FromLast, label: ScanLabel::FromLast, note: ScanNote::Blocks(behind), blocks: Some(behind) },
+        back(ScanLabel::Today, BLOCKS_A_DAY),
+        back(ScanLabel::PastWeek, BLOCKS_A_DAY * 7),
+        back(ScanLabel::PastMonth, BLOCKS_A_DAY * 30),
+        ScanOption { request: ScanRequest::Whole, label: ScanLabel::WholeWallet, note: ScanNote::Whole { first: first_block, blocks: whole }, blocks: Some(whole) },
     ]
 }
 
@@ -159,38 +174,18 @@ pub fn needed(chain_rules: u64, settings: ManualSettings) -> u64 {
     if settings.on { chain_rules.max(u64::from(settings.settled_confirmations)) } else { chain_rules }
 }
 
-/// What a pull found, in words.
+/// What a pull found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullOutcome {
-    pub title: String,
-    pub line: String,
-}
-
-/// The words for a pull: "1 new payment · 2 checked", then what's ready and,
-/// as a pull looks only so far back, that Sync goes further.
-pub fn pull_words(mode: PullMode, checked: usize, new: usize, ready: Option<String>, chain_changed: bool, not_confirmed: usize) -> PullOutcome {
-    if chain_changed {
-        return PullOutcome { title: "The chain changed".into(), line: "Sync to update your balance.".into() };
-    }
-    if not_confirmed > 0 {
-        let title = if not_confirmed == 1 { "1 payment not confirmed".to_owned() } else { format!("{not_confirmed} payments not confirmed") };
-        return PullOutcome { title, line: "Open it in Activity to see what to do.".into() };
-    }
-    let title = match (new, checked) {
-        (0, 0) if ready.is_some() => "Ready to spend".to_owned(),
-        (0, 0) => "Nothing new".to_owned(),
-        (0, c) => format!("{} checked", payments(c)),
-        (1, 0) => "1 new payment".to_owned(),
-        (n, 0) => format!("{n} new payments"),
-        (1, c) => format!("1 new payment · {c} checked"),
-        (n, c) => format!("{n} new payments · {c} checked"),
-    };
-    let further = match mode {
-        PullMode::Auto => "Sync to check further back.",
-        _ => "Sync to look for new payments.",
-    };
-    let line = ready.map_or_else(|| further.to_owned(), |amount| format!("{amount} XMR is ready to spend. {further}"));
-    PullOutcome { title, line }
+    pub mode: PullMode,
+    /// Sent payments it checked.
+    pub checked: usize,
+    /// Payments it found that weren't known.
+    pub new: usize,
+    /// What became ready to spend, if anything, with its digits.
+    pub ready: Option<String>,
+    pub chain_changed: bool,
+    pub not_confirmed: usize,
 }
 
 #[cfg(test)]
@@ -226,39 +221,15 @@ mod tests {
     }
 
     #[test]
-    fn the_drawer_says_what_each_choice_costs() {
+    fn the_drawer_offers_each_choice_with_its_blocks() {
         let options = scan_options(settings(true, 10), 2, 3_811_200, 3_702_000, 3_812_640);
-        assert_eq!(options[0].note, "2 payments · Pool · Last 5 blocks");
-        assert_eq!(options[0].action, "Check payments");
-        assert_eq!((options[1].label.as_str(), options[1].note.as_str(), options[1].cost.as_str()), ("From last scan", "1,440 blocks", "~7 s"));
-        assert_eq!(options[1].action, "Scan 1,440 blocks");
-        assert_eq!((options[3].note.as_str(), options[3].cost.as_str()), ("~5,040 blocks", "~25 s"));
-        assert_eq!(options[5].note, "From block 3,702,000 · ~110,640 blocks");
-        assert_eq!(options[5].cost, "~9 min");
+        assert_eq!(options[0], ScanOption { request: ScanRequest::Unsettled, label: ScanLabel::Unsettled, note: ScanNote::Payments { payments: 2, newest_blocks: Some(5) }, blocks: None });
+        assert_eq!((options[1].note, options[1].blocks), (ScanNote::Blocks(1_440), Some(1_440)));
+        assert_eq!((options[3].request, options[3].note), (ScanRequest::Back(5_040), ScanNote::AboutBlocks(5_040)));
+        assert_eq!(options[5].note, ScanNote::Whole { first: 3_702_000, blocks: 110_640 });
         let send = scan_options(ManualSettings { pull_mode: PullMode::Send, ..settings(true, 10) }, 1, 0, 0, 0);
-        assert_eq!(send[0].note, "1 payment");
+        assert_eq!(send[0].note, ScanNote::Payments { payments: 1, newest_blocks: None });
         let young = scan_options(settings(true, 10), 0, 90, 90, 100);
-        assert_eq!(young[2].note, "~10 blocks", "not past the wallet's first block");
-    }
-
-    #[test]
-    fn a_pull_says_what_it_found_and_what_it_did_not_look_for() {
-        let words = pull_words(PullMode::Auto, 2, 1, Some("0.5".into()), false, 0);
-        assert_eq!(words.title, "1 new payment · 2 checked");
-        assert_eq!(words.line, "0.5 XMR is ready to spend. Sync to check further back.");
-        assert_eq!(pull_words(PullMode::Auto, 0, 0, None, false, 0).title, "Nothing new");
-        assert_eq!(pull_words(PullMode::Auto, 0, 0, Some("0.5".into()), false, 0).title, "Ready to spend");
-        assert_eq!(pull_words(PullMode::Send, 2, 0, None, false, 0).line, "Sync to look for new payments.");
-        assert_eq!(pull_words(PullMode::Auto, 2, 1, None, true, 0).title, "The chain changed");
-        assert_eq!(pull_words(PullMode::Auto, 2, 1, None, false, 1).title, "1 payment not confirmed");
-    }
-
-    #[test]
-    fn numbers_read_in_groups() {
-        assert_eq!(grouped(0), "0");
-        assert_eq!(grouped(999), "999");
-        assert_eq!(grouped(3_811_200), "3,811,200");
-        assert_eq!(estimate(0), "~1 s");
-        assert_eq!(estimate(21_600), "~2 min");
+        assert_eq!(young[2].note, ScanNote::AboutBlocks(10), "not past the wallet's first block");
     }
 }

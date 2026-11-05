@@ -234,7 +234,7 @@ impl Wallet {
 
     pub(super) fn set_zmq_status(&self, zmq: ZmqStatus, endpoint: Option<&str>) -> SyncStatus {
         self.set_status(|s| {
-            s.zmq_text = zmq.text(endpoint);
+            s.zmq_endpoint = endpoint.map(str::to_owned);
             s.zmq = zmq;
         })
     }

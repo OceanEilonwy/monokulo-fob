@@ -90,14 +90,14 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
     assert_eq!(balance.unlocked, ready.iter().map(|p| p.amount).sum::<u64>());
     assert_eq!(balance.total - balance.unlocked, pieces.iter().map(|p| p.amount).sum::<u64>());
     // Coins ready to spend: Split up can be pressed.
-    assert!(wallet.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.can_split);
+    assert!(wallet.said_coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.can_split);
     // The Coins screen counts them all.
-    let coins = wallet.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
+    let coins = wallet.said_coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
     assert_eq!((coins.ready_coins.len(), coins.not_ready_coins.len()), (2, 7));
     assert_eq!((coins.ready, coins.not_ready), (balance.unlocked, balance.total - balance.unlocked));
     assert!(coins.intro.contains("is held as 9 coins"), "{}", coins.intro);
     // Home's sums: ready, not ready, and all of it, the balance.
-    let summary = wallet.not_ready(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.unwrap();
+    let summary = wallet.said_not_ready(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.unwrap();
     let sums: Vec<_> = summary.sums.iter().map(|s| (s.label.as_str(), s.atomic)).collect();
     assert_eq!(sums, [("Ready to spend", balance.unlocked), ("Not ready · 7 coins", balance.total - balance.unlocked), ("All of it", balance.total)]);
 }

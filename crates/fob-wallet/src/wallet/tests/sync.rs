@@ -32,7 +32,7 @@ async fn a_block_announced_over_zmq_wakes_the_sync_loop() {
         }
     };
     tokio::time::timeout(Duration::from_secs(5), listening).await.expect("never listening");
-    assert!(wallet.status().zmq_text.ends_with(" · listening"), "{}", wallet.status().zmq_text);
+    assert!(wallet.said_zmq().ends_with(" · listening"), "{}", wallet.said_zmq());
     // The first round, and the one connecting wakes for what was missed.
     while *rounds.borrow_and_update() < 2 {
         tokio::time::timeout(Duration::from_secs(5), rounds.changed()).await.unwrap().unwrap();

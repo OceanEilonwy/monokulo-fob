@@ -255,7 +255,7 @@ impl Wallet {
             let state = self.inner.state.lock().await;
             (Self::split_payments(&state, clock.now), state.price_cache.shown(&state.prices, clock.now).and_then(|c| crate::price_alert::old(c.at, clock.now)))
         };
-        split::view(&notes, counts, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)), age.as_deref())
+        split::view(&notes, counts, &payments, &budget, money.as_ref().map(|(c, p)| (c, *p)), age)
     }
 
     /// One more piece of note `index`, or why not (the 15-piece cap, or not
