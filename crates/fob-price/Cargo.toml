@@ -11,7 +11,6 @@ fob-monero = { path = "../fob-monero" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 
 [dev-dependencies]

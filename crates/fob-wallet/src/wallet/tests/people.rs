@@ -167,7 +167,7 @@ async fn a_request_is_made_only_on_share_each_on_an_address_no_one_had() {
 #[tokio::test]
 async fn a_request_asked_in_money_keeps_what_it_came_to_then() {
     let wallet = Wallet::create(&dir("request-fiat"), [1; 32], Network::Stagenet).unwrap();
-    assert!(matches!(wallet.make_request(None, Some("80"), true, None).await, Err(FobError::Price(_))));
+    assert!(matches!(wallet.make_request(None, Some("80"), true, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), Asked::Background, now()).await.unwrap();
     let (request, code) = wallet.make_request(None, Some("80"), true, Some("Concert tickets")).await.unwrap();
     let asked = request.asked.clone().unwrap();

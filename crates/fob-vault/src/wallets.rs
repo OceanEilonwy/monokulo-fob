@@ -104,10 +104,10 @@ pub fn any_on(dir: &Path, network: Network) -> bool {
 fn clean_name(name: &str) -> Result<String> {
     let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
     if name.is_empty() {
-        return Err(VaultError::BadName("A wallet needs a name".into()));
+        return Err(VaultError::NameEmpty);
     }
     if name.chars().count() > NAME_LENGTH {
-        return Err(VaultError::BadName(format!("Keep the name to {NAME_LENGTH} characters")));
+        return Err(VaultError::NameTooLong { max: NAME_LENGTH });
     }
     Ok(name)
 }
@@ -172,7 +172,7 @@ impl Wallets {
 
     /// Remembers `file` as the one open on its network.
     pub fn select(&mut self, file: &str) -> Result<()> {
-        let entry = self.find(file).ok_or_else(|| VaultError::BadName("That wallet isn't on this phone".into()))?;
+        let entry = self.find(file).ok_or(VaultError::NotOnThisDevice)?;
         let network = entry.network.name().to_owned();
         self.list.current.insert(network, file.to_owned());
         self.save()
@@ -204,14 +204,14 @@ impl Wallets {
     fn unique(&self, name: &str, except: Option<&str>) -> Result<String> {
         let name = clean_name(name)?;
         if self.list.wallets.iter().any(|w| w.name.eq_ignore_ascii_case(&name) && Some(w.file.as_str()) != except) {
-            return Err(VaultError::BadName(format!("You already have a wallet called {name}")));
+            return Err(VaultError::NameTaken { name: name.to_string() });
         }
         Ok(name)
     }
 
     /// Lists a wallet just made in `file`, as the one open on its network.
     pub fn add(&mut self, file: &str, name: &str) -> Result<Entry> {
-        let network = network_of(file).ok_or_else(|| VaultError::BadName("Not a wallet file".into()))?;
+        let network = network_of(file).ok_or(VaultError::NotAWalletFileName)?;
         let name = self.check_name(name)?;
         let entry = Entry { file: file.to_owned(), name, network };
         self.list.wallets.retain(|w| w.file != file);
@@ -224,7 +224,7 @@ impl Wallets {
     /// Gives a wallet a new name.
     pub fn rename(&mut self, file: &str, name: &str) -> Result<()> {
         let name = self.unique(name, Some(file))?;
-        let entry = self.list.wallets.iter_mut().find(|w| w.file == file).ok_or_else(|| VaultError::BadName("That wallet isn't on this phone".into()))?;
+        let entry = self.list.wallets.iter_mut().find(|w| w.file == file).ok_or(VaultError::NotOnThisDevice)?;
         entry.name = name;
         self.save()
     }
@@ -310,10 +310,10 @@ mod tests {
         touch(&d, &b);
         wallets.add(&a, "Spending").unwrap();
         wallets.add(&b, "Savings").unwrap();
-        assert!(matches!(wallets.rename(&b, "   "), Err(VaultError::BadName(_))));
-        assert!(matches!(wallets.rename(&b, "SPENDING"), Err(VaultError::BadName(_))));
-        assert!(matches!(wallets.check_name("spending"), Err(VaultError::BadName(_))));
-        assert!(matches!(wallets.rename(&b, &"x".repeat(NAME_LENGTH + 1)), Err(VaultError::BadName(_))));
+        assert!(matches!(wallets.rename(&b, "   "), Err(VaultError::NameEmpty)));
+        assert!(matches!(wallets.rename(&b, "SPENDING"), Err(VaultError::NameTaken { .. })));
+        assert!(matches!(wallets.check_name("spending"), Err(VaultError::NameTaken { .. })));
+        assert!(matches!(wallets.rename(&b, &"x".repeat(NAME_LENGTH + 1)), Err(VaultError::NameTooLong { .. })));
         wallets.rename(&b, "savings").unwrap();
         assert_eq!(wallets.list()[1].name, "savings", "a wallet may change its own name's case");
     }

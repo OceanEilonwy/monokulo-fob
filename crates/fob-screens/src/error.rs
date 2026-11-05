@@ -1,24 +1,45 @@
-//! What a contact, request or profile can refuse.
+//! What an action on a screen can refuse. `fob-words` says it.
 
 use fob_codes::error::CodeError;
 use fob_monero::error::MoneroError;
 
-/// Something typed that a contact, request or profile can't take.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenError {
-    /// A contact can't be saved as it is, and why.
-    #[error("{0}")]
-    Contact(String),
-    /// A request can't be made or found, and why.
-    #[error("{0}")]
-    Request(String),
-    /// Your profile can't be saved or shared as it is, and why.
-    #[error("{0}")]
-    Profile(String),
-    #[error(transparent)]
-    Code(#[from] CodeError),
-    #[error(transparent)]
-    Monero(#[from] MoneroError),
+    ContactDeleted,
+    AddressIsContacts { name: String },
+    NameIsContacts { name: String },
+    RequestAddressUsed,
+    ProfileNameEmpty,
+    ProfileNameTooLong { max: usize },
+    ProfilePhotoBad { max: usize },
+    ProfileNotSetUp,
+    ShareAddressUsed,
+    ShareDeleted,
+    /// NFC only works on a share just made.
+    ShareNotFresh,
+    TooManyCoins { max: u32 },
+    OverBudget,
+    NoSuchCoin,
+    NotEnoughForCoin { coin: String },
+    NoCoinToSplit,
+    NothingToSwap,
+    NoPriceToConvert,
+    NotEnoughFunds { available: u64, needed: u64 },
+    NoSuchPayment,
+    Code(CodeError),
+    Monero(MoneroError),
+}
+
+impl From<CodeError> for ScreenError {
+    fn from(e: CodeError) -> Self {
+        ScreenError::Code(e)
+    }
+}
+
+impl From<MoneroError> for ScreenError {
+    fn from(e: MoneroError) -> Self {
+        ScreenError::Monero(e)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ScreenError>;

@@ -14,9 +14,9 @@ pub fn check_address(network: Network, address: &str) -> Result<()> {
         Network::Stagenet => Network::Mainnet,
     };
     if MoneroAddress::from_str(other.monero(), address).is_ok() {
-        return Err(MoneroError::WrongNetwork { expected: network.name(), found: other.name() });
+        return Err(MoneroError::WrongNetwork { expected: network, found: other });
     }
-    Err(MoneroError::BadAddress(network.name()))
+    Err(MoneroError::BadAddress(network))
 }
 
 /// A piece of an address as Receive shows it.

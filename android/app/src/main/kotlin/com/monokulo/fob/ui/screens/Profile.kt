@@ -16,6 +16,7 @@ import com.monokulo.fob.SwapRunner
 import com.monokulo.fob.TouchPhones
 import com.monokulo.fob.nfcState
 import kotlinx.coroutines.flow.first
+import uniffi.fob.ProfileChangeKind
 import uniffi.fob.Swapped
 import uniffi.fob.TouchSwap
 import androidx.activity.compose.BackHandler
@@ -412,10 +413,10 @@ fun ProfileFound(
                     clash.changes.forEach { c ->
                         Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(c.label, color = Fob.muted, fontSize = 12.5.sp)
-                            Text(c.now, fontSize = 14.sp, color = Fob.muted, fontFamily = if (c.label == "Send address") FontFamily.Monospace else FontFamily.Default)
+                            Text(c.now, fontSize = 14.sp, color = Fob.muted, fontFamily = if (c.kind == ProfileChangeKind.SEND_ADDRESS) FontFamily.Monospace else FontFamily.Default)
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 StrokeIcon(Icons.arrow, tint = Fob.orangeText, size = 14.dp)
-                                Text(c.new, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = if (c.label == "Send address") FontFamily.Monospace else FontFamily.Default)
+                                Text(c.new, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = if (c.kind == ProfileChangeKind.SEND_ADDRESS) FontFamily.Monospace else FontFamily.Default)
                             }
                         }
                     }

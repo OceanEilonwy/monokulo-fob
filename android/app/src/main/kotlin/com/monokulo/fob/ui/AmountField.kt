@@ -110,7 +110,7 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
         // Its line always laid out, empty when Rust has nothing to say, so what's under the field never moves as one
         // comes or goes ("That isn't an amount", a price coming).
         // Without [showRate], the "1 XMR = $166.10" part is left off: "≈ 0.1204 XMR · 1 XMR = $166.10" is "≈ 0.1204 XMR".
-        val line = entry?.line?.let { l -> if (showRate) l else l.substringBefore(" · 1 XMR =").takeUnless { it.startsWith("1 XMR =") }?.ifBlank { null } }
+        val line = if (showRate) entry?.line else entry?.conversion
         if (showRate || line != null) Text(line ?: "", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp).then(if (line == null) Modifier.clearAndSetSemantics {} else Modifier))
     }
 }
@@ -148,7 +148,7 @@ fun BigAmount(value: String, onChange: (String) -> Unit, entry: AmountEntry?, on
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(min = 44.dp)) {
-            val line = entry?.line?.substringBefore(" · 1 XMR =")?.takeUnless { it.startsWith("1 XMR =") }?.ifBlank { null }
+            val line = entry?.conversion
             if (line != null) Text(line, color = Fob.muted, fontSize = 14.sp)
             if (entry != null && entry.canSwitch) {
                 Row(

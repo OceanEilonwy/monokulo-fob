@@ -202,31 +202,31 @@ pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
 
 fn read_profile(network: Network, text: &str, nameless_too: bool) -> Result<ProfileCode> {
     use base64::Engine;
+    use crate::error::ProfileCodeProblem as Problem;
     use crate::names::{PHOTO_MAX, check_photo};
-    let not = |why: &str| Err(CodeError::Profile(why.into()));
+    let not = |why: Problem| Err(CodeError::ProfileCode(why));
     let payment = parse_payment(network, text)?;
     if payment.amount.is_some() || payment.description.is_some() || payment.receipt.is_some() {
-        return not("That's a payment code, not a profile.");
+        return not(Problem::IsPaymentCode);
     }
     let rest = split_scheme(text.trim(), &["monero"]).unwrap_or(text);
     let (_, pairs) = split_query(rest);
     let name = match payment.recipient_name {
         Some(name) => name,
         None if nameless_too && get(&pairs, &["fob_meet"]).map(str::trim) == Some("1") => String::new(),
-        None => return not("That code has no name, so it isn't a profile."),
+        None => return not(Problem::NoName),
     };
-    let too_big = "The photo in that profile is too big for Fob.";
     let photo = match get(&pairs, &["recipient_avatar"]).map(str::trim) {
         None => None,
         // Measured before it's decoded: base64 is 4 characters for 3 bytes.
-        Some(text) if text.trim_end_matches('=').len() > (PHOTO_MAX * 4).div_ceil(3) => return not(too_big),
+        Some(text) if text.trim_end_matches('=').len() > (PHOTO_MAX * 4).div_ceil(3) => return not(Problem::PhotoTooBig),
         Some(text) => {
-            let Ok(bytes) = PHOTO_BASE64.decode(text) else { return not("The photo in that profile is damaged.") };
+            let Ok(bytes) = PHOTO_BASE64.decode(text) else { return not(Problem::PhotoDamaged) };
             if bytes.len() > PHOTO_MAX {
-                return not(too_big);
+                return not(Problem::PhotoTooBig);
             }
             if check_photo(&bytes).is_err() {
-                return not("The photo in that profile isn't a WebP image.");
+                return not(Problem::PhotoNotWebp);
             }
             Some(bytes)
         }
@@ -463,7 +463,7 @@ mod tests {
     fn a_mainnet_code_on_a_stagenet_wallet_says_which_network() {
         let mainnet = Keys::generate(Network::Mainnet).keys.primary_address();
         let err = parse_payment(Network::Stagenet, &format!("monero:{mainnet}")).unwrap_err();
-        assert!(matches!(err, CodeError::Monero(MoneroError::WrongNetwork { expected: "stagenet", found: "mainnet" })));
+        assert!(matches!(err, CodeError::Monero(MoneroError::WrongNetwork { expected: Network::Stagenet, found: Network::Mainnet })));
         assert!(matches!(parse_payment(Network::Stagenet, "monero:hello"), Err(CodeError::Monero(MoneroError::BadAddress(_)))));
     }
 
@@ -623,17 +623,18 @@ mod tests {
         let address = wallet().address(7);
         let bare = profile_uri(&address, "Henry", None);
         let with = |photo: &str| format!("{bare}&recipient_avatar={photo}");
-        let refused = |text: &str| parse_profile(Network::Stagenet, text).unwrap_err().to_string();
-        assert_eq!(refused(&with("not*base64!")), "The photo in that profile is damaged.");
-        assert_eq!(refused(&with(&PHOTO_BASE64.encode(b"\x89PNG\r\n\x1a\n0000"))), "The photo in that profile isn't a WebP image.");
+        use crate::error::ProfileCodeProblem as Problem;
+        let refused = |text: &str| parse_profile(Network::Stagenet, text).unwrap_err();
+        assert_eq!(refused(&with("not*base64!")), CodeError::ProfileCode(Problem::PhotoDamaged));
+        assert_eq!(refused(&with(&PHOTO_BASE64.encode(b"\x89PNG\r\n\x1a\n0000"))), CodeError::ProfileCode(Problem::PhotoNotWebp));
         // One byte over, and far over (refused before decoding).
-        assert_eq!(refused(&with(&PHOTO_BASE64.encode(webp(crate::names::PHOTO_MAX + 1)))), "The photo in that profile is too big for Fob.");
-        assert_eq!(refused(&with(&"A".repeat(100_000))), "The photo in that profile is too big for Fob.");
+        assert_eq!(refused(&with(&PHOTO_BASE64.encode(webp(crate::names::PHOTO_MAX + 1)))), CodeError::ProfileCode(Problem::PhotoTooBig));
+        assert_eq!(refused(&with(&"A".repeat(100_000))), CodeError::ProfileCode(Problem::PhotoTooBig));
         assert!(parse_profile(Network::Stagenet, &with(&PHOTO_BASE64.encode(webp(crate::names::PHOTO_MAX)))).is_ok());
         // No name, or something to pay: a payment code, not a profile.
-        assert_eq!(refused(&format!("monero:{address}")), "That code has no name, so it isn't a profile.");
-        assert_eq!(refused(&format!("{bare}&tx_amount=1")), "That's a payment code, not a profile.");
-        assert_eq!(refused(&format!("{bare}&tx_description=Pizza")), "That's a payment code, not a profile.");
+        assert_eq!(refused(&format!("monero:{address}")), CodeError::ProfileCode(Problem::NoName));
+        assert_eq!(refused(&format!("{bare}&tx_amount=1")), CodeError::ProfileCode(Problem::IsPaymentCode));
+        assert_eq!(refused(&format!("{bare}&tx_description=Pizza")), CodeError::ProfileCode(Problem::IsPaymentCode));
         assert!(parse_profile(Network::Mainnet, &bare).is_err(), "another network's");
     }
 

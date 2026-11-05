@@ -1,25 +1,30 @@
-//! What can go wrong with keys and the files that hold them.
+//! What can go wrong with keys and the files that hold them. `fob-words` says it.
 
 use fob_monero::error::MoneroError;
 
-/// Keys and the files that hold them.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VaultError {
-    #[error("that isn't a valid seed phrase")]
     BadSeed,
-    #[error("that key isn't valid")]
     BadKey,
-    #[error("this wallet can only watch: it has no spend key")]
     ViewOnly,
-    #[error("couldn't read or save the wallet: {0}")]
+    /// The file system or database's own words: they name no scenario Fob has.
     Storage(String),
-    #[error("the wallet file can't be opened with this key")]
+    /// Sealing a file failed.
+    Sealing,
+    NotAWalletFile,
     WrongKey,
-    /// A wallet's name can't be used, or the wallet isn't on the list, and why.
-    #[error("{0}")]
-    BadName(String),
-    #[error(transparent)]
-    Monero(#[from] MoneroError),
+    NameEmpty,
+    NameTooLong { max: usize },
+    NameTaken { name: String },
+    NotOnThisDevice,
+    NotAWalletFileName,
+    Monero(MoneroError),
+}
+
+impl From<MoneroError> for VaultError {
+    fn from(e: MoneroError) -> Self {
+        VaultError::Monero(e)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;

@@ -127,7 +127,7 @@ impl Wallet {
             WalletCode::SpendKey { address, spend, view, height } => {
                 let keys = Keys::from_spend_key(network, &spend, view.as_deref().map(|v| v.as_str()))?;
                 if address.is_some_and(|a| a != keys.primary_address()) {
-                    return Err(FobError::BadKey);
+                    return Err(FobError::Vault(VaultError::BadKey));
                 }
                 Wallet::new(path, file_key, keys, Some(height.or(restore_height).unwrap_or(0)))
             }
@@ -161,7 +161,7 @@ impl Wallet {
         let mut db = Db::open(&path, &file_key)?;
         let keys = db.keys()?;
         let saved = db.load()?;
-        let mut state: State = serde_json::from_value(saved).map_err(|e| FobError::Storage(e.to_string()))?;
+        let mut state: State = serde_json::from_value(saved).map_err(|e| FobError::storage(e.to_string()))?;
         db.loaded(Self::state_value(&state)?)?;
         let dropped = state.contacts.drop_bad_photos() | state.profile.drop_bad_photo();
         let wallet = Wallet::from_parts(&path, db, keys.into_keys()?, state);
@@ -179,9 +179,9 @@ impl Wallet {
         if !path.with_extension("fob").exists() && !path.with_extension("tmp").exists() {
             return Ok(());
         }
-        let sync = |to_sync: &Path| std::fs::File::open(to_sync).and_then(|file| file.sync_all()).map_err(|e| FobError::Storage(e.to_string()));
+        let sync = |to_sync: &Path| std::fs::File::open(to_sync).and_then(|file| file.sync_all()).map_err(|e| FobError::storage(e.to_string()));
         sync(path)?;
-        sync(path.parent().ok_or_else(|| FobError::Storage("a wallet's database has no folder".into()))?)?;
+        sync(path.parent().ok_or_else(|| FobError::storage("a wallet's database has no folder"))?)?;
         crate::wallets::remove_sealed_file(path).map_err(Into::into)
     }
 
@@ -196,19 +196,19 @@ impl Wallet {
         let mut db = Db::create(&making, file_key, &keys)?;
         let expected = Self::state_value(&file.state)?;
         db.save(expected.clone())?;
-        let back: State = serde_json::from_value(db.load()?).map_err(|e| FobError::Storage(e.to_string()))?;
+        let back: State = serde_json::from_value(db.load()?).map_err(|e| FobError::storage(e.to_string()))?;
         if Self::state_value(&back)? != expected {
-            return Err(FobError::Storage("the wallet read back from its new database isn't the same".into()));
+            return Err(FobError::storage("the wallet read back from its new database isn't the same"));
         }
         if !db.keys()?.same_as(&keys) {
-            return Err(FobError::Storage("the keys read back from the new database aren't the same".into()));
+            return Err(FobError::storage("the keys read back from the new database aren't the same"));
         }
         db.close()?;
         crate::db::rename(&making, path).map_err(Into::into)
     }
 
     pub(super) fn state_value(state: &State) -> Result<serde_json::Value> {
-        serde_json::to_value(state).map_err(|e| FobError::Storage(e.to_string()))
+        serde_json::to_value(state).map_err(|e| FobError::storage(e.to_string()))
     }
 
     pub(super) fn save_state(&self, state: &State) -> Result<()> {

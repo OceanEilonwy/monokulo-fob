@@ -75,7 +75,7 @@ const CARRY_DAYS: i64 = 4;
 pub struct Kraken;
 
 fn route(currency: &str) -> Result<Route> {
-    ROUTES.iter().find(|r| r.0 == currency).map(|r| r.1).ok_or_else(|| PriceError::Price(format!("Kraken has no XMR price in {currency}")))
+    ROUTES.iter().find(|r| r.0 == currency).map(|r| r.1).ok_or_else(|| PriceError::NoRoute { currency: currency.to_owned() })
 }
 
 /// The answer's `result`, or what Kraken said went wrong: busy for its rate
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(Kraken.currencies(), ["USD", "EUR", "GBP", "AUD", "CAD", "CHF"]);
         assert_eq!(route("EUR").unwrap(), Route::Direct { pair: "XMREUR", key: "XXMRZEUR" });
         assert!(matches!(route("CHF").unwrap(), Route::ViaUsd { per_dollar: true, .. }));
-        assert!(route("NZD").unwrap_err().to_string().contains("no XMR price in NZD"));
+        assert_eq!(route("NZD").unwrap_err(), PriceError::NoRoute { currency: "NZD".into() });
         assert!(route("AED").is_err(), "USD/AED never trades");
         assert!(route("JPY").is_err(), "USD/JPY's spread is too wide to price by");
     }
@@ -230,16 +230,16 @@ mod tests {
         assert!(parse_ticker(XMR_USD_TICKER, "XXMRZEUR", XMR_SPREAD).is_err());
         // USD/JPY that day: bid 156.273, ask 159.730, a 2.2% spread, its
         // last trade above the ask. No price from that.
-        assert_eq!(parse_ticker(USD_JPY_TICKER, "ZUSDZJPY", RATE_SPREAD).unwrap_err().to_string(), "Answered without a price");
+        assert_eq!(parse_ticker(USD_JPY_TICKER, "ZUSDZJPY", RATE_SPREAD).unwrap_err(), PriceError::Failed(Failure::BadAnswer));
         // A market that never traded has no price.
-        assert_eq!(parse_ticker(USD_AED_TICKER, "USDAED", RATE_SPREAD).unwrap_err().to_string(), "Answered without a price");
+        assert_eq!(parse_ticker(USD_AED_TICKER, "USDAED", RATE_SPREAD).unwrap_err(), PriceError::Failed(Failure::BadAnswer));
         // An ask under the bid isn't a market.
         let crossed = br#"{"error":[],"result":{"AUDUSD":{"a":["0.70200","1","1.000"],"b":["0.70300","1","1.000"]}}}"#;
         assert!(parse_ticker(crossed, "AUDUSD", RATE_SPREAD).is_err());
         let refused = br#"{"error":["EQuery:Unknown asset pair"]}"#;
-        assert_eq!(parse_ticker(refused, "XXMRZUSD", XMR_SPREAD).unwrap_err().to_string(), "Not answering");
+        assert_eq!(parse_ticker(refused, "XXMRZUSD", XMR_SPREAD).unwrap_err(), PriceError::Failed(Failure::NotAnswering));
         let limited = br#"{"error":["EAPI:Rate limit exceeded"]}"#;
-        assert_eq!(parse_ticker(limited, "XXMRZUSD", XMR_SPREAD).unwrap_err().to_string(), "Busy, try again soon");
+        assert_eq!(parse_ticker(limited, "XXMRZUSD", XMR_SPREAD).unwrap_err(), PriceError::Failed(Failure::Busy));
         assert!(parse_ticker(b"<html>", "XXMRZUSD", XMR_SPREAD).is_err());
     }
 

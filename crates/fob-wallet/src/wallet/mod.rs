@@ -61,7 +61,7 @@ use crate::{
     catch_up,
     amount,
     contacts::{self, Contact},
-    error::{FobError, PriceError, Result},
+    error::{CodeError, EndpointProblem, FobError, MoneroError, PriceError, Result, ScreenError, VaultError},
     backup,
     keys::{Keys, SeedKind, StoredKeys},
     manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest},
@@ -429,10 +429,10 @@ pub fn restore_point(network: Network, text: &str) -> Result<u64> {
     if let Ok(height) = text.parse::<u64>() {
         return Ok(height);
     }
-    let parts: Vec<i64> = text.split('-').map(|p| p.parse().map_err(|_| FobError::BadCode)).collect::<Result<_>>()?;
-    let [y, m, d] = parts[..] else { return Err(FobError::BadCode) };
+    let parts: Vec<i64> = text.split('-').map(|p| p.parse().map_err(|_| FobError::Code(CodeError::BadCode))).collect::<Result<_>>()?;
+    let [y, m, d] = parts[..] else { return Err(FobError::Code(CodeError::BadCode)) };
     if !(2014..=2100).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return Err(FobError::BadCode);
+        return Err(FobError::Code(CodeError::BadCode));
     }
     // Days from the civil date (Howard Hinnant's algorithm).
     let y = if m <= 2 { y - 1 } else { y };
@@ -474,7 +474,7 @@ pub fn preview_wallet_code(network: Network, code: &str) -> Result<CodePreview> 
         WalletCode::SpendKey { address, spend, view, height } => {
             let keys = Keys::from_spend_key(network, &spend, view.as_deref().map(|v| v.as_str()))?;
             if address.is_some_and(|a| a != keys.primary_address()) {
-                return Err(FobError::BadKey);
+                return Err(FobError::Vault(VaultError::BadKey));
             }
             Ok(CodePreview { address: keys.primary_address(), can_spend: true, restore_height: height })
         }
@@ -491,6 +491,6 @@ pub fn preview_wallet_code(network: Network, code: &str) -> Result<CodePreview> 
 fn sync_failure(e: &FobError, certificate: Option<std::result::Result<(), transport::CertProblem>>, self_signed: bool) -> (String, bool) {
     match e {
         FobError::Node(text) => (node::sync_failure(text, certificate, self_signed), false),
-        e => (node::capitalized(&e.to_string()), matches!(e, FobError::Storage(_))),
+        e => (node::capitalized(&e.to_string()), e.is_storage()),
     }
 }

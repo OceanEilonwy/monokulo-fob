@@ -85,7 +85,7 @@ impl Wallet {
     /// How far back Auto's pull looks: 1 to [`manual::INCOMING_MAX`] blocks.
     pub async fn set_incoming_scan_blocks(&self, blocks: u32) -> Result<()> {
         if !(1..=manual::INCOMING_MAX).contains(&blocks) {
-            return Err(FobError::BadAmount);
+            return Err(FobError::Monero(MoneroError::BadAmount));
         }
         let mut state = self.inner.state.lock().await;
         state.incoming_scan_blocks = blocks;
@@ -96,7 +96,7 @@ impl Wallet {
     /// [`manual::SETTLED_MIN`] and [`manual::SETTLED_MAX`] confirmations.
     pub async fn set_settled_confirmations(&self, confirmations: u32) -> Result<()> {
         if !(manual::SETTLED_MIN..=manual::SETTLED_MAX).contains(&confirmations) {
-            return Err(FobError::BadAmount);
+            return Err(FobError::Monero(MoneroError::BadAmount));
         }
         let mut state = self.inner.state.lock().await;
         state.settled_confirmations = confirmations;
@@ -350,7 +350,7 @@ impl Wallet {
     pub async fn release_payment(&self, tx: &str) -> Result<()> {
         let mut state = self.inner.state.lock().await;
         let Some(i) = state.sent.iter().position(|s| s.tx == tx && s.not_confirmed && s.height.is_none()) else {
-            return Err(FobError::NoSuchPayment);
+            return Err(FobError::Screen(ScreenError::NoSuchPayment));
         };
         state.sent[i].not_confirmed = false;
         state.sent[i].released = true;

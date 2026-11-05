@@ -311,9 +311,9 @@ fn onion_hosts_are_known_by_name() {
     for host in ["onion.example", "example.com", "notonion", "1.2.3.4", "", "é.onio"] {
         assert!(!is_onion(host), "{host}");
     }
-    assert_eq!(reachable(onion), Err(NO_ONION.into()));
-    assert_eq!(reachable("xmrnode.onion:18081"), Err(NO_ONION.into()), "without a scheme too");
-    assert_eq!(reachable("https://user:pw@Node.Onion./"), Err(NO_ONION.into()));
+    assert_eq!(reachable(onion), Err(EndpointProblem::Onion));
+    assert_eq!(reachable("xmrnode.onion:18081"), Err(EndpointProblem::Onion), "without a scheme too");
+    assert_eq!(reachable("https://user:pw@Node.Onion./"), Err(EndpointProblem::Onion));
     assert_eq!(reachable("node.example:18081"), Ok(()));
 }
 

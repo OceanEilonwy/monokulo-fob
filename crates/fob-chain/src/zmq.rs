@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use fob_monero::network::{Network, ZmqStatus};
 
+use crate::error::EndpointProblem;
+
 /// monerod's topics for a transaction entering the pool and for a new
 /// main-chain tip, in their small forms: only the topic is read.
 pub const POOL_TOPIC: &str = "json-minimal-txpool_add";
@@ -45,27 +47,27 @@ pub fn suggest(network: Network, node: &str) -> Option<String> {
 /// Checks a publisher as typed (`tcp://host:port`, or `host:port`) for a
 /// wallet using `node`, and writes it one way. Only TCP, and only the
 /// node's own host.
-pub fn endpoint(node: &str, typed: &str) -> Result<String, String> {
+pub fn endpoint(node: &str, typed: &str) -> Result<String, EndpointProblem> {
     let typed = typed.trim().trim_end_matches('/');
     if typed.is_empty() {
-        return Err("enter the node's ZMQ address, like tcp://host:18083".into());
+        return Err(EndpointProblem::ZmqEmpty);
     }
     let with_scheme = if typed.contains("://") { typed.to_owned() } else { format!("tcp://{typed}") };
-    let url = reqwest::Url::parse(&with_scheme).map_err(|_| format!("{typed} isn't an address Fob can read"))?;
+    let url = reqwest::Url::parse(&with_scheme).map_err(|_| EndpointProblem::Unreadable(typed.to_owned()))?;
     if url.scheme() != "tcp" {
-        return Err("Fob listens over tcp:// only".into());
+        return Err(EndpointProblem::ZmqNotTcp);
     }
     if !url.username().is_empty() || url.password().is_some() || !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
-        return Err("only a host and port: tcp://host:18083".into());
+        return Err(EndpointProblem::ZmqNotHostAndPort);
     }
-    let host = url.host_str().filter(|h| !h.is_empty()).ok_or("add the host: tcp://host:18083")?.to_ascii_lowercase();
+    let host = url.host_str().filter(|h| !h.is_empty()).ok_or(EndpointProblem::ZmqNoHost)?.to_ascii_lowercase();
     if crate::node::is_onion(&host) {
-        return Err(crate::node::NO_ONION.into());
+        return Err(EndpointProblem::Onion);
     }
-    let port = url.port().filter(|p| *p != 0).ok_or("add the port: tcp://host:18083")?;
-    let node_host = node_host(node).ok_or("set a node first")?;
+    let port = url.port().filter(|p| *p != 0).ok_or(EndpointProblem::ZmqNoPort)?;
+    let node_host = node_host(node).ok_or(EndpointProblem::NoNodeSet)?;
     if host != node_host {
-        return Err(format!("instant updates come from your node's own host, {node_host}"));
+        return Err(EndpointProblem::ZmqOtherHost(node_host));
     }
     Ok(format!("tcp://{host}:{port}"))
 }
@@ -168,21 +170,22 @@ mod tests {
         assert_eq!(endpoint(node, "Node.Example:28083").unwrap(), "tcp://node.example:28083");
         assert_eq!(endpoint("http://[::1]:38081", "tcp://[::1]:38083").unwrap(), "tcp://[::1]:38083");
         assert_eq!(endpoint("http://127.0.0.1:38081", "127.0.0.1:38083").unwrap(), "tcp://127.0.0.1:38083");
+        use EndpointProblem as E;
+        let other = || E::ZmqOtherHost("node.example".into());
         for (typed, says) in [
-            ("", "enter"),
-            ("tcp://elsewhere.example:18083", "own host, node.example"),
-            ("tcp://node.example.evil:18083", "own host"),
-            ("tcp://user@node.example:18083", "only a host and port"),
-            ("tcp://node.example:18083/path", "only a host and port"),
-            ("tcp://node.example", "add the port"),
-            ("tcp://node.example:0", "add the port"),
-            ("tcp://node.example:99999", "isn't an address"),
-            ("ipc:///tmp/zmq.sock", "tcp:// only"),
-            ("udp://node.example:18083", "tcp:// only"),
-            ("http://node.example:18083", "tcp:// only"),
+            ("", E::ZmqEmpty),
+            ("tcp://elsewhere.example:18083", other()),
+            ("tcp://node.example.evil:18083", other()),
+            ("tcp://user@node.example:18083", E::ZmqNotHostAndPort),
+            ("tcp://node.example:18083/path", E::ZmqNotHostAndPort),
+            ("tcp://node.example", E::ZmqNoPort),
+            ("tcp://node.example:0", E::ZmqNoPort),
+            ("tcp://node.example:99999", E::Unreadable("tcp://node.example:99999".into())),
+            ("ipc:///tmp/zmq.sock", E::ZmqNotTcp),
+            ("udp://node.example:18083", E::ZmqNotTcp),
+            ("http://node.example:18083", E::ZmqNotTcp),
         ] {
-            let error = endpoint(node, typed).unwrap_err();
-            assert!(error.contains(says), "{typed}: {error}");
+            assert_eq!(endpoint(node, typed).unwrap_err(), says, "{typed}");
         }
     }
 
@@ -191,8 +194,8 @@ mod tests {
     #[tokio::test]
     async fn onion_publishers_are_refused() {
         let onion = "http://xmrnode.onion:18081";
-        assert_eq!(endpoint(onion, "tcp://xmrnode.onion:18083"), Err(crate::node::NO_ONION.into()));
-        assert_eq!(endpoint(onion, "XMRNODE.ONION.:18083"), Err(crate::node::NO_ONION.into()));
+        assert_eq!(endpoint(onion, "tcp://xmrnode.onion:18083"), Err(EndpointProblem::Onion));
+        assert_eq!(endpoint(onion, "XMRNODE.ONION.:18083"), Err(EndpointProblem::Onion));
         let refused = crate::zmtp::connect("tcp://xmrnode.onion:18083", &[CHAIN_TOPIC]).await.err().expect("refused");
         assert_eq!((refused.kind(), refused.to_string()), (std::io::ErrorKind::InvalidData, crate::node::NO_ONION.to_owned()));
     }

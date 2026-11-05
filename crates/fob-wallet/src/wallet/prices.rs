@@ -97,7 +97,7 @@ impl Wallet {
     pub async fn set_fiat_first(&self, fiat_first: bool) -> Result<()> {
         self.change_prices(|s| {
             if s.code().is_none() {
-                return Err(FobError::Price("With XMR as the default currency there's nothing to swap".into()));
+                return Err(ScreenError::NothingToSwap.into());
             }
             s.fiat_first = fiat_first;
             Ok(())
@@ -239,9 +239,9 @@ impl Wallet {
         if !in_fiat {
             return Ok((amount::parse(text)?, None));
         }
-        let (currency, p) = self.price_now().await.ok_or_else(|| FobError::Price("no price to convert with".into()))?;
+        let (currency, p) = self.price_now().await.ok_or(FobError::Screen(ScreenError::NoPriceToConvert))?;
         let minor = fiat::parse(text, &currency)?;
-        Ok((fiat::to_atomic(minor, p, &currency).ok_or(FobError::BadAmount)?, Some((fiat::format(minor, &currency), currency.code))))
+        Ok((fiat::to_atomic(minor, p, &currency).ok_or(FobError::Monero(MoneroError::BadAmount))?, Some((fiat::format(minor, &currency), currency.code))))
     }
 
     /// Builds a payment of an amount as Send's field took it: typed in
@@ -316,7 +316,7 @@ impl Wallet {
         };
         if let Some(failure) = refused {
             self.inner.price_alerts.lock().expect("price lock").looked_up(Some(failed(failure, None)), asked);
-            return Err(FobError::PriceFailed(failure));
+            return Err(PriceError::Failed(failure).into());
         }
         let lookup = self.inner.price_lookups.fetch_add(1, Ordering::Relaxed) + 1;
         let current = if current_due { Some(source.current(&code, settings.transport).await) } else { None };

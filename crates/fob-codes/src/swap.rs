@@ -34,7 +34,7 @@ use std::{
 };
 
 
-use crate::{nfc, error::Result, uri::{self, ProfileCode}};
+use crate::{nfc, error::{CodeError, Result}, uri::{self, ProfileCode}};
 use fob_monero::network::Network;
 
 /// Fob's application on the card side: F0 (proprietary) and "FOBSWAP".
@@ -86,20 +86,7 @@ pub enum Problem {
     /// The other phone wouldn't take ours.
     Refused,
     /// Whole, but not a profile Fob takes (another network's, no name).
-    NotProfile(String),
-}
-
-impl Problem {
-    /// What the Touch phones screen says.
-    pub fn text(&self) -> String {
-        match self {
-            Problem::Away => "The other phone isn't on Share my profile.".into(),
-            Problem::Version => "The other phone has another version of Fob. Update both, or scan each other's code.".into(),
-            Problem::Garbled => "That didn't come through whole. Hold the phones together again.".into(),
-            Problem::Refused => "The other phone couldn't take your profile. Hold the phones together again.".into(),
-            Problem::NotProfile(why) => why.clone(),
-        }
-    }
+    NotProfile(CodeError),
 }
 
 /// The `index`th chunk of `frame`: empty past its end.
@@ -157,7 +144,7 @@ impl Assembly {
 
     /// The profile it carries, read as a scanned one is.
     fn profile(&self, network: Network) -> std::result::Result<ProfileCode, Problem> {
-        uri::parse_meet_code(network, &self.code()?).map_err(|e| Problem::NotProfile(e.to_string()))
+        uri::parse_meet_code(network, &self.code()?).map_err(Problem::NotProfile)
     }
 }
 
@@ -596,7 +583,7 @@ pub struct Ended {
 
 /// A profile code as a frame: version, length, checksum, the code.
 pub fn frame(code: &str) -> Result<Vec<u8>> {
-    nfc::frame(code, VERSION, CODE_MAX, "Your profile is too big to swap by touching phones.")
+    nfc::frame(code, VERSION, CODE_MAX, CodeError::ProfileTooBigForNfc)
 }
 
 /// The select command for Fob's application.
@@ -767,12 +754,10 @@ mod tests {
             (step, card.got().cloned())
         };
         let mainnet = uri::profile_uri(&main.address(1), "Main", None);
-        assert_eq!(fail(&ours, &mainnet), (Some(Step::Failed(Problem::NotProfile(uri::parse_profile(Network::Stagenet, &mainnet).unwrap_err().to_string()))), None));
+        assert_eq!(fail(&ours, &mainnet), (Some(Step::Failed(Problem::NotProfile(uri::parse_profile(Network::Stagenet, &mainnet).unwrap_err()))), None));
         // The card won't take a reader's code without a name: done refused.
         let bare = format!("monero:{}", henry.address(2));
         assert_eq!(fail(&bare, &ours), (Some(Step::Failed(Problem::Refused)), None));
-        assert_eq!(Problem::NotProfile("x".into()).text(), "x");
-        assert_eq!(Problem::Garbled.text(), "That didn't come through whole. Hold the phones together again.");
     }
 
     #[test]

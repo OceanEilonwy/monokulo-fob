@@ -7,7 +7,7 @@ async fn zmq_is_off_until_turned_on_and_follows_the_node_s_host() {
     assert_eq!(wallet.status().zmq_text, "Off");
     // Offered, not used: the node's host, stagenet's usual port.
     assert_eq!(wallet.zmq_endpoint().await, "tcp://stagenet.xmr-tw.org:38083");
-    assert!(matches!(wallet.set_zmq(true, Some("tcp://elsewhere.example:38083")).await, Err(FobError::BadEndpoint(_))));
+    assert!(matches!(wallet.set_zmq(true, Some("tcp://elsewhere.example:38083")).await, Err(FobError::Endpoint(_))));
     assert_eq!(wallet.status().zmq, ZmqStatus::Off, "refused, so still off");
     wallet.set_zmq(true, None).await.unwrap();
     assert_eq!(wallet.status().zmq_text, "stagenet.xmr-tw.org:38083 · connecting");
@@ -18,7 +18,7 @@ async fn zmq_is_off_until_turned_on_and_follows_the_node_s_host() {
     // Another host (set without asking the node, as set_node would):
     // instant updates go off rather than follow somewhere unchosen.
     again.inner.state.lock().await.node = "http://127.0.0.1:1".into();
-    assert!(matches!(again.set_zmq(true, Some("tcp://stagenet.xmr-tw.org:38083")).await, Err(FobError::BadEndpoint(_))));
+    assert!(matches!(again.set_zmq(true, Some("tcp://stagenet.xmr-tw.org:38083")).await, Err(FobError::Endpoint(_))));
 }
 
 #[tokio::test]
@@ -32,7 +32,7 @@ async fn custom_nodes_are_kept_per_wallet_until_removed() {
 
     // One of the network's own is on the list already; an onion can't be reached.
     wallet.add_node(Network::Stagenet.default_nodes()[1], false).await.unwrap();
-    assert!(matches!(wallet.add_node("abc.onion:38081", false).await, Err(FobError::BadEndpoint(_))));
+    assert!(matches!(wallet.add_node("abc.onion:38081", false).await, Err(FobError::Endpoint(_))));
     assert_eq!(wallet.custom_nodes().await.len(), 1);
 
     // Across a reopen, offered after the network's own; another wallet doesn't have it.
@@ -113,7 +113,7 @@ async fn a_self_signed_node_is_kept_with_its_mark() {
     reopened.set_status(|s| s.error = None);
     assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
     // Failing to save the wallet isn't the node's doing.
-    reopened.report(&Quiet, &mut catch_up::Pace::default(), Some(&FobError::Storage("disk full".into()))).await;
+    reopened.report(&Quiet, &mut catch_up::Pace::default(), Some(&FobError::storage("disk full"))).await;
     assert!(reopened.status().error_local);
     assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
     *reopened.inner.node_verdict.lock().unwrap() = None;
@@ -187,7 +187,7 @@ async fn an_onion_node_is_refused_and_never_reached() {
     let wallet = Wallet::create(&dir("onion"), [1; 32], Network::Stagenet).unwrap();
     let before = wallet.node().await;
     let refused = wallet.set_node("xmrnode.onion:38081", false).await.unwrap_err();
-    assert!(matches!(refused, FobError::BadEndpoint(_)));
+    assert!(matches!(refused, FobError::Endpoint(_)));
     assert_eq!(refused.to_string(), "Fob can't reach .onion nodes yet");
     assert_eq!(wallet.node().await, before, "unchanged");
     // An older file with one: syncing fails on it, saying why.
@@ -195,5 +195,5 @@ async fn an_onion_node_is_refused_and_never_reached() {
     let failed = wallet.sync_step().await.unwrap_err().to_string();
     assert!(failed.contains("Fob can't reach .onion nodes yet"), "{failed}");
     // And instant updates can't point at it either.
-    assert!(matches!(wallet.set_zmq(true, Some("tcp://xmrnode.onion:38083")).await, Err(FobError::BadEndpoint(e)) if e == crate::node::NO_ONION));
+    assert!(matches!(wallet.set_zmq(true, Some("tcp://xmrnode.onion:38083")).await, Err(FobError::Endpoint(EndpointProblem::Onion))));
 }

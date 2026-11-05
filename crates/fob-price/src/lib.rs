@@ -73,7 +73,6 @@ const MAX_RESPONSE: usize = 1 << 20;
 const DAY: u64 = 86_400;
 
 pub const USER_AGENT: &str = "Fob";
-const TOR_NOT_YET: &str = "prices over Tor aren't available yet";
 
 /// Whose prices, in the order Fob prefers them: moving to a provider that
 /// can price a currency takes the first that can.
@@ -192,17 +191,16 @@ static CLIENT: LazyLock<std::result::Result<reqwest::Client, String>> = LazyLock
 });
 
 async fn web(url: &str) -> Result<Vec<u8>> {
-    let err = |e: String| PriceError::Price(e);
     let failed = |f: Failure| PriceError::Failed(f);
-    let parsed = reqwest::Url::parse(url).map_err(|_| err(format!("{url} isn't an address")))?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| PriceError::BadUrl { url: url.to_owned() })?;
     if parsed.scheme() != "https" {
-        return Err(err("prices are only asked over https".into()));
+        return Err(PriceError::HttpsOnly);
     }
     // An onion price source would be looked up through the phone's DNS.
     if is_onion(parsed.host_str().unwrap_or("")) {
-        return Err(err("Fob can't reach .onion price sources yet".into()));
+        return Err(PriceError::OnionSource);
     }
-    let client = CLIENT.as_ref().map_err(|e| err(e.clone()))?;
+    let client = CLIENT.as_ref().map_err(|e| PriceError::Client(e.clone()))?;
     let mut response = client.get(parsed).send().await.map_err(|_| failed(Failure::NotAnswering))?;
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(failed(Failure::Busy));
@@ -390,7 +388,7 @@ impl Settings {
             self.currency = None;
             return Ok(None);
         };
-        let info = currencies::find(code).ok_or_else(|| PriceError::Price(format!("Fob has no prices in {code}")))?;
+        let info = currencies::find(code).ok_or_else(|| PriceError::NoPrices { code: code.to_owned() })?;
         let before = self.provider;
         self.currency = Some(code.to_owned());
         let (provider, transport) = self.fit();
@@ -407,7 +405,7 @@ impl Settings {
         if let Some(code) = self.code()
             && !provider.prices(code)
         {
-            return Err(PriceError::Price(format!("{} doesn't price {}", provider.name(), currency(code).plural)));
+            return Err(PriceError::NotPriced { provider: provider.name(), currency: currency(code).plural });
         }
         let transport = self.transport;
         self.provider = provider;
@@ -418,10 +416,10 @@ impl Settings {
     /// Asks `transport`, one that's built and the provider answers over.
     pub fn choose_transport(&mut self, transport: Transport) -> Result<()> {
         if !transport.available() {
-            return Err(PriceError::Price(TOR_NOT_YET.into()));
+            return Err(PriceError::TorNotYet);
         }
         if !self.provider.answers_over(transport) {
-            return Err(PriceError::Price(format!("{} doesn't answer {}", self.provider.name(), transport.text())));
+            return Err(PriceError::NotOverTransport { provider: self.provider.name(), transport });
         }
         self.transport = transport;
         Ok(())
@@ -581,12 +579,24 @@ pub struct TransportRow {
     pub transport: Transport,
     /// "Web", "Tor"
     pub title: &'static str,
-    /// "The provider sees this phone's IP address", "Kraken doesn't answer
-    /// over Tor".
-    pub line: String,
+    /// What choosing it means. `fob-words` says it.
+    pub note: TransportNote,
     /// It can be picked: built, and the provider answers over it.
     pub available: bool,
     pub chosen: bool,
+}
+
+/// What choosing a way of asking means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportNote {
+    /// The provider sees this device's address.
+    SeesAddress,
+    /// This provider doesn't answer over it.
+    NotAnswered { provider: &'static str, transport: Transport },
+    /// It would hide the address, but isn't built in yet.
+    NotBuilt,
+    /// It hides the address, and is slower.
+    HidesAddress,
 }
 
 /// "Ask over": Web, then Tor, greyed while the provider doesn't answer
@@ -595,13 +605,13 @@ pub fn transport_rows(settings: &Settings) -> Vec<TransportRow> {
     [Transport::Web, Transport::Tor]
         .into_iter()
         .map(|t| {
-            let line = match t {
-                Transport::Web => "The provider sees this phone's IP address".to_owned(),
-                Transport::Tor if !settings.provider.answers_over(t) => format!("{} doesn't answer {}", settings.provider.name(), t.text()),
-                Transport::Tor if !t.available() => "Hides this phone's IP address · not built into Fob yet".to_owned(),
-                Transport::Tor => "Hides this phone's IP address; slower".to_owned(),
+            let note = match t {
+                Transport::Web => TransportNote::SeesAddress,
+                Transport::Tor if !settings.provider.answers_over(t) => TransportNote::NotAnswered { provider: settings.provider.name(), transport: t },
+                Transport::Tor if !t.available() => TransportNote::NotBuilt,
+                Transport::Tor => TransportNote::HidesAddress,
             };
-            TransportRow { transport: t, title: t.name(), line, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
+            TransportRow { transport: t, title: t.name(), note, available: t.available() && settings.provider.answers_over(t), chosen: t == settings.transport }
         })
         .collect()
 }
@@ -620,10 +630,20 @@ pub struct CurrencyRow {
     pub chosen: bool,
 }
 
-/// A titled part of the list: "MONERO", "THIS PHONE’S", "ALL 45".
+/// What a part of the list holds. `fob-words` says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurrencyHeading {
+    Monero,
+    /// The currency of this device's locale.
+    ThisDevice,
+    All { count: usize },
+    Found { count: usize, of: usize },
+}
+
+/// A headed part of the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrencyGroup {
-    pub title: String,
+    pub heading: CurrencyHeading,
     pub rows: Vec<CurrencyRow>,
 }
 
@@ -664,15 +684,15 @@ pub fn currency_list(chosen: Option<&str>, phone: Option<&str>, query: &str) -> 
             line: NEVER_LOOKS.into(),
             chosen: chosen.is_none(),
         };
-        groups.push(CurrencyGroup { title: "MONERO".into(), rows: vec![row] });
+        groups.push(CurrencyGroup { heading: CurrencyHeading::Monero, rows: vec![row] });
     }
     if !searching && let Some(info) = phone.and_then(|p| currencies::find(&p.trim().to_ascii_uppercase())) {
-        groups.push(CurrencyGroup { title: "THIS PHONE’S".into(), rows: vec![currency_row(info, chosen)] });
+        groups.push(CurrencyGroup { heading: CurrencyHeading::ThisDevice, rows: vec![currency_row(info, chosen)] });
     }
     let rows: Vec<CurrencyRow> = currencies::by_name().into_iter().filter(|c| currencies::matches(c, query)).map(|c| currency_row(c, chosen)).collect();
     if !rows.is_empty() {
-        let title = if searching { format!("{} OF {}", rows.len(), currencies::TABLE.len()) } else { format!("ALL {}", currencies::TABLE.len()) };
-        groups.push(CurrencyGroup { title, rows });
+        let heading = if searching { CurrencyHeading::Found { count: rows.len(), of: currencies::TABLE.len() } } else { CurrencyHeading::All { count: currencies::TABLE.len() } };
+        groups.push(CurrencyGroup { heading, rows });
     }
     let empty = groups.is_empty().then(|| format!("No currency matches “{}”", query.trim()));
     CurrencyList { groups, empty }
@@ -793,6 +813,9 @@ pub struct AmountField {
     /// XMR = $166.10", the rate alone while it's empty, "That isn't an
     /// amount"; nothing in XMR without a price.
     pub line: Option<String>,
+    /// The line without the rate: "≈ 0.1204 XMR", "That isn't an amount", or
+    /// nothing while it's empty. For a field with no room for the rate.
+    pub conversion: Option<String>,
     /// For TalkBack: "Amount in US dollars", "Amount in XMR".
     pub label: String,
     /// The chip for TalkBack: "Amount in XMR. Switch to US dollars".
@@ -848,6 +871,14 @@ pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField
     // The rate; once the price is aged, when it's from in its place, so
     // the line stays short.
     let from = |p: u64, c: &Currency| age.map_or_else(|| rate(p, c), str::to_owned);
+    // What's typed in the other unit, with how old the price is once it's aged.
+    let aged = |said: String| age.map_or_else(|| said.clone(), |age| format!("{said} · {age}"));
+    let conversion = match price {
+        Some(_) if text.is_empty() => None,
+        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| aged(format!("≈ {} XMR", amount::format(a)))),
+        Some((c, p)) => amount::parse(text).ok().map(|a| aged(format!("≈ {}", value(a, p, c)))),
+        None => missing.map(|c| format!("No {} price now · type the amount in XMR", c.code)),
+    };
     let line = match price {
         Some((c, p)) if text.is_empty() => Some(age.map_or_else(|| rate(p, c), |age| format!("{} · {age}", rate(p, c)))),
         Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)).map(|a| format!("≈ {} XMR · {}", amount::format(a), from(p, c))),
@@ -874,6 +905,7 @@ pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField
         },
         can_switch: price.is_some(),
         line: if valid { line } else { Some("That isn't an amount".into()) },
+        conversion: if valid { conversion } else { Some("That isn't an amount".into()) },
         label: format!("Amount in {}", unit_name(in_fiat)),
         switch_label: price.map(|_| format!("Amount in {}. Switch to {}", unit_name(in_fiat), unit_name(!in_fiat))),
         for_text,
@@ -1213,13 +1245,13 @@ mod tests {
         let mut s = Settings::default();
         let rows = transport_rows(&s);
         assert_eq!(rows.iter().map(|r| (r.title, r.available, r.chosen)).collect::<Vec<_>>(), [("Web", true, true), ("Tor", false, false)]);
-        assert_eq!(rows[0].line, "The provider sees this phone's IP address");
-        assert_eq!(rows[1].line, "Kraken doesn't answer over Tor");
+        assert_eq!(rows[0].note, TransportNote::SeesAddress);
+        assert_eq!(rows[1].note, TransportNote::NotAnswered { provider: "Kraken", transport: Transport::Tor });
         // CoinGecko answers over Tor, but Fob hasn't Tor built in: still
         // greyed, saying so.
         s.choose_provider(Provider::CoinGecko).unwrap();
         let tor = &transport_rows(&s)[1];
-        assert_eq!((tor.line.as_str(), tor.available), ("Hides this phone's IP address · not built into Fob yet", false));
+        assert_eq!((tor.note, tor.available), (TransportNote::NotBuilt, false));
     }
 
     #[test]
@@ -1248,7 +1280,7 @@ mod tests {
         assert_eq!(s.choose_provider(Provider::CoinGecko).unwrap(), None);
         // One that doesn't price the currency is refused.
         s.choose_currency(Some("NZD")).unwrap();
-        assert_eq!(s.choose_provider(Provider::Kraken).unwrap_err().to_string(), "Kraken doesn't price New Zealand dollars");
+        assert_eq!(s.choose_provider(Provider::Kraken).unwrap_err(), PriceError::NotPriced { provider: "Kraken", currency: "New Zealand dollars" });
         assert_eq!(s.provider, Provider::CoinGecko);
         // With XMR only, any.
         s.choose_currency(None).unwrap();
@@ -1258,7 +1290,7 @@ mod tests {
     #[test]
     fn tor_is_refused_until_built_and_for_a_provider_without_it() {
         let mut s = Settings::default();
-        assert_eq!(s.choose_transport(Transport::Tor).unwrap_err().to_string(), "prices over Tor aren't available yet");
+        assert_eq!(s.choose_transport(Transport::Tor).unwrap_err(), PriceError::TorNotYet);
         s.choose_transport(Transport::Web).unwrap();
         assert!(Provider::CoinGecko.answers_over(Transport::Tor) && !Provider::Kraken.answers_over(Transport::Tor));
         assert!(Provider::ALL.iter().all(|p| p.answers_over(Transport::Web)));
@@ -1279,8 +1311,8 @@ mod tests {
     #[test]
     fn the_currency_list_puts_monero_and_the_phone_s_first() {
         let list = currency_list(Some("AUD"), Some("aud"), "");
-        let titles: Vec<&str> = list.groups.iter().map(|g| g.title.as_str()).collect();
-        assert_eq!(titles, ["MONERO", "THIS PHONE’S", "ALL 45"]);
+        let headings: Vec<_> = list.groups.iter().map(|g| g.heading).collect();
+        assert_eq!(headings, [CurrencyHeading::Monero, CurrencyHeading::ThisDevice, CurrencyHeading::All { count: 45 }]);
         let xmr = &list.groups[0].rows[0];
         assert_eq!((xmr.code.as_deref(), xmr.sign.as_str(), xmr.name.as_str(), xmr.line.as_str(), xmr.chosen), (None, "ɱ", "Monero (XMR)", "Fob never looks up a price", false));
         let phone = &list.groups[1].rows[0];
@@ -1296,13 +1328,13 @@ mod tests {
         // Searching: matches only, no phone row.
         let found = currency_list(Some("AUD"), Some("AUD"), "dollar");
         assert_eq!(found.groups.len(), 1);
-        assert_eq!(found.groups[0].title, format!("{} OF 45", found.groups[0].rows.len()));
+        assert_eq!(found.groups[0].heading, CurrencyHeading::Found { count: found.groups[0].rows.len(), of: 45 });
         assert!(found.groups[0].rows.iter().all(|r| r.name.contains("dollar")));
         let zloty = currency_list(None, None, "ZLOTY");
         assert_eq!(zloty.groups[0].rows.iter().map(|r| r.code.as_deref()).collect::<Vec<_>>(), [Some("PLN")]);
-        assert_eq!(currency_list(None, None, "xmr").groups[0].title, "MONERO");
+        assert_eq!(currency_list(None, None, "xmr").groups[0].heading, CurrencyHeading::Monero);
         assert_eq!(currency_list(None, None, "monero").groups[0].rows[0].code, None);
-        assert_eq!(currency_list(None, None, "ɱ").groups[0].title, "MONERO");
+        assert_eq!(currency_list(None, None, "ɱ").groups[0].heading, CurrencyHeading::Monero);
         let none = currency_list(None, None, " qqq ");
         assert_eq!((none.groups.len(), none.empty.as_deref()), (0, Some("No currency matches “qqq”")));
     }
@@ -1413,10 +1445,10 @@ mod tests {
     #[tokio::test]
     async fn tor_says_it_isnt_there_yet_and_onions_are_refused() {
         let tor = Transport::Tor.get("https://api.kraken.com/0/public/Time").await.unwrap_err();
-        assert_eq!(tor.to_string(), "Tor isn't built yet");
+        assert_eq!(tor, PriceError::Failed(Failure::TorNotYet));
         let onion = Transport::Web.get("https://pricesxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion/x").await.unwrap_err();
-        assert!(onion.to_string().contains(".onion"), "{onion}");
+        assert_eq!(onion, PriceError::OnionSource);
         let plain = Transport::Web.get("http://api.kraken.com/0/public/Time").await.unwrap_err();
-        assert!(plain.to_string().contains("https"), "{plain}");
+        assert_eq!(plain, PriceError::HttpsOnly);
     }
 }

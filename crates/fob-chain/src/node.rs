@@ -22,6 +22,7 @@ use tokio::time::Instant;
 
 pub use fob_monero::network::is_onion;
 use fob_monero::{amount::grouped, network::{Network, link_speed}};
+use crate::error::EndpointProblem;
 use crate::{fetch, transport::{CertProblem, Transport}};
 
 /// How long the node has to answer `get_info` (and say its last block).
@@ -46,9 +47,9 @@ pub const NO_ONION: &str = "Fob can't reach .onion nodes yet";
 
 /// Refuses a node Fob can't reach without leaking it: one on an onion
 /// service. Checked before anything connects (or looks a name up).
-pub fn reachable(url: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(&normalize(url)).map_err(|_| format!("{url} isn't an address Fob can read"))?;
-    if is_onion(url.host_str().unwrap_or("")) { Err(NO_ONION.into()) } else { Ok(()) }
+pub fn reachable(url: &str) -> Result<(), EndpointProblem> {
+    let parsed = reqwest::Url::parse(&normalize(url)).map_err(|_| EndpointProblem::Unreadable(url.to_owned()))?;
+    if is_onion(parsed.host_str().unwrap_or("")) { Err(EndpointProblem::Onion) } else { Ok(()) }
 }
 
 /// A node address as people type it: `host:port` gets `http://`, no trailing slash.
@@ -417,7 +418,7 @@ struct Live {
 impl Live {
     fn new(node: &Setting) -> Result<Live, Failure> {
         match reachable(&node.url) {
-            Err(e) if e == NO_ONION => return Err(Failure::Onion),
+            Err(EndpointProblem::Onion) => return Err(Failure::Onion),
             Err(_) => return Err(Failure::BadAddress),
             Ok(()) => {}
         }
@@ -596,7 +597,10 @@ fn lines(reports: &[Report]) -> Vec<String> {
 
 /// Whether `node` is on `network`, before switching to it.
 pub async fn on_network(network: Network, node: &Setting) -> Result<(), String> {
-    reachable(&node.url)?;
+    reachable(&node.url).map_err(|e| match e {
+        EndpointProblem::Onion => NO_ONION.to_owned(),
+        other => format!("{other:?}"),
+    })?;
     let live = Live::new(node).map_err(|f| f.words(ANSWER))?;
     let info = live.info().await.map_err(|f| f.words(ANSWER))?;
     if info.nettype != network.name() {

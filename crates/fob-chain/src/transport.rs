@@ -256,7 +256,10 @@ impl Transport {
     /// An onion node is refused here too, whatever path led to it (an
     /// older wallet file, say): there's no Tor to reach it through.
     pub fn new(url: &str, self_signed: bool) -> Result<Transport, InterfaceError> {
-        crate::node::reachable(url).map_err(InterfaceError::InternalError)?;
+        crate::node::reachable(url).map_err(|e| InterfaceError::InternalError(match e {
+            crate::error::EndpointProblem::Onion => crate::node::NO_ONION.to_owned(),
+            other => format!("{other:?}"),
+        }))?;
         let certificate = Seen::default();
         let tls = tls(self_signed, certificate.clone()).map_err(|e| InterfaceError::InternalError(format!("TLS: {e}")))?;
         let client = reqwest::Client::builder()

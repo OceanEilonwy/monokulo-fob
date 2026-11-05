@@ -136,7 +136,7 @@ impl Book {
     /// Makes a request. Its address must be one no request has had.
     pub fn add(&mut self, draft: Draft, now: u64) -> Result<Request> {
         if self.at(draft.subaddress).is_some() {
-            return Err(ScreenError::Request("That address was already given to a request.".into()));
+            return Err(ScreenError::RequestAddressUsed);
         }
         let id = self.next_id.max(self.requests.iter().map(|r| r.id + 1).max().unwrap_or(1)).max(1);
         self.next_id = id + 1;

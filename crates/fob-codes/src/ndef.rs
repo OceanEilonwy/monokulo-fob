@@ -90,9 +90,9 @@ pub fn read_binary(offset: usize, len: usize) -> Vec<u8> {
 
 /// The URI in an NDEF message: its first URI record, read with the
 /// prefix abbreviation the record names. Err says why it isn't one.
-pub fn parse_uri(message: &[u8]) -> Result<String, String> {
+pub fn parse_uri(message: &[u8]) -> Result<String, crate::error::CodeError> {
     const PREFIXES: [&str; 5] = ["", "http://www.", "https://www.", "http://", "https://"];
-    let bad = || "That tag has no payment code.".to_owned();
+    let bad = || crate::error::CodeError::TagHasNoCode;
     let mut at = 0;
     while at < message.len() {
         let flags = *message.get(at).ok_or_else(bad)?;

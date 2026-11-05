@@ -10,6 +10,7 @@
 //! module chooses them, checks them against the money and the 16 outputs a
 //! transaction may have, and writes every word of the Split up screen.
 
+use crate::error::ScreenError;
 use fob_monero::{amount, fiat::{self, Currency}};
 
 /// The most pieces one split makes: a transaction has at most 16 outputs,
@@ -154,27 +155,27 @@ fn sized(notes: &[Note], counts: &[u32]) -> Vec<u32> {
 
 /// Why `counts` can't be split, if they can't: too many pieces, or more
 /// than is ready to spend with the fee.
-pub fn check(notes: &[Note], counts: &[u32], budget: &Budget) -> Result<(), String> {
+pub fn check(notes: &[Note], counts: &[u32], budget: &Budget) -> Result<(), ScreenError> {
     let counts = sized(notes, counts);
     if pieces(&counts) > MAX_PIECES {
-        return Err(format!("{MAX_PIECES} coins is the most one split can make"));
+        return Err(ScreenError::TooManyCoins { max: MAX_PIECES });
     }
     if !budget.fits(pieces(&counts), value(notes, &counts)) {
-        return Err("That's more than is ready to spend, with the fee".into());
+        return Err(ScreenError::OverBudget);
     }
     Ok(())
 }
 
 /// One more of note `i`, or why not.
-pub fn add(notes: &[Note], counts: &[u32], i: usize, budget: &Budget) -> Result<Vec<u32>, String> {
+pub fn add(notes: &[Note], counts: &[u32], i: usize, budget: &Budget) -> Result<Vec<u32>, ScreenError> {
     let mut counts = sized(notes, counts);
-    let note = notes.get(i).ok_or("There's no such coin")?;
+    let note = notes.get(i).ok_or(ScreenError::NoSuchCoin)?;
     if pieces(&counts) >= MAX_PIECES {
-        return Err(format!("{MAX_PIECES} coins is the most one split can make"));
+        return Err(ScreenError::TooManyCoins { max: MAX_PIECES });
     }
     counts[i] += 1;
     if !budget.fits(pieces(&counts), value(notes, &counts)) {
-        return Err(format!("Not enough ready to spend for another {} coin", note.spoken));
+        return Err(ScreenError::NotEnoughForCoin { coin: note.spoken.clone() });
     }
     Ok(counts)
 }
@@ -488,11 +489,11 @@ mod tests {
             counts = add(&notes, &counts, 0, &plenty).unwrap();
         }
         assert_eq!(counts, [15, 0, 0, 0, 0, 0]);
-        assert_eq!(add(&notes, &counts, 1, &plenty).unwrap_err(), "15 coins is the most one split can make");
+        assert_eq!(add(&notes, &counts, 1, &plenty).unwrap_err(), ScreenError::TooManyCoins { max: 15 });
         // 0.6 XMR: one 0.5 and then no 0.25 with the fee.
         let little = budget(600);
         let counts = add(&notes, &[], 4, &little).unwrap();
-        assert_eq!(add(&notes, &counts, 3, &little).unwrap_err(), "Not enough ready to spend for another 0.25 XMR coin");
+        assert_eq!(add(&notes, &counts, 3, &little).unwrap_err(), ScreenError::NotEnoughForCoin { coin: "0.25 XMR".into() });
         assert!(add(&notes, &counts, 1, &little).is_ok());
         assert_eq!(remove(&notes, &counts, 4), [0; 6]);
         assert_eq!(remove(&notes, &[], 4), [0; 6]);

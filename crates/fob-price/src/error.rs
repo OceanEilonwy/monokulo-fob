@@ -1,15 +1,23 @@
-//! What can go wrong asking for a price.
+//! Why a price can't be had or a price setting can't be taken. `fob-words` says it.
 
-use crate::Failure;
+use crate::{Failure, Transport};
 
-/// A price that couldn't be had.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PriceError {
-    /// Prices couldn't be had, or a price setting isn't one Fob has.
-    #[error("{0}")]
-    Price(String),
-    /// A provider gave no price, and why in a word or two.
-    #[error("{}", .0.text())]
+    /// A currency Fob doesn't know.
+    NoPrices { code: String },
+    /// `provider` doesn't price this currency (named in the plural).
+    NotPriced { provider: &'static str, currency: &'static str },
+    TorNotYet,
+    NotOverTransport { provider: &'static str, transport: Transport },
+    /// Kraken has no market for this currency.
+    NoRoute { currency: String },
+    BadUrl { url: String },
+    HttpsOnly,
+    OnionSource,
+    /// The HTTP client wouldn't start, and why.
+    Client(String),
+    /// A provider gave no price.
     Failed(Failure),
 }
 
