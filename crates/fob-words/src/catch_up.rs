@@ -208,7 +208,7 @@ mod tests {
         let at = Some("tcp://node.example:18083");
         assert_eq!(zmq_text(&ZmqStatus::Off, at), "Off");
         assert_eq!(zmq_text(&ZmqStatus::Listening, at), "node.example:18083 · listening");
-        assert_eq!(zmq_text(&ZmqStatus::CantConnect("no answer".into()), at), "node.example:18083 · can't connect");
+        assert_eq!(zmq_text(&ZmqStatus::CantConnect(fob_monero::network::ZmqProblem::NoAnswer), at), "node.example:18083 · can't connect");
     }
 
     #[test]

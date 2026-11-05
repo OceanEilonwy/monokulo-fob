@@ -98,7 +98,7 @@ async fn a_self_signed_node_is_kept_with_its_mark() {
 
     // Checking the node in use names it on Settings' line.
     let report = reopened.check_node(&reopened.node().await, &|_| {}).await;
-    assert_eq!(report.rows[0].result, "self-signed, accepted");
+    assert_eq!(fob_words::node::result(&report.rows[0].outcome), "self-signed, accepted");
     assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
     // Syncing failing since, the line says so, as Home's chip, over the
     // check (and over having synced before).

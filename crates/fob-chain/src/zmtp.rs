@@ -64,6 +64,18 @@ pub(crate) struct Subscriber<S> {
     stream: S,
 }
 
+/// An onion publisher, refused before anything is looked up.
+#[derive(Debug)]
+pub(crate) struct OnionRefused;
+
+impl std::fmt::Display for OnionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(crate::node::ONION_REFUSED)
+    }
+}
+
+impl std::error::Error for OnionRefused {}
+
 /// Connects to `endpoint` (`tcp://host:port`, as given to monerod's
 /// `--zmq-pub`) and subscribes to every message starting with one of
 /// `topics`. Which endpoints are allowed is [`crate::zmq`]'s to decide.
@@ -74,7 +86,7 @@ pub(crate) async fn connect(endpoint: &str, topics: &[&str]) -> io::Result<Subsc
     // Never looked up: there's no Tor to reach an onion service through.
     let host = address.rsplit_once(':').map_or(address, |(host, _)| host);
     if crate::node::is_onion(host.trim_start_matches('[').trim_end_matches(']')) {
-        return Err(invalid(crate::node::NO_ONION));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, OnionRefused));
     }
     let stream = tokio::net::TcpStream::connect(address).await?;
     // Subscriptions are a few small writes, each worth sending at once.

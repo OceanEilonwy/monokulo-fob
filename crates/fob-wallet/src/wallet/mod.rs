@@ -331,7 +331,7 @@ struct Inner {
     fresh_share: std::sync::Mutex<Option<u64>>,
     /// The last full check of the node in use, while it stays in use:
     /// Settings' "Working · node.example:38081".
-    node_verdict: std::sync::Mutex<Option<(crate::node::Setting, &'static str)>>,
+    node_verdict: std::sync::Mutex<Option<(crate::node::Setting, node::Verdict)>>,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
 }
@@ -490,7 +490,7 @@ pub fn preview_wallet_code(network: Network, code: &str) -> Result<CodePreview> 
 /// wallet, say, which is nothing to do with the node).
 fn sync_failure(e: &FobError, certificate: Option<std::result::Result<(), transport::CertProblem>>, self_signed: bool) -> (String, bool) {
     match e {
-        FobError::Node(text) => (node::sync_failure(text, certificate, self_signed), false),
-        e => (node::capitalized(&e.to_string()), e.is_storage()),
+        FobError::Node(text) => (fob_words::node::sync_failure(&node::sync_failure(text, certificate, self_signed)), false),
+        e => (fob_words::capitalised(&e.to_string()), e.is_storage()),
     }
 }

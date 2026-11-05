@@ -33,7 +33,7 @@ impl Probe for Fake {
     }
 
     async fn last_block(&self) -> Result<(u64, u64), Failure> {
-        match self.last_block.clone() {
+        match self.last_block {
             Some(last) => last,
             None => std::future::pending().await,
         }
@@ -41,7 +41,7 @@ impl Probe for Fake {
 
     async fn blocks(&self, start: u64, end: u64) -> Result<(u64, u64), Failure> {
         assert!(start >= 1 && start <= end && end - start < SAMPLE, "{start}..={end}");
-        match self.blocks.clone() {
+        match self.blocks {
             Some(blocks) => {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 blocks
@@ -63,9 +63,38 @@ async fn checked(probe: &Fake, url: &str) -> Report {
     run(probe, Report::pending(Network::Stagenet, &node(url)), 0, NOW, &|_| {}).await
 }
 
-fn rows(report: &Report) -> Vec<(&str, &str, Mark)> {
-    report.rows.iter().map(|r| (r.title(), r.result.as_str(), r.mark)).collect()
+/// A row as (check, outcome, mark), its speed rounded as the clock's a moment over a second.
+fn rows(report: &Report) -> Vec<(Step, Outcome, Mark)> {
+    report
+        .rows
+        .iter()
+        .map(|r| {
+            let outcome = match r.outcome {
+                Outcome::Speed { blocks_per_second, bytes_per_second } => Outcome::Speed { blocks_per_second: (blocks_per_second * 10.0).round() / 10.0, bytes_per_second: (bytes_per_second / 1e4).round() * 1e4 },
+                ref other => other.clone(),
+            };
+            (r.step, outcome, r.mark)
+        })
+        .collect()
 }
+
+fn failed(failure: Failure) -> Outcome {
+    Outcome::Failed { failure, limit: 5 }
+}
+
+fn block(age: u64) -> Outcome {
+    Outcome::Block { height: 1_792_004, age }
+}
+
+fn network() -> Outcome {
+    Outcome::Network("stagenet".into())
+}
+
+fn speed(blocks_per_second: f64, bytes_per_second: f64) -> Outcome {
+    Outcome::Speed { blocks_per_second, bytes_per_second }
+}
+
+const NOT_ACCEPTED: Failure = Failure::Certificate(CertProblem::SelfSigned);
 
 #[tokio::test(start_paused = true)]
 async fn a_good_node_passes_every_check() {
@@ -73,22 +102,17 @@ async fn a_good_node_passes_every_check() {
     assert_eq!(
         rows(&report),
         [
-            ("Answers", "0 ms", Mark::Pass),
-            ("Right network", "stagenet", Mark::Pass),
-            ("Up to date", "block 1,792,004 · 1 min ago", Mark::Pass),
-            ("Sends blocks to Fob", "31 blocks/s", Mark::Pass),
+            (Step::Answers, Outcome::Latency(0), Mark::Pass),
+            (Step::Network, network(), Mark::Pass),
+            (Step::UpToDate, block(75), Mark::Pass),
+            (Step::Blocks, speed(31.0, 1_800_000.0), Mark::Pass),
         ]
     );
-    // The link speed on a line of its own, never beside the blocks; only there.
-    let seconds: Vec<_> = report.rows.iter().map(|r| r.second.as_deref()).collect();
-    assert_eq!(seconds, [None, None, None, Some("1.8 MB/s")]);
-    assert_eq!(report.rows[3].label(), "Sends blocks to Fob: 31 blocks/s, 1.8 MB/s");
-    assert_eq!((report.verdict(), report.usable(), report.address.as_str()), ("Working", Usable::Use, "node.example:38081"));
+    assert_eq!((report.verdict(), report.usable(), report.address.as_str()), (Verdict::Working, Usable::Use, "node.example:38081"));
     assert_eq!(report.mark(), Mark::Pass);
     assert_eq!(Report::pending(Network::Stagenet, &node("x:1")).mark(), Mark::Checking);
-    assert_eq!(report.line(false), "0 ms · in sync");
-    assert_eq!(report.line(true), "0 ms · in sync · fastest");
-    assert_eq!(report.rows[2].label(), "Up to date: block 1,792,004 · 1 min ago");
+    assert_eq!(report.line(false), Line::InSync { ms: 0, fastest: false });
+    assert_eq!(report.line(true), Line::InSync { ms: 0, fastest: true });
 }
 
 #[tokio::test(start_paused = true)]
@@ -96,9 +120,9 @@ async fn each_check_is_told_as_it_finishes() {
     let seen = Mutex::new(vec![]);
     let progress = |r: &Report| seen.lock().unwrap().push((r.verdict(), r.rows.iter().filter(|r| r.mark == Mark::Checking).count()));
     let report = run(&good(), Report::pending(Network::Stagenet, &node("node.example:38081")), 0, NOW, &progress).await;
-    assert_eq!(*seen.lock().unwrap(), [("Checking…", 3), ("Checking…", 2), ("Checking…", 1)]);
+    assert_eq!(*seen.lock().unwrap(), [(Verdict::Checking, 3), (Verdict::Checking, 2), (Verdict::Checking, 1)]);
     assert!(!report.checking());
-    assert_eq!(Report::pending(Network::Stagenet, &node("x:1")).line(false), "Checking…");
+    assert_eq!(Report::pending(Network::Stagenet, &node("x:1")).line(false), Line::Checking);
     assert_eq!(Report::pending(Network::Stagenet, &node("x:1")).usable(), Usable::No);
 }
 
@@ -108,31 +132,30 @@ async fn a_node_that_never_answers_stops_at_answers() {
     assert_eq!(
         rows(&report),
         [
-            ("Answers", "didn't answer in 5 s", Mark::Fail),
-            ("Right network", "", Mark::Skipped),
-            ("Up to date", "", Mark::Skipped),
-            ("Sends blocks to Fob", "", Mark::Skipped),
+            (Step::Answers, failed(Failure::TimedOut), Mark::Fail),
+            (Step::Network, Outcome::Skipped, Mark::Skipped),
+            (Step::UpToDate, Outcome::Skipped, Mark::Skipped),
+            (Step::Blocks, Outcome::Skipped, Mark::Skipped),
         ]
     );
-    assert_eq!((report.verdict(), report.usable()), ("Doesn't answer", Usable::No));
-    assert_eq!(report.line(false), "Didn't answer in 5 s");
-    assert_eq!(report.rows[1].label(), "Right network: not checked");
+    assert_eq!((report.verdict(), report.usable()), (Verdict::Failed(Step::Answers), Usable::No));
+    assert_eq!(report.line(false), Line::NoAnswer(failed(Failure::TimedOut)));
     let refused = checked(&Fake { info: Some(Err(Failure::Refused)), ..good() }, "node.example:38081").await;
-    assert_eq!(refused.line(false), "Refused to connect");
+    assert_eq!(refused.line(false), Line::NoAnswer(failed(Failure::Refused)));
     let web = checked(&Fake { info: Some(Err(Failure::NotMonero)), ..good() }, "example.com").await;
-    assert_eq!(web.line(false), "Not a Monero node");
+    assert_eq!(web.line(false), Line::NoAnswer(failed(Failure::NotMonero)));
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_mainnet_node_is_the_wrong_network_for_a_stagenet_wallet() {
     let mainnet = Fake { info: Some(Ok(Info { nettype: "mainnet".into(), height: 3_400_000, target_height: 0 })), ..good() };
     let report = checked(&mainnet, "xmr.example:18081").await;
-    assert_eq!(rows(&report)[1], ("Right network", "mainnet, not stagenet", Mark::Fail));
-    assert_eq!(rows(&report)[2..], [("Up to date", "", Mark::Skipped), ("Sends blocks to Fob", "", Mark::Skipped)]);
-    assert_eq!((report.verdict(), report.usable()), ("Wrong network", Usable::No));
-    assert_eq!(report.line(false), "Mainnet node: this wallet is stagenet");
+    assert_eq!(rows(&report)[1], (Step::Network, Outcome::WrongNetwork { theirs: "mainnet".into(), ours: "stagenet".into() }, Mark::Fail));
+    assert_eq!(rows(&report)[2..], [(Step::UpToDate, Outcome::Skipped, Mark::Skipped), (Step::Blocks, Outcome::Skipped, Mark::Skipped)]);
+    assert_eq!((report.verdict(), report.usable()), (Verdict::Failed(Step::Network), Usable::No));
+    assert_eq!(report.line(false), Line::OtherNetwork { theirs: "mainnet".into(), ours: "stagenet".into() });
     let unknown = checked(&Fake { info: Some(Ok(Info { nettype: String::new(), ..Info::default() })), ..good() }, "x:1").await;
-    assert_eq!(unknown.line(false), "Unknown network: this wallet is stagenet");
+    assert_eq!(unknown.line(false), Line::OtherNetwork { theirs: String::new(), ours: "stagenet".into() });
 }
 
 #[tokio::test(start_paused = true)]
@@ -140,71 +163,71 @@ async fn a_lagging_node_can_be_used_anyway() {
     // Two days of blocks short of what it's catching up to.
     let lagging = Fake { info: Some(Ok(Info { nettype: "stagenet".into(), height: HEIGHT, target_height: HEIGHT + 1440 })), ..good() };
     let report = checked(&lagging, "node.example:38081").await;
-    assert_eq!(rows(&report)[2..], [("Up to date", "2 days behind", Mark::Fail), ("Sends blocks to Fob", "31 blocks/s", Mark::Pass)]);
-    assert_eq!(report.rows[3].second.as_deref(), Some("1.8 MB/s"));
-    assert_eq!((report.verdict(), report.usable(), report.mark()), ("Not up to date", Usable::UseAnyway, Mark::Fail));
-    assert_eq!(report.line(false), "0 ms · 2 days behind");
+    let two_days = Outcome::Behind { seconds: 172_800 };
+    assert_eq!(rows(&report)[2..], [(Step::UpToDate, two_days.clone(), Mark::Fail), (Step::Blocks, speed(31.0, 1_800_000.0), Mark::Pass)]);
+    assert_eq!((report.verdict(), report.usable(), report.mark()), (Verdict::Failed(Step::UpToDate), Usable::UseAnyway, Mark::Fail));
+    assert_eq!(report.line(false), Line::Poor { ms: 0, outcome: two_days });
     // Behind what this wallet has already seen, though it thinks it's synced.
     let report = run(&good(), Report::pending(Network::Stagenet, &node("x:1")), HEIGHT + 30, NOW, &|_| {}).await;
-    assert_eq!(rows(&report)[2], ("Up to date", "1 h behind", Mark::Fail));
+    assert_eq!(rows(&report)[2], (Step::UpToDate, Outcome::Behind { seconds: 3600 }, Mark::Fail));
     // A few blocks it hasn't heard of yet don't count.
     let report = run(&good(), Report::pending(Network::Stagenet, &node("x:1")), HEIGHT + 5, NOW, &|_| {}).await;
-    assert_eq!(report.verdict(), "Working");
+    assert_eq!(report.verdict(), Verdict::Working);
     // Stuck: no new block for three hours.
     let stuck = Fake { last_block: Some(Ok((HEIGHT - 1, NOW - 3 * 3600))), ..good() };
-    assert_eq!(rows(&checked(&stuck, "x:1").await)[2], ("Up to date", "3 h behind", Mark::Fail));
+    assert_eq!(rows(&checked(&stuck, "x:1").await)[2], (Step::UpToDate, Outcome::Behind { seconds: 3 * 3600 }, Mark::Fail));
     // Can't say its last block: not up to date, and not usable without it.
     let silent = Fake { last_block: None, ..good() };
     let report = checked(&silent, "x:1").await;
-    assert_eq!(rows(&report)[2], ("Up to date", "didn't answer in 5 s", Mark::Fail));
+    assert_eq!(rows(&report)[2], (Step::UpToDate, failed(Failure::TimedOut), Mark::Fail));
     assert_eq!(report.usable(), Usable::UseAnyway);
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_node_that_sends_no_blocks_cant_be_used() {
     let slow = checked(&Fake { blocks: None, ..good() }, "x:1").await;
-    assert_eq!(rows(&slow)[3], ("Sends blocks to Fob", "no blocks in 10 s", Mark::Fail));
-    assert_eq!((slow.rows[3].second.as_deref(), slow.rows[3].label().as_str()), (None, "Sends blocks to Fob: no blocks in 10 s"));
-    assert_eq!((slow.verdict(), slow.usable()), ("Doesn't send blocks", Usable::No));
-    assert_eq!(slow.line(false), "0 ms · no blocks in 10 s");
+    let within = Outcome::NoBlocksWithin { seconds: 10 };
+    assert_eq!(rows(&slow)[3], (Step::Blocks, within.clone(), Mark::Fail));
+    assert_eq!((slow.verdict(), slow.usable()), (Verdict::Failed(Step::Blocks), Usable::No));
+    assert_eq!(slow.line(false), Line::Poor { ms: 0, outcome: within });
     let garbled = checked(&Fake { blocks: Some(Err(Failure::Unreadable)), ..good() }, "x:1").await;
-    assert_eq!(rows(&garbled)[3], ("Sends blocks to Fob", "sent blocks Fob can't read", Mark::Fail));
+    assert_eq!(rows(&garbled)[3], (Step::Blocks, Outcome::Failed { failure: Failure::Unreadable, limit: 10 }, Mark::Fail));
     let none = checked(&Fake { blocks: Some(Ok((0, 0))), ..good() }, "x:1").await;
-    assert_eq!(rows(&none)[3], ("Sends blocks to Fob", "sent no blocks", Mark::Fail));
+    assert_eq!(rows(&none)[3], (Step::Blocks, Outcome::NoBlocks, Mark::Fail));
     // Behind and not sending: no "anyway".
     let both = Fake { blocks: None, last_block: Some(Ok((HEIGHT - 1, NOW - 4 * 86_400))), ..good() };
     let report = checked(&both, "x:1").await;
-    assert_eq!((report.verdict(), report.usable()), ("Not up to date", Usable::No));
+    assert_eq!((report.verdict(), report.usable()), (Verdict::Failed(Step::UpToDate), Usable::No));
     let slow = checked(&Fake { blocks: Some(Ok((5, 40_000))), ..good() }, "x:1").await;
-    assert_eq!((rows(&slow)[3].1, slow.rows[3].second.as_deref()), ("5.0 blocks/s", Some("40 kB/s")));
+    assert_eq!(rows(&slow)[3].1, speed(5.0, 40_000.0));
 }
 
 #[tokio::test(start_paused = true)]
 async fn an_https_node_has_its_certificate_checked_first() {
     let valid = checked(&Fake { certificate: Some(Ok(())), ..good() }, "https://node.example:18089").await;
-    assert_eq!(rows(&valid)[0], ("Certificate", "valid", Mark::Pass));
-    assert_eq!((valid.rows.len(), valid.verdict()), (5, "Working"));
+    assert_eq!(rows(&valid)[0], (Step::Certificate, Outcome::Certificate(None), Mark::Pass));
+    assert_eq!((valid.rows.len(), valid.verdict()), (5, Verdict::Working));
     // Marked to accept it: said, and the checks go on.
     let accepted = checked(&Fake { certificate: Some(Err(CertProblem::SelfSigned)), ..good() }, "https://192.168.1.20:38081").await;
-    assert_eq!(rows(&accepted)[0], ("Certificate", "self-signed, accepted", Mark::Pass));
-    assert_eq!((accepted.verdict(), accepted.address.as_str()), ("Working", "192.168.1.20:38081"));
+    assert_eq!(rows(&accepted)[0], (Step::Certificate, Outcome::Certificate(Some(CertProblem::SelfSigned)), Mark::Pass));
+    assert_eq!((accepted.verdict(), accepted.address.as_str()), (Verdict::Working, "192.168.1.20:38081"));
     // Not marked: nothing else runs.
-    let refused = checked(&Fake { info: Some(Err(Failure::Certificate(CertProblem::SelfSigned))), ..good() }, "https://192.168.1.20:38081").await;
+    let refused = checked(&Fake { info: Some(Err(NOT_ACCEPTED)), ..good() }, "https://192.168.1.20:38081").await;
     assert_eq!(
         rows(&refused),
         [
-            ("Certificate", "self-signed, not accepted", Mark::Fail),
-            ("Answers", "", Mark::Skipped),
-            ("Right network", "", Mark::Skipped),
-            ("Up to date", "", Mark::Skipped),
-            ("Sends blocks to Fob", "", Mark::Skipped),
+            (Step::Certificate, failed(NOT_ACCEPTED), Mark::Fail),
+            (Step::Answers, Outcome::Skipped, Mark::Skipped),
+            (Step::Network, Outcome::Skipped, Mark::Skipped),
+            (Step::UpToDate, Outcome::Skipped, Mark::Skipped),
+            (Step::Blocks, Outcome::Skipped, Mark::Skipped),
         ]
     );
-    assert_eq!((refused.verdict(), refused.usable()), ("Certificate not accepted", Usable::No));
-    assert_eq!(refused.line(false), "Certificate self-signed, not accepted");
+    assert_eq!((refused.verdict(), refused.usable()), (Verdict::Failed(Step::Certificate), Usable::No));
+    assert_eq!(refused.line(false), Line::Certificate(failed(NOT_ACCEPTED)));
     // No answer at all: the certificate was never seen.
     let silent = checked(&Fake { info: None, ..good() }, "https://node.example").await;
-    assert_eq!(rows(&silent)[..2], [("Certificate", "", Mark::Skipped), ("Answers", "didn't answer in 5 s", Mark::Fail)]);
+    assert_eq!(rows(&silent)[..2], [(Step::Certificate, Outcome::Skipped, Mark::Skipped), (Step::Answers, failed(Failure::TimedOut), Mark::Fail)]);
     assert_eq!(silent.address, "node.example");
 }
 
@@ -213,20 +236,16 @@ async fn the_fastest_of_the_nodes_that_pass_says_so() {
     let quick = checked(&Fake { blocks: Some(Ok((90, 1_000))), ..good() }, "a:1").await;
     let slow = checked(&good(), "b:1").await;
     let behind = checked(&Fake { info: Some(Ok(Info { nettype: "stagenet".into(), height: HEIGHT, target_height: HEIGHT + 900 })), ..good() }, "c:1").await;
-    assert_eq!(lines(&[slow.clone(), quick.clone(), behind]), ["0 ms · in sync", "0 ms · in sync · fastest", "0 ms · 30 h behind"]);
-    assert_eq!(lines(&[slow]), ["0 ms · in sync"], "fastest only among two or more");
+    let in_sync = |fastest| Line::InSync { ms: 0, fastest };
+    assert_eq!(lines(&[slow.clone(), quick.clone(), behind]), [in_sync(false), in_sync(true), Line::Poor { ms: 0, outcome: Outcome::Behind { seconds: 108_000 } }]);
+    assert_eq!(lines(&[slow]), [in_sync(false)], "fastest only among two or more");
 }
 
 #[test]
-fn texts() {
-    assert_eq!([ago(10), ago(75), ago(3599), ago(3600)], ["just now", "1 min ago", "59 min ago", "1 h ago"]);
-    assert_eq!([behind(30), behind(720), behind(7200), behind(172_800)], ["1 min behind", "12 min behind", "2 h behind", "2 days behind"]);
+fn addresses_show_host_and_port_alone() {
     assert_eq!(address("https://user:secret@node.example:18089/"), "node.example:18089");
     assert_eq!(address("192.168.1.20:38081"), "192.168.1.20:38081");
     assert_eq!(address("http://[::1]:38081"), "[::1]:38081");
-    assert_eq!(Failure::Status(401).words(ANSWER), "wants a login");
-    assert_eq!(Failure::Onion.words(ANSWER), "needs Tor, not in Fob yet");
-    assert_eq!(capitalized("éa"), "Éa");
 }
 
 #[test]
@@ -240,28 +259,28 @@ fn transport_errors_are_told_apart() {
     assert_eq!(Failure::from_text("something else"), Failure::Other);
 }
 
-/// The sync card says why syncing failed as the checks would, never the
-/// transport's debug text.
+/// Syncing's failures are told apart as the checks would, never by showing
+/// the transport's debug text.
 #[test]
-fn sync_failures_are_told_in_words() {
+fn sync_failures_are_told_apart() {
     // Made as the sync loop makes them: the interface error's debug text.
     let node = |e: InterfaceError| format!("{e:?}");
-    let words = |e: &str| sync_failure(e, None, false);
+    let why = |e: &str| sync_failure(e, None, false);
     let offline = node(InterfaceError::InterfaceError("error sending request: client error (Connect): dns error: failed to lookup address information: No address associated with hostname".into()));
-    assert_eq!(words(&offline), "Address not found");
+    assert_eq!(why(&offline), Failure::NotFound);
     let refused = node(InterfaceError::InterfaceError("error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)".into()));
-    assert_eq!(words(&refused), "Refused to connect");
-    assert_eq!(words(&node(InterfaceError::InterfaceError("operation timed out".into()))), "Stopped answering");
-    assert_eq!(words(&node(InterfaceError::InterfaceError("node answered 401 Unauthorized".into()))), "Wants a login");
-    assert_eq!(words("scanning block 12: InvalidScannableBlock(\"x\")"), "Sent blocks Fob can't read");
+    assert_eq!(why(&refused), Failure::Refused);
+    assert_eq!(why(&node(InterfaceError::InterfaceError("operation timed out".into()))), Failure::TimedOut);
+    assert_eq!(why(&node(InterfaceError::InterfaceError("node answered 401 Unauthorized".into()))), Failure::Status(401));
+    assert_eq!(why("scanning block 12: InvalidScannableBlock(\"x\")"), Failure::Unreadable);
     // The node answered, but not as the protocol says: the fetcher's and
     // monero-daemon-rpc's own words for it.
     for invalid in ["the node sent blocks out of order", "node's response was too large", "expected 100 blocks, got 3"] {
-        assert_eq!(words(&node(InterfaceError::InvalidInterface(invalid.into()))), "Sent blocks Fob can't read", "{invalid}");
+        assert_eq!(why(&node(InterfaceError::InvalidInterface(invalid.into()))), Failure::Unreadable, "{invalid}");
     }
-    assert_eq!(words("rejected"), "Couldn't connect");
+    assert_eq!(why("rejected"), Failure::Other);
     // An older file's onion node, refused before anything connects.
-    assert_eq!(words(&node(InterfaceError::InternalError(NO_ONION.into()))), "Needs Tor, not in Fob yet");
+    assert_eq!(why(&node(InterfaceError::InternalError(ONION_REFUSED.into()))), Failure::Onion);
 }
 
 /// A failed round over https says what the Node checks say of the
@@ -269,12 +288,12 @@ fn sync_failures_are_told_in_words() {
 #[test]
 fn a_sync_refused_for_its_certificate_says_so() {
     let tls = format!("{:?}", InterfaceError::InterfaceError("error sending request: client error (Connect): invalid peer certificate: Expired".into()));
-    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::Expired)), false), "Certificate expired, not accepted");
-    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::SelfSigned)), false), "Certificate self-signed, not accepted");
-    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::BadSignature)), true), "Certificate signature doesn't match, not accepted");
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::Expired)), false), Failure::Certificate(CertProblem::Expired));
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::SelfSigned)), false), NOT_ACCEPTED);
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::BadSignature)), true), Failure::Certificate(CertProblem::BadSignature));
     // Accepted with the mark: the failure is something else.
-    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::SelfSigned)), true), "Couldn't connect");
-    assert_eq!(sync_failure(&tls, Some(Ok(())), false), "Couldn't connect");
+    assert_eq!(sync_failure(&tls, Some(Err(CertProblem::SelfSigned)), true), Failure::Other);
+    assert_eq!(sync_failure(&tls, Some(Ok(())), false), Failure::Other);
 }
 
 /// Over a real handshake: a node whose certificate the wallet's node
@@ -286,7 +305,7 @@ async fn syncing_against_a_refused_certificate_names_it() {
     let transport = Transport::new(&url, false).unwrap();
     let e = transport.post("get_info", b"{}".to_vec(), None).await.unwrap_err();
     let failed = format!("{e:?}");
-    assert_eq!(sync_failure(&failed, transport.certificate(), false), "Certificate self-signed, not accepted");
+    assert_eq!(sync_failure(&failed, transport.certificate(), false), NOT_ACCEPTED);
 }
 
 #[test]
@@ -322,11 +341,11 @@ fn onion_hosts_are_known_by_name() {
 #[tokio::test]
 async fn an_onion_node_is_refused_before_any_lookup() {
     let checked = check(Network::Stagenet, &node("xmrnode.onion:38081"), 0, NOW, &|_| {}).await;
-    assert_eq!(rows(&checked)[0], ("Answers", "needs Tor, not in Fob yet", Mark::Fail));
-    assert_eq!(checked.line(false), "Needs Tor, not in Fob yet");
-    assert_eq!(on_network(Network::Stagenet, &node("http://xmrnode.onion:38081")).await, Err(NO_ONION.into()));
+    assert_eq!(rows(&checked)[0], (Step::Answers, failed(Failure::Onion), Mark::Fail));
+    assert_eq!(checked.line(false), Line::NoAnswer(failed(Failure::Onion)));
+    assert_eq!(on_network(Network::Stagenet, &node("http://xmrnode.onion:38081")).await, Err(SwitchRefused::Endpoint(EndpointProblem::Onion)));
     let err = Transport::new("http://xmrnode.onion:38081", false).err().expect("refused");
-    assert!(format!("{err:?}").contains(NO_ONION), "{err:?}");
+    assert!(format!("{err:?}").contains(ONION_REFUSED), "{err:?}");
 }
 
 #[test]
@@ -342,9 +361,10 @@ async fn a_canned_node_is_checked_over_http() {
     let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), 0, now(), &|_| {}).await;
     let rows = rows(&report);
     assert_eq!(rows.len(), 4, "no certificate over http");
-    assert_eq!((rows[0].0, rows[0].2), ("Answers", Mark::Pass));
-    assert_eq!(rows[1..3], [("Right network", "stagenet", Mark::Pass), ("Up to date", "block 1,792,004 · just now", Mark::Pass)]);
-    assert_eq!(rows[3], ("Sends blocks to Fob", "sent blocks Fob can't read", Mark::Fail));
+    assert_eq!((rows[0].0, rows[0].2), (Step::Answers, Mark::Pass));
+    assert_eq!((&rows[1], &rows[2].0, &rows[2].2), (&(Step::Network, network(), Mark::Pass), &Step::UpToDate, &Mark::Pass));
+    assert!(matches!(rows[2].1, Outcome::Block { height: 1_792_004, age: 0..60 }), "{:?}", rows[2].1);
+    assert_eq!(rows[3], (Step::Blocks, Outcome::Failed { failure: Failure::Unreadable, limit: 10 }, Mark::Fail));
     assert_eq!(report.address, format!("127.0.0.1:{port}"));
 }
 
@@ -355,7 +375,7 @@ async fn a_closed_port_refuses_to_connect() {
         listener.local_addr().unwrap().port()
     };
     let report = check(Network::Stagenet, &node(&format!("http://127.0.0.1:{port}")), 0, now(), &|_| {}).await;
-    assert_eq!(rows(&report)[0], ("Answers", "refused to connect", Mark::Fail));
+    assert_eq!(rows(&report)[0], (Step::Answers, failed(Failure::Refused), Mark::Fail));
 }
 
 /// The usual check refuses a self-signed certificate and says so; a node
@@ -365,12 +385,12 @@ async fn a_self_signed_certificate_passes_only_when_accepted() {
     let port = canned_node(true).await;
     let url = format!("https://127.0.0.1:{port}");
     let refused = check(Network::Stagenet, &node(&url), 0, now(), &|_| {}).await;
-    assert_eq!(rows(&refused)[..2], [("Certificate", "self-signed, not accepted", Mark::Fail), ("Answers", "", Mark::Skipped)]);
-    assert_eq!(refused.verdict(), "Certificate not accepted");
+    assert_eq!(rows(&refused)[..2], [(Step::Certificate, failed(NOT_ACCEPTED), Mark::Fail), (Step::Answers, Outcome::Skipped, Mark::Skipped)]);
+    assert_eq!(refused.verdict(), Verdict::Failed(Step::Certificate));
     let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
-    assert_eq!(rows(&accepted)[..3], [("Certificate", "self-signed, accepted", Mark::Pass), ("Answers", rows(&accepted)[1].1, Mark::Pass), ("Right network", "stagenet", Mark::Pass)]);
+    assert_eq!(rows(&accepted)[..3], [(Step::Certificate, Outcome::Certificate(Some(CertProblem::SelfSigned)), Mark::Pass), (Step::Answers, rows(&accepted)[1].1.clone(), Mark::Pass), (Step::Network, network(), Mark::Pass)]);
     // Switching to it checks the same way.
-    assert_eq!(on_network(Network::Stagenet, &node(&url)).await, Err("self-signed, not accepted".into()));
+    assert_eq!(on_network(Network::Stagenet, &node(&url)).await, Err(SwitchRefused::Failed(NOT_ACCEPTED)));
     assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Ok(()));
 }
 
@@ -383,10 +403,10 @@ async fn monerods_own_certificate_works_once_accepted() {
         let port = canned(Canned::Tls { monerod: true, tls12 }).await;
         let url = format!("https://127.0.0.1:{port}");
         let refused = check(Network::Stagenet, &node(&url), 0, now(), &|_| {}).await;
-        assert_eq!(rows(&refused)[0], ("Certificate", "self-signed, not accepted", Mark::Fail), "TLS 1.2: {tls12}");
+        assert_eq!(rows(&refused)[0], (Step::Certificate, failed(NOT_ACCEPTED), Mark::Fail), "TLS 1.2: {tls12}");
         let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
-        assert_eq!(rows(&accepted)[0], ("Certificate", "self-signed, accepted", Mark::Pass), "TLS 1.2: {tls12}");
-        assert_eq!(rows(&accepted)[2], ("Right network", "stagenet", Mark::Pass), "TLS 1.2: {tls12}");
+        assert_eq!(rows(&accepted)[0], (Step::Certificate, Outcome::Certificate(Some(CertProblem::SelfSigned)), Mark::Pass), "TLS 1.2: {tls12}");
+        assert_eq!(rows(&accepted)[2], (Step::Network, network(), Mark::Pass), "TLS 1.2: {tls12}");
         assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Ok(()));
     }
 }
@@ -403,9 +423,10 @@ async fn a_handshake_not_signed_by_the_certificates_key_is_refused_even_when_acc
             let url = format!("https://127.0.0.1:{port}");
             let marked = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
             let case = format!("monerod: {monerod}, TLS 1.2: {tls12}");
-            assert_eq!(rows(&marked)[..2], [("Certificate", "signature doesn't match, not accepted", Mark::Fail), ("Answers", "", Mark::Skipped)], "{case}");
-            assert_eq!(marked.line(false), "Certificate signature doesn't match, not accepted", "{case}");
-            assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Err("signature doesn't match, not accepted".into()), "{case}");
+            let bad = Failure::Certificate(CertProblem::BadSignature);
+            assert_eq!(rows(&marked)[..2], [(Step::Certificate, failed(bad), Mark::Fail), (Step::Answers, Outcome::Skipped, Mark::Skipped)], "{case}");
+            assert_eq!(marked.line(false), Line::Certificate(failed(bad)), "{case}");
+            assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Err(SwitchRefused::Failed(bad)), "{case}");
         }
     }
 }
@@ -417,8 +438,8 @@ async fn a_node_that_redirects_is_not_followed() {
     let good = canned_node(false).await;
     let port = canned(Canned::Redirect(good)).await;
     let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), 0, now(), &|_| {}).await;
-    assert_eq!(rows(&report)[0], ("Answers", "answered 307", Mark::Fail));
-    assert_eq!(report.verdict(), "Doesn't answer");
+    assert_eq!(rows(&report)[0], (Step::Answers, failed(Failure::Status(307)), Mark::Fail));
+    assert_eq!(report.verdict(), Verdict::Failed(Step::Answers));
 }
 
 /// Only a problem a node's own certificate can have is accepted with the
@@ -451,7 +472,6 @@ fn only_a_nodes_own_certificate_problems_can_be_accepted() {
         assert_eq!(refused, (!acceptable).then_some(Failure::Certificate(problem)), "marked: {problem:?}");
         assert_eq!(Failure::refused(Some(Err(problem)), false), Some(Failure::Certificate(problem)), "not marked: {problem:?}");
     }
-    assert_eq!(Failure::Certificate(CertProblem::Invalid).words(ANSWER), "not valid, not accepted");
     assert_eq!(Failure::refused(Some(Ok(())), false), None);
 }
 
@@ -497,7 +517,7 @@ fn a_certificates_key_is_read_from_any_version() {
 async fn checks_tell_fast_from_wrong_over_http() {
     let stagenet = check(Network::Stagenet, &node(Network::Stagenet.default_nodes()[0]), 0, now(), &|_| {}).await;
     println!("{stagenet:?}");
-    assert_eq!(stagenet.verdict(), "Working");
+    assert_eq!(stagenet.verdict(), Verdict::Working);
     let mainnet_node = check(Network::Stagenet, &node(Network::Mainnet.default_nodes()[0]), 0, now(), &|_| {}).await;
-    assert_eq!(mainnet_node.verdict(), "Wrong network");
+    assert_eq!(mainnet_node.verdict(), Verdict::Failed(Step::Network));
 }

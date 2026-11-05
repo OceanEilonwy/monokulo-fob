@@ -114,7 +114,7 @@ pub fn screen(e: &ScreenError) -> String {
 pub fn endpoint(e: &EndpointProblem) -> String {
     match e {
         EndpointProblem::Unreadable(text) => format!("{text} isn't an address Fob can read"),
-        EndpointProblem::Onion => "Fob can't reach .onion nodes yet".into(),
+        EndpointProblem::Onion => crate::node::NO_ONION.into(),
         EndpointProblem::ZmqEmpty => "enter the node's ZMQ address, like tcp://host:18083".into(),
         EndpointProblem::ZmqNotTcp => "Fob listens over tcp:// only".into(),
         EndpointProblem::ZmqNotHostAndPort => "only a host and port: tcp://host:18083".into(),
@@ -127,7 +127,8 @@ pub fn endpoint(e: &EndpointProblem) -> String {
 
 /// A failure the node gave, in its library's words.
 pub fn node(why: &str) -> String {
-    format!("the node didn't answer: {why}")
+    // An onion node's refusal travels in the interface error's text.
+    format!("the node didn't answer: {}", why.replace(fob_chain::node::ONION_REFUSED, crate::node::NO_ONION))
 }
 
 /// A failure building or publishing a transaction, in its library's words.
