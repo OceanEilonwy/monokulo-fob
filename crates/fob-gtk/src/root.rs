@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use fob_app::{Clock, Engine, Options, Phase, Update, views::{PriceToast, Screens, SyncStatus, WalletEntry}};
+use fob_app::{Clock, Engine, Options, Phase, Update, form, views::{Prepared, PriceToast, Screens, SyncStatus, WalletEntry}};
 use relm4::{
     Sender,
     adw::{self, prelude::*},
@@ -20,11 +20,17 @@ use crate::{
     confirm::{self, Confirm},
     contacts::{self, Contacts},
     home::{self, Home},
+    meet::{self, Meet},
+    node::{self, Node},
     passphrase::{self, Passphrase},
     payment::Payment,
+    prices::{self, Prices},
+    profile::{self, Profile},
     receive::{self, Receive},
+    requests::{self, Request},
     send::{self, Send},
     settings::{self, Settings},
+    split::{self, Split},
     start::{self, Start},
 };
 
@@ -71,7 +77,31 @@ pub enum Go {
     Settings,
     /// Adding a wallet while one is open.
     AddWallet,
+    Request(u64),
+    Split,
+    /// Confirm, with what's ready to go already worked out.
+    ConfirmReady(View<Prepared>),
+    Profile,
+    Meet,
+    /// Someone's profile, from a link.
+    Scanned(String),
+    /// A share's code again.
+    Share(u64),
+    Node,
+    Prices,
     Back,
+}
+
+impl Go {
+    /// The same place, for a row that can be opened more than once. Only rows make these.
+    pub fn again(&self) -> Go {
+        match self {
+            Go::Payment(tx) => Go::Payment(tx.clone()),
+            Go::Request(id) => Go::Request(*id),
+            Go::Share(id) => Go::Share(*id),
+            _ => Go::Back,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -100,6 +130,12 @@ pub struct Root {
     contacts: Controller<Contacts>,
     coins: Controller<Coins>,
     settings: Controller<Settings>,
+    request: Controller<Request>,
+    split: Controller<Split>,
+    profile: Controller<Profile>,
+    meet: Controller<Meet>,
+    node: Controller<Node>,
+    prices: Controller<Prices>,
     toasts: adw::ToastOverlay,
     nav: adw::NavigationView,
     screens: Option<Arc<Screens>>,
@@ -167,6 +203,12 @@ impl SimpleComponent for Root {
         let contacts = Contacts::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
         let coins = Coins::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
         let settings = Settings::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let request = Request::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let split = Split::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let profile = Profile::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let meet = Meet::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let node = Node::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let prices = Prices::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
         passphrase.emit(passphrase::Input::Phase(engine.phase()));
 
         let nav = adw::NavigationView::new();
@@ -180,10 +222,11 @@ impl SimpleComponent for Root {
         links_go_to(sender.input_sender().clone());
         let toasts = adw::ToastOverlay::new();
         let phase = engine.phase();
-        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, toasts: toasts.clone(), nav: nav.clone(), screens: None, pending: None, toast: None };
+        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, toasts: toasts.clone(), nav: nav.clone(), screens: None, pending: None, toast: None };
         let toasts = &toasts;
         let nav = &nav;
         let widgets = view_output!();
+        Self::lock_when_left(&root, &model.engine);
         crate::scene::run(&model.engine, sender.input_sender().clone());
         ComponentParts { model, widgets }
     }
@@ -192,7 +235,7 @@ impl SimpleComponent for Root {
         match msg {
             Msg::Engine(Event(update)) => self.take(update, &sender),
             Msg::Go(go) => self.go(go),
-            Msg::Open(code) if self.phase == Phase::Open => self.go(Go::SendFrom(code)),
+            Msg::Open(code) if self.phase == Phase::Open => self.opened(code),
             Msg::Open(code) => self.pending = Some(code),
             Msg::Say(text) => self.toasts.add_toast(adw::Toast::new(&text)),
             Msg::ToastDismissed => {
@@ -214,12 +257,52 @@ impl SimpleComponent for Root {
 }
 
 impl Root {
+    /// Locks after being left alone, and when the desktop does. What's on
+    /// screen goes with it: a seed phrase left open mustn't stay.
+    fn lock_when_left(window: &adw::ApplicationWindow, engine: &Engine) {
+        let touches = gtk::EventControllerLegacy::new();
+        touches.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let touched = engine.clone();
+        touches.connect_event(move |_, _| {
+            touched.touched();
+            gtk::glib::Propagation::Proceed
+        });
+        window.add_controller(touches);
+        let idle = engine.clone();
+        gtk::glib::timeout_add_seconds_local(30, move || {
+            idle.lock_if_idle();
+            gtk::glib::ControlFlow::Continue
+        });
+        let desktop = engine.clone();
+        relm4::main_application().connect_screensaver_active_notify(move |app| {
+            if app.is_screensaver_active() {
+                desktop.lock_with_the_desktop();
+            }
+        });
+    }
+
+    fn close_dialogs(&self) {
+        let Some(window) = self.nav.root().and_downcast::<adw::ApplicationWindow>() else { return };
+        while let Some(dialog) = window.visible_dialog() {
+            dialog.force_close();
+        }
+    }
+
+    /// A code from outside: someone's profile, or something to pay.
+    fn opened(&mut self, code: String) {
+        match form::take(self.engine.network(), &code) {
+            form::Taken::Profile => self.go(Go::Scanned(code)),
+            _ => self.go(Go::SendFrom(code)),
+        }
+    }
+
     /// Hands what the engine published to whoever draws it.
     fn take(&mut self, update: Update, sender: &ComponentSender<Self>) {
         match update {
             Update::Phase(phase) => {
                 if matches!(phase, Phase::NoPassphrase | Phase::Locked | Phase::NoWallet) {
                     self.nav.pop_to_tag("home");
+                    self.close_dialogs();
                 }
                 self.passphrase.emit(passphrase::Input::Phase(phase.clone()));
                 self.start.emit(start::Input::Phase(phase.clone()));
@@ -227,7 +310,7 @@ impl Root {
                 if self.phase == Phase::Open
                     && let Some(code) = self.pending.take()
                 {
-                    self.go(Go::SendFrom(code));
+                    self.opened(code);
                 }
             }
             Update::Screens(screens) => {
@@ -237,6 +320,13 @@ impl Root {
                 self.contacts.emit(contacts::Input::Screens(View(screens.clone())));
                 self.coins.emit(crate::coins::Input::Screens(View(screens.clone())));
                 self.settings.emit(settings::Input::Screens(View(screens.clone())));
+                self.prices.emit(prices::Input::Screens(View(screens.clone())));
+                match self.nav.visible_page().and_then(|page| page.tag()).as_deref() {
+                    Some("request") => self.request.emit(requests::Input::Refresh),
+                    Some("split") => self.split.emit(split::Input::Refresh),
+                    Some("profile") => self.profile.emit(profile::Input::Refresh),
+                    _ => {}
+                }
                 self.receive.emit(receive::Input::Screens(View(screens)));
             }
             Update::Status(status) => self.show_status(status),
@@ -305,7 +395,7 @@ impl Root {
                 self.push("confirm", "Confirm", self.confirm.widget());
             }
             Go::Payment(tx) => {
-                self.payment.emit(crate::payment::Input::Open(tx));
+                self.payment.emit(crate::payment::Input::Open(tx, self.screens.clone().map(View)));
                 self.push("payment", "Payment", self.payment.widget());
             }
             Go::Contacts => {
@@ -320,6 +410,41 @@ impl Root {
             Go::AddWallet => {
                 self.add_wallet.emit(start::Input::Adding);
                 self.push("add-wallet", "Add a wallet", self.add_wallet.widget());
+            }
+            Go::Request(id) => {
+                self.request.emit(requests::Input::Open(id));
+                self.push("request", "Request", self.request.widget());
+            }
+            Go::Split => {
+                self.split.emit(split::Input::Opened);
+                self.push("split", "Split up", self.split.widget());
+            }
+            Go::ConfirmReady(prepared) => {
+                self.nav.pop();
+                self.confirm.emit(confirm::Input::Ready(prepared));
+                self.push("confirm", "Confirm", self.confirm.widget());
+            }
+            Go::Profile => {
+                self.profile.emit(profile::Input::Opened);
+                self.push("profile", "Your profile", self.profile.widget());
+            }
+            Go::Meet => {
+                self.meet.emit(meet::Input::Opened);
+                self.push("meet", "Meet", self.meet.widget());
+            }
+            Go::Scanned(text) => self.meet.emit(meet::Input::Scanned(text)),
+            Go::Share(id) => {
+                self.profile.emit(profile::Input::Opened);
+                self.profile.emit(profile::Input::ShowShare(id));
+                self.push("profile", "Your profile", self.profile.widget());
+            }
+            Go::Node => {
+                self.node.emit(node::Input::Opened);
+                self.push("node", "Node", self.node.widget());
+            }
+            Go::Prices => {
+                self.prices.emit(prices::Input::Opened);
+                self.push("prices", "Prices", self.prices.widget());
             }
             Go::Back => {
                 self.nav.pop();

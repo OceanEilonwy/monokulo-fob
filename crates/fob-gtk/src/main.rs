@@ -6,13 +6,19 @@ mod coins;
 mod confirm;
 mod contacts;
 mod home;
+mod meet;
+mod node;
 mod passphrase;
 mod payment;
+mod prices;
+mod profile;
 mod receive;
+mod requests;
 mod root;
 mod scene;
 mod send;
 mod settings;
+mod split;
 mod start;
 mod widgets;
 
@@ -64,5 +70,5 @@ fn main() {
     let app = RelmApp::from_app(application).with_args(std::iter::once("fob".to_owned()).chain(links).collect());
     relm4::set_global_css(include_str!("style.css"));
     let (data, cache) = dirs();
-    app.run::<root::Root>(root::Init { data, cache, online: scene::dir().is_none(), clock: Box::new(clock()) });
+    app.run::<root::Root>(root::Init { data, cache, online: scene::dir().is_none() || std::env::var_os("FOB_SCENE_ONLINE").is_some(), clock: Box::new(clock()) });
 }

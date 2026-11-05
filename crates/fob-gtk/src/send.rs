@@ -34,6 +34,8 @@ pub enum Input {
     Replace(String),
     Refused(String),
     Pick(String),
+    /// A value for the amount field, converted by Rust.
+    Converted(String),
     Review,
     Reviewed(View<fob_app::views::PaymentPreview>, Filled),
     Failed(String),
@@ -177,6 +179,11 @@ impl SimpleComponent for Send {
                 self.busy = false;
                 self.clear();
                 self.ask_entry(&sender);
+                // So Confirm's first fee doesn't wait on this.
+                let engine = self.engine.clone();
+                relm4::spawn(async move {
+                    engine.read(|wallet, _| async move { wallet.warm_up_send().await }).await;
+                });
                 if let Some(code) = code {
                     sender.input(Input::Take(code));
                 }
@@ -202,7 +209,7 @@ impl SimpleComponent for Send {
                 relm4::spawn(async move {
                     let converted = engine.read(move |wallet, _| async move { wallet.convert_amount(text, to_fiat).await }).await;
                     if let Some(converted) = converted {
-                        sender.input(Input::Pick(format!("\u{0}{converted}")));
+                        sender.input(Input::Converted(converted));
                     }
                 });
             }
@@ -235,9 +242,8 @@ impl SimpleComponent for Send {
             Input::Take(text) => self.take(text, &sender),
             Input::Replace(text) => self.fill(text, &sender),
             Input::Refused(why) => self.error = Some(why),
-            // Internal: a value for the amount field, marked by a NUL no typed text has.
-            Input::Pick(text) if text.starts_with('\u{0}') => {
-                self.amount.text = text[1..].to_owned();
+            Input::Converted(text) => {
+                self.amount.text = text;
                 self.set_amount_field();
                 self.ask_entry(&sender);
             }
@@ -363,6 +369,14 @@ impl Send {
             let row = widgets::row(&contact.name, &contact.line);
             row.set_activatable(true);
             let sender = sender.clone();
+            row.connect_activated(move |_| sender.input(Input::Pick(address.clone())));
+            self.people.add(&row);
+            self.people_rows.push(row);
+        }
+        for paid in &screens.paid_before {
+            let row = widgets::row(&paid.name, &paid.line);
+            row.set_activatable(true);
+            let (address, sender) = (paid.address.clone(), sender.clone());
             row.connect_activated(move |_| sender.input(Input::Pick(address.clone())));
             self.people.add(&row);
             self.people_rows.push(row);

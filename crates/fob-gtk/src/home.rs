@@ -83,30 +83,10 @@ impl Home {
         for day in &screens.activity {
             let group = adw::PreferencesGroup::builder().title(gtk::glib::markup_escape_text(&day.label).as_str()).build();
             for view in &day.rows {
-                let row = widgets::row(&view.title, &view.line);
-                let amount = gtk::Box::builder().orientation(gtk::Orientation::Vertical).valign(gtk::Align::Center).build();
-                let text = gtk::Label::builder().label(&view.amount_text).xalign(1.0).build();
-                text.add_css_class("money");
-                if view.activity.as_ref().is_some_and(|a| !a.outgoing) {
-                    text.add_css_class("incoming");
-                }
-                amount.append(&text);
-                if let Some(fiat) = &view.fiat_text {
-                    let under = gtk::Label::builder().label(fiat).xalign(1.0).build();
-                    under.add_css_class("dim-label");
-                    under.add_css_class("caption");
-                    amount.append(&under);
-                }
-                row.add_suffix(&amount);
-                if let Some(activity) = &view.activity {
-                    let tx = activity.tx.clone();
-                    let sender = sender.clone();
-                    row.set_activatable(true);
-                    row.connect_activated(move |_| {
-                        let _ = sender.output(RootMsg::Go(Go::Payment(tx.clone())));
-                    });
-                }
-                group.add(&row);
+                let then = sender.clone();
+                group.add(&widgets::activity_row(view, move |go| {
+                    let _ = then.output(RootMsg::Go(go));
+                }));
             }
             self.days.append(&group);
         }
