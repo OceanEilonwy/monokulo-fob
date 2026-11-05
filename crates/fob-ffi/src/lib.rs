@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, address, amount, clock, contacts, keys, not_ready, pattern, price, profile, qr, receipt, split, uri};
+use fob_core::{activity, address, amount, backup, clock, contacts, not_ready, pattern, price, profile, qr, receipt, split, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -231,12 +231,12 @@ pub enum HubItem {
     Keys,
 }
 
-impl From<keys::HubRow> for HubRow {
-    fn from(r: keys::HubRow) -> Self {
+impl From<backup::HubRow> for HubRow {
+    fn from(r: backup::HubRow) -> Self {
         let item = match r.item {
-            keys::HubItem::SeedPhrase => HubItem::SeedPhrase,
-            keys::HubItem::WalletCode => HubItem::WalletCode,
-            keys::HubItem::Keys => HubItem::Keys,
+            backup::HubItem::SeedPhrase => HubItem::SeedPhrase,
+            backup::HubItem::WalletCode => HubItem::WalletCode,
+            backup::HubItem::Keys => HubItem::Keys,
         };
         HubRow { item, title: r.title, line: r.line }
     }
@@ -275,17 +275,17 @@ pub enum KeyBadge {
     Public,
 }
 
-impl From<keys::KeyGroup> for KeyGroup {
-    fn from(g: keys::KeyGroup) -> Self {
+impl From<backup::KeyGroup> for KeyGroup {
+    fn from(g: backup::KeyGroup) -> Self {
         let keys = g
             .keys
             .into_iter()
             .map(|k| KeyRow {
                 title: k.title,
                 badge: match k.badge {
-                    keys::KeyBadge::SpendsMoney => KeyBadge::SpendsMoney,
-                    keys::KeyBadge::SeesPayments => KeyBadge::SeesPayments,
-                    keys::KeyBadge::Public => KeyBadge::Public,
+                    backup::KeyBadge::SpendsMoney => KeyBadge::SpendsMoney,
+                    backup::KeyBadge::SeesPayments => KeyBadge::SeesPayments,
+                    backup::KeyBadge::Public => KeyBadge::Public,
                 },
                 badge_text: k.badge_text,
                 line: k.line,

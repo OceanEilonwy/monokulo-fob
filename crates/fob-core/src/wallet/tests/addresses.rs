@@ -78,7 +78,7 @@ async fn reading_a_restored_wallet_s_receive_address_hands_nothing_out() {
 async fn a_new_wallet_asks_to_be_backed_up_until_its_words_are_written_down() {
     let path = dir("backup");
     let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
-    assert_eq!(wallet.backup_reminder().await, Some(keys::reminder(16)));
+    assert_eq!(wallet.backup_reminder().await, Some(backup::reminder(16)));
     // Fob closed during the backup step: opened again, it still asks.
     let reopened = Wallet::open(&path, [1; 32]).unwrap();
     assert!(reopened.backup_reminder().await.is_some());
@@ -103,7 +103,7 @@ async fn backup_and_keys_says_whether_the_words_are_written_down_and_shows_the_r
     assert_eq!(hub.backup[0].line, "16 words that restore everything · backed up");
     assert_eq!(hub.settings_line, "Seed phrase, wallet code, keys");
     // Restored from 25 words: no word on whether they're written down.
-    let classic = keys::Keys::from_spend_key(Network::Stagenet, &wallet.inner.keys.spend_key_hex().unwrap(), None).unwrap();
+    let classic = Keys::from_spend_key(Network::Stagenet, &wallet.inner.keys.spend_key_hex().unwrap(), None).unwrap();
     let words = classic.seed_words().unwrap().1;
     let restored = Wallet::restore_words(&dir("hub-restored"), [1; 32], Network::Stagenet, &words, Some(2_200_000)).unwrap();
     assert_eq!(restored.backup_hub(true).await.backup[0].line, "25 words that restore everything");
@@ -117,7 +117,7 @@ async fn backup_and_keys_says_whether_the_words_are_written_down_and_shows_the_r
     // secret spend key.
     let watch = Wallet::restore_view_only(&dir("hub-watch"), [1; 32], Network::Stagenet, &wallet.primary_address(), &wallet.inner.keys.view_key_hex(), Some(0)).unwrap();
     let hub = watch.backup_hub(true).await;
-    assert_eq!(hub.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [keys::HubItem::WalletCode]);
+    assert_eq!(hub.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [backup::HubItem::WalletCode]);
     assert_eq!(hub.settings_line, "Wallet code, keys");
     let page = watch.keys_page().await;
     assert_eq!(page[0].keys.iter().map(|k| k.title.as_str()).collect::<Vec<_>>(), ["Secret view key"]);
@@ -130,4 +130,17 @@ fn the_restore_height_is_dated_only_when_the_date_can_be_named() {
     assert_eq!(restore_date(Network::Mainnet, near).as_deref(), Some("2 Sep 2026"));
     assert_eq!(restore_date(Network::Mainnet, 1_009_827), None);
     assert_eq!(restore_date(Network::Stagenet, 0), None);
+}
+
+#[tokio::test]
+async fn keys_page_writes_each_of_this_wallet_s_keys_where_it_belongs() {
+    let wallet = Wallet::create(&dir("keys-page"), [1; 32], Network::Stagenet).unwrap();
+    let keys = &wallet.inner.keys;
+    let page = wallet.keys_page().await;
+    let value = |g: usize, k: usize| page[g].keys[k].value.to_string();
+    assert_eq!(value(0, 0), *keys.spend_key_hex().unwrap());
+    assert_eq!(value(0, 1), *keys.view_key_hex());
+    assert_eq!(value(1, 0), keys.primary_address());
+    assert_eq!(value(1, 2), keys.public_view_key_hex());
+    assert_eq!(value(1, 3), keys.public_spend_key_hex());
 }

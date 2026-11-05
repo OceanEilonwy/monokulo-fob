@@ -25,6 +25,7 @@ pub mod fiat;
 pub mod names;
 pub mod price_alert;
 pub mod amount;
+pub mod backup;
 pub mod catch_up;
 pub mod contacts;
 mod db;
