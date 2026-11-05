@@ -12,7 +12,7 @@
 
 use crate::{
     amount,
-    price::{self, Currency},
+    fiat::{self, Currency},
 };
 
 /// The most pieces one split makes: a transaction has at most 16 outputs,
@@ -54,7 +54,7 @@ pub struct Note {
 
 /// A whole number of a currency: "$20", "20 CHF", "₫100,000".
 fn whole(units: u64, currency: &Currency) -> String {
-    let units = price::grouped(units);
+    let units = amount::grouped(units);
     match currency.symbol {
         Some(symbol) => format!("{symbol}{units}"),
         None => format!("{units} {}", currency.code),
@@ -67,11 +67,11 @@ pub fn notes(money: Money) -> Vec<Note> {
     if let Some((currency, p)) = money {
         let unit = 10u64.pow(currency.decimals);
         // Six round amounts from the currency's smallest note.
-        let in_money: Option<Vec<Note>> = price::currencies::ladder(currency.note, NOTE_COUNT)
+        let in_money: Option<Vec<Note>> = fiat::currencies::ladder(currency.note, NOTE_COUNT)
             .into_iter()
             .map(|units| {
                 let minor = units.checked_mul(unit)?;
-                let atomic = price::to_atomic(minor, p, currency).filter(|a| *a > 0)?;
+                let atomic = fiat::to_atomic(minor, p, currency).filter(|a| *a > 0)?;
                 Some(Note { atomic, label: whole(units, currency), spoken: whole(units, currency), minor: Some(minor) })
             })
             .collect();
@@ -296,7 +296,7 @@ pub struct View {
 
 fn worth(atomic: u64, money: Money) -> String {
     match money {
-        Some((currency, p)) => price::value(atomic, p, currency),
+        Some((currency, p)) => fiat::value(atomic, p, currency),
         None => format!("{} XMR", amount::format_short(atomic)),
     }
 }
@@ -304,8 +304,8 @@ fn worth(atomic: u64, money: Money) -> String {
 /// The fee as the footer says it: "$0.03", "less than $0.01", "0.0002 XMR".
 fn fee_text(fee: u64, money: Money) -> String {
     match money {
-        Some((currency, p)) if price::to_minor(fee, p, currency) == 0 => format!("less than {}", price::format(1, currency)),
-        Some((currency, p)) => price::value(fee, p, currency),
+        Some((currency, p)) if fiat::to_minor(fee, p, currency) == 0 => format!("less than {}", fiat::format(1, currency)),
+        Some((currency, p)) => fiat::value(fee, p, currency),
         None => format!("{} XMR", amount::format(fee)),
     }
 }
@@ -351,7 +351,7 @@ pub fn view(notes: &[Note], counts: &[u32], payments: &[u64], budget: &Budget, m
         .map(|&(v, left_over)| Block { width: (v as f64 / whole as f64) as f32, height: ((v as f64).sqrt() / tallest) as f32, left_over })
         .collect();
     let summary_value = match money {
-        Some((currency, _)) => price::format(notes.iter().zip(&counts).map(|(note, c)| note.minor.unwrap_or(0) * u64::from(*c)).sum(), currency),
+        Some((currency, _)) => fiat::format(notes.iter().zip(&counts).map(|(note, c)| note.minor.unwrap_or(0) * u64::from(*c)).sum(), currency),
         None => format!("{} XMR", amount::format_short(total)),
     };
     let mut footer = if n == 0 { String::new() } else { format!("Network fee about {}", fee_text(fee, money)) };
@@ -419,11 +419,11 @@ mod tests {
     const XMR: u64 = amount::ATOMIC_PER_XMR;
 
     fn usd() -> Currency {
-        price::currency("USD")
+        fiat::currency("USD")
     }
 
     /// $300.00 per XMR.
-    const PRICE: u64 = 300 * price::MICRO;
+    const PRICE: u64 = 300 * fiat::MICRO;
 
     fn budget(xmr_thousandths: u64) -> Budget {
         Budget { outputs: vec![xmr_thousandths * XMR / 1000], fee_rate: Some((20_000, 10_000)) }
@@ -438,20 +438,20 @@ mod tests {
         // $20 at $300 is 0.06667 XMR: as few decimals as come to $20.00
         // (0.0667 would be $20.01).
         assert_eq!(amount::format(notes[2].atomic), "0.06667");
-        assert_eq!(price::to_minor(notes[2].atomic, PRICE, &usd), 2_000);
-        let (gbp, chf) = (price::currency("GBP"), price::currency("CHF"));
+        assert_eq!(fiat::to_minor(notes[2].atomic, PRICE, &usd), 2_000);
+        let (gbp, chf) = (fiat::currency("GBP"), fiat::currency("CHF"));
         assert_eq!(super::notes(Some((&gbp, PRICE)))[0].label, "£5");
         assert_eq!(super::notes(Some((&chf, PRICE)))[0].label, "5 CHF");
         // Currencies with many units to the dollar get notes of about the
         // same worth, not 5 yen.
-        let labels = |code: &str, price: u64| super::notes(Some((&price::currency(code), price))).into_iter().map(|n| n.label).collect::<Vec<_>>();
-        assert_eq!(labels("JPY", 45_000 * price::MICRO), ["¥1,000", "¥2,000", "¥5,000", "¥10,000", "¥20,000", "¥50,000"]);
-        assert_eq!(labels("VND", 7_500_000 * price::MICRO), ["₫100,000", "₫200,000", "₫500,000", "₫1,000,000", "₫2,000,000", "₫5,000,000"]);
-        assert_eq!(labels("KRW", 420_000 * price::MICRO)[0], "₩5,000");
-        assert_eq!(labels("IDR", 4_800_000 * price::MICRO)[0], "Rp50,000");
-        assert_eq!(labels("KWD", 92 * price::MICRO), ["1 KWD", "2 KWD", "5 KWD", "10 KWD", "20 KWD", "50 KWD"]);
+        let labels = |code: &str, price: u64| super::notes(Some((&fiat::currency(code), price))).into_iter().map(|n| n.label).collect::<Vec<_>>();
+        assert_eq!(labels("JPY", 45_000 * fiat::MICRO), ["¥1,000", "¥2,000", "¥5,000", "¥10,000", "¥20,000", "¥50,000"]);
+        assert_eq!(labels("VND", 7_500_000 * fiat::MICRO), ["₫100,000", "₫200,000", "₫500,000", "₫1,000,000", "₫2,000,000", "₫5,000,000"]);
+        assert_eq!(labels("KRW", 420_000 * fiat::MICRO)[0], "₩5,000");
+        assert_eq!(labels("IDR", 4_800_000 * fiat::MICRO)[0], "Rp50,000");
+        assert_eq!(labels("KWD", 92 * fiat::MICRO), ["1 KWD", "2 KWD", "5 KWD", "10 KWD", "20 KWD", "50 KWD"]);
         // ¥1,000 at ¥45,000 an XMR is about the same XMR as $5 at $300.
-        let yen = super::notes(Some((&price::currency("JPY"), 45_000 * price::MICRO)));
+        let yen = super::notes(Some((&fiat::currency("JPY"), 45_000 * fiat::MICRO)));
         assert_eq!(amount::format(yen[0].atomic), "0.02222");
         assert_eq!(amount::format(notes[0].atomic), "0.01667");
         let xmr: Vec<_> = super::notes(None).iter().map(|n| (n.label.clone(), n.spoken.clone())).collect();
@@ -509,7 +509,7 @@ mod tests {
         let usd = usd();
         let money = Some((&usd, PRICE));
         let notes = notes(money);
-        let dollars = |d: u64| price::to_atomic(d * 100, PRICE, &usd).unwrap();
+        let dollars = |d: u64| fiat::to_atomic(d * 100, PRICE, &usd).unwrap();
         // Coffees and lunches: $4, $5, $6, $12, $18, $25, $25.
         let payments = [dollars(4), dollars(5), dollars(6), dollars(12), dollars(18), dollars(25), dollars(25)];
         // 2 XMR is $600: plenty for 15 pieces.
@@ -601,13 +601,13 @@ mod tests {
         let v = view(&notes, &[4, 4, 3], &[], &b, money, None);
         assert_eq!(v.summary.as_deref(), Some("11 coins · $120.00"));
         let (fee, left) = b.plan(11, value(&notes, &[4, 4, 3]));
-        assert_eq!(v.left_over, Some(format!("+ {} left as one coin", price::value(left.unwrap(), PRICE, &usd))));
+        assert_eq!(v.left_over, Some(format!("+ {} left as one coin", fiat::value(left.unwrap(), PRICE, &usd))));
         assert_eq!(v.button, "Split into 11 coins");
         assert!(v.ready);
-        assert_eq!(v.footer, format!("Network fee about {}", price::value(fee, PRICE, &usd)));
+        assert_eq!(v.footer, format!("Network fee about {}", fiat::value(fee, PRICE, &usd)));
         // An old price: its age after the fee, and nothing more.
         let aged = view(&notes, &[4, 4, 3], &[], &b, money, Some("23 h old"));
-        assert_eq!(aged.footer, format!("Network fee about {} · 23 h old price", price::value(fee, PRICE, &usd)));
+        assert_eq!(aged.footer, format!("Network fee about {} · 23 h old price", fiat::value(fee, PRICE, &usd)));
         assert_eq!(v.counts, [4, 4, 3, 0, 0, 0]);
         let tile = |i: usize| (v.tiles[i].label.as_str(), v.tiles[i].count_text.as_str(), v.tiles[i].add_label.as_str());
         assert_eq!(tile(2), ("$20", "× 3", "Add a $20 coin, 3 so far"));

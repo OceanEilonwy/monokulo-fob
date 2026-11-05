@@ -7,9 +7,9 @@
 use std::{collections::VecDeque, time::Duration, time::Instant};
 
 use crate::{
-    activity::{self, Clock},
-    price::grouped,
-    wallet::SyncStatus,
+    amount::grouped,
+    clock::{self, Clock},
+    network::{ZmqStatus, link_amount, link_speed},
 };
 
 /// Speeds are measured over about this much of the latest samples.
@@ -220,23 +220,6 @@ fn per_second(blocks: f64) -> String {
     format!("{}/s", blocks_a_second(blocks))
 }
 
-/// The amount and its unit: ("1.8", "MB"), ("12", "MB"), or ("640", "kB")
-/// under a megabyte (decimal units).
-fn link_amount(bytes_per_second: f64) -> (String, &'static str) {
-    let mb = bytes_per_second / 1e6;
-    match () {
-        _ if mb >= 9.95 => (format!("{}", mb.round()), "MB"),
-        _ if mb >= 0.995 => (format!("{mb:.1}"), "MB"),
-        _ => (format!("{}", (bytes_per_second / 1e3).round()), "kB"),
-    }
-}
-
-/// "1.8 MB/s", "12 MB/s", or "640 kB/s" under a megabyte (decimal units).
-pub fn link_speed(bytes_per_second: f64) -> String {
-    let (amount, unit) = link_amount(bytes_per_second);
-    format!("{amount} {unit}/s")
-}
-
 /// The same for TalkBack: "1.8 megabytes a second".
 fn link_speed_spoken(bytes_per_second: f64) -> String {
     let (amount, unit) = link_amount(bytes_per_second);
@@ -347,14 +330,14 @@ pub struct Details {
 
 /// "Today, 14:20", "Yesterday, 14:20", "29 Oct, 14:20", "29 Oct 2025, 14:20".
 pub(crate) fn date_time(time: u64, clock: Clock) -> String {
-    let (day, seconds) = activity::local(time, clock);
-    let (today, _) = activity::local(clock.now, clock);
+    let (day, seconds) = clock::local(time, clock);
+    let (today, _) = clock::local(clock.now, clock);
     let date = match day {
         _ if day == today => "Today".to_owned(),
         _ if day == today - 1 => "Yesterday".to_owned(),
-        _ => activity::date(day, today),
+        _ => clock::date(day, today),
     };
-    format!("{date}, {}", activity::time_of_day(seconds, clock))
+    format!("{date}, {}", clock::time_of_day(seconds, clock))
 }
 
 /// The card's words for `status`.
@@ -419,6 +402,65 @@ pub fn details(status: &SyncStatus, clock: Clock) -> Details {
         error: status.error.clone(),
         scan_again: (status.chain_changed && status.error.is_some()).then(|| "Scan the whole wallet again".to_owned()),
     }
+}
+
+/// How far a scan someone asked for has got.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScanProgress {
+    /// "Scanning from last scan".
+    pub title: String,
+    pub from: u64,
+    pub to: u64,
+    /// The next block it will scan.
+    pub at: u64,
+    /// Blocks with payments found so far, and whether money came in. A block
+    /// with both is marked as money in; change isn't money in.
+    pub marks: Vec<(u64, bool)>,
+}
+
+/// How far syncing has got.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyncStatus {
+    pub scanned: u64,
+    pub tip: u64,
+    pub start: u64,
+    /// As far as the wallet knows: `tip` may be from the last time it asked,
+    /// until [`connected`](Self::connected) says the node has answered.
+    pub synced: bool,
+    /// The node has answered since syncing started, and hasn't failed since.
+    pub connected: bool,
+    /// How long this wallet has been waiting for the node's next blocks; 0
+    /// when they're coming.
+    pub waiting_seconds: u64,
+    /// 0 to 1, from the restore height to the tip.
+    pub progress: f32,
+    /// The time left as the chip shows it: none until the speed settles,
+    /// counting down, and never up (see [`catch_up`]).
+    pub seconds_left: Option<u64>,
+    /// Blocks scanned per second over the last few seconds, once settled.
+    pub blocks_per_second: Option<f64>,
+    /// Megabytes a second the fetcher took from the node over the last few
+    /// seconds, once settled.
+    pub link_mb_per_second: Option<f64>,
+    /// When the last scanned block was mined.
+    pub up_to: u64,
+    /// Why the last round failed, in words.
+    pub error: Option<String>,
+    /// The failure is the phone's own (the wallet couldn't be saved), not
+    /// the node's.
+    pub error_local: bool,
+    /// The failure is a reorganisation deeper than the wallet can check.
+    pub chain_changed: bool,
+    /// Manual Sync is on.
+    pub manual_sync: bool,
+    /// A scan someone asked for, while it runs.
+    pub scan: Option<ScanProgress>,
+    /// Something to say once: "The chain changed, so Fob scanned recent blocks again."
+    pub notice: Option<String>,
+    /// Instant updates from the node's ZMQ publisher.
+    pub zmq: ZmqStatus,
+    /// [`zmq`](Self::zmq) as Settings shows it: "node.example:18083 · listening".
+    pub zmq_text: String,
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! The currencies Fob can show amounts in, baked in: CoinGecko's money
 //! list as checked on 2026-10-31, 45 of them. Which providers price each is
-//! up to the providers ([`super::Provider::prices`]); this is how each is
+//! up to the providers (`Provider::prices`); this is how each is
 //! written.
 
 use unicode_normalization::UnicodeNormalization;

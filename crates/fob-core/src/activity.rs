@@ -3,20 +3,13 @@
 //! amount, so the apps only draw.
 
 use crate::{
-    amount, price, split,
-    wallet::{Activity, Direction},
+    address::short_title,
+    amount,
+    clock::{Clock, day_label, day_name, local, time_of_day, when},
+    fiat,
+    receipt::ReceiptView,
+    split,
 };
-
-/// The phone's clock, which only the app knows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Clock {
-    /// Seconds since the epoch.
-    pub now: u64,
-    /// The phone's offset from UTC now, in seconds ("+01:00" is 3600).
-    pub utc_offset: i32,
-    /// "09:12" rather than "9:12 am".
-    pub hours_24: bool,
-}
 
 /// One row of Activity, ready to draw: a payment, or a request to be paid
 /// (its own line, apart from the payments to it).
@@ -53,57 +46,6 @@ pub struct Day {
     pub rows: Vec<Row>,
 }
 
-const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-
-/// Days since the epoch on the phone's calendar, and seconds into that day.
-pub(crate) fn local(time: u64, clock: Clock) -> (i64, i64) {
-    let t = time as i64 + i64::from(clock.utc_offset);
-    (t.div_euclid(86_400), t.rem_euclid(86_400))
-}
-
-/// The civil date of a day since the epoch (Howard Hinnant's algorithm).
-fn civil(days: i64) -> (i64, usize, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (yoe + era * 400 + i64::from(m <= 2), m as usize, d)
-}
-
-fn day_label(day: i64, clock: Clock) -> String {
-    let (today, _) = local(clock.now, clock);
-    if day == today {
-        return "TODAY".into();
-    }
-    if day == today - 1 {
-        return "YESTERDAY".into();
-    }
-    let (year, month, d) = civil(day);
-    let (this_year, _, _) = civil(today);
-    let date = format!("{d} {}", MONTHS[month - 1]);
-    if year == this_year { date } else { format!("{date} {year}") }
-}
-
-pub(crate) fn time_of_day(seconds: i64, clock: Clock) -> String {
-    let (h, m) = (seconds / 3600, seconds % 3600 / 60);
-    if clock.hours_24 {
-        format!("{h:02}:{m:02}")
-    } else {
-        let half = if h < 12 { "am" } else { "pm" };
-        format!("{}:{m:02} {half}", if h % 12 == 0 { 12 } else { h % 12 })
-    }
-}
-
-/// An address cut to its ends, for a title: "86Ux … 7kQa".
-pub fn short_address(address: &str) -> String {
-    let n = address.len();
-    if n <= 8 { address.to_owned() } else { format!("{} … {}", &address[..4], &address[n - 4..]) }
-}
-
 /// While a payment isn't settled: "Sending", "On the way",
 /// "Confirming · 3 of 10" (out) or "Not ready · 3 of 10" (in; "20 of 60"
 /// for a mined reward, as many as its outputs need to be spent).
@@ -123,45 +65,6 @@ pub(crate) fn waiting(activity: &Activity) -> Option<String> {
 /// then "Confirmed · 24".
 pub fn status(activity: &Activity) -> String {
     waiting(activity).unwrap_or_else(|| format!("Confirmed · {}", activity.confirmations))
-}
-
-/// A day that isn't today or yesterday: "27 Oct", "27 Oct 2025".
-pub(crate) fn date(day: i64, today: i64) -> String {
-    let (year, month, d) = civil(day);
-    let name = month_name(month);
-    if year == civil(today).0 { format!("{d} {name}") } else { format!("{d} {name} {year}") }
-}
-
-/// A day with its year whatever the year: "2 Sep 2026".
-pub(crate) fn full_date(day: i64) -> String {
-    let (year, month, d) = civil(day);
-    format!("{d} {} {year}", month_name(month))
-}
-
-fn month_name(month: usize) -> String {
-    let name = &MONTHS[month - 1];
-    format!("{}{}", &name[..1], name[1..].to_lowercase())
-}
-
-/// When, for a payment's own screen: "Today 08:40", "Yesterday 08:40",
-/// "27 Oct 08:40", "27 Oct 2025 08:40".
-pub fn when(time: u64, clock: Clock) -> String {
-    let (day, seconds) = local(time, clock);
-    let (today, _) = local(clock.now, clock);
-    let date = match day {
-        _ if day == today => "Today".to_owned(),
-        _ if day == today - 1 => "Yesterday".to_owned(),
-        _ => date(day, today),
-    };
-    format!("{date} {}", time_of_day(seconds, clock))
-}
-
-/// When, short, for a line under something else: the time today ("08:40"),
-/// the date before ("22 Oct", "22 Oct 2025").
-pub(crate) fn short_when(time: u64, clock: Clock) -> String {
-    let (day, seconds) = local(time, clock);
-    let (today, _) = local(clock.now, clock);
-    if day == today { time_of_day(seconds, clock) } else { date(day, today) }
 }
 
 /// The words for "Not available", where a price can't be had.
@@ -231,20 +134,20 @@ fn pieces(amounts: &[u64]) -> Option<String> {
 /// The words of a payment's own screen. `now` is the current price shown
 /// (none with XMR only or none asked within the hour); `priced` says
 /// whether prices show at all; `provider` names where they come from.
-pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, priced: bool, provider: &str, clock: Clock) -> Detail {
+pub fn detail(activity: &Activity, now: Option<(&fiat::Currency, u64)>, priced: bool, provider: &str, clock: Clock) -> Detail {
     let out = activity.direction == Direction::Out;
-    let worth = |price: u64, currency: &price::Currency| price::value(activity.amount, price, currency);
-    let then = activity.price.as_ref().map(|r| (price::currency(&r.currency), r.price));
+    let worth = |price: u64, currency: &fiat::Currency| fiat::value(activity.amount, price, currency);
+    let then = activity.price.as_ref().map(|r| (fiat::currency(&r.currency), r.price));
     let change = match (now, &then) {
         (Some((c, p)), Some((tc, tp))) if c.code == tc.code => {
-            Some(price::change(price::to_minor(activity.amount, *tp, tc), price::to_minor(activity.amount, p, c), c))
+            Some(fiat::change(fiat::to_minor(activity.amount, *tp, tc), fiat::to_minor(activity.amount, p, c), c))
         }
         _ => None,
     };
     let party = if activity.split.is_some() {
         Some("This wallet".to_owned())
     } else if out {
-        activity.contact.clone().or_else(|| activity.to.as_deref().map(short_address))
+        activity.contact.clone().or_else(|| activity.to.as_deref().map(short_title))
     } else {
         activity.subaddress.map(|i| {
             let address = if i == 0 { "Main address".to_owned() } else { format!("Address {i}") };
@@ -270,10 +173,10 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, priced:
         when: format!("{}{note}", when(activity.time, clock)),
         priced,
         worth_now: now.map(|(c, p)| worth(p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
-        rate_now: now.map(|(c, p)| price::rate(p, c)),
+        rate_now: now.map(|(c, p)| fiat::rate(p, c)),
         then_label: if out { "When sent" } else { "When received" }.into(),
         worth_then: then.as_ref().map(|(c, p)| worth(*p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
-        rate_then: then.as_ref().map(|(c, p)| price::rate(*p, c)),
+        rate_then: then.as_ref().map(|(c, p)| fiat::rate(*p, c)),
         up: change.as_ref().is_some_and(|c| c.1),
         change: change.map(|c| c.0),
         status: status(activity),
@@ -302,7 +205,7 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         // Paid to a share of your profile.
         _ if !out && activity.shared.is_some() => crate::profile::VIA.into(),
         (Some(r), _) => r.merchant.clone(),
-        (None, Some(to)) if out => short_address(to),
+        (None, Some(to)) if out => short_title(to),
         _ if out => "Sent".into(),
         _ => "Received".into(),
     };
@@ -334,7 +237,7 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         // A receipt's own total; otherwise what it was worth when it moved.
         fiat: match (&activity.receipt, &activity.price) {
             (Some(r), _) => Some(r.total.clone()),
-            (None, Some(p)) => Some(price::value(activity.amount, p.price, &price::currency(&p.currency))),
+            (None, Some(p)) => Some(fiat::value(activity.amount, p.price, &fiat::currency(&p.currency))),
             (None, None) => None,
         },
         activity: Some(activity),
@@ -389,7 +292,7 @@ pub const PAID_BEFORE: usize = 3;
 /// wrote, not what was paid.
 pub(crate) fn paid_amount(payment: &Activity) -> String {
     match &payment.price {
-        Some(p) => price::value(payment.amount, p.price, &price::currency(&p.currency)),
+        Some(p) => fiat::value(payment.amount, p.price, &fiat::currency(&p.currency)),
         None => format!("{} XMR", amount::format_short(payment.amount)),
     }
 }
@@ -401,17 +304,6 @@ pub(crate) fn last_line(payment: &Activity, clock: Clock) -> String {
     match &payment.note {
         Some(note) => format!("{note} · {day}"),
         None => format!("{day} · {}", paid_amount(payment)),
-    }
-}
-
-/// The day of `time`, for a line: "Today", "Yesterday", "27 Oct".
-pub(crate) fn day_name(time: u64, clock: Clock) -> String {
-    let (day, _) = local(time, clock);
-    let (today, _) = local(clock.now, clock);
-    match day {
-        _ if day == today => "Today".to_owned(),
-        _ if day == today - 1 => "Yesterday".to_owned(),
-        _ => date(day, today),
     }
 }
 
@@ -429,13 +321,86 @@ pub fn paid_before(rows: &[Activity], clock: Clock) -> Vec<PaidBefore> {
             continue;
         }
         seen.push(to);
-        let name = last.contact.clone().or_else(|| last.receipt.as_ref().map(|r| r.merchant.clone())).unwrap_or_else(|| short_address(to));
+        let name = last.contact.clone().or_else(|| last.receipt.as_ref().map(|r| r.merchant.clone())).unwrap_or_else(|| short_title(to));
         people.push(PaidBefore { address: to.to_owned(), name, line: last_line(last, clock) });
         if people.len() == PAID_BEFORE {
             break;
         }
     }
     people
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    In,
+    Out,
+}
+
+/// One row of Activity: a payment in or out, with its receipt if it had one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Activity {
+    pub tx: String,
+    pub direction: Direction,
+    /// What moved, without the fee.
+    pub amount: u64,
+    pub fee: Option<u64>,
+    /// Who was paid, when this wallet sent it.
+    pub to: Option<String>,
+    pub height: Option<u64>,
+    pub time: u64,
+    pub confirmations: u64,
+    /// Confirmations before it's settled: 10, or for a payment in, as many
+    /// as its slowest output needs to be spent (60 for a mined reward, more
+    /// for one locked to a later block), the not-ready card's rule.
+    pub needed: u64,
+    pub receipt: Option<ReceiptView>,
+    pub receipt_json: Option<String>,
+    /// What one XMR was worth when it moved, in the currency prices are
+    /// shown in; `None` with XMR only or no price to be had.
+    pub price: Option<fiat::Record>,
+    /// The address (by index) a payment in came to; 0 is the main address.
+    pub subaddress: Option<u32>,
+    /// Its pieces, in atomic units: the outputs received for a payment in,
+    /// the outputs spent for one out.
+    pub pieces: Vec<u64>,
+    /// What it was for: the note in the payment code (Fob's own for its
+    /// address, or the payee's description when paying).
+    pub note: Option<String>,
+    /// A split, with its number of pieces: money paid back to this wallet,
+    /// so `amount` is only the fee, what left.
+    pub split: Option<u32>,
+    /// The contact paid, by name, when this wallet sent it to one of a
+    /// contact's addresses; for a payment in, the contact whose request it
+    /// paid (unless the request was deleted before it came).
+    pub contact: Option<String>,
+    /// That contact, by id.
+    pub contact_id: Option<u64>,
+    /// For a payment in to a share of your profile's address: when that
+    /// share was made ("Via your profile", "Shared 09:15").
+    pub shared: Option<u64>,
+    /// For a payment in: what came to each address it paid, by index, so
+    /// one transaction paying two requests credits each its own part.
+    pub parts: Vec<(u32, u64)>,
+    /// Sent, and a day on the node has never heard of it.
+    pub not_confirmed: bool,
+    /// Sent, its coins since released.
+    pub released: bool,
+}
+
+impl Activity {
+    /// This payment in as far as it came to the address at `subaddress`:
+    /// its part there (all of it when it paid that address alone), or
+    /// `None` when it paid that address nothing.
+    pub fn part(&self, subaddress: u32) -> Option<Activity> {
+        if self.direction != Direction::In {
+            return None;
+        }
+        let amount = match self.parts.as_slice() {
+            [] => (self.subaddress == Some(subaddress)).then_some(self.amount)?,
+            parts => parts.iter().find(|p| p.0 == subaddress)?.1,
+        };
+        Some(Activity { amount, subaddress: Some(subaddress), parts: vec![(subaddress, amount)], ..self.clone() })
+    }
 }
 
 #[cfg(test)]
@@ -490,14 +455,6 @@ mod tests {
             total: "$13.50".into(),
             currency: "USD".into(),
         }
-    }
-
-    #[test]
-    fn the_clock_is_where_the_designs_say() {
-        assert_eq!(civil(local(NOW, clock(0)).0), (2026, 10, 31));
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(-1), (1969, 12, 31));
-        assert_eq!(civil(19_782), (2024, 2, 29));
     }
 
     #[test]
@@ -607,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_row_shows_what_it_was_worth_or_its_receipt_s_total() {
-        let record = |price| crate::price::Record { currency: "USD".into(), price, provider: "Kraken".into(), at: NOW, daily: false };
+        let record = |price| crate::fiat::Record { currency: "USD".into(), price, provider: "Kraken".into(), at: NOW, daily: false };
         let mut priced = activity(Direction::In, 500_000_000_000, NOW - HOUR, 20);
         priced.price = Some(record(166_060_000));
         let mut paid = activity(Direction::Out, 142_100_000_000, NOW - 2 * HOUR, 20);
@@ -621,12 +578,12 @@ mod tests {
 
     #[test]
     fn a_payment_s_own_screen_reads_like_the_designs() {
-        let usd = crate::price::currency("USD");
+        let usd = crate::fiat::currency("USD");
         let c = clock(0);
         let at = |h: u64, m: u64| NOW - 12 * HOUR + h * HOUR + m * 60;
         let mut received = activity(Direction::In, 500_000_000_000, at(8, 40), 3);
         received.tx = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90".into();
-        received.price = Some(crate::price::Record { currency: "USD".into(), price: 158_800_000, provider: "Kraken".into(), at: at(8, 40), daily: false });
+        received.price = Some(crate::fiat::Record { currency: "USD".into(), price: 158_800_000, provider: "Kraken".into(), at: at(8, 40), daily: false });
         received.subaddress = Some(3);
         received.note = Some("Coffee beans".into());
         received.pieces = vec![200_000_000_000, 300_000_000_000];
@@ -729,7 +686,7 @@ mod tests {
         let mut sam = paid(address('b'), 100_000_000_000, NOW - 4 * DAY);
         sam.note = Some("Lunch money".into());
         let mut mum = paid(address('c'), 300_000_000_000, NOW - 28 * DAY);
-        mum.price = Some(crate::price::Record { currency: "USD".into(), price: 166_666_666, provider: "Kraken".into(), at: NOW, daily: false });
+        mum.price = Some(crate::fiat::Record { currency: "USD".into(), price: 166_666_666, provider: "Kraken".into(), at: NOW, daily: false });
         // Sam again, earlier: only the last payment to Sam shows.
         let sam_before = paid(address('b'), 1, NOW - 9 * DAY);
         let split = Activity { split: Some(4), ..paid(address('d'), 1, NOW) };

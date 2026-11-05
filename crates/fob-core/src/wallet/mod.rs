@@ -13,6 +13,8 @@ mod sync;
 #[cfg(test)]
 mod tests;
 
+pub use crate::activity::{Activity, Direction};
+pub use crate::catch_up::{ScanProgress, SyncStatus};
 #[cfg(test)]
 use manual_sync::{SentLookup, sent_lookup};
 use state::{ChainSpend, Owned, Sent, State, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
@@ -52,7 +54,10 @@ use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 use crate::{
-    activity::{self, Clock, short_address},
+    activity,
+    address::short_title,
+    clock::{self, Clock},
+    fiat,
     catch_up,
     amount,
     contacts::{self, Contact},
@@ -66,7 +71,8 @@ use crate::{
     receipt::ReceiptView,
     profile, requests, scan, split, store, swap,
     uri::{self, WalletCode},
-    zmq::{self, ZmqStatus},
+    network::ZmqStatus,
+    zmq,
 };
 
 
@@ -160,79 +166,6 @@ pub struct Balance {
     pub unlocked: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Direction {
-    In,
-    Out,
-}
-
-/// One row of Activity: a payment in or out, with its receipt if it had one.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Activity {
-    pub tx: String,
-    pub direction: Direction,
-    /// What moved, without the fee.
-    pub amount: u64,
-    pub fee: Option<u64>,
-    /// Who was paid, when this wallet sent it.
-    pub to: Option<String>,
-    pub height: Option<u64>,
-    pub time: u64,
-    pub confirmations: u64,
-    /// Confirmations before it's settled: 10, or for a payment in, as many
-    /// as its slowest output needs to be spent (60 for a mined reward, more
-    /// for one locked to a later block), the not-ready card's rule.
-    pub needed: u64,
-    pub receipt: Option<ReceiptView>,
-    pub receipt_json: Option<String>,
-    /// What one XMR was worth when it moved, in the currency prices are
-    /// shown in; `None` with XMR only or no price to be had.
-    pub price: Option<price::Record>,
-    /// The address (by index) a payment in came to; 0 is the main address.
-    pub subaddress: Option<u32>,
-    /// Its pieces, in atomic units: the outputs received for a payment in,
-    /// the outputs spent for one out.
-    pub pieces: Vec<u64>,
-    /// What it was for: the note in the payment code (Fob's own for its
-    /// address, or the payee's description when paying).
-    pub note: Option<String>,
-    /// A split, with its number of pieces: money paid back to this wallet,
-    /// so `amount` is only the fee, what left.
-    pub split: Option<u32>,
-    /// The contact paid, by name, when this wallet sent it to one of a
-    /// contact's addresses; for a payment in, the contact whose request it
-    /// paid (unless the request was deleted before it came).
-    pub contact: Option<String>,
-    /// That contact, by id.
-    pub contact_id: Option<u64>,
-    /// For a payment in to a share of your profile's address: when that
-    /// share was made ("Via your profile", "Shared 09:15").
-    pub shared: Option<u64>,
-    /// For a payment in: what came to each address it paid, by index, so
-    /// one transaction paying two requests credits each its own part.
-    pub parts: Vec<(u32, u64)>,
-    /// Sent, and a day on the node has never heard of it.
-    pub not_confirmed: bool,
-    /// Sent, its coins since released.
-    pub released: bool,
-}
-
-impl Activity {
-    /// This payment in as far as it came to the address at `subaddress`:
-    /// its part there (all of it when it paid that address alone), or
-    /// `None` when it paid that address nothing.
-    pub fn part(&self, subaddress: u32) -> Option<Activity> {
-        if self.direction != Direction::In {
-            return None;
-        }
-        let amount = match self.parts.as_slice() {
-            [] => (self.subaddress == Some(subaddress)).then_some(self.amount)?,
-            parts => parts.iter().find(|p| p.0 == subaddress)?.1,
-        };
-        Some(Activity { amount, subaddress: Some(subaddress), parts: vec![(subaddress, amount)], ..self.clone() })
-    }
-}
-
 /// What the screens list, read together by [`Wallet::lists`].
 pub struct Lists {
     /// Home's Activity.
@@ -259,65 +192,6 @@ pub struct ReceiveCode {
     pub detail: Option<String>,
 }
 
-/// How far a scan someone asked for has got.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ScanProgress {
-    /// "Scanning from last scan".
-    pub title: String,
-    pub from: u64,
-    pub to: u64,
-    /// The next block it will scan.
-    pub at: u64,
-    /// Blocks with payments found so far, and whether money came in. A block
-    /// with both is marked as money in; change isn't money in.
-    pub marks: Vec<(u64, bool)>,
-}
-
-/// How far syncing has got.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SyncStatus {
-    pub scanned: u64,
-    pub tip: u64,
-    pub start: u64,
-    /// As far as the wallet knows: `tip` may be from the last time it asked,
-    /// until [`connected`](Self::connected) says the node has answered.
-    pub synced: bool,
-    /// The node has answered since syncing started, and hasn't failed since.
-    pub connected: bool,
-    /// How long this wallet has been waiting for the node's next blocks; 0
-    /// when they're coming.
-    pub waiting_seconds: u64,
-    /// 0 to 1, from the restore height to the tip.
-    pub progress: f32,
-    /// The time left as the chip shows it: none until the speed settles,
-    /// counting down, and never up (see [`catch_up`]).
-    pub seconds_left: Option<u64>,
-    /// Blocks scanned per second over the last few seconds, once settled.
-    pub blocks_per_second: Option<f64>,
-    /// Megabytes a second the fetcher took from the node over the last few
-    /// seconds, once settled.
-    pub link_mb_per_second: Option<f64>,
-    /// When the last scanned block was mined.
-    pub up_to: u64,
-    /// Why the last round failed, in words.
-    pub error: Option<String>,
-    /// The failure is the phone's own (the wallet couldn't be saved), not
-    /// the node's.
-    pub error_local: bool,
-    /// The failure is a reorganisation deeper than the wallet can check.
-    pub chain_changed: bool,
-    /// Manual Sync is on.
-    pub manual_sync: bool,
-    /// A scan someone asked for, while it runs.
-    pub scan: Option<ScanProgress>,
-    /// Something to say once: "The chain changed, so Fob scanned recent blocks again."
-    pub notice: Option<String>,
-    /// Instant updates from the node's ZMQ publisher.
-    pub zmq: ZmqStatus,
-    /// [`zmq`](Self::zmq) as Settings shows it: "node.example:18083 · listening".
-    pub zmq_text: String,
-}
-
 /// Told about every change while the wallet syncs.
 pub trait SyncListener: Send + Sync {
     fn on_status(&self, status: SyncStatus);
@@ -329,7 +203,7 @@ pub enum Retried {
     /// It worked: "USD price updated", "1 XMR = $166.10", shown for 2 s.
     Updated { title: String, line: String },
     /// It failed again: the toast with its new words.
-    Failed(price::alert::Toast),
+    Failed(crate::price_alert::Toast),
 }
 
 /// A payment ready to sign: shown on the confirm screen, sent by its `id`.
@@ -439,7 +313,7 @@ struct Inner {
     /// Has the price task ask at once (a setting changed, a money amount
     /// was typed), for whom it says here.
     prices_wake: tokio::sync::Notify,
-    prices_asked: std::sync::Mutex<Option<price::alert::Asked>>,
+    prices_asked: std::sync::Mutex<Option<crate::price_alert::Asked>>,
     /// When a money amount typed last had the price task ask.
     typed_asked: std::sync::Mutex<u64>,
     /// Price lookups started, and the newest of them come back: an older
@@ -447,7 +321,7 @@ struct Inner {
     price_lookups: AtomicU64,
     price_looked_up: AtomicU64,
     /// The run of failed price lookups, for the toast.
-    price_alerts: std::sync::Mutex<price::alert::Alerts>,
+    price_alerts: std::sync::Mutex<crate::price_alert::Alerts>,
     /// The node's fee per unit of weight and its rounding mask, as last
     /// asked: Split up's fee "about" before a payment is built.
     fee_rate: std::sync::Mutex<Option<(u64, u64)>>,
@@ -575,7 +449,7 @@ pub fn restore_point(network: Network, text: &str) -> Result<u64> {
 /// The day a restore height was mined, as Keys shows it beside the height
 /// ("2 Sep 2026"); none when it would be a guess.
 fn restore_date(network: Network, height: u64) -> Option<String> {
-    network.dated(height).map(|time| activity::full_date((time / 86_400) as i64))
+    network.dated(height).map(|time| clock::full_date((time / 86_400) as i64))
 }
 
 /// What a wallet code holds, shown before restoring from it.

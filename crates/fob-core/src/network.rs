@@ -105,6 +105,61 @@ impl Network {
     }
 }
 
+/// The amount and its unit: ("1.8", "MB"), ("12", "MB"), or ("640", "kB")
+/// under a megabyte (decimal units).
+pub fn link_amount(bytes_per_second: f64) -> (String, &'static str) {
+    let mb = bytes_per_second / 1e6;
+    match () {
+        _ if mb >= 9.95 => (format!("{}", mb.round()), "MB"),
+        _ if mb >= 0.995 => (format!("{mb:.1}"), "MB"),
+        _ => (format!("{}", (bytes_per_second / 1e3).round()), "kB"),
+    }
+}
+
+/// "1.8 MB/s", "12 MB/s", or "640 kB/s" under a megabyte (decimal units).
+pub fn link_speed(bytes_per_second: f64) -> String {
+    let (amount, unit) = link_amount(bytes_per_second);
+    format!("{amount} {unit}/s")
+}
+
+/// How instant updates are doing, for Settings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ZmqStatus {
+    /// Turned off: polling alone.
+    #[default]
+    Off,
+    /// Turned on, not connected yet (or not syncing just now).
+    Connecting,
+    /// Connected and subscribed.
+    Listening,
+    /// The last try failed, and why, in a few words. Retried with a
+    /// growing pause, up to a minute.
+    CantConnect(String),
+}
+
+impl ZmqStatus {
+    /// The subtitle under "Instant updates (ZMQ)":
+    /// "node.example:18083 · listening", or "Off".
+    pub fn text(&self, endpoint: Option<&str>) -> String {
+        let word = match self {
+            ZmqStatus::Off => return "Off".to_owned(),
+            ZmqStatus::Connecting => "connecting",
+            ZmqStatus::Listening => "listening",
+            ZmqStatus::CantConnect(_) => "can't connect",
+        };
+        let place = endpoint.map(|e| e.trim_start_matches("tcp://")).unwrap_or("");
+        format!("{place} · {word}")
+    }
+}
+
+/// Whether `host` is an onion service's (`….onion`, any case, with or
+/// without the root's dot).
+pub fn is_onion(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    let n = host.len();
+    host.eq_ignore_ascii_case("onion") || n > 6 && host.is_char_boundary(n - 6) && host[n - 6..].eq_ignore_ascii_case(".onion")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

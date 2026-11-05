@@ -46,6 +46,19 @@ pub fn parse(text: &str) -> Result<u64> {
         .ok_or(FobError::BadAmount)
 }
 
+/// Digits with a comma every three: "1,234".
+pub fn grouped(whole: u64) -> String {
+    let digits = whole.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

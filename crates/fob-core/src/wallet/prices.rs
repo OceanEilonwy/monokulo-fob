@@ -10,16 +10,16 @@ impl Wallet {
 
     /// The failure in the current run of failed price lookups, if one is
     /// going on.
-    pub fn price_alert(&self) -> Option<price::alert::Alert> {
+    pub fn price_alert(&self) -> Option<crate::price_alert::Alert> {
         self.inner.price_alerts.lock().expect("price lock").alert().cloned()
     }
 
     /// The price toast, while lookups are failing: what failed and what Fob
     /// uses instead. The app shows one whose `id` it hasn't shown yet.
-    pub async fn price_toast(&self, clock: Clock) -> Option<price::alert::Toast> {
+    pub async fn price_toast(&self, clock: Clock) -> Option<crate::price_alert::Toast> {
         let alert = self.price_alert()?;
         let state = self.inner.state.lock().await;
-        Some(price::alert::toast(&alert, state.price_cache.last(&state.prices), clock))
+        Some(crate::price_alert::toast(&alert, state.price_cache.last(&state.prices), clock))
     }
 
     /// Settings' Price from row: "Kraken · web", or while
@@ -33,7 +33,7 @@ impl Wallet {
     }
 
     /// Has the price task ask now, for `asked`.
-    pub(super) fn ask_prices(&self, asked: price::alert::Asked) {
+    pub(super) fn ask_prices(&self, asked: crate::price_alert::Asked) {
         *self.inner.prices_asked.lock().expect("price lock") = Some(asked);
         self.inner.prices_wake.notify_one();
     }
@@ -51,7 +51,7 @@ impl Wallet {
             if asks {
                 // The run was about settings gone; the user's new ones are asked now.
                 self.inner.price_alerts.lock().expect("price lock").reset();
-                self.ask_prices(price::alert::Asked::User);
+                self.ask_prices(crate::price_alert::Asked::User);
             }
         }
         Ok(said)
@@ -81,7 +81,7 @@ impl Wallet {
     /// transport; `None` with XMR only.
     pub async fn check_prices(&self) -> Option<Vec<price::Check>> {
         let settings = self.price_settings().await;
-        let currency = price::currency(settings.code()?);
+        let currency = fiat::currency(settings.code()?);
         let providers = price::providers_for(&currency.code);
         Some(price::check(providers, &currency, settings.transport, settings.provider.name(), price::CHECK_TIMEOUT).await)
     }
@@ -114,16 +114,16 @@ impl Wallet {
     pub async fn balance_worth(&self, atomic: u64, now: u64) -> (Option<(String, Option<String>)>, price::BalanceOrder) {
         let state = self.inner.state.lock().await;
         let shown = state.price_cache.shown(&state.prices, now);
-        let worth = shown.map(|c| (price::value(atomic, c.price, &price::currency(&c.currency)), price::alert::old(c.at, now)));
+        let worth = shown.map(|c| (fiat::value(atomic, c.price, &fiat::currency(&c.currency)), crate::price_alert::old(c.at, now)));
         let order = price::balance_order(&state.prices, worth.is_some());
         (worth, order)
     }
 
     /// The current price shown now, when amounts are also shown in a
     /// currency and one was asked within the day: (currency, price).
-    pub async fn price_now(&self) -> Option<(price::Currency, u64)> {
+    pub async fn price_now(&self) -> Option<(fiat::Currency, u64)> {
         let state = self.inner.state.lock().await;
-        state.price_cache.shown(&state.prices, now()).map(|c| (price::currency(&c.currency), c.price))
+        state.price_cache.shown(&state.prices, now()).map(|c| (fiat::currency(&c.currency), c.price))
     }
 
     /// When the price shown at `now` was asked: new with every new price,
@@ -137,7 +137,7 @@ impl Wallet {
     /// "23 h old"; `None` while it's fresh, or without one.
     pub async fn price_age(&self, now: u64) -> Option<String> {
         let state = self.inner.state.lock().await;
-        state.price_cache.shown(&state.prices, now).and_then(|c| price::alert::old(c.at, now))
+        state.price_cache.shown(&state.prices, now).and_then(|c| crate::price_alert::old(c.at, now))
     }
 
     /// [`price_age`](Wallet::price_age) now, by the phone's clock.
@@ -147,7 +147,7 @@ impl Wallet {
 
     /// What `atomic` XMR is worth now: "$83.03"; `None` without a current price.
     pub async fn worth_now(&self, atomic: u64) -> Option<String> {
-        self.price_now().await.map(|(currency, p)| price::value(atomic, p, &currency))
+        self.price_now().await.map(|(currency, p)| fiat::value(atomic, p, &currency))
     }
 
     /// What `atomic` XMR is worth at `now` (seconds since the epoch), with
@@ -156,7 +156,7 @@ impl Wallet {
     pub async fn worth_aged(&self, atomic: u64, now: u64) -> Option<(String, Option<String>)> {
         let state = self.inner.state.lock().await;
         let c = state.price_cache.shown(&state.prices, now)?;
-        Some((price::value(atomic, c.price, &price::currency(&c.currency)), price::alert::old(c.at, now)))
+        Some((fiat::value(atomic, c.price, &fiat::currency(&c.currency)), crate::price_alert::old(c.at, now)))
     }
 
     /// An amount field for `text`, typed in money (`in_fiat`) or XMR: in
@@ -169,14 +169,14 @@ impl Wallet {
     pub async fn amount_field(&self, text: &str, in_fiat: bool, clock: Clock) -> price::AmountField {
         let (wanted, shown) = {
             let state = self.inner.state.lock().await;
-            (state.prices.code().map(price::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
+            (state.prices.code().map(fiat::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
         };
         let stale = shown.as_ref().is_some_and(|c| clock.now.saturating_sub(c.at) >= price::REFRESH);
         if wanted.is_some() && (shown.is_none() || stale && in_fiat && !text.trim().is_empty()) {
             let mut last = self.inner.typed_asked.lock().expect("price lock");
             if clock.now.saturating_sub(*last) >= price::PULL_REFRESH {
                 *last = clock.now;
-                self.ask_prices(price::alert::Asked::Typing);
+                self.ask_prices(crate::price_alert::Asked::Typing);
             }
         }
         Self::with_field_price(wanted, shown, clock, |price| price::amount_field(text, in_fiat, price))
@@ -189,7 +189,7 @@ impl Wallet {
     pub async fn blank_amount_field(&self, clock: Clock) -> price::AmountField {
         let (wanted, shown) = {
             let state = self.inner.state.lock().await;
-            (state.prices.code().map(price::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
+            (state.prices.code().map(fiat::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
         };
         Self::with_field_price(wanted, shown, clock, price::blank_field)
     }
@@ -197,12 +197,12 @@ impl Wallet {
     /// `make` given the field's price: the currency `wanted` at the price
     /// `shown`, with its age by `clock` once it's aged.
     pub(super) fn with_field_price<T>(
-        wanted: Option<price::Currency>,
+        wanted: Option<fiat::Currency>,
         shown: Option<price::Current>,
         clock: Clock,
         make: impl FnOnce(price::FieldPrice) -> T,
     ) -> T {
-        let age = shown.as_ref().and_then(|c| price::alert::age(c.at, clock));
+        let age = shown.as_ref().and_then(|c| crate::price_alert::age(c.at, clock));
         let price = match (&wanted, &shown) {
             (Some(c), Some(now)) => price::FieldPrice::At(c, now.price, age.as_deref()),
             (Some(c), None) => price::FieldPrice::Missing(c),
@@ -217,9 +217,9 @@ impl Wallet {
     pub async fn convert_amount(&self, text: &str, to_fiat: bool) -> String {
         let Some((currency, p)) = self.price_now().await else { return String::new() };
         if to_fiat {
-            amount::parse(text).map(|a| price::plain(price::to_minor(a, p, &currency), &currency)).unwrap_or_default()
+            amount::parse(text).map(|a| fiat::plain(fiat::to_minor(a, p, &currency), &currency)).unwrap_or_default()
         } else {
-            price::parse(text, &currency).ok().and_then(|m| price::to_atomic(m, p, &currency)).map(amount::format).unwrap_or_default()
+            fiat::parse(text, &currency).ok().and_then(|m| fiat::to_atomic(m, p, &currency)).map(amount::format).unwrap_or_default()
         }
     }
 
@@ -240,8 +240,8 @@ impl Wallet {
             return Ok((amount::parse(text)?, None));
         }
         let (currency, p) = self.price_now().await.ok_or_else(|| FobError::Price("no price to convert with".into()))?;
-        let minor = price::parse(text, &currency)?;
-        Ok((price::to_atomic(minor, p, &currency).ok_or(FobError::BadAmount)?, Some((price::format(minor, &currency), currency.code))))
+        let minor = fiat::parse(text, &currency)?;
+        Ok((fiat::to_atomic(minor, p, &currency).ok_or(FobError::BadAmount)?, Some((fiat::format(minor, &currency), currency.code))))
     }
 
     /// Builds a payment of an amount as Send's field took it: typed in
@@ -277,13 +277,13 @@ impl Wallet {
     /// every 5 minutes (a minute when the user asked), the daily history
     /// once a day while a payment lacks a price. Returns whether anything
     /// changed. A failure goes to the run of failures as `asked` says.
-    pub async fn refresh_prices(&self, asked: price::alert::Asked) -> Result<bool> {
+    pub async fn refresh_prices(&self, asked: crate::price_alert::Asked) -> Result<bool> {
         let provider = self.inner.state.lock().await.prices.provider;
         self.refresh_prices_from(&provider, asked, now()).await
     }
 
-    pub(super) async fn refresh_prices_from(&self, source: &impl price::Source, asked: price::alert::Asked, now: u64) -> Result<bool> {
-        let pulled = asked != price::alert::Asked::Background;
+    pub(super) async fn refresh_prices_from(&self, source: &impl price::Source, asked: crate::price_alert::Asked, now: u64) -> Result<bool> {
+        let pulled = asked != crate::price_alert::Asked::Background;
         let (settings, code, current_due, history_due, lacking_day) = {
             let state = self.inner.state.lock().await;
             let settings = state.prices.clone();
@@ -306,7 +306,7 @@ impl Wallet {
         if !current_due && !history_due {
             return Ok(false);
         }
-        let failed = |failure, day| price::alert::Failed { failure, provider: source.name().into(), currency: code.clone(), day };
+        let failed = |failure, day| crate::price_alert::Failed { failure, provider: source.name().into(), currency: code.clone(), day };
         // Kept over a transport the provider doesn't answer over (an older
         // wallet file): never asked another way without the user's pick.
         let refused = match settings.transport {
@@ -385,7 +385,7 @@ impl Wallet {
         let wallet = self.clone();
         let handle = crate::runtime().spawn(async move {
             loop {
-                let asked = wallet.inner.prices_asked.lock().expect("price lock").take().unwrap_or(price::alert::Asked::Background);
+                let asked = wallet.inner.prices_asked.lock().expect("price lock").take().unwrap_or(crate::price_alert::Asked::Background);
                 let before = wallet.price_alert();
                 let changed = wallet.refresh_prices(asked).await.unwrap_or(false);
                 if changed || wallet.price_alert() != before {
@@ -409,7 +409,7 @@ impl Wallet {
     /// Pull to refresh: new blocks and the pool as [`sync_now`](Wallet::sync_now),
     /// and the price if a minute has passed. Returns when both are done.
     pub async fn pull(&self) {
-        let _ = tokio::join!(self.sync_now(), self.refresh_prices(price::alert::Asked::User));
+        let _ = tokio::join!(self.sync_now(), self.refresh_prices(crate::price_alert::Asked::User));
     }
 
     /// The toast's Retry: asks again as the user, and says what came of it.
@@ -421,12 +421,12 @@ impl Wallet {
     pub(super) async fn retry_prices_from(&self, source: &impl price::Source, clock: Clock) -> Retried {
         // A run about one day's price says that day when it's found.
         let day = self.price_alert().and_then(|a| a.failed.day);
-        let _ = self.refresh_prices_from(source, price::alert::Asked::User, clock.now).await;
+        let _ = self.refresh_prices_from(source, crate::price_alert::Asked::User, clock.now).await;
         if let Some(toast) = self.price_toast(clock).await {
             return Retried::Failed(toast);
         }
         let state = self.inner.state.lock().await;
-        let (title, line) = price::alert::updated(&state.price_cache, &state.prices, day, clock);
+        let (title, line) = crate::price_alert::updated(&state.price_cache, &state.prices, day, clock);
         Retried::Updated { title, line }
     }
 }

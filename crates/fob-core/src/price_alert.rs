@@ -11,8 +11,9 @@
 //! The app shows the toast whose `id` it hasn't shown (or had swiped
 //! away) yet: a new id is a new showing, the same id only newer words.
 
-use super::{Cache, Current, Failure, Settings, currency, rate};
-use crate::activity::{self, Clock};
+use crate::fiat::{currency, rate};
+use crate::price::{self, Cache, Current, Failure, Settings};
+use crate::clock::{self, Clock};
 
 /// Who asked for a price.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,17 +117,17 @@ pub fn reason(failure: Failure, provider: &str) -> String {
 /// settings, however old, and `clock` the phone's.
 pub fn toast(alert: &Alert, last: Option<&Current>, clock: Clock) -> Toast {
     let f = &alert.failed;
-    let (today, _) = activity::local(clock.now, clock);
+    let (today, _) = clock::local(clock.now, clock);
     // "USD price", "29 Oct's USD price".
     let what = match f.day {
-        Some(day) => format!("{}'s {} price", activity::date(day, today), f.currency),
+        Some(day) => format!("{}'s {} price", clock::date(day, today), f.currency),
         None => format!("the {} price", f.currency),
     };
     let reason = reason(f.failure, &f.provider);
     let xmr = if alert.typing { "type the amount in XMR" } else { "amounts stay in XMR" };
     let line = match last {
         _ if f.day.is_some() => format!("{reason} · shown as not available"),
-        Some(c) if clock.now.saturating_sub(c.at) < super::SHOWN => format!("{reason} · using {}", price_from(c.at, clock, true)),
+        Some(c) if clock.now.saturating_sub(c.at) < price::SHOWN => format!("{reason} · using {}", price_from(c.at, clock, true)),
         // One too old to use: the reason, and what that means.
         Some(_) => format!("{reason} · {xmr}"),
         // None ever kept: still why, and that there's none yet.
@@ -145,33 +146,33 @@ pub fn toast(alert: &Alert, last: Option<&Current>, clock: Clock) -> Toast {
 /// When a price is from: "14:02", "yesterday's 14:02", "29 Oct's" (with
 /// `the`, "the 14:02 price"), or "14:02", "yesterday 14:02", "29 Oct".
 pub(crate) fn price_from(at: u64, clock: Clock, the: bool) -> String {
-    let (day, seconds) = activity::local(at, clock);
-    let (today, _) = activity::local(clock.now, clock);
-    let time = activity::time_of_day(seconds, clock);
+    let (day, seconds) = clock::local(at, clock);
+    let (today, _) = clock::local(clock.now, clock);
+    let time = clock::time_of_day(seconds, clock);
     match (day, the) {
         _ if day == today && the => format!("the {time} price"),
         _ if day == today => time,
         _ if day == today - 1 && the => format!("yesterday's {time} price"),
         _ if day == today - 1 => format!("yesterday {time}"),
-        (_, true) => format!("{}'s price", activity::date(day, today)),
-        (_, false) => activity::date(day, today),
+        (_, true) => format!("{}'s price", clock::date(day, today)),
+        (_, false) => clock::date(day, today),
     }
 }
 
 /// Where a price converts an amount, how old it is once it isn't just
 /// asked: "price from 14:02"; `None` while it's newer than
-/// [`AGED`](super::AGED).
+/// [`AGED`](price::AGED).
 pub fn age(at: u64, clock: Clock) -> Option<String> {
-    (clock.now.saturating_sub(at) >= super::AGED).then(|| format!("price from {}", price_from(at, clock, false)))
+    (clock.now.saturating_sub(at) >= price::AGED).then(|| format!("price from {}", price_from(at, clock, false)))
 }
 
-/// Beside an amount converted at a price over [`AGED`](super::AGED) old
+/// Beside an amount converted at a price over [`AGED`](price::AGED) old
 /// (Home's balance, Send's ready line): "40 min old", "2 h old"; `None`
 /// while it's newer. Shown prices are under a day old, so never days.
 pub fn old(at: u64, now: u64) -> Option<String> {
     let age = now.saturating_sub(at);
     match age {
-        _ if age < super::AGED => None,
+        _ if age < price::AGED => None,
         _ if age < 3_600 => Some(format!("{} min old", age / 60)),
         _ => Some(format!("{} h old", age / 3_600)),
     }
@@ -184,9 +185,9 @@ pub fn updated(cache: &Cache, settings: &Settings, day: Option<i64>, clock: Cloc
     let Some(code) = settings.code() else { return ("Prices are off".into(), String::new()) };
     match day {
         Some(day) => {
-            let (today, _) = activity::local(clock.now, clock);
+            let (today, _) = clock::local(clock.now, clock);
             let found = cache.history(settings).and_then(|h| h.days.iter().find(|d| d.0 == day)).map(|d| rate(d.1, &currency(code)));
-            (format!("{}'s {code} price found", activity::date(day, today)), found.unwrap_or_default())
+            (format!("{}'s {code} price found", clock::date(day, today)), found.unwrap_or_default())
         }
         None => {
             let line = cache.shown(settings, clock.now).map(|c| rate(c.price, &currency(&c.currency))).unwrap_or_default();
@@ -261,7 +262,7 @@ mod tests {
         assert_eq!(toast(&nzd, None, clock(now)).line, "CoinGecko didn't answer · no NZD price yet");
         let t = toast(&alert(Failure::Busy, None, true), None, clock(now));
         assert_eq!(t.line, "Kraken is busy · type the amount in XMR");
-        let t = toast(&alert(Failure::BadAnswer, None, false), Some(&kept(now - super::super::SHOWN)), clock(now));
+        let t = toast(&alert(Failure::BadAnswer, None, false), Some(&kept(now - crate::price::SHOWN)), clock(now));
         assert_eq!(t.line, "Kraken answered without a price · amounts stay in XMR");
         // A day's history.
         let t = toast(&alert(Failure::NotAnswering, Some(crate::price::day(now) - 2), false), Some(&kept(at_1402)), clock(now));
@@ -277,8 +278,8 @@ mod tests {
     fn an_amount_says_how_old_its_price_is_after_ten_minutes() {
         let now = 1_793_458_800;
         assert_eq!(old(now, now), None);
-        assert_eq!(old(now - super::super::AGED + 1, now), None);
-        assert_eq!(old(now - super::super::AGED, now).as_deref(), Some("10 min old"));
+        assert_eq!(old(now - crate::price::AGED + 1, now), None);
+        assert_eq!(old(now - crate::price::AGED, now).as_deref(), Some("10 min old"));
         assert_eq!(old(now - 59 * 60 - 59, now).as_deref(), Some("59 min old"));
         assert_eq!(old(now - 3_600, now).as_deref(), Some("1 h old"));
         assert_eq!(old(now - 2 * 3_600 - 1_799, now).as_deref(), Some("2 h old"));
@@ -290,7 +291,7 @@ mod tests {
     #[test]
     fn a_price_says_its_age_once_it_isnt_just_asked() {
         let now = 1_793_458_800;
-        assert_eq!(age(now - super::super::AGED + 1, clock(now)), None);
+        assert_eq!(age(now - crate::price::AGED + 1, clock(now)), None);
         assert_eq!(age(now - 58 * 60, clock(now)).as_deref(), Some("price from 14:02"));
         assert_eq!(age(now - 20 * 3600, clock(now)).as_deref(), Some("price from yesterday 19:00"));
         assert_eq!(age(now - 3 * 86_400, clock(now)).as_deref(), Some("price from 28 Oct"));

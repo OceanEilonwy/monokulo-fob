@@ -5,8 +5,9 @@
 //! with a bar, and opens it into sums; the Coins screen lists every coin.
 
 use crate::{
-    activity::{Clock, local, short_when, time_of_day},
-    amount, price, split,
+    amount,
+    clock::{Clock, local, short_when, time_of_day},
+    fiat, split,
 };
 
 /// About how long a block takes.
@@ -251,8 +252,8 @@ pub struct Coins {
 /// included, waits `unlock` blocks.
 /// `age` says how old the price is once it's missed a refresh ("23 h old"),
 /// beside the ready sum.
-pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unlock: u64, price: Option<(&price::Currency, u64)>, age: Option<&str>, clock: Clock) -> Coins {
-    let worth = |atomic: u64| price.map(|(currency, p)| price::value(atomic, p, currency));
+pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unlock: u64, price: Option<(&fiat::Currency, u64)>, age: Option<&str>, clock: Clock) -> Coins {
+    let worth = |atomic: u64| price.map(|(currency, p)| fiat::value(atomic, p, currency));
     let ready_total: u64 = ready.iter().map(|p| p.amount).sum();
     let mut ready_coins: Vec<CoinView> = ready
         .into_iter()
@@ -339,7 +340,7 @@ mod tests {
             vec![piece(XMR / 2, 3, Source::Received, NOW - 8 * 60), piece(XMR / 50, 9, Source::Change(Some("84Bv … 9fQ2".into())), NOW - 20 * 60)],
             NOW - 30,
             10,
-            Some((&price::currency("USD"), 166_060_000)),
+            Some((&fiat::currency("USD"), 166_060_000)),
             None,
             clock(),
         );
@@ -366,7 +367,7 @@ mod tests {
         // The bar for TalkBack says what it shows, not a bare percentage.
         assert_eq!(coins.bar_description, "1.725 XMR ready, 0.52 XMR not yet, 32% of the way");
         // An old price says its age beside the sum it values.
-        let aged = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, Some((&price::currency("USD"), 166_060_000)), Some("23 h old"), clock());
+        let aged = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, Some((&fiat::currency("USD"), 166_060_000)), Some("23 h old"), clock());
         assert_eq!(aged.ready_sum, "1 · $166.06 · 23 h old");
         let all_ready = super::coins(vec![piece(XMR, 10, Source::Received, NOW)], vec![], NOW, 10, None, None, clock());
         assert_eq!(all_ready.bar_description, "1 XMR ready");

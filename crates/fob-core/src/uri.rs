@@ -1,10 +1,10 @@
 //! What a QR code can hold: a payment request (`monero:`), maybe with an ORF
 //! receipt, or a whole wallet (`monero_wallet:`, or bare seed words).
 
-use monero_wallet::address::MoneroAddress;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use zeroize::Zeroizing;
 
+use crate::address::check_address;
 use crate::amount;
 
 pub use orf_codec::Receipt;
@@ -57,21 +57,6 @@ fn split_query(rest: &str) -> (&str, Vec<(String, String)>) {
 
 fn get<'a>(pairs: &'a [(String, String)], keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|k| pairs.iter().find(|(pk, v)| pk == k && !v.is_empty()).map(|(_, v)| v.as_str()))
-}
-
-/// The address's network, for a clear error when a code is for the other one.
-fn check_address(network: Network, address: &str) -> Result<()> {
-    if MoneroAddress::from_str(network.monero(), address).is_ok() {
-        return Ok(());
-    }
-    let other = match network {
-        Network::Mainnet => Network::Stagenet,
-        Network::Stagenet => Network::Mainnet,
-    };
-    if MoneroAddress::from_str(other.monero(), address).is_ok() {
-        return Err(FobError::WrongNetwork { expected: network.name(), found: other.name() });
-    }
-    Err(FobError::BadAddress(network.name()))
 }
 
 /// A scanned or pasted payment code: `monero:<address>?tx_amount=…&orf=…`,
@@ -311,38 +296,6 @@ pub fn receive(address: &str, amount: Option<&str>, note: Option<&str>) -> Resul
     })
 }
 
-/// A piece of an address as Receive shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AddressGroup {
-    pub text: String,
-    /// The first, middle and last groups stand out: the ones people check.
-    pub highlighted: bool,
-}
-
-/// An address in groups of five characters (19 for a 95-character address;
-/// an integrated one splits the same way, its last group shorter), with the
-/// first, the middle (index count ÷ 2) and the last highlighted.
-pub fn address_groups(address: &str) -> Vec<AddressGroup> {
-    let chars: Vec<char> = address.trim().chars().collect();
-    let count = chars.len().div_ceil(5);
-    chars
-        .chunks(5)
-        .enumerate()
-        .map(|(i, group)| AddressGroup { text: group.iter().collect(), highlighted: i == 0 || i == count / 2 || i + 1 == count })
-        .collect()
-}
-
-/// An address in a field, its first and last five: "84Bv9 … 99fQ2". Short
-/// text is kept as it is.
-pub fn short(address: &str) -> String {
-    let chars: Vec<char> = address.trim().chars().collect();
-    if chars.len() <= 12 {
-        return chars.into_iter().collect();
-    }
-    let (head, tail): (String, String) = (chars[..5].iter().collect(), chars[chars.len() - 5..].iter().collect());
-    format!("{head} … {tail}")
-}
-
 /// A wallet code: `monero_wallet:` with keys or seed (the form the Monero GUI
 /// and Cake Wallet show), or a code holding only seed words.
 pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
@@ -406,6 +359,7 @@ pub fn wallet_code(address: &str, spend_hex: Option<&str>, view_hex: &str, heigh
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::{address_groups, short};
     use crate::keys::Keys;
 
     fn wallet() -> Keys {
@@ -600,31 +554,6 @@ mod tests {
     }
 
     #[test]
-    fn addresses_show_in_groups_of_five_ends_and_middle_marked() {
-        let address = wallet().address(1);
-        assert_eq!(address.len(), 95);
-        let groups = address_groups(&address);
-        assert_eq!(groups.len(), 19);
-        assert_eq!(groups.iter().map(|g| g.text.as_str()).collect::<String>(), address);
-        let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
-        assert_eq!(marked, [0, 9, 18]);
-        // An integrated address: 106 characters, the last group one long.
-        let integrated = "4".repeat(106);
-        let groups = address_groups(&integrated);
-        assert_eq!((groups.len(), groups[21].text.as_str()), (22, "4"));
-        let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
-        assert_eq!(marked, [0, 11, 21]);
-    }
-
-    #[test]
-    fn an_address_in_a_field_shows_its_first_and_last_five() {
-        let address = wallet().address(1);
-        assert_eq!(short(&address), format!("{} … {}", &address[..5], &address[90..]));
-        assert_eq!(short(" 84Bv9qqqqqqqqqqqqq99fQ2 "), "84Bv9 … 99fQ2");
-        assert_eq!(short("86Ux"), "86Ux");
-    }
-
-    #[test]
     fn wallet_codes_round_trip_with_keys() {
         let keys = wallet();
         let code = wallet_code(&keys.primary_address(), keys.spend_key_hex().as_deref().map(|s| s.as_str()), &keys.view_key_hex(), 2_100_000);
@@ -662,7 +591,7 @@ mod tests {
     }
 
     fn webp(len: usize) -> Vec<u8> {
-        crate::contacts::test_webp(len, 96)
+        crate::names::test_webp(len, 96)
     }
 
     #[test]
@@ -771,5 +700,30 @@ mod tests {
         // A usual one, a name and a short note: medium, version 11 or below.
         let usual = payment_uri(&address, Some(481_700_000_000), Some("Concert tickets"), Some("Henry Hollingworth"));
         assert!(version(&usual) <= 11, "{}", version(&usual));
+    }
+
+    #[test]
+    fn addresses_show_in_groups_of_five_ends_and_middle_marked() {
+        let address = wallet().address(1);
+        assert_eq!(address.len(), 95);
+        let groups = address_groups(&address);
+        assert_eq!(groups.len(), 19);
+        assert_eq!(groups.iter().map(|g| g.text.as_str()).collect::<String>(), address);
+        let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
+        assert_eq!(marked, [0, 9, 18]);
+        // An integrated address: 106 characters, the last group one long.
+        let integrated = "4".repeat(106);
+        let groups = address_groups(&integrated);
+        assert_eq!((groups.len(), groups[21].text.as_str()), (22, "4"));
+        let marked: Vec<usize> = groups.iter().enumerate().filter(|(_, g)| g.highlighted).map(|(i, _)| i).collect();
+        assert_eq!(marked, [0, 11, 21]);
+    }
+
+    #[test]
+    fn an_address_in_a_field_shows_its_first_and_last_five() {
+        let address = wallet().address(1);
+        assert_eq!(short(&address), format!("{} … {}", &address[..5], &address[90..]));
+        assert_eq!(short(" 84Bv9qqqqqqqqqqqqq99fQ2 "), "84Bv9 … 99fQ2");
+        assert_eq!(short("86Ux"), "86Ux");
     }
 }

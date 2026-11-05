@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use crate::network::Network;
+use crate::network::{Network, ZmqStatus};
 
 /// monerod's topics for a transaction entering the pool and for a new
 /// main-chain tip, in their small forms: only the topic is read.
@@ -25,36 +25,6 @@ pub(crate) const CHAIN_TOPIC: &str = "json-minimal-chain_main";
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(60);
-
-/// How instant updates are doing, for Settings.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum ZmqStatus {
-    /// Turned off: polling alone.
-    #[default]
-    Off,
-    /// Turned on, not connected yet (or not syncing just now).
-    Connecting,
-    /// Connected and subscribed.
-    Listening,
-    /// The last try failed, and why, in a few words. Retried with a
-    /// growing pause, up to a minute.
-    CantConnect(String),
-}
-
-impl ZmqStatus {
-    /// The subtitle under "Instant updates (ZMQ)":
-    /// "node.example:18083 · listening", or "Off".
-    pub fn text(&self, endpoint: Option<&str>) -> String {
-        let word = match self {
-            ZmqStatus::Off => return "Off".to_owned(),
-            ZmqStatus::Connecting => "connecting",
-            ZmqStatus::Listening => "listening",
-            ZmqStatus::CantConnect(_) => "can't connect",
-        };
-        let place = endpoint.map(|e| e.trim_start_matches("tcp://")).unwrap_or("");
-        format!("{place} · {word}")
-    }
-}
 
 /// The node's host as a URL has it (`[::1]` for IPv6), lowercased.
 fn node_host(node: &str) -> Option<String> {

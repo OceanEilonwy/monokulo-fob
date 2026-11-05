@@ -250,8 +250,8 @@ async fn a_day_s_history_that_fails_is_named() {
     assert_eq!(failing.asked(), (0, 1), "only the history was due");
     let clock = Clock { now: t + 60, utc_offset: 0, hours_24: true };
     let toast = wallet.price_toast(clock).await.unwrap();
-    let (today, _) = activity::local(t + 60, clock);
-    let date = activity::date(price::day(t - 2 * DAY), today);
+    let (today, _) = clock::local(t + 60, clock);
+    let date = clock::date(price::day(t - 2 * DAY), today);
     assert_eq!(toast.title, format!("Couldn't get {date}'s USD price"));
     assert_eq!(toast.line, "Kraken didn't answer · shown as not available");
     // Retry finds it: the day's price is named, not the current one.
@@ -289,7 +289,7 @@ async fn an_old_price_keeps_amounts_with_its_age_and_one_over_a_day_turns_money_
     // A refresh missed: when it's from, money still typed.
     let f = wallet.amount_field("20", true, at(t + price::AGED)).await;
     assert!(f.in_fiat && f.can_switch);
-    let from = price::alert::age(t, at(t + price::AGED)).unwrap();
+    let from = crate::price_alert::age(t, at(t + price::AGED)).unwrap();
     assert_eq!(f.line, Some(format!("≈ 0.1204 XMR · {from}")));
     // Over a day: XMR only, saying why.
     let f = wallet.amount_field("20", true, at(t + price::SHOWN)).await;

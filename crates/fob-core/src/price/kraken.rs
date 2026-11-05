@@ -13,7 +13,8 @@ use std::ops::Range;
 
 use serde_json::Value;
 
-use super::{Failure, MICRO, Source, Transport, micro};
+use super::{Failure, Source, Transport, micro};
+use crate::fiat::MICRO;
 use crate::error::{FobError, Result};
 
 const API: &str = "https://api.kraken.com/0/public";

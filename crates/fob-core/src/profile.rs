@@ -12,12 +12,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    activity::{self, Clock},
+    activity::{self, Activity},
     amount,
+    clock::{self, Clock},
     contacts::{self, Contact},
     error::{FobError, Result},
-    price, uri,
-    wallet::Activity,
+    fiat, uri,
 };
 
 /// Your name and photo, kept in the wallet file.
@@ -266,9 +266,9 @@ pub fn received(share: &Share, rows: &[Activity]) -> Option<String> {
     let atomic: u64 = paid.iter().map(|a| a.amount).sum();
     let unit = first.price.as_ref().map(|p| p.currency.clone());
     let fiat = unit.and_then(|unit| {
-        let currency = price::currency(&unit);
-        let minor: Option<u64> = paid.iter().map(|a| a.price.as_ref().filter(|p| p.currency == unit).map(|p| price::to_minor(a.amount, p.price, &currency))).sum();
-        minor.map(|m| price::format(m, &currency))
+        let currency = fiat::currency(&unit);
+        let minor: Option<u64> = paid.iter().map(|a| a.price.as_ref().filter(|p| p.currency == unit).map(|p| fiat::to_minor(a.amount, p.price, &currency))).sum();
+        minor.map(|m| fiat::format(m, &currency))
     });
     Some(format!("+{}", fiat.unwrap_or_else(|| format!("{} XMR", amount::format_short(atomic)))))
 }
@@ -291,8 +291,8 @@ pub struct Line {
 
 /// "Today 09:15", "Yesterday 18:02", "28 Oct": a share's time on Your profile.
 fn when(time: u64, clock: Clock) -> String {
-    match activity::day_name(time, clock).as_str() {
-        "Today" | "Yesterday" => activity::when(time, clock),
+    match clock::day_name(time, clock).as_str() {
+        "Today" | "Yesterday" => clock::when(time, clock),
         day => day.to_owned(),
     }
 }
@@ -333,7 +333,7 @@ pub fn activity_rows(book: &Book, clock: Clock) -> Vec<activity::Row> {
                 ShareKind::TouchedPhones { name: Some(name) } | ShareKind::Met { name } => format!("Met {name}"),
                 _ => "Shared your profile".into(),
             },
-            line: format!("A new address for this share · {}", activity::time_of_day(activity::local(s.created, clock).1, clock)),
+            line: format!("A new address for this share · {}", clock::time_of_day(clock::local(s.created, clock).1, clock)),
             amount: String::new(),
             fiat: None,
         })
@@ -343,7 +343,7 @@ pub fn activity_rows(book: &Book, clock: Clock) -> Vec<activity::Row> {
 /// What leads a payment's line when it came to a share's address: "Shared
 /// 09:15" (the share's time, or its day before today).
 pub fn shared_text(created: u64, clock: Clock) -> String {
-    format!("Shared {}", activity::short_when(created, clock))
+    format!("Shared {}", clock::short_when(created, clock))
 }
 
 /// The title of a payment that came to a share's address.
@@ -532,7 +532,7 @@ pub fn updated(contact: &Contact, code: &uri::ProfileCode) -> contacts::Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{keys::Keys, network::Network, price::Record, wallet::{Direction, UNLOCK}};
+    use crate::{keys::Keys, network::Network, fiat::Record, wallet::{Direction, UNLOCK}};
 
     /// 2026-10-31 12:00 UTC.
     const NOW: u64 = 1_793_448_000;
@@ -543,7 +543,7 @@ mod tests {
     }
 
     fn webp(len: usize) -> Vec<u8> {
-        crate::contacts::test_webp(len, 96)
+        crate::names::test_webp(len, 96)
     }
 
     fn paid_in(subaddress: u32, amount: u64, time: u64, price: Option<u64>) -> Activity {

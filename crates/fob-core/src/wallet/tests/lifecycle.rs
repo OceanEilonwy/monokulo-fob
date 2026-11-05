@@ -268,12 +268,12 @@ async fn a_wallet_file_from_before_profiles_opens_with_none() {
 async fn a_photo_saved_before_headers_were_read_is_dropped_on_opening() {
     let path = dir("bad-photo");
     let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
-    let good = contacts::test_webp(300, 96);
+    let good = crate::names::test_webp(300, 96);
     wallet.set_profile("Henry", Some(good.clone())).await.unwrap();
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), photo: Some(good.clone()), ..Default::default() }).await.unwrap();
     let jo = wallet.add_contact(contacts::Draft { name: "Jo".into(), photo: Some(good.clone()), ..Default::default() }).await.unwrap();
     // As an older Fob kept them: a header claiming 16384 × 16384, for Jo and the profile.
-    let huge = contacts::test_webp(300, 16384);
+    let huge = crate::names::test_webp(300, 16384);
     let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
     file["state"]["contacts"]["contacts"][1]["photo"] = hex::encode(&huge).into();
     file["state"]["profile"]["profile"]["photo"] = hex::encode(&huge).into();
