@@ -14,9 +14,9 @@ impl Wallet {
     /// Home's reminder while a wallet made here hasn't had its seed phrase
     /// written down, with the warning over the words meanwhile; `None` once
     /// it has (or for a restored or view-only wallet).
-    pub async fn backup_reminder(&self) -> Option<keys::Reminder> {
+    pub async fn backup_reminder(&self) -> Option<backup::Reminder> {
         let pending = self.inner.state.lock().await.backup_pending;
-        self.inner.keys.seed_word_count().filter(|_| pending).map(keys::reminder)
+        self.inner.keys.seed_word_count().filter(|_| pending).map(backup::reminder)
     }
 
     /// "I've written them down": no more reminders.
@@ -51,21 +51,30 @@ impl Wallet {
     /// word count and whether it was written down (said only of a wallet
     /// made here); `phone_lock`: the phone has a screen lock set, which
     /// opening it asks for.
-    pub async fn backup_hub(&self, phone_lock: bool) -> keys::Hub {
+    pub async fn backup_hub(&self, phone_lock: bool) -> backup::Hub {
         let state = self.inner.state.lock().await;
         let backed = match () {
-            _ if state.restored => keys::Backed::Restored,
-            _ if state.backup_pending => keys::Backed::Pending,
-            _ => keys::Backed::Up,
+            _ if state.restored => backup::Backed::Restored,
+            _ if state.backup_pending => backup::Backed::Pending,
+            _ => backup::Backed::Up,
         };
-        keys::hub(self.inner.keys.seed_word_count(), backed, phone_lock)
+        backup::hub(self.inner.keys.seed_word_count(), backed, phone_lock)
     }
 
     /// Keys' page: every key in full, the restore height with its date
     /// when it can be named.
-    pub async fn keys_page(&self) -> Vec<keys::KeyGroup> {
+    pub async fn keys_page(&self) -> Vec<backup::KeyGroup> {
         let height = self.restore_from().await;
-        self.inner.keys.page(height, restore_date(self.network(), height))
+        let keys = &self.inner.keys;
+        backup::page(backup::KeyValues {
+            spend: keys.spend_key_hex(),
+            view: keys.view_key_hex(),
+            address: keys.primary_address(),
+            public_view: keys.public_view_key_hex(),
+            public_spend: keys.public_spend_key_hex(),
+            restore_height: height,
+            date: restore_date(self.network(), height),
+        })
     }
 
     pub fn primary_address(&self) -> String {
