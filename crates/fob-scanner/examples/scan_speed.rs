@@ -15,7 +15,7 @@
 
 use std::{io::Read, sync::atomic::{AtomicUsize, Ordering}, time::Instant};
 
-use fob_scan::{fe, gpu::{Gpu, TUNING, Tuning}};
+use fob_scanner::{fe, gpu::{Gpu, TUNING, Tuning}};
 use curve25519_dalek::Scalar;
 use sha3::{Digest, Keccak256};
 
@@ -262,7 +262,7 @@ fn main() {
         let mut all = ([0u8; 32], 0);
         // As the wallet does: the GPU goes on while the cores finish the last batch.
         std::thread::scope(|scope| {
-            let (done, finishing) = std::sync::mpsc::sync_channel::<(&[Job], fob_scan::gpu::Points)>(1);
+            let (done, finishing) = std::sync::mpsc::sync_channel::<(&[Job], fob_scanner::gpu::Points)>(1);
             let finisher = scope.spawn(move || {
                 let mut all = ([0u8; 32], 0);
                 for (part, points) in finishing {

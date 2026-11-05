@@ -78,14 +78,14 @@ fn a_wallets_gpu_check_runs_when_due_and_no_more() {
 #[tokio::test]
 #[ignore = "needs a GPU; run with --ignored"]
 async fn a_wallet_keeps_its_gpu_check() {
-    fob_scan::set_mode(fob_scan::Mode::Gpu);
+    fob_scanner::set_mode(fob_scanner::Mode::Gpu);
     for _ in 0..1200 {
-        if fob_scan::gpu_ready() {
+        if fob_scanner::gpu_ready() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let device = fob_scan::gpu_identity().expect("the GPU passed its cold-start check");
+    let device = fob_scanner::gpu_identity().expect("the GPU passed its cold-start check");
     let path = dir("gpu-check");
     let wallet = a_used_wallet(&path).await;
     assert!(wallet.gpu_allowed().await);

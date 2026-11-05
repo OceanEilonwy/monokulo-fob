@@ -294,7 +294,7 @@ mod tests {
     }
 
     /// Real requests to Kraken, to check its answers still read.
-    /// Run by hand: `cargo test -p fob-core kraken_answers -- --ignored`.
+    /// Run by hand: `cargo test -p fob-wallet kraken_answers -- --ignored`.
     #[tokio::test]
     #[ignore = "asks Kraken over the internet"]
     async fn kraken_answers_for_real() {

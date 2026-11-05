@@ -1,10 +1,10 @@
-//! [`fob_core`] for the apps, through UniFFI. This crate only converts types
-//! and turns fob-core's async calls into Kotlin `suspend` functions; every
-//! decision about the wallet is made in fob-core, so the apps stay thin.
+//! [`fob_wallet`] for the apps, through UniFFI. This crate only converts types
+//! and turns fob-wallet's async calls into Kotlin `suspend` functions; every
+//! decision about the wallet is made in fob-wallet, so the apps stay thin.
 
 use std::{path::PathBuf, sync::Arc};
 
-use fob_core::{activity, address, amount, backup, clock, contacts, not_ready, pattern, price, profile, qr, receipt, split, uri};
+use fob_wallet::{activity, address, amount, backup, clock, contacts, not_ready, pattern, price, profile, qr, receipt, split, uri};
 
 uniffi::setup_scaffolding!();
 
@@ -33,9 +33,9 @@ pub enum FobError {
     Other { reason: String },
 }
 
-impl From<fob_core::FobError> for FobError {
-    fn from(e: fob_core::FobError) -> Self {
-        use fob_core::FobError as E;
+impl From<fob_wallet::FobError> for FobError {
+    fn from(e: fob_wallet::FobError) -> Self {
+        use fob_wallet::FobError as E;
         let reason = e.to_string();
         match e {
             E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) | E::Profile(_) | E::BadName(_) => {
@@ -51,12 +51,12 @@ impl From<fob_core::FobError> for FobError {
     }
 }
 
-/// The kinds of error fob-core's parts raise, as fob-core's own.
+/// The kinds of error fob-wallet's parts raise, as fob-wallet's own.
 macro_rules! from_kind {
     ($($kind:ident),*) => {$(
-        impl From<fob_core::error::$kind> for FobError {
-            fn from(e: fob_core::error::$kind) -> Self {
-                fob_core::FobError::from(e).into()
+        impl From<fob_wallet::error::$kind> for FobError {
+            fn from(e: fob_wallet::error::$kind) -> Self {
+                fob_wallet::FobError::from(e).into()
             }
         }
     )*};
@@ -71,20 +71,20 @@ pub enum Network {
     Stagenet,
 }
 
-impl From<Network> for fob_core::Network {
+impl From<Network> for fob_wallet::Network {
     fn from(n: Network) -> Self {
         match n {
-            Network::Mainnet => fob_core::Network::Mainnet,
-            Network::Stagenet => fob_core::Network::Stagenet,
+            Network::Mainnet => fob_wallet::Network::Mainnet,
+            Network::Stagenet => fob_wallet::Network::Stagenet,
         }
     }
 }
 
-impl From<fob_core::Network> for Network {
-    fn from(n: fob_core::Network) -> Self {
+impl From<fob_wallet::Network> for Network {
+    fn from(n: fob_wallet::Network) -> Self {
         match n {
-            fob_core::Network::Mainnet => Network::Mainnet,
-            fob_core::Network::Stagenet => Network::Stagenet,
+            fob_wallet::Network::Mainnet => Network::Mainnet,
+            fob_wallet::Network::Stagenet => Network::Stagenet,
         }
     }
 }
@@ -211,7 +211,7 @@ pub struct BackupReminder {
     pub seed_warning: String,
 }
 
-/// Backup and keys, every word from fob-core, and Settings' line for it.
+/// Backup and keys, every word from fob-wallet, and Settings' line for it.
 #[derive(uniffi::Record)]
 pub struct BackupHub {
     /// The warning card: "Anyone who sees these can take or watch your money. …"
@@ -492,8 +492,8 @@ pub struct PriceToast {
     pub retrying_line: String,
 }
 
-impl From<fob_core::price_alert::Toast> for PriceToast {
-    fn from(t: fob_core::price_alert::Toast) -> Self {
+impl From<fob_wallet::price_alert::Toast> for PriceToast {
+    fn from(t: fob_wallet::price_alert::Toast) -> Self {
         PriceToast { id: t.id, title: t.title, line: t.line, retrying_title: t.retrying_title, retrying_line: t.retrying_line }
     }
 }
@@ -518,9 +518,9 @@ pub struct Activity {
     pub receipt: Option<Receipt>,
 }
 
-fn activity(a: fob_core::Activity) -> Activity {
+fn activity(a: fob_wallet::Activity) -> Activity {
     Activity {
-        outgoing: a.direction == fob_core::Direction::Out,
+        outgoing: a.direction == fob_wallet::Direction::Out,
         amount_text: xmr(a.amount),
         tx: a.tx,
         receipt: a.receipt.map(Into::into),
@@ -746,13 +746,13 @@ pub enum ZmqStatus {
     CantConnect { reason: String },
 }
 
-impl From<fob_core::ZmqStatus> for ZmqStatus {
-    fn from(z: fob_core::ZmqStatus) -> Self {
+impl From<fob_wallet::ZmqStatus> for ZmqStatus {
+    fn from(z: fob_wallet::ZmqStatus) -> Self {
         match z {
-            fob_core::ZmqStatus::Off => ZmqStatus::Off,
-            fob_core::ZmqStatus::Connecting => ZmqStatus::Connecting,
-            fob_core::ZmqStatus::Listening => ZmqStatus::Listening,
-            fob_core::ZmqStatus::CantConnect(reason) => ZmqStatus::CantConnect { reason },
+            fob_wallet::ZmqStatus::Off => ZmqStatus::Off,
+            fob_wallet::ZmqStatus::Connecting => ZmqStatus::Connecting,
+            fob_wallet::ZmqStatus::Listening => ZmqStatus::Listening,
+            fob_wallet::ZmqStatus::CantConnect(reason) => ZmqStatus::CantConnect { reason },
         }
     }
 }
@@ -796,8 +796,8 @@ pub struct SyncDetails {
     pub scan_again: Option<String>,
 }
 
-impl From<fob_core::catch_up::Details> for SyncDetails {
-    fn from(d: fob_core::catch_up::Details) -> Self {
+impl From<fob_wallet::catch_up::Details> for SyncDetails {
+    fn from(d: fob_wallet::catch_up::Details) -> Self {
         SyncDetails {
             title: d.title,
             percent: d.percent,
@@ -813,19 +813,19 @@ impl From<fob_core::catch_up::Details> for SyncDetails {
 /// The fewest Settled Confirmations can be.
 #[uniffi::export]
 pub fn manual_settled_min() -> u32 {
-    fob_core::manual::SETTLED_MIN
+    fob_wallet::manual::SETTLED_MIN
 }
 
 /// The most Settled Confirmations can be.
 #[uniffi::export]
 pub fn manual_settled_max() -> u32 {
-    fob_core::manual::SETTLED_MAX
+    fob_wallet::manual::SETTLED_MAX
 }
 
 /// The most Incoming Scan Blocks can be.
 #[uniffi::export]
 pub fn manual_incoming_max() -> u32 {
-    fob_core::manual::INCOMING_MAX
+    fob_wallet::manual::INCOMING_MAX
 }
 
 /// A scan someone asked for, ready to draw.
@@ -849,14 +849,14 @@ pub struct ScanMark {
     pub incoming: bool,
 }
 
-impl From<fob_core::wallet::ScanProgress> for ScanView {
-    fn from(s: fob_core::wallet::ScanProgress) -> Self {
+impl From<fob_wallet::wallet::ScanProgress> for ScanView {
+    fn from(s: fob_wallet::wallet::ScanProgress) -> Self {
         let total = s.to.saturating_sub(s.from).max(1);
         let done = s.at.saturating_sub(s.from).min(total);
         let position = |height: u64| (height.saturating_sub(s.from) as f32 / total as f32).clamp(0.0, 1.0);
         ScanView {
             title: s.title,
-            blocks: format!("{} of {} blocks", fob_core::manual::grouped(done), fob_core::manual::grouped(total)),
+            blocks: format!("{} of {} blocks", fob_wallet::manual::grouped(done), fob_wallet::manual::grouped(total)),
             progress: done as f32 / total as f32,
             marks: s.marks.iter().map(|(height, incoming)| ScanMark { position: position(*height), incoming: *incoming }).collect(),
         }
@@ -871,7 +871,7 @@ pub enum PullMode {
     Auto,
 }
 
-impl From<PullMode> for fob_core::manual::PullMode {
+impl From<PullMode> for fob_wallet::manual::PullMode {
     fn from(m: PullMode) -> Self {
         match m {
             PullMode::Disabled => Self::Disabled,
@@ -881,12 +881,12 @@ impl From<PullMode> for fob_core::manual::PullMode {
     }
 }
 
-impl From<fob_core::manual::PullMode> for PullMode {
-    fn from(m: fob_core::manual::PullMode) -> Self {
+impl From<fob_wallet::manual::PullMode> for PullMode {
+    fn from(m: fob_wallet::manual::PullMode) -> Self {
         match m {
-            fob_core::manual::PullMode::Disabled => Self::Disabled,
-            fob_core::manual::PullMode::Send => Self::Send,
-            fob_core::manual::PullMode::Auto => Self::Auto,
+            fob_wallet::manual::PullMode::Disabled => Self::Disabled,
+            fob_wallet::manual::PullMode::Send => Self::Send,
+            fob_wallet::manual::PullMode::Auto => Self::Auto,
         }
     }
 }
@@ -911,7 +911,7 @@ pub enum ScanRequest {
     Dates { from: u64, to: Option<u64> },
 }
 
-impl From<ScanRequest> for fob_core::manual::ScanRequest {
+impl From<ScanRequest> for fob_wallet::manual::ScanRequest {
     fn from(r: ScanRequest) -> Self {
         match r {
             ScanRequest::Unsettled => Self::Unsettled,
@@ -924,9 +924,9 @@ impl From<ScanRequest> for fob_core::manual::ScanRequest {
     }
 }
 
-impl From<fob_core::manual::ScanRequest> for ScanRequest {
-    fn from(r: fob_core::manual::ScanRequest) -> Self {
-        use fob_core::manual::ScanRequest as R;
+impl From<fob_wallet::manual::ScanRequest> for ScanRequest {
+    fn from(r: fob_wallet::manual::ScanRequest) -> Self {
+        use fob_wallet::manual::ScanRequest as R;
         match r {
             R::Unsettled => Self::Unsettled,
             R::FromLast => Self::FromLast,
@@ -971,14 +971,14 @@ pub struct PullOutcome {
     pub line: String,
 }
 
-impl From<fob_core::manual::PullOutcome> for PullOutcome {
-    fn from(p: fob_core::manual::PullOutcome) -> Self {
+impl From<fob_wallet::manual::PullOutcome> for PullOutcome {
+    fn from(p: fob_wallet::manual::PullOutcome) -> Self {
         PullOutcome { title: p.title, line: p.line }
     }
 }
 
-impl From<fob_core::SyncStatus> for SyncStatus {
-    fn from(s: fob_core::SyncStatus) -> Self {
+impl From<fob_wallet::SyncStatus> for SyncStatus {
+    fn from(s: fob_wallet::SyncStatus) -> Self {
         let chip = s.chip();
         SyncStatus {
             scanned: s.scanned,
@@ -987,9 +987,9 @@ impl From<fob_core::SyncStatus> for SyncStatus {
             progress: s.progress,
             error: s.error,
             chip_look: match chip.look {
-                fob_core::catch_up::Look::Ring => ChipLook::Ring,
-                fob_core::catch_up::Look::Synced => ChipLook::Synced,
-                fob_core::catch_up::Look::Offline => ChipLook::Offline,
+                fob_wallet::catch_up::Look::Ring => ChipLook::Ring,
+                fob_wallet::catch_up::Look::Synced => ChipLook::Synced,
+                fob_wallet::catch_up::Look::Offline => ChipLook::Offline,
             },
             chip_text: chip.text,
             chip_label: chip.label,
@@ -1011,8 +1011,8 @@ pub trait SyncObserver: Send + Sync {
 
 struct Observer(Arc<dyn SyncObserver>);
 
-impl fob_core::SyncListener for Observer {
-    fn on_status(&self, status: fob_core::SyncStatus) {
+impl fob_wallet::SyncListener for Observer {
+    fn on_status(&self, status: fob_wallet::SyncStatus) {
         self.0.on_status(status.into());
     }
 }
@@ -1209,8 +1209,8 @@ pub struct WalletEntry {
     pub network: Network,
 }
 
-impl From<&fob_core::wallets::Entry> for WalletEntry {
-    fn from(e: &fob_core::wallets::Entry) -> Self {
+impl From<&fob_wallet::wallets::Entry> for WalletEntry {
+    fn from(e: &fob_wallet::wallets::Entry) -> Self {
         WalletEntry { file: e.file.clone(), name: e.name.clone(), network: e.network.into() }
     }
 }
@@ -1227,7 +1227,7 @@ pub enum ScanMode {
 /// compiled shader, which is the slow part of a GPU's first use.
 #[uniffi::export]
 pub fn set_scan_mode(mode: ScanMode, cache_dir: String) {
-    use fob_core::scanning::{Mode, set_cache_dir, set_mode};
+    use fob_wallet::scanning::{Mode, set_cache_dir, set_mode};
     set_cache_dir(cache_dir.into());
     set_mode(match mode {
         ScanMode::Auto => Mode::Auto,
@@ -1240,24 +1240,24 @@ pub fn set_scan_mode(mode: ScanMode, cache_dir: String) {
 /// setting says.
 #[uniffi::export]
 pub fn scan_gpu_failed() -> bool {
-    fob_core::scanning::gpu_failed()
+    fob_wallet::scanning::gpu_failed()
 }
 
 /// Whether the folder `dir` holds a wallet on `network`; asks nothing of the
 /// keystore, so it can be asked while the first screen is chosen.
 #[uniffi::export]
 pub fn wallets_on(dir: String, network: Network) -> bool {
-    fob_core::wallets::any_on(&PathBuf::from(dir), network.into())
+    fob_wallet::wallets::any_on(&PathBuf::from(dir), network.into())
 }
 
 /// The wallets on this phone: names, networks, and which was last open.
 #[derive(uniffi::Object)]
 pub struct WalletList {
-    inner: std::sync::Mutex<fob_core::wallets::Wallets>,
+    inner: std::sync::Mutex<fob_wallet::wallets::Wallets>,
 }
 
 impl WalletList {
-    fn book(&self) -> std::sync::MutexGuard<'_, fob_core::wallets::Wallets> {
+    fn book(&self) -> std::sync::MutexGuard<'_, fob_wallet::wallets::Wallets> {
         self.inner.lock().expect("wallet list lock")
     }
 }
@@ -1268,7 +1268,7 @@ impl WalletList {
     /// was a list join it.
     #[uniffi::constructor]
     pub fn open(dir: String, key: Vec<u8>) -> Result<Arc<Self>> {
-        Ok(Arc::new(WalletList { inner: std::sync::Mutex::new(fob_core::wallets::Wallets::open(&PathBuf::from(dir), file_key(key)?)?) }))
+        Ok(Arc::new(WalletList { inner: std::sync::Mutex::new(fob_wallet::wallets::Wallets::open(&PathBuf::from(dir), file_key(key)?)?) }))
     }
 
     pub fn list(&self) -> Vec<WalletEntry> {
@@ -1323,24 +1323,24 @@ impl WalletList {
 /// A Fob wallet, saved in one file.
 #[derive(uniffi::Object)]
 pub struct FobWallet {
-    inner: fob_core::Wallet,
+    inner: fob_wallet::Wallet,
 }
 
-fn wallet(inner: fob_core::Result<fob_core::Wallet>) -> Result<Arc<FobWallet>> {
+fn wallet(inner: fob_wallet::Result<fob_wallet::Wallet>) -> Result<Arc<FobWallet>> {
     Ok(Arc::new(FobWallet { inner: inner? }))
 }
 
 fn height(network: Network, restore_point: Option<String>) -> Result<Option<u64>> {
     restore_point
         .filter(|t| !t.trim().is_empty())
-        .map(|t| fob_core::restore_point(network.into(), &t))
+        .map(|t| fob_wallet::restore_point(network.into(), &t))
         .transpose()
         .map_err(Into::into)
 }
 
 /// A prepared payment or split for the confirm screen, with what it's
 /// worth now.
-async fn prepared(wallet: &fob_core::Wallet, p: fob_core::Prepared) -> Prepared {
+async fn prepared(wallet: &fob_wallet::Wallet, p: fob_wallet::Prepared) -> Prepared {
     let age = wallet.price_age_now().await;
     let split = p.pieces.map(|n| SplitSummary {
         title: split::TITLE.into(),
@@ -1443,7 +1443,7 @@ impl FobWallet {
     /// (32 bytes the app keeps in the Keystore).
     #[uniffi::constructor]
     pub fn create(path: String, key: Vec<u8>, network: Network) -> Result<Arc<Self>> {
-        wallet(fob_core::Wallet::create(&PathBuf::from(path), file_key(key)?, network.into()))
+        wallet(fob_wallet::Wallet::create(&PathBuf::from(path), file_key(key)?, network.into()))
     }
 
     /// From 16 or 25 seed words. `restore_point` is a date (YYYY-MM-DD) or
@@ -1451,14 +1451,14 @@ impl FobWallet {
     #[uniffi::constructor]
     pub fn restore_words(path: String, key: Vec<u8>, network: Network, words: String, restore_point: Option<String>) -> Result<Arc<Self>> {
         let height = height(network, restore_point)?;
-        wallet(fob_core::Wallet::restore_words(&PathBuf::from(path), file_key(key)?, network.into(), &words, height))
+        wallet(fob_wallet::Wallet::restore_words(&PathBuf::from(path), file_key(key)?, network.into(), &words, height))
     }
 
     /// From a scanned wallet code.
     #[uniffi::constructor]
     pub fn restore_code(path: String, key: Vec<u8>, network: Network, code: String, restore_point: Option<String>) -> Result<Arc<Self>> {
         let height = height(network, restore_point)?;
-        wallet(fob_core::Wallet::restore_code(&PathBuf::from(path), file_key(key)?, network.into(), &code, height))
+        wallet(fob_wallet::Wallet::restore_code(&PathBuf::from(path), file_key(key)?, network.into(), &code, height))
     }
 
     /// A wallet that watches: primary address and private view key.
@@ -1472,12 +1472,12 @@ impl FobWallet {
         restore_point: Option<String>,
     ) -> Result<Arc<Self>> {
         let height = height(network, restore_point)?;
-        wallet(fob_core::Wallet::restore_view_only(&PathBuf::from(path), file_key(key)?, network.into(), &address, &view_key, height))
+        wallet(fob_wallet::Wallet::restore_view_only(&PathBuf::from(path), file_key(key)?, network.into(), &address, &view_key, height))
     }
 
     #[uniffi::constructor]
     pub fn open(path: String, key: Vec<u8>) -> Result<Arc<Self>> {
-        wallet(fob_core::Wallet::open(&PathBuf::from(path), file_key(key)?))
+        wallet(fob_wallet::Wallet::open(&PathBuf::from(path), file_key(key)?))
     }
 
     pub fn network(&self) -> Network {
@@ -1500,8 +1500,8 @@ impl FobWallet {
     pub fn seed_phrase(&self) -> Option<SeedPhrase> {
         self.inner.seed_words().map(|(kind, words)| SeedPhrase {
             kind: match kind {
-                fob_core::SeedKind::Polyseed => "polyseed".into(),
-                fob_core::SeedKind::Classic => "classic".into(),
+                fob_wallet::SeedKind::Polyseed => "polyseed".into(),
+                fob_wallet::SeedKind::Classic => "classic".into(),
             },
             words: words.split(' ').map(str::to_owned).collect(),
         })
@@ -1604,7 +1604,7 @@ impl FobWallet {
             .await
             .into_iter()
             .map(|n| {
-                let report = fob_core::node::Report::pending(network, &n);
+                let report = fob_wallet::node::Report::pending(network, &n);
                 NodeChoice::new(&report, report.line(false), &custom)
             })
             .collect()
@@ -1761,8 +1761,8 @@ impl FobWallet {
     /// The toast's Retry: asks for the price again and says what came of it.
     pub async fn retry_prices(&self, now: u64, utc_offset: i32, hours_24: bool) -> PriceRetry {
         match self.inner.retry_prices(clock::Clock { now, utc_offset, hours_24 }).await {
-            fob_core::Retried::Updated { title, line } => PriceRetry::Updated { title, line },
-            fob_core::Retried::Failed(toast) => PriceRetry::Failed { toast: toast.into() },
+            fob_wallet::Retried::Updated { title, line } => PriceRetry::Updated { title, line },
+            fob_wallet::Retried::Failed(toast) => PriceRetry::Failed { toast: toast.into() },
         }
     }
 
@@ -2266,7 +2266,7 @@ impl From<profile::ShareKind> for ShareKind {
 /// back; the protocol is all here.
 #[derive(uniffi::Object)]
 pub struct TouchSwap {
-    inner: Arc<fob_core::swap::Session>,
+    inner: Arc<fob_wallet::swap::Session>,
 }
 
 /// What the reader sends next.
@@ -2300,9 +2300,9 @@ impl TouchSwap {
     /// The card's answer to the last command: what to do next.
     pub fn reader_next(&self, response: Vec<u8>) -> ReaderStep {
         match self.inner.reader_next(&response) {
-            fob_core::swap::Step::Send(apdu) => ReaderStep::Send { apdu },
-            fob_core::swap::Step::Done(_) => ReaderStep::Done,
-            fob_core::swap::Step::Failed(problem) => ReaderStep::Failed { reason: problem.text() },
+            fob_wallet::swap::Step::Send(apdu) => ReaderStep::Send { apdu },
+            fob_wallet::swap::Step::Done(_) => ReaderStep::Done,
+            fob_wallet::swap::Step::Failed(problem) => ReaderStep::Failed { reason: problem.text() },
         }
     }
 
@@ -2326,7 +2326,7 @@ impl TouchSwap {
 /// chunk to a reader on Send or Home. The protocol is all in Rust.
 #[derive(uniffi::Object)]
 pub struct PayCard {
-    inner: fob_core::pay::PayCard,
+    inner: fob_wallet::pay::PayCard,
 }
 
 #[uniffi::export]
@@ -2335,7 +2335,7 @@ impl PayCard {
     /// too big to send.
     #[uniffi::constructor]
     pub fn new(code: String) -> Result<Arc<PayCard>> {
-        Ok(Arc::new(PayCard { inner: fob_core::pay::PayCard::new(&code)? }))
+        Ok(Arc::new(PayCard { inner: fob_wallet::pay::PayCard::new(&code)? }))
     }
 
     pub fn card_answer(&self, apdu: Vec<u8>) -> Vec<u8> {
@@ -2365,14 +2365,14 @@ pub enum PayStep {
 /// Receive.
 #[derive(uniffi::Object)]
 pub struct PayReader {
-    inner: fob_core::pay::PayReader,
+    inner: fob_wallet::pay::PayReader,
 }
 
 #[uniffi::export]
 impl PayReader {
     #[uniffi::constructor]
     pub fn new(network: Network) -> Arc<PayReader> {
-        Arc::new(PayReader { inner: fob_core::pay::PayReader::new(network.into()) })
+        Arc::new(PayReader { inner: fob_wallet::pay::PayReader::new(network.into()) })
     }
 
     pub fn start(&self) -> Vec<u8> {
@@ -2381,9 +2381,9 @@ impl PayReader {
 
     pub fn next(&self, response: Vec<u8>) -> PayStep {
         match self.inner.next(&response) {
-            fob_core::pay::Step::Send(apdu) => PayStep::Send { apdu },
-            fob_core::pay::Step::Done(code) => PayStep::Done { code },
-            fob_core::pay::Step::Failed(problem) => PayStep::Failed { reason: problem.text() },
+            fob_wallet::pay::Step::Send(apdu) => PayStep::Send { apdu },
+            fob_wallet::pay::Step::Done(code) => PayStep::Done { code },
+            fob_wallet::pay::Step::Failed(problem) => PayStep::Failed { reason: problem.text() },
         }
     }
 
@@ -2395,20 +2395,20 @@ impl PayReader {
 /// Whether a command selects the payment application, not the swap's.
 #[uniffi::export]
 pub fn pay_is_select(apdu: Vec<u8>) -> bool {
-    fob_core::pay::is_select(&apdu)
+    fob_wallet::pay::is_select(&apdu)
 }
 
 /// What the card service answers a payment select while Receive isn't in front.
 #[uniffi::export]
 pub fn pay_not_available() -> Vec<u8> {
-    fob_core::pay::NOT_AVAILABLE.to_vec()
+    fob_wallet::pay::NOT_AVAILABLE.to_vec()
 }
 
 /// What the card service answers while no Share my profile is in front:
 /// "not available", whoever asks.
 #[uniffi::export]
 pub fn swap_not_available() -> Vec<u8> {
-    fob_core::swap::NOT_AVAILABLE.to_vec()
+    fob_wallet::swap::NOT_AVAILABLE.to_vec()
 }
 
 /// Touched phones: both got each other's profile.
@@ -3019,9 +3019,9 @@ pub fn classify_code(network: Network, text: String) -> CodeKind {
 
 #[uniffi::export]
 pub fn preview_wallet_code(network: Network, code: String) -> Result<WalletCodePreview> {
-    let p = fob_core::preview_wallet_code(network.into(), &code)?;
+    let p = fob_wallet::preview_wallet_code(network.into(), &code)?;
     Ok(WalletCodePreview {
-        restore_time: p.restore_height.map(|h| fob_core::Network::from(network).timestamp_for(h)),
+        restore_time: p.restore_height.map(|h| fob_wallet::Network::from(network).timestamp_for(h)),
         address: p.address,
         can_spend: p.can_spend,
         restore_height: p.restore_height,
@@ -3064,15 +3064,15 @@ pub struct NodeSetting {
     pub self_signed: bool,
 }
 
-impl From<fob_core::node::Setting> for NodeSetting {
-    fn from(s: fob_core::node::Setting) -> Self {
+impl From<fob_wallet::node::Setting> for NodeSetting {
+    fn from(s: fob_wallet::node::Setting) -> Self {
         NodeSetting { url: s.url, self_signed: s.self_signed }
     }
 }
 
-impl From<NodeSetting> for fob_core::node::Setting {
+impl From<NodeSetting> for fob_wallet::node::Setting {
     fn from(s: NodeSetting) -> Self {
-        fob_core::node::Setting { url: s.url, self_signed: s.self_signed }
+        fob_wallet::node::Setting { url: s.url, self_signed: s.self_signed }
     }
 }
 
@@ -3086,9 +3086,9 @@ pub enum CheckMark {
     Skipped,
 }
 
-impl From<fob_core::node::Mark> for CheckMark {
-    fn from(m: fob_core::node::Mark) -> Self {
-        use fob_core::node::Mark as M;
+impl From<fob_wallet::node::Mark> for CheckMark {
+    fn from(m: fob_wallet::node::Mark) -> Self {
+        use fob_wallet::node::Mark as M;
         match m {
             M::Pass => CheckMark::Pass,
             M::Fail => CheckMark::Fail,
@@ -3134,9 +3134,9 @@ pub struct NodeReport {
     pub checking: bool,
 }
 
-impl From<fob_core::node::Report> for NodeReport {
-    fn from(r: fob_core::node::Report) -> Self {
-        use fob_core::node::Usable;
+impl From<fob_wallet::node::Report> for NodeReport {
+    fn from(r: fob_wallet::node::Report) -> Self {
+        use fob_wallet::node::Usable;
         NodeReport {
             verdict: r.verdict().into(),
             mark: r.mark().into(),
@@ -3169,8 +3169,8 @@ pub struct NodeChoice {
 }
 
 impl NodeChoice {
-    fn new(report: &fob_core::node::Report, line: String, custom: &[fob_core::node::Setting]) -> NodeChoice {
-        let can_use = report.usable() == fob_core::node::Usable::Use;
+    fn new(report: &fob_wallet::node::Report, line: String, custom: &[fob_wallet::node::Setting]) -> NodeChoice {
+        let can_use = report.usable() == fob_wallet::node::Usable::Use;
         NodeChoice {
             node: NodeSetting { url: report.url.clone(), self_signed: report.self_signed },
             address: report.address.clone(),

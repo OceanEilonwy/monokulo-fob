@@ -1,7 +1,7 @@
 //! Holds a GPU to the CPU's answers at length, for development: the app runs a
 //! short form of this (`vectors.rs`) each time the GPU starts.
 //!
-//!   cargo run --release -p fob-scan --example gpu_check [--any] [--rounds N] [--batch N] [--windows N] [--group N] [--every N]
+//!   cargo run --release -p fob-scanner --example gpu_check [--any] [--rounds N] [--batch N] [--windows N] [--group N] [--every N]
 //!
 //! It checks the shader's field arithmetic on the values that break field
 //! arithmetic, then 8aR against curve25519-dalek on random keys, small-order and
@@ -9,7 +9,7 @@
 //! of a workgroup and of a batch. It stops at the first difference.
 
 use curve25519_dalek::{Scalar, constants::ED25519_BASEPOINT_TABLE, constants::EIGHT_TORSION, edwards::{CompressedEdwardsY, EdwardsPoint}};
-use fob_scan::{
+use fob_scanner::{
     fe::{self, Fe},
     gpu::{Gpu, TUNING, Tuning},
 };
@@ -225,10 +225,10 @@ fn main() {
     let gpu = Gpu::start(None, tuning, args.iter().any(|a| a == "--any")).expect("a GPU");
     println!("{}, {tuning:?}, started in {:.1} s", gpu.name(), started.elapsed().as_secs_f64());
     let t = std::time::Instant::now();
-    println!("the startup vectors: {:?}, {:.3} s", fob_scan::startup_vectors(&gpu), t.elapsed().as_secs_f64());
+    println!("the startup vectors: {:?}, {:.3} s", fob_scanner::startup_vectors(&gpu), t.elapsed().as_secs_f64());
     let t = std::time::Instant::now();
     let view = zeroize::Zeroizing::new(curve25519_dalek::Scalar::from_bytes_mod_order([0x42; 32]).to_bytes());
-    println!("a wallet's vectors: {:?}, {:.3} s", fob_scan::wallet_vectors(&gpu, &view), t.elapsed().as_secs_f64());
+    println!("a wallet's vectors: {:?}, {:.3} s", fob_scanner::wallet_vectors(&gpu, &view), t.elapsed().as_secs_f64());
     let mut rng = Rng(u64::from(std::process::id()));
     println!("seed {}", rng.0);
 

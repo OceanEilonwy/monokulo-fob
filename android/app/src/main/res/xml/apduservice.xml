@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Touch phones: Fob's own application on the card side, answered only
      while Meet or Receive is in front on an unlocked phone. The AID is
-     fob-core's swap::AID (F0 then "FOBSWAP"); a test there checks it. -->
+     fob-wallet's swap::AID (F0 then "FOBSWAP"); a test there checks it. -->
 <host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/swap_service"
     android:requireDeviceUnlock="true">

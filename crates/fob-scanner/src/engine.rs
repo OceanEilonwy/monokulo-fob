@@ -72,7 +72,7 @@ pub fn warm_up() {
         return;
     }
     let dir = CACHE_DIR.lock().expect("cache lock").clone();
-    let started = std::thread::Builder::new().name("fob-scan-gpu".into()).spawn(move || match Gpu::start(dir, TUNING, false) {
+    let started = std::thread::Builder::new().name("fob-scanner-gpu".into()).spawn(move || match Gpu::start(dir, TUNING, false) {
         Ok(gpu) if matches!(vectors::passes(&gpu), Ok(true)) => {
             let _ = GPU.set(Mutex::new(Some(gpu)));
         }

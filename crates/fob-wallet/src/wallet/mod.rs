@@ -265,7 +265,7 @@ struct Inner {
     pipeline: Mutex<Option<Pipeline>>,
     /// The scanner, with how far it watches: 200 addresses are slow to work
     /// out again for every batch.
-    scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scan::Prefilter>)>>,
+    scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scanner::Prefilter>)>>,
     /// This wallet's GPU check has run since it was opened.
     gpu_checked: AtomicBool,
     /// When syncing last looked for sent payments gone quiet.

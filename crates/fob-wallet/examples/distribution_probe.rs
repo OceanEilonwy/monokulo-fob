@@ -1,7 +1,7 @@
 //! Prints what a node sends for `get_output_distribution.bin` with
-//! `compress` on: `cargo run -p fob-core --example distribution_probe [node]`.
+//! `compress` on: `cargo run -p fob-wallet --example distribution_probe [node]`.
 
-use fob_core::transport::Transport;
+use fob_wallet::transport::Transport;
 use monero_daemon_rpc::HttpTransport;
 use monero_epee::{Epee, HEADER, Type, VERSION};
 

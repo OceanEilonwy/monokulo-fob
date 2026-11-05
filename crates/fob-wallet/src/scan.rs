@@ -8,7 +8,7 @@
 //! than a little one. It works from a clone of the scanner and hands back what
 //! it found for the sync step to apply, in block order, under the lock.
 //!
-//! [`fob_scan::Prefilter`] goes first and finds the few blocks that could hold
+//! [`fob_scanner::Prefilter`] goes first and finds the few blocks that could hold
 //! the wallet's money. Only those cost a scanner's time.
 
 use std::sync::{
@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use fob_scan::Prefilter;
+use fob_scanner::Prefilter;
 use monero_wallet::{Scanner, WalletOutput, block::Block, interface::ScannableBlock, transaction::{Input, Transaction}};
 
 /// Fewer blocks than this aren't worth starting threads for: a wallet near the

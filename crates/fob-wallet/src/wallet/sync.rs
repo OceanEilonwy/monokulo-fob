@@ -22,11 +22,11 @@ impl Wallet {
     }
 
     /// A scanner watching up to `watching`, from the last one.
-    pub(super) fn scanner(&self, watching: u32) -> (Scanner, Arc<fob_scan::Prefilter>) {
+    pub(super) fn scanner(&self, watching: u32) -> (Scanner, Arc<fob_scanner::Prefilter>) {
         let pair = self.inner.keys.view_pair();
         let mut kept = self.inner.scanner.lock().expect("scanner lock");
         let (upto, scanner, prefilter) = kept.get_or_insert_with(|| {
-            (0, Scanner::new(pair.clone()), Arc::new(fob_scan::Prefilter::new(&pair, &self.inner.keys.view_bytes())))
+            (0, Scanner::new(pair.clone()), Arc::new(fob_scanner::Prefilter::new(&pair, &self.inner.keys.view_bytes())))
         });
         if *upto < watching {
             Self::watch(scanner, *upto + 1, watching);
@@ -46,10 +46,10 @@ impl Wallet {
     /// Whether this wallet may scan on the GPU now, running its check first if
     /// that's due. False until the GPU has passed this cold start's check.
     pub(super) async fn gpu_allowed(&self) -> bool {
-        if fob_scan::mode() == fob_scan::Mode::Cpu {
+        if fob_scanner::mode() == fob_scanner::Mode::Cpu {
             return false;
         }
-        let Some(device) = fob_scan::gpu_identity() else { return false };
+        let Some(device) = fob_scanner::gpu_identity() else { return false };
         {
             let state = self.inner.state.lock().await;
             let checked = self.inner.gpu_checked.load(Ordering::Relaxed);
@@ -60,7 +60,7 @@ impl Wallet {
             }
         }
         let view = self.inner.keys.view_bytes();
-        let Ok(Some(passed)) = tokio::task::spawn_blocking(move || fob_scan::check_wallet(&view)).await else { return false };
+        let Ok(Some(passed)) = tokio::task::spawn_blocking(move || fob_scanner::check_wallet(&view)).await else { return false };
         self.inner.gpu_checked.store(true, Ordering::Relaxed);
         let mut state = self.inner.state.lock().await;
         state.gpu_checked_on = Some(device);

@@ -1,11 +1,11 @@
 //! Where a catch-up's time goes, with a throwaway view-only wallet:
-//! `cargo run --release -p fob-core --example sync_profile [node] [blocks]`.
+//! `cargo run --release -p fob-wallet --example sync_profile [node] [blocks]`.
 //! Prints the whole catch-up through `Wallet::sync_step`, then the parts:
 //! fetching alone, and scanning the same blocks on 1 and on every core.
 
 use std::time::Instant;
 
-use fob_core::{Network, Wallet, fetch, transport::Transport};
+use fob_wallet::{Network, Wallet, fetch, transport::Transport};
 use monero_daemon_rpc::MoneroDaemon;
 use monero_wallet::{Scanner, ViewPair, address::{MoneroAddress, SubaddressIndex}, ed25519::Scalar, interface::prelude::*};
 use zeroize::Zeroizing;
@@ -15,7 +15,7 @@ async fn main() {
     let node = std::env::args().nth(1).unwrap_or_else(|| "http://node.sethforprivacy.com:18089".into());
     let count: u64 = std::env::args().nth(2).and_then(|n| n.parse().ok()).unwrap_or(720);
     // FOB_SCAN=gpu, cpu or auto (the default); FOB_SCAN_CACHE keeps the compiled shader.
-    use fob_core::scanning::{Mode, gpu_ready, set_cache_dir, set_mode};
+    use fob_wallet::scanning::{Mode, gpu_ready, set_cache_dir, set_mode};
     if let Ok(dir) = std::env::var("FOB_SCAN_CACHE") {
         set_cache_dir(dir.into());
     }

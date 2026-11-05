@@ -16,6 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "fob"
 
-// app: the Compose app, a thin layer over the Rust wallet (crates/fob-core
+// app: the Compose app, a thin layer over the Rust wallet (crates/fob-wallet
 // through crates/fob-ffi), built into it by the app's cargo tasks.
 include(":app")

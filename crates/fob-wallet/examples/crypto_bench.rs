@@ -1,4 +1,4 @@
-//! The hot crypto, timed: `cargo run --release -p fob-core --example crypto_bench`.
+//! The hot crypto, timed: `cargo run --release -p fob-wallet --example crypto_bench`.
 //! On a phone: build with `cargo ndk -t arm64-v8a build --profile android --example crypto_bench`,
 //! `adb push` the binary to /data/local/tmp and run it, before and after a build-setting change.
 

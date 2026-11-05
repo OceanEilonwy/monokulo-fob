@@ -4,11 +4,11 @@ A small Monero wallet: fast to catch up, simple to pay with, and it keeps
 the [Open Receipt Format](https://github.com/openreceiptformat/orf-spec)
 receipts that payment codes can carry (as Monokular's tills add).
 
-- `crates/fob-core`: the whole wallet, in Rust, on
+- `crates/fob-wallet`: the whole wallet, in Rust, on
   [monero-oxide](https://github.com/monero-oxide/monero-oxide). Seeds and
   keys, payment and wallet codes, receipts, the encrypted wallet file,
   syncing and sending.
-- `crates/fob-ffi`: fob-core for Kotlin (later Swift) through UniFFI. Types
+- `crates/fob-ffi`: fob-wallet for Kotlin (later Swift) through UniFFI. Types
   only.
 - `android/`: the Android app, a thin Compose layer over fob-ffi.
 - `third_party/`: two vendored seed crates (see its README).
@@ -66,6 +66,6 @@ the Kotlin bindings from it, so the app and the library can't drift.
 Tests against real stagenet nodes are ignored by default:
 
 ```sh
-cargo test --release -p fob-core --test stagenet_over_http -- --ignored
-cargo run --release -p fob-core --example fetch_speed [node] [blocks]
+cargo test --release -p fob-wallet --test stagenet_over_http -- --ignored
+cargo run --release -p fob-wallet --example fetch_speed [node] [blocks]
 ```

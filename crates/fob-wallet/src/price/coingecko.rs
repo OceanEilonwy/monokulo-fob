@@ -127,7 +127,7 @@ mod tests {
     }
 
     /// Real requests to CoinGecko, to check its answers still read.
-    /// Run by hand: `cargo test -p fob-core coingecko_answers -- --ignored`.
+    /// Run by hand: `cargo test -p fob-wallet coingecko_answers -- --ignored`.
     #[tokio::test]
     #[ignore = "asks CoinGecko over the internet"]
     async fn coingecko_answers_for_real() {

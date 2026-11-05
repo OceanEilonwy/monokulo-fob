@@ -16,7 +16,7 @@
 //! - [`amount`], [`activity`], [`catch_up`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
-pub use fob_scan as scanning;
+pub use fob_scanner as scanning;
 
 pub mod activity;
 pub mod address;
