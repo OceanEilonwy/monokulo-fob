@@ -285,14 +285,14 @@ async fn an_old_price_keeps_amounts_with_its_age_and_one_over_a_day_turns_money_
     let at = |now| Clock { now, utc_offset: 0, hours_24: true };
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
     // Just asked: the rate.
-    assert_eq!(wallet.amount_field("20", true, at(t)).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+    assert_eq!(wallet.said_field("20", true, at(t)).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
     // A refresh missed: when it's from, money still typed.
-    let f = wallet.amount_field("20", true, at(t + price::AGED)).await;
+    let f = wallet.said_field("20", true, at(t + price::AGED)).await;
     assert!(f.in_fiat && f.can_switch);
-    let from = crate::price_alert::age(t, at(t + price::AGED)).unwrap();
+    let from = fob_words::prices::from_when(&crate::price_alert::age(t, at(t + price::AGED)).unwrap());
     assert_eq!(f.line, Some(format!("≈ 0.1204 XMR · {from}")));
     // Over a day: XMR only, saying why.
-    let f = wallet.amount_field("20", true, at(t + price::SHOWN)).await;
+    let f = wallet.said_field("20", true, at(t + price::SHOWN)).await;
     assert!(!f.in_fiat && !f.can_switch);
     assert_eq!(f.line.as_deref(), Some("No USD price now · type the amount in XMR"));
 }
@@ -347,7 +347,7 @@ async fn receive_s_code_and_field_agree_after_a_new_price() {
     assert_eq!(wallet.receive_code(&address, Some("20"), true, None).await.unwrap().detail.as_deref(), Some("0.2 XMR"));
     wallet.refresh_prices_from(&FakePrices::new(200_000_000, vec![]), Asked::Typing, t).await.unwrap();
     assert_ne!(wallet.price_at(t).await, old, "a new price is told apart");
-    let field = wallet.amount_field("20", true, clock_now()).await;
+    let field = wallet.said_field("20", true, clock_now()).await;
     let code = wallet.receive_code(&address, Some("20"), true, None).await.unwrap();
     assert_eq!(field.line.as_deref(), Some("≈ 0.1 XMR · 1 XMR = $200.00"));
     assert_eq!(code.detail.as_deref(), Some("0.1 XMR"));
@@ -426,7 +426,7 @@ async fn receive_takes_an_amount_in_money_and_asks_in_xmr() {
     assert!(!wallet.amount_field("", true, clock_now()).await.can_switch);
     assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
-    let field = wallet.amount_field("20", true, clock_now()).await;
+    let field = wallet.said_field("20", true, clock_now()).await;
     assert_eq!((field.sign.as_deref(), field.unit.as_str(), field.in_fiat), (Some("$"), "USD", true));
     // What the field says the code asks for is what it asks for.
     assert_eq!(field.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
@@ -459,7 +459,7 @@ async fn send_takes_an_amount_in_money_at_the_current_price() {
     assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
     // The XMR the field's line showed for it.
-    assert_eq!(wallet.amount_field("20", true, clock_now()).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+    assert_eq!(wallet.said_field("20", true, clock_now()).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
     assert_eq!(wallet.typed_amount("20", true).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
     assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::Monero(MoneroError::BadAmount))));
     // Converted before the address and amount are checked, as prepare checks them.
@@ -491,7 +491,7 @@ async fn a_currency_kraken_lacks_moves_to_coingecko_and_old_records_stay() {
     wallet.refresh_prices_from(&FakePrices::new(166_000_000, vec![]), Asked::Background, t).await.unwrap();
     assert_eq!(price_of(&wallet.activity().await, "in"), Some((166_000_000, false)));
     let said = wallet.set_currency(Some("NZD")).await.unwrap();
-    assert_eq!(said.as_deref(), Some("Kraken doesn't price New Zealand dollars, so Fob now asks CoinGecko"));
+    assert_eq!(said.map(fob_words::prices::moved).as_deref(), Some("Kraken doesn't price New Zealand dollars, so Fob now asks CoinGecko"));
     // Kept, and the dollar price no longer shows in New Zealand dollars.
     let again = Wallet::open(&wallet.inner.path, [1; 32]).unwrap();
     let settings = again.price_settings().await;

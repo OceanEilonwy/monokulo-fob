@@ -25,13 +25,13 @@ pub fn price(e: &PriceError) -> String {
         PriceError::NoPrices { code } => format!("Fob has no prices in {code}"),
         PriceError::NotPriced { provider, currency } => format!("{provider} doesn't price {currency}"),
         PriceError::TorNotYet => "prices over Tor aren't available yet".into(),
-        PriceError::NotOverTransport { provider, transport } => format!("{provider} doesn't answer {}", transport.text()),
+        PriceError::NotOverTransport { provider, transport } => format!("{provider} doesn't answer {}", crate::prices::over(*transport)),
         PriceError::NoRoute { currency } => format!("Kraken has no XMR price in {currency}"),
         PriceError::BadUrl { url } => format!("{url} isn't an address"),
         PriceError::HttpsOnly => "prices are only asked over https".into(),
         PriceError::OnionSource => "Fob can't reach .onion price sources yet".into(),
         PriceError::Client(why) => why.clone(),
-        PriceError::Failed(failure) => failure.text().into(),
+        PriceError::Failed(failure) => crate::prices::failure(*failure).into(),
     }
 }
 
@@ -228,8 +228,8 @@ mod tests {
         assert_eq!(monero(MoneroError::BadAmount), "that amount isn't valid");
         assert_eq!(monero(MoneroError::BadAddress(stage)), "that isn't a Monero address for stagenet");
         assert_eq!(monero(MoneroError::WrongNetwork { expected: stage, found: main }), "the wallet code is for mainnet, but this wallet is on stagenet");
-        assert_eq!(price(&PriceError::NotOverTransport { provider: "Kraken", transport: Transport::Tor }), format!("Kraken doesn't answer {}", Transport::Tor.text()));
-        assert_eq!(price(&PriceError::Failed(Failure::Busy)), Failure::Busy.text());
+        assert_eq!(price(&PriceError::NotOverTransport { provider: "Kraken", transport: Transport::Tor }), "Kraken doesn't answer over Tor");
+        assert_eq!(price(&PriceError::Failed(Failure::Busy)), "Busy, try again soon");
         assert_eq!(vault(&VaultError::Storage("disk full".into())), "couldn't read or save the wallet: disk full");
         assert_eq!(vault(&VaultError::NotAWalletFile), "couldn't read or save the wallet: not a Fob wallet file");
         assert_eq!(vault(&VaultError::NameTooLong { max: 30 }), "Keep the name to 30 characters");

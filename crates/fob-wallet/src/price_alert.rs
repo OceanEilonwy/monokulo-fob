@@ -12,7 +12,8 @@
 //! away) yet: a new id is a new showing, the same id only newer words.
 
 use crate::fiat::{PriceAge, currency, rate};
-use crate::price::{self, Cache, Current, Failure, Settings};
+use crate::price::{self, Cache, Current, Failure, PriceFrom, Settings};
+use fob_words::prices::PriceWas;
 use crate::clock::{self, Clock};
 
 /// Who asked for a price.
@@ -102,68 +103,36 @@ pub struct Toast {
     pub retrying_line: String,
 }
 
-/// Who failed and how: "Kraken didn't answer", "CoinGecko is busy".
-pub fn reason(failure: Failure, provider: &str) -> String {
-    match failure {
-        Failure::NotAnswering => format!("{provider} didn't answer"),
-        Failure::Busy => format!("{provider} is busy"),
-        Failure::BadAnswer => format!("{provider} answered without a price"),
-        Failure::TorNotYet => "Tor isn't built yet".into(),
-        Failure::NotOverTor => format!("{provider} doesn't answer over Tor"),
-    }
-}
-
 /// The toast for `alert`, with `last` the current price kept for the
 /// settings, however old, and `clock` the phone's.
 pub fn toast(alert: &Alert, last: Option<&Current>, clock: Clock) -> Toast {
     let f = &alert.failed;
     let (today, _) = clock::local(clock.now, clock);
-    // "USD price", "29 Oct's USD price".
-    let what = match f.day {
-        Some(day) => format!("{}'s {} price", clock::date(day, today), f.currency),
-        None => format!("the {} price", f.currency),
+    let was = match last {
+        Some(c) if clock.now.saturating_sub(c.at) < price::SHOWN => PriceWas::Using(price_from(c.at, clock)),
+        Some(_) => PriceWas::TooOld,
+        None => PriceWas::NeverKept,
     };
-    let reason = reason(f.failure, &f.provider);
-    let xmr = if alert.typing { "type the amount in XMR" } else { "amounts stay in XMR" };
-    let line = match last {
-        _ if f.day.is_some() => format!("{reason} · shown as not available"),
-        Some(c) if clock.now.saturating_sub(c.at) < price::SHOWN => format!("{reason} · using {}", price_from(c.at, clock, true)),
-        // One too old to use: the reason, and what that means.
-        Some(_) => format!("{reason} · {xmr}"),
-        // None ever kept: still why, and that there's none yet.
-        None if alert.typing => format!("{reason} · {xmr}"),
-        None => format!("{reason} · no {} price yet", f.currency),
-    };
-    Toast {
-        id: alert.id,
-        title: format!("Couldn't get {what}"),
-        line,
-        retrying_title: "Trying again…".into(),
-        retrying_line: format!("Asking {} for {what}", f.provider),
-    }
+    let said = fob_words::prices::toast(f.failure, &f.provider, &f.currency, f.day.map(|day| clock::date(day, today)).as_deref(), alert.typing, &was);
+    Toast { id: alert.id, title: said.title, line: said.line, retrying_title: said.retrying_title, retrying_line: said.retrying_line }
 }
 
-/// When a price is from: "14:02", "yesterday's 14:02", "29 Oct's" (with
-/// `the`, "the 14:02 price"), or "14:02", "yesterday 14:02", "29 Oct".
-pub(crate) fn price_from(at: u64, clock: Clock, the: bool) -> String {
+/// When a price is from.
+pub(crate) fn price_from(at: u64, clock: Clock) -> PriceFrom {
     let (day, seconds) = clock::local(at, clock);
     let (today, _) = clock::local(clock.now, clock);
     let time = clock::time_of_day(seconds, clock);
-    match (day, the) {
-        _ if day == today && the => format!("the {time} price"),
-        _ if day == today => time,
-        _ if day == today - 1 && the => format!("yesterday's {time} price"),
-        _ if day == today - 1 => format!("yesterday {time}"),
-        (_, true) => format!("{}'s price", clock::date(day, today)),
-        (_, false) => clock::date(day, today),
+    match day {
+        _ if day == today => PriceFrom::Today(time),
+        _ if day == today - 1 => PriceFrom::Yesterday(time),
+        _ => PriceFrom::Date(clock::date(day, today)),
     }
 }
 
-/// Where a price converts an amount, how old it is once it isn't just
-/// asked: "price from 14:02"; `None` while it's newer than
-/// [`AGED`](price::AGED).
-pub fn age(at: u64, clock: Clock) -> Option<String> {
-    (clock.now.saturating_sub(at) >= price::AGED).then(|| format!("price from {}", price_from(at, clock, false)))
+/// Where a price converts an amount, when it's from once it isn't just
+/// asked; `None` while it's newer than [`AGED`](price::AGED).
+pub fn age(at: u64, clock: Clock) -> Option<PriceFrom> {
+    (clock.now.saturating_sub(at) >= price::AGED).then(|| price_from(at, clock))
 }
 
 /// Beside an amount converted at a price over [`AGED`](price::AGED) old
@@ -181,16 +150,16 @@ pub fn old(at: u64, now: u64) -> Option<PriceAge> {
 /// for a run that was about one day's price (`day`), that day's: "29
 /// Oct's USD price found", "1 XMR = $160.12".
 pub fn updated(cache: &Cache, settings: &Settings, day: Option<i64>, clock: Clock) -> (String, String) {
-    let Some(code) = settings.code() else { return ("Prices are off".into(), String::new()) };
+    let Some(code) = settings.code() else { return (fob_words::prices::prices_off(), String::new()) };
     match day {
         Some(day) => {
             let (today, _) = clock::local(clock.now, clock);
             let found = cache.history(settings).and_then(|h| h.days.iter().find(|d| d.0 == day)).map(|d| rate(d.1, &currency(code)));
-            (format!("{}'s {code} price found", clock::date(day, today)), found.unwrap_or_default())
+            (fob_words::prices::day_found(&clock::date(day, today), code), found.unwrap_or_default())
         }
         None => {
             let line = cache.shown(settings, clock.now).map(|c| rate(c.price, &currency(&c.currency))).unwrap_or_default();
-            (format!("{code} price updated"), line)
+            (fob_words::prices::updated(code), line)
         }
     }
 }
@@ -270,7 +239,7 @@ mod tests {
         // A twelve-hour phone.
         let t = toast(&alert(Failure::NotAnswering, None, false), Some(&kept(at_1402)), Clock { hours_24: false, ..clock(now) });
         assert_eq!(t.line, "Kraken didn't answer · using the 2:02 pm price");
-        assert_eq!(reason(Failure::TorNotYet, "CoinGecko"), "Tor isn't built yet");
+        assert_eq!(fob_words::prices::reason(Failure::TorNotYet, "CoinGecko"), "Tor isn't built yet");
     }
 
     #[test]
@@ -291,8 +260,8 @@ mod tests {
     fn a_price_says_its_age_once_it_isnt_just_asked() {
         let now = 1_793_458_800;
         assert_eq!(age(now - crate::price::AGED + 1, clock(now)), None);
-        assert_eq!(age(now - 58 * 60, clock(now)).as_deref(), Some("price from 14:02"));
-        assert_eq!(age(now - 20 * 3600, clock(now)).as_deref(), Some("price from yesterday 19:00"));
-        assert_eq!(age(now - 3 * 86_400, clock(now)).as_deref(), Some("price from 28 Oct"));
+        assert_eq!(age(now - 58 * 60, clock(now)).as_ref().map(fob_words::prices::from_when).as_deref(), Some("price from 14:02"));
+        assert_eq!(age(now - 20 * 3600, clock(now)).as_ref().map(fob_words::prices::from_when).as_deref(), Some("price from yesterday 19:00"));
+        assert_eq!(age(now - 3 * 86_400, clock(now)).as_ref().map(fob_words::prices::from_when).as_deref(), Some("price from 28 Oct"));
     }
 }
