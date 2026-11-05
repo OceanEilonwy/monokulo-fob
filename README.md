@@ -8,6 +8,9 @@ receipts that payment codes can carry (as Monokular's tills add).
   [monero-oxide](https://github.com/monero-oxide/monero-oxide). Seeds and
   keys, payment and wallet codes, receipts, the encrypted wallet file,
   syncing and sending.
+- `crates/fob-screens`, `fob-codes`, `fob-vault`, `fob-price`, `fob-chain`,
+  `fob-scanner`, `fob-monero`: the parts `fob-wallet` is built from
+  (`docs/decisions.md`, decision 334).
 - `crates/fob-ffi`: fob-wallet for Kotlin (later Swift) through UniFFI. Types
   only.
 - `android/`: the Android app, a thin Compose layer over fob-ffi.

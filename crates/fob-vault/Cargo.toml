@@ -1,0 +1,24 @@
+[package]
+name = "fob-vault"
+description = "A wallet's keys, its encrypted database and files, and the list of wallets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+chacha20poly1305 = "0.10"
+curve25519-dalek = "4"
+fob-monero = { path = "../fob-monero" }
+hex = "0.4"
+monero-seed = { path = "../../third_party/monero-seed" }
+monero-wallet = "0.2"
+polyseed = { path = "../../third_party/polyseed" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+# The wallet's database, encrypted. OpenSSL comes from source, for every ABI alike.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = "1"
+

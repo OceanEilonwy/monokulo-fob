@@ -1,83 +1,10 @@
-//! What can go wrong, by what it's about. Each kind below moves with the
-//! code that raises it; [`FobError`] is what the wallet and the apps see,
-//! whichever kind it began as.
+//! What the wallet and the apps see, whichever part of Fob an error began in.
 
-use crate::price::Failure;
-
-/// An amount or an address that isn't right.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub enum MoneroError {
-    #[error("that amount isn't valid")]
-    BadAmount,
-    #[error("that isn't a Monero address for {0}")]
-    BadAddress(&'static str),
-    #[error("the wallet code is for {found}, but this wallet is on {expected}")]
-    WrongNetwork { expected: &'static str, found: &'static str },
-}
-
-/// A price that couldn't be had.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub enum PriceError {
-    /// Prices couldn't be had, or a price setting isn't one Fob has.
-    #[error("{0}")]
-    Price(String),
-    /// A provider gave no price, and why in a word or two.
-    #[error("{}", .0.text())]
-    Failed(Failure),
-}
-
-/// Keys and the files that hold them.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub enum VaultError {
-    #[error("that isn't a valid seed phrase")]
-    BadSeed,
-    #[error("that key isn't valid")]
-    BadKey,
-    #[error("this wallet can only watch: it has no spend key")]
-    ViewOnly,
-    #[error("couldn't read or save the wallet: {0}")]
-    Storage(String),
-    #[error("the wallet file can't be opened with this key")]
-    WrongKey,
-    /// A wallet's name can't be used, or the wallet isn't on the list, and why.
-    #[error("{0}")]
-    BadName(String),
-    #[error(transparent)]
-    Monero(#[from] MoneroError),
-}
-
-/// A code that can't be read or made.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub enum CodeError {
-    #[error("that code isn't a payment or wallet code Fob can read")]
-    BadCode,
-    /// A scanned profile can't be read, or a code is too big to send, and why.
-    #[error("{0}")]
-    Profile(String),
-    /// A name, note or photo can't be kept as it is, and why.
-    #[error("{0}")]
-    Contact(String),
-    #[error(transparent)]
-    Monero(#[from] MoneroError),
-}
-
-/// Something typed that a contact, request or profile can't take.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub enum ScreenError {
-    /// A contact can't be saved as it is, and why.
-    #[error("{0}")]
-    Contact(String),
-    /// A request can't be made or found, and why.
-    #[error("{0}")]
-    Request(String),
-    /// Your profile can't be saved or shared as it is, and why.
-    #[error("{0}")]
-    Profile(String),
-    #[error(transparent)]
-    Code(#[from] CodeError),
-    #[error(transparent)]
-    Monero(#[from] MoneroError),
-}
+pub use fob_codes::error::CodeError;
+pub use fob_monero::error::MoneroError;
+pub use fob_price::{Failure, error::PriceError};
+pub use fob_screens::error::ScreenError;
+pub use fob_vault::error::VaultError;
 
 /// Everything that can go wrong in Fob, in words an app can show.
 #[derive(Debug, thiserror::Error)]
@@ -200,11 +127,6 @@ impl From<ScreenError> for FobError {
 }
 
 pub type Result<T> = std::result::Result<T, FobError>;
-pub type MoneroErrorResult<T> = std::result::Result<T, MoneroError>;
-pub type PriceErrorResult<T> = std::result::Result<T, PriceError>;
-pub type VaultErrorResult<T> = std::result::Result<T, VaultError>;
-pub type CodeErrorResult<T> = std::result::Result<T, CodeError>;
-pub type ScreenErrorResult<T> = std::result::Result<T, ScreenError>;
 
 #[cfg(test)]
 mod tests {

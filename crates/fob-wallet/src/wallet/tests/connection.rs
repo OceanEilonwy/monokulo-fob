@@ -88,7 +88,7 @@ async fn a_self_signed_node_is_kept_with_its_mark() {
     assert!(!wallet.node().await.self_signed);
     assert_eq!(wallet.node_line().await, "stagenet.xmr-tw.org:38081");
 
-    let port = crate::node::tests::canned_node(true).await;
+    let port = crate::node::canned::canned_node(true).await;
     let url = format!("https://127.0.0.1:{port}");
     let refused = wallet.set_node(&url, false).await.unwrap_err();
     assert_eq!(refused.to_string(), "the node didn't answer: self-signed, not accepted");
@@ -146,7 +146,7 @@ async fn switching_node_clears_the_old_failure_and_tries_the_new_one_at_once() {
     tokio::time::timeout(Duration::from_secs(5), rounds.changed()).await.unwrap().unwrap();
     assert_eq!(wallet.status().error.as_deref(), Some("Refused to connect"));
     assert_eq!(wallet.status().chip().text, "Can't reach node");
-    let port = crate::node::tests::canned_node(false).await;
+    let port = crate::node::canned::canned_node(false).await;
     rounds.mark_unchanged();
     let before = heard.0.lock().unwrap().len();
     wallet.set_node(&format!("127.0.0.1:{port}"), false).await.unwrap();
@@ -163,7 +163,7 @@ async fn switching_node_clears_the_old_failure_and_tries_the_new_one_at_once() {
 #[tokio::test]
 async fn a_connection_is_kept_for_the_node_and_its_mark() {
     let wallet = Wallet::create(&dir("connection-mark"), [1; 32], Network::Stagenet).unwrap();
-    let port = crate::node::tests::canned_node(true).await;
+    let port = crate::node::canned::canned_node(true).await;
     {
         let mut state = wallet.inner.state.lock().await;
         state.node = format!("https://127.0.0.1:{port}");
