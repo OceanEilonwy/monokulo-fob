@@ -83,7 +83,7 @@ async fn fill(title: &str, text: &str) -> Result<(), String> {
         if let Some(row) = widget.downcast_ref::<adw::EntryRow>()
             && row.title() == title
         {
-            return Some(widget.clone().downcast::<gtk::Editable>().ok()?);
+            return widget.clone().downcast::<gtk::Editable>().ok();
         }
         widget.downcast_ref::<gtk::PasswordEntry>().filter(|entry| entry.placeholder_text().is_some_and(|hint| hint == title)).and_then(|_| widget.clone().downcast::<gtk::Editable>().ok())
     })
@@ -109,7 +109,7 @@ async fn settle_short() {
 }
 
 /// First run to a wallet, through every page a person would use with no money.
-async fn walk(png: &str) -> Result<(), String> {
+async fn walk(engine: &Engine, png: &str) -> Result<(), String> {
     let shot = |name: &str| snap(&format!("{png}.{name}.png"));
 
     // A passphrase is chosen, with a mistake first.
@@ -167,6 +167,22 @@ async fn walk(png: &str) -> Result<(), String> {
     // Locked, a wrong passphrase refused, and back to the same wallet.
     press("Lock now").await?;
     see("Unlock").await?;
+    fill("Passphrase", PASS).await?;
+    press("Unlock").await?;
+    see("Nothing yet").await?;
+
+    // Left alone with a dialog open: locking takes the dialog too, as it could be a seed phrase.
+    press("Settings").await?;
+    press("Change passphrase").await?;
+    fill("Passphrase now", "typed").await?;
+    engine.lock();
+    see("Unlock").await?;
+    // A dialog closing animates for a moment.
+    settle().await;
+    if showing().iter().any(|widget| widget.is::<adw::Dialog>()) {
+        return Err("a dialog stayed up over the lock".into());
+    }
+
     fill("Passphrase", "not it").await?;
     press("Unlock").await?;
     see("That isn't the passphrase").await?;
@@ -190,7 +206,7 @@ pub fn run(engine: &Engine, to: Sender<Msg>) {
     let engine = engine.clone();
     glib::spawn_future_local(async move {
         settle().await;
-        let code = if scene == "walk" { walk(&png).await } else { play(&engine, &to, &scene).await };
+        let code = if scene == "walk" { walk(&engine, &png).await } else { play(&engine, &to, &scene).await };
         settle().await;
         snap(&png);
         if let Err(why) = code {

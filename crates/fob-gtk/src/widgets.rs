@@ -184,7 +184,7 @@ fn texture_rgba(texture: &gdk::Texture) -> Vec<u8> {
     let (width, height) = (texture.width() as usize, texture.height() as usize);
     let mut pixels = vec![0u8; width * height * 4];
     texture.download(&mut pixels, width * 4);
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     pixels
