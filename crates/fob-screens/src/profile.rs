@@ -65,17 +65,6 @@ impl ShareKind {
         matches!(self, ShareKind::TouchedPhones { name: Some(_) } | ShareKind::Met { .. })
     }
 
-    /// "Code shown", "Link copied", "Link shared", "Touched phones with Sam".
-    pub fn title(&self) -> String {
-        match self {
-            ShareKind::CodeShown => "Code shown".into(),
-            ShareKind::LinkCopied => "Link copied".into(),
-            ShareKind::LinkShared => "Link shared".into(),
-            ShareKind::TouchedPhones { name: Some(name) } => format!("Touched phones with {name}"),
-            ShareKind::TouchedPhones { name: None } => "Touched phones".into(),
-            ShareKind::Met { name } => format!("Met {name}"),
-        }
-    }
 }
 
 /// One press of "Share my profile".
@@ -268,53 +257,28 @@ pub fn received(share: &Share, rows: &[Activity]) -> Option<String> {
     Some(format!("+{}", fiat.unwrap_or_else(|| format!("{} XMR", amount::format_short(atomic)))))
 }
 
-/// A share on Your profile, ready to draw.
+/// A share on Your profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub id: u64,
     pub address: String,
     pub kind: ShareKind,
-    /// "Code shown", "Link copied"
-    pub title: String,
-    /// "Today 09:15", "Yesterday 18:02", "28 Oct"
-    pub when: String,
-    /// "+$4.98", or "nothing yet".
-    pub received: String,
-    /// Something came: drawn green.
-    pub any: bool,
-}
-
-/// "Today 09:15", "Yesterday 18:02", "28 Oct": a share's time on Your profile.
-fn when(time: u64, clock: Clock) -> String {
-    match clock::day_name(time, clock).as_str() {
-        "Today" | "Yesterday" => clock::when(time, clock),
-        day => day.to_owned(),
-    }
+    pub when: clock::When,
+    /// "+$4.98"; `None` while nothing has come.
+    pub received: Option<String>,
 }
 
 /// Your shares, newest first ("Your shares · each its own address").
 pub fn lines(book: &Book, rows: &[Activity], clock: Clock) -> Vec<Line> {
     book.newest_first()
         .into_iter()
-        .map(|s| {
-            let got = received(s, rows);
-            Line {
-                id: s.id,
-                address: s.address.clone(),
-                kind: s.kind.clone(),
-                title: s.kind.title(),
-                when: when(s.created, clock),
-                any: got.is_some(),
-                received: got.unwrap_or_else(|| "nothing yet".into()),
-            }
-        })
+        .map(|s| Line { id: s.id, address: s.address.clone(), kind: s.kind.clone(), when: clock::when(s.created, clock), received: received(s, rows) })
         .collect()
 }
 
-/// Each completed share's line in Activity, newest first: "Met Sam", "A
-/// new address for this share · 09:15", no amount. A share nobody took
-/// (a code shown, a touch that gave nothing) isn't listed there; Your
-/// profile still lists every one.
+/// Each completed share's line in Activity, newest first, no amount. A share
+/// nobody took (a code shown, a touch that gave nothing) isn't listed there;
+/// Your profile still lists every one.
 pub fn activity_rows(book: &Book, clock: Clock) -> Vec<activity::Row> {
     book.newest_first()
         .into_iter()
@@ -325,60 +289,25 @@ pub fn activity_rows(book: &Book, clock: Clock) -> Vec<activity::Row> {
             share: Some(s.id),
             time: s.created,
             title: match &s.kind {
-                ShareKind::TouchedPhones { name: Some(name) } | ShareKind::Met { name } => format!("Met {name}"),
-                _ => "Shared your profile".into(),
+                ShareKind::TouchedPhones { name: Some(name) } | ShareKind::Met { name } => activity::RowTitle::Met(name.clone()),
+                _ => activity::RowTitle::SharedProfile,
             },
-            line: format!("A new address for this share · {}", clock::time_of_day(clock::local(s.created, clock).1, clock)),
+            line: activity::RowLine::Share { time: clock::time_of_day(clock::local(s.created, clock).1, clock) },
             amount: String::new(),
             fiat: None,
         })
         .collect()
 }
 
-/// What leads a payment's line when it came to a share's address: "Shared
-/// 09:15" (the share's time, or its day before today).
-pub fn shared_text(created: u64, clock: Clock) -> String {
-    format!("Shared {}", clock::short_when(created, clock))
-}
-
-/// The title of a payment that came to a share's address.
-pub const VIA: &str = "Via your profile";
-
-/// What Swapped says once phones have touched: "Swapped with Sam" and
-/// "Sam got your profile, and you got Sam's." when Sam's phone said it took
-/// ours (`sure`); otherwise only what this phone knows, since its last
-/// answer may not have reached Sam's.
-pub fn swapped_words(name: &str, sure: bool) -> (String, String) {
-    if name.is_empty() {
-        return ("Swapped".into(), "You got their address and sent yours. They didn't share a name.".into());
-    }
-    let line = if sure {
-        format!("{name} got your profile, and you got {name}'s.")
-    } else {
-        format!("You got {name}'s profile and sent yours. If {name}'s phone doesn't say Swapped, touch again.")
-    };
-    (format!("Swapped with {name}"), line)
-}
-
-/// Settings' row for the profile, every word ready to draw.
+/// Settings' row for the profile: there's only the name to say, and none
+/// while it's blank (a photo alone doesn't make a contact others can save).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsRow {
-    /// "Your profile", or "Add a shareable Fob contact" before there's a name.
-    pub title: String,
-    /// The line under it, in two parts so the app cuts only the name:
-    /// "Henry" and " · share as a code". None without a name.
     pub name: Option<String>,
-    pub suffix: Option<String>,
 }
 
-/// Settings' row: "Your profile" over "Henry · share as a code", or only
-/// "Add a shareable Fob contact" while there's no name (a photo alone
-/// doesn't make a contact others can save).
 pub fn settings_row(profile: Option<&Profile>) -> SettingsRow {
-    match profile.map(|p| p.name.trim()).filter(|n| !n.is_empty()) {
-        Some(name) => SettingsRow { title: "Your profile".into(), name: Some(name.to_owned()), suffix: Some(" · share as a code".into()) },
-        None => SettingsRow { title: "Add a shareable Fob contact".into(), name: None, suffix: None },
-    }
+    SettingsRow { name: profile.map(|p| p.name.trim()).filter(|n| !n.is_empty()).map(str::to_owned) }
 }
 
 /// A change a scanned profile would make to a contact: what it is now and
@@ -386,12 +315,20 @@ pub fn settings_row(profile: Option<&Profile>) -> SettingsRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub kind: ChangeKind,
-    /// "Name", "Photo", "Send address"
-    pub label: String,
-    /// "Sam", "No photo", "84Bv9 … 2kLmQ … 99fQ2", "None"
-    pub now: String,
-    /// "Henry", "Their new photo", "89Hn2 … Tq4Lp … 6wKeR"
-    pub new: String,
+    pub now: ChangeValue,
+    pub new: ChangeValue,
+}
+
+/// One side of a change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangeValue {
+    /// A name, or an address cut to three parts.
+    Text(String),
+    /// No send address.
+    Nothing,
+    NoPhoto,
+    TheirPhoto,
+    ProfilePhoto,
 }
 
 /// What a change is to.
@@ -402,42 +339,37 @@ pub enum ChangeKind {
     SendAddress,
 }
 
+/// Why a scanned profile matches a contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClashWhy {
+    SendAddress,
+    PaidAt,
+    SameName,
+    NameLooksLike,
+}
+
 /// A contact a scanned profile matches (the same address, else the same
 /// name), and what taking the profile would change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Clash {
     pub contact: Contact,
-    /// "You have a contact named Henry.", "This address is Sam's send
-    /// address.", "Sam was paid at this address."
-    pub why: String,
+    pub why: ClashWhy,
     /// Empty when the profile is what the contact has already.
     pub changes: Vec<Change>,
     /// The photo would change: draw both.
     pub photo_changes: bool,
-    /// "Update Sam: their name, photo and send address change to the
-    /// profile's." or "Nothing would change."
-    pub ask: String,
-    /// "Update Sam", or "Open Sam" when nothing would change.
-    pub update: String,
-    pub keep: String,
-    /// "Add as new contact", for a name only: an address that's a
-    /// contact's already is never given a second one.
-    pub add_new: Option<String>,
+    /// It matched by name: an address that's a contact's already is never
+    /// given a second one.
+    pub can_add_new: bool,
 }
 
-/// A scanned profile, every word ready to draw ("Another Fob scans the code").
+/// A scanned profile ("Another Fob scans the code").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanned {
     pub code: uri::ProfileCode,
     pub initial: String,
     /// "89Hn2 … Tq4Lp … 6wKeR"
     pub address_short: String,
-    /// "A Fob profile. The name and photo are Henry's own, not checked by Fob."
-    pub note: String,
-    /// "Pay Henry"
-    pub pay: String,
-    /// "Add contact"
-    pub add: String,
     /// A contact it would change: asked about before anything is.
     pub clash: Option<Clash>,
 }
@@ -445,17 +377,17 @@ pub struct Scanned {
 fn changes(contact: &Contact, code: &uri::ProfileCode) -> (Vec<Change>, bool) {
     let mut changes = vec![];
     if contact.name != code.name {
-        changes.push(Change { kind: ChangeKind::Name, label: "Name".into(), now: contact.name.clone(), new: code.name.clone() });
+        changes.push(Change { kind: ChangeKind::Name, now: ChangeValue::Text(contact.name.clone()), new: ChangeValue::Text(code.name.clone()) });
     }
     // A profile without a photo leaves the contact's.
     let photo_changes = code.photo.is_some() && code.photo != contact.photo;
     if photo_changes {
-        let now = if contact.photo.is_some() { "Their photo now" } else { "No photo" };
-        changes.push(Change { kind: ChangeKind::Photo, label: "Photo".into(), now: now.into(), new: "The profile's photo".into() });
+        let now = if contact.photo.is_some() { ChangeValue::TheirPhoto } else { ChangeValue::NoPhoto };
+        changes.push(Change { kind: ChangeKind::Photo, now, new: ChangeValue::ProfilePhoto });
     }
     if contact.send_address.as_deref() != Some(code.address.as_str()) {
-        let now = contact.send_address.as_deref().map(contacts::three_part).unwrap_or_else(|| "None".into());
-        changes.push(Change { kind: ChangeKind::SendAddress, label: "Send address".into(), now, new: contacts::three_part(&code.address) });
+        let now = contact.send_address.as_deref().map_or(ChangeValue::Nothing, |a| ChangeValue::Text(contacts::three_part(a)));
+        changes.push(Change { kind: ChangeKind::SendAddress, now, new: ChangeValue::Text(contacts::three_part(&code.address)) });
     }
     (changes, photo_changes)
 }
@@ -466,52 +398,15 @@ fn changes(contact: &Contact, code: &uri::ProfileCode) -> (Vec<Change>, bool) {
 pub fn scanned(book: &contacts::Book, code: uri::ProfileCode) -> Scanned {
     let clash = book
         .owner(&code.address)
-        .map(|c| {
-            let why = if c.send_address.as_deref() == Some(code.address.as_str()) {
-                format!("This address is {}'s send address.", c.name)
-            } else {
-                format!("{} was paid at this address.", c.name)
-            };
-            (c, why, false)
-        })
+        .map(|c| (c, if c.send_address.as_deref() == Some(code.address.as_str()) { ClashWhy::SendAddress } else { ClashWhy::PaidAt }, false))
         .or_else(|| {
-            book.named(&code.name).filter(|_| !code.name.is_empty()).map(|c| {
-                let why = if c.name.to_lowercase() == code.name.to_lowercase() {
-                    format!("You have a contact named {}.", c.name)
-                } else {
-                    format!("You have a contact whose name looks like this one: {}.", c.name)
-                };
-                (c, why, true)
-            })
+            book.named(&code.name).filter(|_| !code.name.is_empty()).map(|c| (c, if c.name.to_lowercase() == code.name.to_lowercase() { ClashWhy::SameName } else { ClashWhy::NameLooksLike }, true))
         })
         .map(|(contact, why, by_name)| {
             let (changes, photo_changes) = changes(contact, &code);
-            let what: Vec<String> = changes.iter().map(|c| c.label.to_lowercase()).collect();
-            let ask = match what.as_slice() {
-                [] => format!("{} already has this profile's name, photo and send address.", contact.name),
-                [one] => format!("Update {}? Their {one} changes to the profile's.", contact.name),
-                [rest @ .., last] => format!("Update {}? Their {} and {last} change to the profile's.", contact.name, rest.join(", ")),
-            };
-            Clash {
-                update: if changes.is_empty() { format!("Open {}", contact.name) } else { format!("Update {}", contact.name) },
-                keep: "Keep as is".into(),
-                add_new: by_name.then(|| "Add as new contact".into()),
-                contact: contact.clone(),
-                why,
-                ask,
-                changes,
-                photo_changes,
-            }
+            Clash { can_add_new: by_name, contact: contact.clone(), why, changes, photo_changes }
         });
-    Scanned {
-        initial: contacts::initial(&code.name),
-        address_short: contacts::three_part(&code.address),
-        note: if code.name.is_empty() { "A Fob user who didn't share a name.".into() } else { format!("A Fob profile. The name and photo are {}'s own, not checked by Fob.", code.name) },
-        pay: if code.name.is_empty() { "Pay them".into() } else { format!("Pay {}", code.name) },
-        add: "Add contact".into(),
-        clash,
-        code,
-    }
+    Scanned { initial: contacts::initial(&code.name), address_short: contacts::three_part(&code.address), clash, code }
 }
 
 /// A new contact from a scanned profile: its name, photo and address as
@@ -537,47 +432,18 @@ pub fn updated(contact: &Contact, code: &uri::ProfileCode) -> contacts::Draft {
 mod tests {
     use super::*;
     use fob_vault::keys::Keys;
-    use fob_monero::{network::Network, fiat::Record};
-    use crate::activity::Direction;
-    use fob_monero::network::UNLOCK;
+    use fob_monero::network::Network;
 
     /// 2026-10-31 12:00 UTC.
     const NOW: u64 = 1_793_448_000;
     const DAY: u64 = 86_400;
 
-    fn clock() -> Clock {
-        Clock { now: NOW, utc_offset: 0, hours_24: true }
-    }
-
     fn webp(len: usize) -> Vec<u8> {
         fob_codes::names::test_webp(len, 96)
     }
 
-    fn paid_in(subaddress: u32, amount: u64, time: u64, price: Option<u64>) -> Activity {
-        Activity {
-            not_confirmed: false,
-            released: false,
-            tx: format!("in-{subaddress}-{time}"),
-            direction: Direction::In,
-            amount,
-            fee: None,
-            to: None,
-            height: Some(100),
-            time,
-            confirmations: 20,
-            needed: UNLOCK,
-            receipt: None,
-            receipt_json: None,
-            price: price.map(|p| Record { currency: "USD".into(), price: p, provider: "Kraken".into(), at: time, daily: false }),
-            subaddress: Some(subaddress),
-            pieces: vec![amount],
-            note: None,
-            split: None,
-            contact: None,
-            contact_id: None,
-            shared: None,
-            parts: vec![],
-        }
+    fn code(name: &str, address: &str, photo: Option<Vec<u8>>) -> uri::ProfileCode {
+        uri::ProfileCode { address: address.into(), name: name.into(), photo, reply: false }
     }
 
     #[test]
@@ -638,137 +504,16 @@ mod tests {
     }
 
     #[test]
-    fn shares_list_newest_first_with_what_came() {
-        let keys = Keys::generate(Network::Stagenet).keys;
-        let mut book = Book::default();
-        book.set("Henry", None).unwrap();
-        let old = book.share(3, keys.address(3), ShareKind::CodeShown, NOW - DAY * 3).unwrap();
-        book.share(4, keys.address(4), ShareKind::CodeShown, NOW - 2 * 3600).unwrap();
-        book.went_out(old.id, ShareKind::LinkCopied);
-        let rows = vec![paid_in(4, 30_000_000_000, NOW - 3600, Some(166_000_000)), paid_in(4, 10_000_000_000, NOW - 1800, Some(165_000_000)), paid_in(3, 5_000_000_000, NOW, None)];
-        let lines = lines(&book, &rows, clock());
-        assert_eq!(lines.iter().map(|l| (l.title.as_str(), l.when.as_str(), l.received.as_str(), l.any)).collect::<Vec<_>>(), [
-            ("Code shown", "Today 10:00", "+$6.63", true),
-            ("Link copied", "28 Oct", "+0.005 XMR", true),
-        ]);
-        assert_eq!(super::lines(&book, &[], clock())[0].received, "nothing yet");
-        // Activity lists only a share someone took: a code shown, or a link sent, isn't one.
-        assert!(activity_rows(&book, clock()).is_empty());
-        let met = book.met(2, "Sam".into()).unwrap();
-        assert!(book.met(2, "Other".into()).is_none(), "a meeting stays the one it was");
-        assert_eq!(met.kind.title(), "Met Sam");
-        let activity = activity_rows(&book, clock());
-        assert_eq!(activity.len(), 1);
-        assert_eq!(
-            (activity[0].title.as_str(), activity[0].line.as_str(), activity[0].share, activity[0].amount.as_str()),
-            ("Met Sam", "A new address for this share · 10:00", Some(2), "")
-        );
-        assert_eq!(shared_text(NOW - 2 * 3600, clock()), "Shared 10:00");
-        assert_eq!(shared_text(NOW - DAY * 3, clock()), "Shared 28 Oct");
-    }
-
-    #[test]
-    fn a_share_by_touching_phones_names_whom_and_stays_one() {
-        let keys = Keys::generate(Network::Stagenet).keys;
-        let mut book = Book::default();
-        book.set("Henry", None).unwrap();
-        let sam = book.share(7, keys.address(7), ShareKind::TouchedPhones { name: Some("Sam".into()) }, NOW).unwrap();
-        let nobody = book.share(8, keys.address(8), ShareKind::TouchedPhones { name: None }, NOW + 1).unwrap();
-        // Copy link on its code again doesn't make it a link.
-        assert!(!book.went_out(sam.id, ShareKind::LinkCopied));
-        let titles: Vec<String> = lines(&book, &[], clock()).into_iter().map(|l| l.title).collect();
-        assert_eq!(titles, ["Touched phones", "Touched phones with Sam"]);
-        let json = serde_json::to_string(&book).unwrap();
-        assert!(json.contains(r#""kind":{"touched_phones":{"name":"Sam"}}"#), "{json}");
-        assert_eq!(serde_json::from_str::<Book>(&json).unwrap(), book);
-        assert_eq!(book.get(nobody.id).unwrap().kind, ShareKind::TouchedPhones { name: None });
-        // A code's share that phones then touched on: kept as the touch.
-        let shown = book.share(9, keys.address(9), ShareKind::CodeShown, NOW + 2).unwrap();
-        assert_eq!(book.touched(shown.id, None).unwrap().kind, ShareKind::TouchedPhones { name: None });
-        assert!(book.touched(shown.id, None).is_none(), "kept already");
-        assert_eq!(book.touched(shown.id, Some("Jo".into())).unwrap().kind, ShareKind::TouchedPhones { name: Some("Jo".into()) });
-        assert!(book.touched(shown.id, None).is_none(), "the name stays");
-        assert!(book.touched(99, None).is_none());
-        assert_eq!(swapped_words("Sam", true), ("Swapped with Sam".into(), "Sam got your profile, and you got Sam's.".into()));
-        assert_eq!(swapped_words("Sam", false).1, "You got Sam's profile and sent yours. If Sam's phone doesn't say Swapped, touch again.");
-    }
-
-    #[test]
-    fn settings_says_whose_profile_it_is() {
-        let mut book = Book::default();
-        let row = settings_row(book.profile());
-        assert_eq!((row.title.as_str(), row.name, row.suffix), ("Add a shareable Fob contact", None, None), "no second line");
-        book.set("Henry", None).unwrap();
-        let row = settings_row(book.profile());
-        assert_eq!((row.title.as_str(), row.name.as_deref(), row.suffix.as_deref()), ("Your profile", Some("Henry"), Some(" · share as a code")));
-        // A long name comes whole: the app cuts it, never the suffix.
-        book.set("Henrietta Montgomery-Fairweather", None).unwrap();
-        assert_eq!(settings_row(book.profile()).name.as_deref(), Some("Henrietta Montgomery-Fairweather"));
-        // An old file's blank name, with a photo or not, isn't a contact.
-        let blank = Profile { name: " ".into(), photo: None, name_in_requests: true };
-        assert_eq!(settings_row(Some(&blank)).title, "Add a shareable Fob contact");
-    }
-
-    fn code(name: &str, address: &str, photo: Option<Vec<u8>>) -> uri::ProfileCode {
-        uri::ProfileCode { address: address.into(), name: name.into(), photo, reply: false }
-    }
-
-    #[test]
-    fn a_scanned_profile_that_would_change_a_contact_asks_first() {
-        let keys = Keys::generate(Network::Stagenet).keys;
-        let (henry_at, sam_at, other_at) = (keys.address(1), keys.address(2), keys.address(3));
+    fn a_scanned_profile_says_what_it_clashes_with_without_words() {
+        let network = Network::Stagenet;
+        let keys = Keys::generate(network).keys;
         let mut book = contacts::Book::default();
-        // Nobody: just the profile.
-        let s = scanned(&book, code("Henry", &henry_at, Some(webp(50))));
-        assert_eq!((s.pay.as_str(), s.add.as_str(), s.clash.is_none()), ("Pay Henry", "Add contact", true));
-        assert_eq!(s.note, "A Fob profile. The name and photo are Henry's own, not checked by Fob.");
-        assert_eq!(s.address_short, contacts::three_part(&henry_at));
-        let sam = book
-            .add(Network::Stagenet, contacts::Draft { name: "Sam".into(), note: Some("Lunch".into()), send_address: Some(sam_at.clone()), also_paid_at: vec![other_at.clone()], ..Default::default() }, NOW)
-            .unwrap();
-
-        // The same name, another address: the hijack the question is for.
-        let c = scanned(&book, code("sam", &henry_at, Some(webp(50)))).clash.unwrap();
-        assert_eq!((c.contact.id, c.why.as_str()), (sam.id, "You have a contact named Sam."));
-        assert_eq!(
-            c.changes,
-            [
-                Change { kind: ChangeKind::Name, label: "Name".into(), now: "Sam".into(), new: "sam".into() },
-                Change { kind: ChangeKind::Photo, label: "Photo".into(), now: "No photo".into(), new: "The profile's photo".into() },
-                Change { kind: ChangeKind::SendAddress, label: "Send address".into(), now: contacts::three_part(&sam_at), new: contacts::three_part(&henry_at) },
-            ]
-        );
-        assert!(c.photo_changes);
-        assert_eq!(c.ask, "Update Sam? Their name, photo and send address change to the profile's.");
-        assert_eq!((c.update.as_str(), c.keep.as_str(), c.add_new.as_deref()), ("Update Sam", "Keep as is", Some("Add as new contact")));
-        // A name made to look like Sam's: a zero-width space in it, a Cyrillic "Ѕ", full-width letters.
-        for lookalike in ["Sa\u{200b}m", "\u{405}am", "Ｓａｍ", "S\u{430}m"] {
-            let c = scanned(&book, code(lookalike, &henry_at, None)).clash.expect(lookalike);
-            assert_eq!(c.contact.id, sam.id, "{lookalike}");
-        }
-        let c = scanned(&book, code("\u{405}am", &henry_at, None)).clash.unwrap();
-        assert_eq!(c.why, "You have a contact whose name looks like this one: Sam.");
-        assert!(scanned(&book, code("Pam", &henry_at, None)).clash.is_none());
-
-        // The same address under another name: the address wins, and no second contact gets it.
-        let c = scanned(&book, code("Samuel", &sam_at, None)).clash.unwrap();
-        assert_eq!((c.why.as_str(), c.ask.as_str(), c.photo_changes), ("This address is Sam's send address.", "Update Sam? Their name changes to the profile's.", false));
-        assert_eq!(c.add_new, None);
-        let c = scanned(&book, code("Sam", &other_at, None)).clash.unwrap();
-        assert_eq!((c.why.as_str(), c.changes.len()), ("Sam was paid at this address.", 1));
-        // Nothing to change.
-        let c = scanned(&book, code("Sam", &sam_at, None)).clash.unwrap();
-        assert!(c.changes.is_empty());
-        assert_eq!((c.update.as_str(), c.ask.as_str()), ("Open Sam", "Sam already has this profile's name, photo and send address."));
-
-        // Taken: name, photo and send address; the note and paid-at stay, and
-        // a profile without a photo keeps theirs.
-        let draft = updated(&sam, &code("Samuel", &other_at, Some(webp(60))));
-        let edited = book.edit(Network::Stagenet, sam.id, draft, &|_| false).unwrap();
-        assert_eq!((edited.name.as_str(), edited.note.as_deref(), edited.photo.clone()), ("Samuel", Some("Lunch"), Some(webp(60))));
-        assert_eq!((edited.send_address.as_deref(), edited.also_paid_at.len()), (Some(other_at.as_str()), 0), "moved out of paid at");
-        assert_eq!(updated(&edited, &code("Sam", &sam_at, None)).photo, Some(webp(60)));
-        let fresh = new_contact(&code("Jo", &henry_at, Some(webp(40))));
-        assert_eq!((fresh.name.as_str(), fresh.send_address.as_deref(), fresh.photo), ("Jo", Some(henry_at.as_str()), Some(webp(40))));
+        let sam = book.add(network, contacts::Draft { name: "Sam".into(), send_address: Some(keys.address(1)), ..Default::default() }, NOW).unwrap();
+        let by_address = scanned(&book, code("Henry", &keys.address(1), None));
+        let clash = by_address.clash.unwrap();
+        assert_eq!((clash.contact.id, clash.why, clash.can_add_new), (sam.id, ClashWhy::SendAddress, false));
+        assert_eq!(clash.changes, [Change { kind: ChangeKind::Name, now: ChangeValue::Text("Sam".into()), new: ChangeValue::Text("Henry".into()) }]);
+        let by_name = scanned(&book, code("sam", &keys.address(2), None)).clash.unwrap();
+        assert_eq!((by_name.why, by_name.can_add_new), (ClashWhy::SameName, true));
     }
 }

@@ -70,7 +70,7 @@ async fn send_s_sheet_says_what_s_ready_and_who_was_paid() {
     let t = now();
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     assert_eq!(wallet.ready_line(t).await, "0 XMR ready to spend");
-    assert!(wallet.lists(clock).await.paid_before.is_empty());
+    assert!(wallet.said_lists(clock).await.paid_before.is_empty());
     let to = "5".repeat(95);
     {
         let mut state = wallet.inner.state.lock().await;
@@ -89,7 +89,7 @@ async fn send_s_sheet_says_what_s_ready_and_who_was_paid() {
     assert_eq!(wallet.worth_aged(XMR, t + price::AGED).await, Some(("$166.10".into(), Some("10 min old".into()))));
     assert_eq!(wallet.worth_aged(XMR, t + 60).await, Some(("$166.10".into(), None)));
     assert_eq!(wallet.ready_line(t + price::SHOWN).await, "2 XMR ready to spend");
-    let paid = wallet.lists(clock).await.paid_before;
+    let paid = wallet.said_lists(clock).await.paid_before;
     assert_eq!(paid.len(), 1);
     assert_eq!((paid[0].address.as_str(), paid[0].name.as_str(), paid[0].line.as_str()), (to.as_str(), "5555 … 5555", "Lunch money · Today"));
 }
@@ -202,7 +202,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
     let split: Vec<_> = summary.pieces.iter().filter(|p| p.source.starts_with("Split up · ")).collect();
     assert_eq!(split.len(), 16);
     assert_eq!(split.iter().map(|p| p.atomic).sum::<u64>(), 2 * XMR - 1);
-    let row = wallet.lists(clock).await.days.into_iter().flat_map(|d| d.rows).find(|r| r.activity.as_ref().is_some_and(|a| a.tx == "split")).unwrap();
+    let row = wallet.said_lists(clock).await.days.into_iter().flat_map(|d| d.rows).find(|r| r.activity.as_ref().is_some_and(|a| a.tx == "split")).unwrap();
     assert_eq!((row.title.as_str(), row.amount.as_str()), ("Split up", "−0.000000000001"));
     assert!(row.line.starts_with("Sending · 15 coins · "), "{}", row.line);
 }

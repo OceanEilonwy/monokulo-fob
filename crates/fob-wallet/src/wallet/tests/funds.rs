@@ -73,7 +73,7 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
     assert_eq!(last, 4_000);
     // Activity holds each payment in to the same rule: "Not ready"
     // until its outputs can be spent, not at 10 for every one.
-    let lines: HashMap<String, String> = wallet.lists(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.days
+    let lines: HashMap<String, String> = wallet.said_lists(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await.days
         .into_iter()
         .flat_map(|d| d.rows)
         .map(|r| (r.activity.unwrap().tx, r.line.split(" · ").take(2).collect::<Vec<_>>().join(" · ")))
@@ -121,12 +121,12 @@ async fn notes_go_with_payments_in_and_out() {
         state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None });
     }
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
-    let shown = wallet.payment("in", clock).await.unwrap();
+    let shown = wallet.said_payment("in", clock).await.unwrap();
     assert_eq!((shown.party.as_deref(), shown.pieces.as_deref()), (Some("Address 1 · Coffee beans"), Some("2 · 0.5 + 0.25")));
     assert!(shown.when.ends_with(" · Coffee beans"));
-    assert!(wallet.payment("out", clock).await.unwrap().when.ends_with(" · Rent"));
-    assert!(wallet.payment("nothing", clock).await.is_none());
+    assert!(wallet.said_payment("out", clock).await.unwrap().when.ends_with(" · Rent"));
+    assert!(wallet.said_payment("nothing", clock).await.is_none());
     // A blank note forgets it.
     wallet.remember_receive_note(1, "").await.unwrap();
-    assert_eq!(wallet.payment("in", clock).await.unwrap().party.as_deref(), Some("Address 1"));
+    assert_eq!(wallet.said_payment("in", clock).await.unwrap().party.as_deref(), Some("Address 1"));
 }

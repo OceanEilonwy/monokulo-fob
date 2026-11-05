@@ -9,7 +9,7 @@ async fn two_wallets_without_profiles_meet_by_code_and_name_each_other() {
     assert!(ann.start_swap(ann_share.id).await.is_ok(), "touching needs no profile either");
 
     // Bo scans Ann's code and names her, then shows the reply.
-    assert!(bo.scanned_profile(&first).await.is_err(), "it needs a name first");
+    assert!(bo.said_scanned(&first).await.is_err(), "it needs a name first");
     let named = uri::name_meet_code(Network::Stagenet, &first, "Ann").unwrap();
     let contact = bo.add_contact_from_profile(&named, false, true).await.unwrap();
     assert_eq!((contact.name.as_str(), contact.send_address.as_deref(), contact.half), ("Ann", Some(ann_share.address.as_str()), false));
@@ -18,7 +18,7 @@ async fn two_wallets_without_profiles_meet_by_code_and_name_each_other() {
     let reply = bo.share_reply_code(bo_share.id).await.unwrap();
     assert!(!reply.contains("recipient_name"), "no name goes out");
     let named = uri::name_meet_code(Network::Stagenet, &reply, "Bo").unwrap();
-    assert!(ann.scanned_profile(&named).await.unwrap().code.reply);
+    assert!(ann.said_scanned(&named).await.unwrap().code.reply);
     let contact = ann.add_contact_from_profile(&named, false, true).await.unwrap();
     assert_eq!(contact.send_address.as_deref(), Some(bo_share.address.as_str()));
     assert!(ann.profile().await.is_none() && bo.profile().await.is_none(), "neither has had to make one");
@@ -48,18 +48,18 @@ async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
     assert_eq!(reopened.contact(sam.id).await, Some(sam.clone()));
     assert_eq!(reopened.contact(sam.id).await.unwrap().photo, Some(photo));
     // Activity calls the payment to Sam's address "Sam".
-    let lists = reopened.lists(clock).await;
+    let lists = reopened.said_lists(clock).await;
     let days = lists.days;
     let titles: Vec<_> = days[0].rows.iter().map(|r| r.title.as_str()).collect();
     assert_eq!(titles, ["Sam", &crate::address::short_title(&other)]);
-    assert_eq!(reopened.payment("lunch", clock).await.unwrap().party.as_deref(), Some("Sam"));
-    assert_eq!(reopened.contacts("lunch", clock).await[0].line, "Lunch money · paid today");
+    assert_eq!(reopened.said_payment("lunch", clock).await.unwrap().party.as_deref(), Some("Sam"));
+    assert_eq!(reopened.said_contacts("lunch", clock).await[0].line, "Lunch money · paid today");
     assert_eq!(lists.on_send[0].line, "Lunch · Today");
     assert_eq!(lists.unsaved.iter().map(|p| p.address.as_str()).collect::<Vec<_>>(), [other.as_str()]);
-    assert_eq!(reopened.contact_card(sam.id, clock).await.unwrap().paid.len(), 1);
+    assert_eq!(reopened.said_card(sam.id, clock).await.unwrap().paid.len(), 1);
     // Deleted, the payment stays, shown by its address again.
     reopened.delete_contact(sam.id).await.unwrap();
-    assert!(reopened.contact_card(sam.id, clock).await.is_none());
+    assert!(reopened.said_card(sam.id, clock).await.is_none());
     let rows = Wallet::open(&path, [1; 32]).unwrap().activity().await;
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|r| r.contact.is_none()));
@@ -96,24 +96,24 @@ async fn the_paid_screen_offers_to_save_whoever_a_payment_went_to() {
         state.sent.push(sent("plain", &plain, t, None));
         state.sent.push(Sent { pieces: Some(3), ..sent("split", &plain, t, None) });
     }
-    assert!(wallet.save_offer("to-sam").await.is_none());
-    assert!(wallet.save_offer("split").await.is_none());
-    assert!(wallet.save_offer("nothing").await.is_none());
-    let add = wallet.save_offer("named-sam").await.unwrap();
+    assert!(wallet.said_offer("to-sam").await.is_none());
+    assert!(wallet.said_offer("split").await.is_none());
+    assert!(wallet.said_offer("nothing").await.is_none());
+    let add = wallet.said_offer("named-sam").await.unwrap();
     assert_eq!((add.add_to.map(|c| c.id), add.button.as_str()), (Some(sam.id), "Add to Sam"));
-    let plain_offer = wallet.save_offer("plain").await.unwrap();
+    let plain_offer = wallet.said_offer("plain").await.unwrap();
     assert_eq!(plain_offer.draft.send_address.as_deref(), Some(plain.as_str()));
     // "Paid, not saved": an address once paid with a named code is only ever paid at.
     let henry_draft = wallet.new_contact_for(&henry).await;
     assert_eq!((henry_draft.name.as_str(), henry_draft.send_address, henry_draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
     assert_eq!(wallet.new_contact_for(&plain).await.send_address.as_deref(), Some(plain.as_str()));
     // So too on Paid after paying it again without the name (from Paid before, or pasted).
-    let again = wallet.save_offer("henry-again").await.unwrap();
+    let again = wallet.said_offer("henry-again").await.unwrap();
     assert_eq!((again.draft.name.as_str(), again.draft.send_address, again.draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
     assert_eq!(again.named.as_deref(), Some("to a code named “Henry”"));
     // Added to Sam, the payment is Sam's and nothing more is offered.
     wallet.add_contact_paid_at(sam.id, &add.address).await.unwrap();
-    assert!(wallet.save_offer("named-sam").await.is_none());
+    assert!(wallet.said_offer("named-sam").await.is_none());
     let rows = wallet.activity().await;
     assert_eq!(rows.iter().find(|r| r.tx == "named-sam").and_then(|r| r.contact.as_deref()), Some("Sam"));
     // A payment saved before names were kept reads without one.
@@ -176,7 +176,7 @@ async fn a_request_asked_in_money_keeps_what_it_came_to_then() {
     // A new price changes nothing about it.
     wallet.refresh_prices_from(&FakePrices::new(200_000_000, vec![]), Asked::User, now() + 120).await.unwrap();
     assert_eq!(wallet.request_code(request.id).await.unwrap(), code);
-    assert_eq!(wallet.request(request.id, Clock { now: now(), utc_offset: 0, hours_24: true }).await.unwrap().headline, "$80.00");
+    assert_eq!(wallet.said_request(request.id, Clock { now: now(), utc_offset: 0, hours_24: true }).await.unwrap().headline, "$80.00");
 }
 
 #[tokio::test]
@@ -188,20 +188,20 @@ async fn a_request_shows_what_came_and_once_deleted_its_address_still_receives_u
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), ..Default::default() }).await.unwrap();
     let (request, _) = wallet.make_request(Some(sam.id), Some("0.5"), false, Some("Pizza")).await.unwrap();
     let (other, _) = wallet.make_request(Some(sam.id), None, false, None).await.unwrap();
-    assert_eq!(wallet.request_contacts().await[0].line, "2 requests waiting");
+    assert_eq!(wallet.said_request_contacts().await[0].line, "2 requests waiting");
     let to_request = |tx: &str, time: u64, amount: u64| Owned { subaddress: request.subaddress, ..received(tx, time, amount) };
     wallet.inner.state.lock().await.outputs.push(to_request("first", t - 60, XMR / 4));
     // One still in the pool counts too.
     wallet.pool_found([("pooled".into(), Some(request.subaddress), XMR / 10)], t - 30);
-    let detail = wallet.request(request.id, clock).await.unwrap();
+    let detail = wallet.said_request(request.id, clock).await.unwrap();
     assert_eq!((detail.received.as_str(), detail.payments.len()), ("0.35 XMR", 2));
     assert!(detail.payments.iter().all(|p| p.title == "From Sam"), "{:?}", detail.payments);
-    assert_eq!(wallet.request_contacts().await[0].line, "1 request paid, 1 waiting");
-    let days = wallet.lists(clock).await.days;
+    assert_eq!(wallet.said_request_contacts().await[0].line, "1 request paid, 1 waiting");
+    let days = wallet.said_lists(clock).await.days;
     let today: Vec<_> = days[0].rows.iter().map(|r| (r.title.clone(), r.request)).collect();
     assert!(today.contains(&("Request to Sam".into(), Some(request.id))), "{today:?}");
     assert!(today.contains(&("From Sam".into(), None)), "{today:?}");
-    let card = wallet.contact_card(sam.id, clock).await.unwrap();
+    let card = wallet.said_card(sam.id, clock).await.unwrap();
     assert_eq!((card.requests.len(), card.paid.len(), card.paid_title.as_str()), (2, 2, "Payments with Sam"));
 
     // Deleted: gone from Activity and Sam's card; what came before is still Sam's, the payment still in the
@@ -211,7 +211,7 @@ async fn a_request_shows_what_came_and_once_deleted_its_address_still_receives_u
     wallet.inner.pool.lock().unwrap().clear();
     wallet.inner.state.lock().await.outputs.push(to_request("pooled", t + 600, XMR / 10));
     assert_eq!(wallet.activity().await.iter().find(|r| r.tx == "pooled").and_then(|r| r.contact.clone()), Some("Sam".into()));
-    assert!(wallet.request(request.id, clock).await.is_none());
+    assert!(wallet.said_request(request.id, clock).await.is_none());
     assert!(wallet.request_code(request.id).await.is_none());
     wallet.inner.state.lock().await.outputs.push(to_request("later", t + 3600, XMR));
     let reopened = Wallet::open(&path, [1; 32]).unwrap();
@@ -220,9 +220,9 @@ async fn a_request_shows_what_came_and_once_deleted_its_address_still_receives_u
     let from = |tx: &str| rows.iter().find(|r| r.tx == tx).map(|r| (r.contact.clone(), r.note.clone()));
     assert_eq!(from("first"), Some((Some("Sam".into()), Some("Pizza".into()))));
     assert_eq!(from("later"), Some((None, Some("Pizza".into()))));
-    let days = reopened.lists(Clock { now: t + 3600, ..clock }).await.days;
+    let days = reopened.said_lists(Clock { now: t + 3600, ..clock }).await.days;
     assert!(days.iter().flat_map(|d| &d.rows).all(|r| r.request != Some(request.id)));
-    let card = reopened.contact_card(sam.id, clock).await.unwrap();
+    let card = reopened.said_card(sam.id, clock).await.unwrap();
     assert_eq!(card.requests.iter().map(|r| r.id).collect::<Vec<_>>(), [other.id]);
     assert_eq!(card.paid.iter().map(|p| p.activity.tx.as_str()).collect::<Vec<_>>(), ["first"]);
     // Its address is still scanned, and never handed out again.
@@ -243,7 +243,7 @@ async fn one_transaction_paying_two_requests_credits_each_its_own_part() {
     let (for_jo, _) = wallet.make_request(Some(jo.id), None, false, Some("Bills")).await.unwrap();
     let received_by = |id: u64| {
         let wallet = wallet.clone();
-        async move { wallet.request(id, clock).await.unwrap().received }
+        async move { wallet.said_request(id, clock).await.unwrap().received }
     };
     // Seen in the pool, the way a pool scan keeps it: a batch payout to both, and one to the main address in it.
     wallet.pool_found(
@@ -264,9 +264,9 @@ async fn one_transaction_paying_two_requests_credits_each_its_own_part() {
     }
     assert_eq!(received_by(for_sam.id).await, "0.5 XMR");
     assert_eq!(received_by(for_jo.id).await, "0.25 XMR");
-    let detail = wallet.request(for_jo.id, clock).await.unwrap();
+    let detail = wallet.said_request(for_jo.id, clock).await.unwrap();
     assert_eq!(detail.payments.iter().map(|p| p.amount.as_str()).collect::<Vec<_>>(), ["+0.25"]);
-    assert_eq!(wallet.request_contacts().await.iter().map(|c| c.line.as_str()).collect::<Vec<_>>(), ["1 request paid", "1 request paid"]);
+    assert_eq!(wallet.said_request_contacts().await.iter().map(|c| c.line.as_str()).collect::<Vec<_>>(), ["1 request paid", "1 request paid"]);
 }
 
 #[tokio::test]
@@ -276,7 +276,7 @@ async fn each_share_of_the_profile_is_a_new_address_and_its_own_line() {
     let t = now();
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let address = |i: u32| wallet.inner.keys.address(i);
-    assert_eq!(wallet.profile_row().await.title, "Add a shareable Fob contact");
+    assert_eq!(wallet.said_profile_row().await.title, "Add a shareable Fob contact");
     wallet.set_profile("Henry", Some(webp(300))).await.unwrap();
     let own = wallet.receive_address().await.unwrap();
     let (first, code) = wallet.share_profile().await.unwrap();
@@ -290,18 +290,18 @@ async fn each_share_of_the_profile_is_a_new_address_and_its_own_line() {
 
     // A payment to a share's address comes "Via your profile".
     wallet.inner.state.lock().await.outputs.push(Owned { subaddress: 2, ..received("via", t - 60, XMR / 4) });
-    let days = wallet.lists(clock).await.days;
+    let days = wallet.said_lists(clock).await.days;
     let rows: Vec<_> = days[0].rows.iter().map(|r| (r.title.as_str(), r.share, r.amount.as_str())).collect();
     assert!(rows.iter().all(|r| !r.0.starts_with("Shared your") && !r.0.starts_with("Met")), "shares nobody took aren't in Activity: {rows:?}");
     wallet.share_met(second.id, "Sam").await.unwrap();
-    let met = wallet.lists(clock).await.days[0].rows.iter().filter(|r| r.share == Some(second.id)).map(|r| r.title.clone()).collect::<Vec<_>>();
+    let met = wallet.said_lists(clock).await.days[0].rows.iter().filter(|r| r.share == Some(second.id)).map(|r| r.title.clone()).collect::<Vec<_>>();
     assert_eq!(met, ["Met Sam"]);
     let via = days[0].rows.iter().find(|r| r.title == "Via your profile").unwrap();
     let shared = clock::time_of_day(clock::local(first.created, clock).1, clock);
     assert!(via.line.starts_with(&format!("Shared {shared} · ")), "{}", via.line);
-    let detail = wallet.payment("via", clock).await.unwrap();
+    let detail = wallet.said_payment("via", clock).await.unwrap();
     assert_eq!(detail.party.as_deref(), Some("Address 2 · via your profile"));
-    let lines = wallet.profile_shares(clock).await;
+    let lines = wallet.said_shares(clock).await;
     assert_eq!(lines.iter().map(|l| (l.title.as_str(), l.received.as_str())).collect::<Vec<_>>(), [("Met Sam", "nothing yet"), ("Link copied", "+0.25 XMR")]);
 
     // Kept in the file; a share's code again is the profile as it is now.
@@ -363,7 +363,7 @@ async fn touching_phones_swaps_profiles_on_the_share_s_own_address() {
     assert_eq!((got.code.name.as_str(), got.code.photo.clone(), got.code.address.clone()), ("Henry", Some(webp(1200)), henry.inner.keys.address(2)));
     // Ended twice (success, then the screen closing): kept once.
     assert!(henry.end_swap(&ours).await.unwrap().is_none());
-    assert_eq!(henry.profile_shares(clock).await.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Touched phones with Sam"]);
+    assert_eq!(henry.said_shares(clock).await.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Touched phones with Sam"]);
     // Adding Sam goes the way a scanned profile does, asking when he clashes.
     let text = uri::profile_uri(&got.code.address, &got.code.name, got.code.photo.as_deref());
     sam.add_contact_from_profile(&text, false, false).await.unwrap();
@@ -371,7 +371,7 @@ async fn touching_phones_swaps_profiles_on_the_share_s_own_address() {
     let (_, ours) = share_and_swap(&henry).await;
     touch(&again, &ours);
     let (_, rescanned, _) = sam.end_swap(&again).await.unwrap().unwrap();
-    assert_eq!(rescanned.clash.unwrap().why, "You have a contact named Henry.");
+    assert_eq!(rescanned.clash.unwrap().why, profile::ClashWhy::SameName);
     assert_eq!(henry.end_swap(&ours).await.unwrap().unwrap().0.kind, profile::ShareKind::TouchedPhones { name: Some("Sam".into()) });
 
     // Nobody touched: the share stays "Code shown".
@@ -390,12 +390,12 @@ async fn touching_phones_swaps_profiles_on_the_share_s_own_address() {
     half.card_lost();
     let none = henry.end_swap(&half).await.unwrap();
     assert!(none.is_none());
-    let lines = henry.profile_shares(clock).await;
+    let lines = henry.said_shares(clock).await;
     let titles: Vec<&str> = lines.iter().map(|l| l.title.as_str()).collect();
     assert_eq!(titles, ["Touched phones", "Code shown", "Touched phones with Sam", "Touched phones with Sam"]);
     assert_eq!(lines[1].address, idle_share.address);
     let reopened = Wallet::open(&path, [1; 32]).unwrap();
-    assert_eq!(reopened.profile_shares(clock).await.len(), 4);
+    assert_eq!(reopened.said_shares(clock).await.len(), 4);
     // Four openings, four addresses (2, 4, 5, 6; 3 was Receive's).
     assert_eq!(half.subaddress(), 6);
     assert_eq!(reopened.new_receive_address().await.unwrap(), reopened.inner.keys.address(7));
@@ -461,15 +461,15 @@ async fn a_contact_scanned_on_its_own_is_half_set_up_until_met() {
     let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
     let code = uri::profile_uri(&other.address(4), "Ana", None);
     let ana = wallet.add_contact_from_profile(&code, false, false).await.unwrap();
-    assert!(wallet.contact_card(ana.id, clock).await.unwrap().half.is_some());
+    assert!(wallet.said_card(ana.id, clock).await.unwrap().half.is_some());
     // Meeting (a touch, or both codes) clears it, whether Meet updates or opens them.
     let newer = uri::profile_uri_with(&other.address(9), "Ana", None, true);
     assert!(uri::parse_profile(Network::Stagenet, &newer).unwrap().reply);
     wallet.update_contact_from_profile(ana.id, &newer, true).await.unwrap();
-    assert!(wallet.contact_card(ana.id, clock).await.unwrap().half.is_none());
+    assert!(wallet.said_card(ana.id, clock).await.unwrap().half.is_none());
     // Added by Meet, never half set up.
     let sam = wallet.add_contact_from_profile(&uri::profile_uri(&other.address(5), "Sam", None), false, true).await.unwrap();
-    assert!(wallet.contact_card(sam.id, clock).await.unwrap().half.is_none());
+    assert!(wallet.said_card(sam.id, clock).await.unwrap().half.is_none());
     // The mark survives the wallet file.
     let ben = wallet.add_contact_from_profile(&uri::profile_uri(&other.address(6), "Ben", None), false, false).await.unwrap();
     assert!(wallet.contact(ben.id).await.unwrap().half);
@@ -480,13 +480,13 @@ async fn a_scanned_profile_adds_a_contact_or_updates_one_only_when_asked() {
     let wallet = Wallet::create(&dir("profile-scan"), [1; 32], Network::Stagenet).unwrap();
     let other = Keys::generate(Network::Stagenet).keys;
     let code = uri::profile_uri(&other.address(4), "Henry", Some(&webp(200)));
-    let scanned = wallet.scanned_profile(&code).await.unwrap();
+    let scanned = wallet.said_scanned(&code).await.unwrap();
     assert!(scanned.clash.is_none());
     let henry = wallet.add_contact_from_profile(&code, false, false).await.unwrap();
     assert_eq!((henry.name.as_str(), henry.send_address.clone(), henry.photo.clone()), ("Henry", Some(other.address(4)), Some(webp(200))));
     // Scanned again from a new share: the same name, a new address. Nothing changes until Update.
     let newer = uri::profile_uri(&other.address(9), "Henry", None);
-    let clash = wallet.scanned_profile(&newer).await.unwrap().clash.unwrap();
+    let clash = wallet.said_scanned(&newer).await.unwrap().clash.unwrap();
     assert_eq!((clash.contact.id, clash.changes.len()), (henry.id, 1));
     assert_eq!(wallet.contact(henry.id).await.unwrap().send_address, Some(other.address(4)));
     let updated = wallet.update_contact_from_profile(henry.id, &newer, false).await.unwrap();
@@ -500,10 +500,10 @@ async fn a_scanned_profile_adds_a_contact_or_updates_one_only_when_asked() {
     assert_eq!(refused, "That address is Henry's already: update Henry instead.");
     let renamed = uri::profile_uri(&other.address(9), "Someone else", None);
     assert!(wallet.add_contact_from_profile(&renamed, true, false).await.is_err(), "an address is never two contacts' send address");
-    assert_eq!(wallet.contacts("", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 1);
+    assert_eq!(wallet.said_contacts("", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 1);
     // Add as new contact, once asked about the name, keeps both.
     wallet.add_contact_from_profile(&elsewhere, true, false).await.unwrap();
-    assert_eq!(wallet.contacts("henry", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 2);
-    assert!(wallet.scanned_profile(&format!("monero:{}", other.address(4))).await.is_err());
+    assert_eq!(wallet.said_contacts("henry", Clock { now: now(), utc_offset: 0, hours_24: true }).await.len(), 2);
+    assert!(wallet.said_scanned(&format!("monero:{}", other.address(4))).await.is_err());
     assert!(wallet.update_contact_from_profile(99, &newer, false).await.is_err());
 }

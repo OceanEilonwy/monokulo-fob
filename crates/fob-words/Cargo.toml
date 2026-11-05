@@ -14,3 +14,7 @@ fob-price = { path = "../fob-price" }
 fob-screens = { path = "../fob-screens" }
 fob-vault = { path = "../fob-vault" }
 zeroize = "1"
+
+[dev-dependencies]
+fob-codes = { path = "../fob-codes", features = ["test-support"] }
+serde_json = "1"
