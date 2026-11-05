@@ -638,7 +638,7 @@ impl Wallet {
             ReorgReach::ToStart => self.rewind(start, None).await?,
             ReorgReach::TooDeep => return Err(FobError::ReorgTooDeep),
         }
-        self.set_status(|s| s.notice = Some("The chain changed, so Fob scanned recent blocks again.".into()));
+        self.set_status(|s| s.notice = Some(catch_up::Notice::ChainFollowed));
         Ok(())
     }
 
@@ -649,7 +649,7 @@ impl Wallet {
         let start = self.inner.state.lock().await.restore_height.unwrap_or(0);
         *self.inner.pipeline.lock().await = None;
         self.rewind(start, None).await?;
-        self.ask_to_scan("Scanning the whole wallet", start).await;
+        self.ask_to_scan(ScanTitle::WholeWallet, start).await;
         self.sync_now().await;
         Ok(())
     }

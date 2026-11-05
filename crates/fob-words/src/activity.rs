@@ -161,7 +161,10 @@ pub fn detail(d: activity::Detail) -> Detail {
         when: format!("{}{note}", clock::when(&d.when)),
         priced: d.priced,
         worth_now: d.worth_now.unwrap_or_else(|| NOT_AVAILABLE.into()),
-        rate_now: d.rate_now,
+        rate_now: d.rate_now.map(|rate| match &d.rate_age {
+            Some(age) => format!("{rate} · {}", crate::prices::age(*age)),
+            None => rate,
+        }),
         then_label: if d.out { "When sent" } else { "When received" }.into(),
         worth_then: d.worth_then.unwrap_or_else(|| NOT_AVAILABLE.into()),
         rate_then: d.rate_then,

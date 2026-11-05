@@ -21,7 +21,7 @@ async fn a_view_only_wallet_refuses_to_prepare_payments() {
         spent_in: None,
     }];
     watch.inner.state.lock().await.tip = 100;
-    let coins = watch.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
+    let coins = watch.said_coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
     assert!(coins.ready > 0 && !coins.can_split);
     assert!(matches!(watch.prepare(&full.primary_address(), 1, None, None).await, Err(FobError::Vault(VaultError::ViewOnly))));
 }
@@ -86,7 +86,7 @@ async fn send_s_sheet_says_what_s_ready_and_who_was_paid() {
     // A price that's missed refreshes says how old it is; one over a
     // day old isn't used.
     assert_eq!(wallet.ready_line(t + 2 * 3_600).await, "2 XMR ready to spend · $332.20 · 2 h old");
-    assert_eq!(wallet.worth_aged(XMR, t + price::AGED).await, Some(("$166.10".into(), Some("10 min old".into()))));
+    assert_eq!(wallet.worth_aged(XMR, t + price::AGED).await, Some(("$166.10".into(), Some(fiat::PriceAge::Minutes(10)))));
     assert_eq!(wallet.worth_aged(XMR, t + 60).await, Some(("$166.10".into(), None)));
     assert_eq!(wallet.ready_line(t + price::SHOWN).await, "2 XMR ready to spend");
     let paid = wallet.said_lists(clock).await.paid_before;
@@ -155,11 +155,11 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
     }
     // No price: notes in XMR. Split up opens empty, with Auto learned
     // from the four coffees.
-    let opening = wallet.split_view(&[], clock_now()).await;
+    let opening = wallet.said_split_view(&[], clock_now()).await;
     assert_eq!((opening.pieces, opening.is_auto, opening.button.as_str(), opening.footer.as_str()), (0, false, "Add a coin to split", ""));
     let auto = opening.auto.expect("four payments to learn from").counts;
     assert_eq!(auto, [0, 0, 15, 0, 0, 0]);
-    let view = wallet.split_view(&auto, clock_now()).await;
+    let view = wallet.said_split_view(&auto, clock_now()).await;
     assert!(view.is_auto);
     assert_eq!((view.summary.as_deref(), view.button.as_str()), (Some("15 coins · 1.5 XMR"), "Split into 15 coins"));
     assert!(view.footer.starts_with("Network fee about 0.0001"), "{}", view.footer);
@@ -187,7 +187,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
     }
     assert_eq!(wallet.balance().await.total, 2 * XMR + 5 * XMR + 2 * XMR - 1);
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
-    let pieces = wallet.not_ready(clock).await.unwrap().pieces;
+    let pieces = wallet.said_not_ready(clock).await.unwrap().pieces;
     assert!(pieces.iter().any(|p| p.source.starts_with("Split up · ")));
 
     // Sent with its outputs known: each one shows before it's mined,
@@ -198,7 +198,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
         let back = vec![XMR / 10; 15].into_iter().chain([XMR / 2 - 1]).collect::<Vec<_>>();
         state.sent.push(Sent { change: 2 * XMR - 1, height: None, back, ..sent("split", 15 * XMR / 10, t, Some(15)) });
     }
-    let summary = wallet.not_ready(clock).await.unwrap();
+    let summary = wallet.said_not_ready(clock).await.unwrap();
     let split: Vec<_> = summary.pieces.iter().filter(|p| p.source.starts_with("Split up · ")).collect();
     assert_eq!(split.len(), 16);
     assert_eq!(split.iter().map(|p| p.atomic).sum::<u64>(), 2 * XMR - 1);

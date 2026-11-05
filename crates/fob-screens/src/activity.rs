@@ -155,6 +155,8 @@ pub struct Detail {
     pub worth_now: Option<String>,
     /// "1 XMR = $166.06", with a current price.
     pub rate_now: Option<String>,
+    /// How old that rate is, once it's missed a refresh.
+    pub rate_age: Option<fiat::PriceAge>,
     /// What it was worth then.
     pub worth_then: Option<String>,
     pub rate_then: Option<String>,
@@ -235,6 +237,7 @@ pub fn detail(activity: &Activity, now: Option<(&fiat::Currency, u64)>, priced: 
         priced,
         worth_now: now.map(|(c, p)| worth(p, c)),
         rate_now: now.map(|(c, p)| fiat::rate(p, c)),
+        rate_age: None,
         worth_then: then.as_ref().map(|(c, p)| worth(*p, c)),
         rate_then: then.as_ref().map(|(c, p)| fiat::rate(*p, c)),
         change,

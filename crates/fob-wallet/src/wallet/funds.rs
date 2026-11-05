@@ -64,7 +64,7 @@ impl Wallet {
         let (ready, waiting, last_block_time) = self.coin_pieces().await;
         let price = self.price_now().await;
         let age = self.price_age(clock.now).await;
-        let mut coins = not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), age.as_deref(), clock);
+        let mut coins = not_ready::coins(ready, waiting, last_block_time, UNLOCK, price.as_ref().map(|(c, p)| (c, *p)), age, clock);
         // A view-only wallet can't split, whatever it holds.
         coins.can_split &= self.can_spend();
         coins
@@ -82,9 +82,6 @@ impl Wallet {
                 sum.fiat = Some(fiat::value(sum.atomic, p, &currency));
             }
             summary.price_age = self.price_age(clock.now).await;
-            if let Some(age) = &summary.price_age {
-                summary.all_ready_line = format!("{} · price {age}", summary.all_ready_line);
-            }
         }
         Some(summary)
     }
@@ -261,9 +258,7 @@ impl Wallet {
         let now = self.price_now().await;
         let mut detail = activity::detail(&row, now.as_ref().map(|(c, p)| (c, *p)), settings.code().is_some(), settings.provider.name(), clock);
         // "Now" at an old price says how old.
-        if let Some(age) = self.price_age(clock.now).await {
-            detail.rate_now = detail.rate_now.map(|rate| format!("{rate} · {age}"));
-        }
+        detail.rate_age = self.price_age(clock.now).await;
         Some(detail)
     }
 }

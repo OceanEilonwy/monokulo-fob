@@ -10,12 +10,12 @@ impl Wallet {
     }
 
     /// Tells the sync loop to scan to the newest block, as `title`.
-    pub(super) async fn ask_to_scan(&self, title: &str, from: u64) {
+    pub(super) async fn ask_to_scan(&self, title: ScanTitle, from: u64) {
         let (to, at) = {
             let state = self.inner.state.lock().await;
             (state.tip, state.next_block)
         };
-        *self.inner.scan_job.lock().expect("scan lock") = Some(ScanProgress { title: title.into(), from, to, at, marks: vec![] });
+        *self.inner.scan_job.lock().expect("scan lock") = Some(ScanProgress { title, from, to, at, marks: vec![] });
         self.inner.scan_asked.store(true, Ordering::Relaxed);
         self.set_status(|s| {
             s.chain_changed = false;
@@ -127,13 +127,10 @@ impl Wallet {
         manual::scan_options(state.manual(), Self::unsettled_sent(&state).len(), state.next_block, first, state.tip)
     }
 
-    /// "Last scan Today, 14:20 · Block 3,811,200", or that there hasn't been one.
-    pub async fn last_scan_line(&self, clock: Clock) -> String {
+    /// The last scan, or none yet.
+    pub async fn last_scan(&self, clock: Clock) -> Option<manual::LastScan> {
         let state = self.inner.state.lock().await;
-        if state.next_block == 0 || state.last_block_time == 0 {
-            return "No scan yet".into();
-        }
-        format!("Last scan {} · Block {}", catch_up::date_time(state.last_block_time, clock), manual::grouped(state.next_block - 1))
+        (state.next_block != 0 && state.last_block_time != 0).then(|| manual::LastScan { when: clock::when(state.last_block_time, clock), block: state.next_block - 1 })
     }
 
     /// What the Block tab shows for a typed block.
@@ -141,9 +138,9 @@ impl Wallet {
         let state = self.inner.state.lock().await;
         let network = self.network();
         manual::BlockInfo {
-            mined: network.dated(height).map(|time| format!("~{}", catch_up::date_time(time, clock))),
-            newest: manual::grouped(state.tip.saturating_sub(1)),
-            first: manual::grouped(state.restore_height.unwrap_or(0)),
+            mined: network.dated(height).map(|time| clock::when(time, clock)),
+            newest: state.tip.saturating_sub(1),
+            first: state.restore_height.unwrap_or(0),
         }
     }
 
@@ -166,18 +163,18 @@ impl Wallet {
                 // What pulls found past Last scan is put right as this passes it.
                 *self.inner.pipeline.lock().await = None;
                 self.rewind(next_block, newest_hash).await?;
-                self.ask_to_scan("Scanning from last scan", next_block).await;
+                self.ask_to_scan(ScanTitle::FromLast, next_block).await;
                 return Ok(None);
             }
-            ScanRequest::Whole => (first, u64::MAX, "Scanning the whole wallet".to_owned()),
-            ScanRequest::Back(blocks) => (tip.saturating_sub(blocks).max(first), u64::MAX, format!("Scanning the newest {} blocks", manual::grouped(blocks))),
-            ScanRequest::Height(height) => (height, u64::MAX, format!("Scanning from block {}", manual::grouped(height))),
+            ScanRequest::Whole => (first, u64::MAX, ScanTitle::WholeWallet),
+            ScanRequest::Back(blocks) => (tip.saturating_sub(blocks).max(first), u64::MAX, ScanTitle::Newest(blocks)),
+            ScanRequest::Height(height) => (height, u64::MAX, ScanTitle::FromBlock(height)),
             ScanRequest::Dates { from, to } => {
                 let network = self.network();
                 // Dates only say roughly which block: a margin, so none is missed.
                 let start = network.restore_height_for(from);
                 let end = to.map_or(u64::MAX, |to| network.height_at(to) + manual::BLOCKS_A_DAY);
-                (start, end, "Scanning those dates".to_owned())
+                (start, end, ScanTitle::Dates)
             }
         };
         match manual::scan_plan(from, to, next_block, tip) {
@@ -185,7 +182,7 @@ impl Wallet {
                 *self.inner.pipeline.lock().await = None;
                 self.rewind(from, None).await?;
                 self.inner.state.lock().await.lower_start(from);
-                self.ask_to_scan(&title, from).await;
+                self.ask_to_scan(title, from).await;
             }
             ScanPlan::Window(from, to) => {
                 *self.inner.scan_job.lock().expect("scan lock") = Some(ScanProgress { title, from, to: to + 1, at: from, marks: vec![] });
@@ -297,7 +294,7 @@ impl Wallet {
             .len();
         let ready = state.spendable().checked_sub(ready_before).filter(|more| *more > 0).map(amount::format_short);
         let missing = state.sent.iter().filter(|s| s.not_confirmed).count();
-        let words = manual::pull_words(mode, unsettled.len(), new, ready, chain_changed, missing);
+        let words = PullOutcome { mode, checked: unsettled.len(), new, ready, chain_changed, not_confirmed: missing };
         self.save_state(&state)?;
         drop(state);
         self.refresh_status().await;

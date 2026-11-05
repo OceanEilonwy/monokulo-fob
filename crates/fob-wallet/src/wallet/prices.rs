@@ -111,7 +111,7 @@ impl Wallet {
     /// [`worth_aged`](Wallet::worth_aged)), and whether tapping it swaps XMR
     /// and the default currency (one besides XMR, with that worth) and
     /// which leads.
-    pub async fn balance_worth(&self, atomic: u64, now: u64) -> (Option<(String, Option<String>)>, price::BalanceOrder) {
+    pub async fn balance_worth(&self, atomic: u64, now: u64) -> (Option<(String, Option<fiat::PriceAge>)>, price::BalanceOrder) {
         let state = self.inner.state.lock().await;
         let shown = state.price_cache.shown(&state.prices, now);
         let worth = shown.map(|c| (fiat::value(atomic, c.price, &fiat::currency(&c.currency)), crate::price_alert::old(c.at, now)));
@@ -133,15 +133,15 @@ impl Wallet {
         state.price_cache.shown(&state.prices, now).map(|c| c.at)
     }
 
-    /// How old the price shown at `now` is, once it's missed a refresh:
-    /// "23 h old"; `None` while it's fresh, or without one.
-    pub async fn price_age(&self, now: u64) -> Option<String> {
+    /// How old the price shown at `now` is, once it's missed a refresh;
+    /// `None` while it's fresh, or without one.
+    pub async fn price_age(&self, now: u64) -> Option<fiat::PriceAge> {
         let state = self.inner.state.lock().await;
         state.price_cache.shown(&state.prices, now).and_then(|c| crate::price_alert::old(c.at, now))
     }
 
     /// [`price_age`](Wallet::price_age) now, by the phone's clock.
-    pub async fn price_age_now(&self) -> Option<String> {
+    pub async fn price_age_now(&self) -> Option<fiat::PriceAge> {
         self.price_age(now()).await
     }
 
@@ -151,9 +151,9 @@ impl Wallet {
     }
 
     /// What `atomic` XMR is worth at `now` (seconds since the epoch), with
-    /// the price's age once it's missed a refresh: ("$412.06", Some("2 h
-    /// old")); `None` without a price from within the day.
-    pub async fn worth_aged(&self, atomic: u64, now: u64) -> Option<(String, Option<String>)> {
+    /// the price's age once it's missed a refresh; `None` without a price
+    /// from within the day.
+    pub async fn worth_aged(&self, atomic: u64, now: u64) -> Option<(String, Option<fiat::PriceAge>)> {
         let state = self.inner.state.lock().await;
         let c = state.price_cache.shown(&state.prices, now)?;
         Some((fiat::value(atomic, c.price, &fiat::currency(&c.currency)), crate::price_alert::old(c.at, now)))
@@ -265,12 +265,7 @@ impl Wallet {
     /// it's missed a refresh ("… · $308.70 · 2 h old").
     pub async fn ready_line(&self, now: u64) -> String {
         let ready = self.balance().await.unlocked;
-        let xmr = format!("{} XMR ready to spend", amount::format_short(ready));
-        match self.worth_aged(ready, now).await {
-            Some((worth, Some(old))) => format!("{xmr} · {worth} · {old}"),
-            Some((worth, None)) => format!("{xmr} · {worth}"),
-            None => xmr,
-        }
+        fob_words::prices::ready_line(&amount::format_short(ready), self.worth_aged(ready, now).await)
     }
 
     /// Asks the provider for what's due, unless XMR only: the current price

@@ -678,23 +678,24 @@ pub struct NotReady {
 
 impl From<not_ready::NotReady> for NotReady {
     fn from(n: not_ready::NotReady) -> Self {
+        let n = fob_wallet::words::not_ready::not_ready(n);
         NotReady {
             ready: n.ready,
-            not_ready: n.total,
+            not_ready: n.not_ready,
             ready_text: n.ready_text,
             not_yet_text: n.not_yet_text,
             all_ready: n.all_ready,
             all_ready_line: n.all_ready_line,
             description: n.description,
-            sums: n.sums.into_iter().map(|s| NotReadySum { description: s.description(), label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
+            sums: n.sums.into_iter().map(|s| NotReadySum { description: s.description, label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
             price_age: n.price_age,
             progress: n.progress,
         }
     }
 }
 
-impl From<not_ready::PieceView> for NotReadyPiece {
-    fn from(p: not_ready::PieceView) -> Self {
+impl From<fob_wallet::words::not_ready::PieceView> for NotReadyPiece {
+    fn from(p: fob_wallet::words::not_ready::PieceView) -> Self {
         NotReadyPiece {
             amount_text: p.amount,
             fiat_text: p.fiat,
@@ -751,6 +752,7 @@ pub struct Coins {
 
 impl From<not_ready::Coins> for Coins {
     fn from(c: not_ready::Coins) -> Self {
+        let c = fob_wallet::words::not_ready::coins(c);
         Coins {
             intro: c.intro,
             ready: c.ready,
@@ -854,6 +856,7 @@ pub struct SyncDetails {
 
 impl From<fob_wallet::catch_up::Details> for SyncDetails {
     fn from(d: fob_wallet::catch_up::Details) -> Self {
+        let d = fob_wallet::words::catch_up::details(d);
         SyncDetails {
             title: d.title,
             percent: d.percent,
@@ -911,8 +914,8 @@ impl From<fob_wallet::wallet::ScanProgress> for ScanView {
         let done = s.at.saturating_sub(s.from).min(total);
         let position = |height: u64| (height.saturating_sub(s.from) as f32 / total as f32).clamp(0.0, 1.0);
         ScanView {
-            title: s.title,
-            blocks: format!("{} of {} blocks", fob_wallet::manual::grouped(done), fob_wallet::manual::grouped(total)),
+            title: fob_wallet::words::manual::scan_title(s.title),
+            blocks: fob_wallet::words::manual::scan_blocks(done, total),
             progress: done as f32 / total as f32,
             marks: s.marks.iter().map(|(height, incoming)| ScanMark { position: position(*height), incoming: *incoming }).collect(),
         }
@@ -1029,13 +1032,15 @@ pub struct PullOutcome {
 
 impl From<fob_wallet::manual::PullOutcome> for PullOutcome {
     fn from(p: fob_wallet::manual::PullOutcome) -> Self {
-        PullOutcome { title: p.title, line: p.line }
+        let said = fob_wallet::words::manual::pull(&p);
+        PullOutcome { title: said.title, line: said.line }
     }
 }
 
 impl From<fob_wallet::SyncStatus> for SyncStatus {
     fn from(s: fob_wallet::SyncStatus) -> Self {
-        let chip = s.chip();
+        let chip = fob_wallet::words::catch_up::chip(s.chip());
+        let zmq_text = fob_wallet::words::catch_up::zmq_text(&s.zmq, s.zmq_endpoint.as_deref());
         SyncStatus {
             scanned: s.scanned,
             tip: s.tip,
@@ -1050,10 +1055,10 @@ impl From<fob_wallet::SyncStatus> for SyncStatus {
             chip_text: chip.text,
             chip_label: chip.label,
             zmq: s.zmq.into(),
-            zmq_text: s.zmq_text,
+            zmq_text,
             manual_sync: s.manual_sync,
             scan: s.scan.map(Into::into),
-            notice: s.notice,
+            notice: s.notice.map(fob_wallet::words::manual::notice),
         }
     }
 }
@@ -1192,6 +1197,7 @@ pub struct SplitView {
 
 impl From<split::View> for SplitView {
     fn from(v: split::View) -> Self {
+        let v = fob_wallet::words::split::view(v);
         SplitView {
             title: v.title,
             intro: v.intro,
@@ -1397,14 +1403,14 @@ fn height(network: Network, restore_point: Option<String>) -> Result<Option<u64>
 /// A prepared payment or split for the confirm screen, with what it's
 /// worth now.
 async fn prepared(wallet: &fob_wallet::Wallet, p: fob_wallet::Prepared) -> Prepared {
-    let age = wallet.price_age_now().await;
+    let age = wallet.price_age_now().await.map(fob_wallet::words::prices::age);
     let split = p.pieces.map(|n| SplitSummary {
-        title: split::TITLE.into(),
-        to: split::TO.into(),
+        title: fob_wallet::words::split::TITLE.into(),
+        to: fob_wallet::words::split::TO.into(),
         pieces: p.split.iter().map(|(label, amount)| SplitLine { label: label.clone(), amount_text: amount.clone() }).collect(),
-        pieces_text: split::pieces_text(n),
-        swipe: split::swipe_text(n),
-        done: split::done_text(n),
+        pieces_text: fob_wallet::words::split::coins(n),
+        swipe: fob_wallet::words::split::swipe_text(n),
+        done: fob_wallet::words::split::done_text(n),
     });
     Prepared {
         id: p.id,
@@ -1437,6 +1443,7 @@ impl FobWallet {
     async fn balance(&self, now: u64) -> Balance {
         let b = self.inner.balance().await;
         let (worth, order) = self.inner.balance_worth(b.total, now).await;
+        let worth = worth.map(|(w, old)| (w, old.map(fob_wallet::words::prices::age)));
         Balance {
             total: b.total,
             unlocked: b.unlocked,
@@ -1736,20 +1743,23 @@ impl FobWallet {
     pub async fn scan_drawer(&self, now: u64, utc_offset: i32, hours_24: bool) -> ScanDrawer {
         self.inner.refresh_tip().await;
         ScanDrawer {
-            last_scan: self.inner.last_scan_line(clock::Clock { now, utc_offset, hours_24 }).await,
+            last_scan: fob_wallet::words::manual::last_scan(self.inner.last_scan(clock::Clock { now, utc_offset, hours_24 }).await.as_ref()),
             options: self
                 .inner
                 .scan_options()
                 .await
                 .into_iter()
-                .map(|o| ScanOption { request: o.request.into(), label: o.label, note: o.note, cost: o.cost, action: o.action })
+                .map(|o| {
+                    let said = fob_wallet::words::manual::option(&o);
+                    ScanOption { request: o.request.into(), label: said.label, note: said.note, cost: said.cost, action: said.action }
+                })
                 .collect(),
         }
     }
 
     /// What the Block tab shows for a typed block.
     pub async fn block_info(&self, height: u64, now: u64, utc_offset: i32, hours_24: bool) -> BlockInfo {
-        let info = self.inner.block_info(height, clock::Clock { now, utc_offset, hours_24 }).await;
+        let info = fob_wallet::words::manual::block(&self.inner.block_info(height, clock::Clock { now, utc_offset, hours_24 }).await);
         BlockInfo { mined: info.mined, newest: info.newest, first: info.first }
     }
 

@@ -316,20 +316,20 @@ async fn every_amount_at_an_old_price_says_how_old() {
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
     // Fresh: no age anywhere.
     assert_eq!(wallet.price_age(t).await, None);
-    assert_eq!(wallet.coins(at(t)).await.ready_sum, "1 · $166.10");
-    assert_eq!(wallet.not_ready(at(t)).await.unwrap().price_age, None);
+    assert_eq!(wallet.said_coins(at(t)).await.ready_sum, "1 · $166.10");
+    assert_eq!(wallet.said_not_ready(at(t)).await.unwrap().price_age, None);
     assert_eq!(wallet.said_payment("in", at(t)).await.unwrap().rate_now.as_deref(), Some("1 XMR = $166.10"));
-    let fresh = wallet.split_view(&[1], at(t)).await.footer;
+    let fresh = wallet.said_split_view(&[1], at(t)).await.footer;
     assert!(fresh.starts_with("Network fee about ") && !fresh.contains('·'), "{fresh}");
     // A second short of a day: still shown, and how old it is said.
     let late = t + price::SHOWN - 1;
-    assert_eq!(wallet.price_age(late).await.as_deref(), Some("23 h old"));
-    assert_eq!(wallet.coins(at(late)).await.ready_sum, "1 · $166.10 · 23 h old");
-    let n = wallet.not_ready(at(late)).await.unwrap();
+    assert_eq!(wallet.price_age(late).await, Some(fiat::PriceAge::Hours(23)));
+    assert_eq!(wallet.said_coins(at(late)).await.ready_sum, "1 · $166.10 · 23 h old");
+    let n = wallet.said_not_ready(at(late)).await.unwrap();
     assert_eq!(n.price_age.as_deref(), Some("23 h old"));
     assert!(n.all_ready_line.ends_with(" · price 23 h old"), "{}", n.all_ready_line);
     assert_eq!(wallet.said_payment("in", at(late)).await.unwrap().rate_now.as_deref(), Some("1 XMR = $166.10 · 23 h old"));
-    let footer = wallet.split_view(&[1], at(late)).await.footer;
+    let footer = wallet.said_split_view(&[1], at(late)).await.footer;
     assert!(footer.starts_with("Network fee about ") && footer.ends_with(" · 23 h old price"), "{footer}");
     // A day: no price, so no age.
     assert_eq!(wallet.price_age(t + price::SHOWN).await, None);

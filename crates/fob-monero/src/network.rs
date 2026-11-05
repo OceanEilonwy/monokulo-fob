@@ -137,21 +137,6 @@ pub enum ZmqStatus {
     CantConnect(String),
 }
 
-impl ZmqStatus {
-    /// The subtitle under "Instant updates (ZMQ)":
-    /// "node.example:18083 · listening", or "Off".
-    pub fn text(&self, endpoint: Option<&str>) -> String {
-        let word = match self {
-            ZmqStatus::Off => return "Off".to_owned(),
-            ZmqStatus::Connecting => "connecting",
-            ZmqStatus::Listening => "listening",
-            ZmqStatus::CantConnect(_) => "can't connect",
-        };
-        let place = endpoint.map(|e| e.trim_start_matches("tcp://")).unwrap_or("");
-        format!("{place} · {word}")
-    }
-}
-
 /// Whether `host` is an onion service's (`….onion`, any case, with or
 /// without the root's dot).
 pub fn is_onion(host: &str) -> bool {

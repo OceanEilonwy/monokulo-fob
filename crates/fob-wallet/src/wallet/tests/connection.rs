@@ -4,13 +4,13 @@ use super::*;
 async fn zmq_is_off_until_turned_on_and_follows_the_node_s_host() {
     let wallet = Wallet::create(&dir("zmq-settings"), [1; 32], Network::Stagenet).unwrap();
     assert_eq!(wallet.status().zmq, ZmqStatus::Off);
-    assert_eq!(wallet.status().zmq_text, "Off");
+    assert_eq!(wallet.said_zmq(), "Off");
     // Offered, not used: the node's host, stagenet's usual port.
     assert_eq!(wallet.zmq_endpoint().await, "tcp://stagenet.xmr-tw.org:38083");
     assert!(matches!(wallet.set_zmq(true, Some("tcp://elsewhere.example:38083")).await, Err(FobError::Endpoint(_))));
     assert_eq!(wallet.status().zmq, ZmqStatus::Off, "refused, so still off");
     wallet.set_zmq(true, None).await.unwrap();
-    assert_eq!(wallet.status().zmq_text, "stagenet.xmr-tw.org:38083 · connecting");
+    assert_eq!(wallet.said_zmq(), "stagenet.xmr-tw.org:38083 · connecting");
     let path = wallet.inner.path.clone();
     drop(wallet);
     let again = Wallet::open(&path, [1; 32]).unwrap();
@@ -145,7 +145,7 @@ async fn switching_node_clears_the_old_failure_and_tries_the_new_one_at_once() {
     wallet.start_sync(heard.clone());
     tokio::time::timeout(Duration::from_secs(5), rounds.changed()).await.unwrap().unwrap();
     assert_eq!(wallet.status().error.as_deref(), Some("Refused to connect"));
-    assert_eq!(wallet.status().chip().text, "Can't reach node");
+    assert_eq!(fob_words::catch_up::chip(wallet.status().chip()).text, "Can't reach node");
     let port = crate::node::canned::canned_node(false).await;
     rounds.mark_unchanged();
     let before = heard.0.lock().unwrap().len();

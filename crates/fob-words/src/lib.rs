@@ -7,9 +7,12 @@
 
 pub mod activity;
 pub mod backup;
+pub mod catch_up;
 pub mod clock;
 pub mod contacts;
 pub mod errors;
+pub mod manual;
+pub mod not_ready;
 pub mod prices;
 pub mod profile;
 pub mod requests;

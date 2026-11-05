@@ -91,15 +91,15 @@ async fn with_manual_sync_on_nothing_scans_until_asked() {
     assert!(!wallet.waiting_to_be_asked().await, "off: the loop scans");
     wallet.set_manual_sync(true).await.unwrap();
     assert!(wallet.waiting_to_be_asked().await);
-    wallet.ask_to_scan("Scanning", 0).await;
+    wallet.ask_to_scan(ScanTitle::WholeWallet, 0).await;
     assert!(!wallet.waiting_to_be_asked().await);
     assert!(!wallet.status().synced, "not up to date while it scans");
-    assert_eq!(wallet.status().scan.unwrap().title, "Scanning");
+    assert_eq!(wallet.status().scan.unwrap().title, ScanTitle::WholeWallet);
     wallet.scan_finished().await;
     assert!(wallet.waiting_to_be_asked().await);
     assert!(wallet.status().scan.is_none());
     // Turning it on stops one under way.
-    wallet.ask_to_scan("Scanning", 0).await;
+    wallet.ask_to_scan(ScanTitle::WholeWallet, 0).await;
     wallet.set_manual_sync(true).await.unwrap();
     assert!(wallet.waiting_to_be_asked().await);
 }
@@ -155,8 +155,9 @@ async fn a_pull_in_send_mode_checks_the_chain_and_says_when_it_changed() {
         state.pull_mode = PullMode::Send;
     }
     let words = wallet.pull_refresh().await.unwrap().unwrap();
-    assert_eq!(words.title, "Nothing new");
-    assert_eq!(words.line, "Sync to look for new payments.");
+    let said = fob_words::manual::pull(&words);
+    assert_eq!(said.title, "Nothing new");
+    assert_eq!(said.line, "Sync to look for new payments.");
     {
         let state = wallet.inner.state.lock().await;
         assert_eq!(state.tip, 3_000_000, "coins waiting can now count down");
@@ -164,9 +165,9 @@ async fn a_pull_in_send_mode_checks_the_chain_and_says_when_it_changed() {
         assert_eq!(state.next_block, 0, "Last scan stays");
     }
     // Same hash again: nothing to say. Another hash at that height: the chain changed.
-    assert_eq!(wallet.pull_refresh().await.unwrap().unwrap().title, "Nothing new");
+    assert_eq!(fob_words::manual::pull(&wallet.pull_refresh().await.unwrap().unwrap()).title, "Nothing new");
     wallet.inner.state.lock().await.pull_mark_hash = Some("b".repeat(64));
-    assert_eq!(wallet.pull_refresh().await.unwrap().unwrap().title, "The chain changed");
+    assert_eq!(fob_words::manual::pull(&wallet.pull_refresh().await.unwrap().unwrap()).title, "The chain changed");
     // Disabled does nothing at all.
     wallet.set_pull_mode(PullMode::Disabled).await.unwrap();
     assert_eq!(wallet.pull_refresh().await.unwrap(), None);

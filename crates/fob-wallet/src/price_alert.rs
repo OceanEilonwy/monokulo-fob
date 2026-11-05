@@ -11,7 +11,7 @@
 //! The app shows the toast whose `id` it hasn't shown (or had swiped
 //! away) yet: a new id is a new showing, the same id only newer words.
 
-use crate::fiat::{currency, rate};
+use crate::fiat::{PriceAge, currency, rate};
 use crate::price::{self, Cache, Current, Failure, Settings};
 use crate::clock::{self, Clock};
 
@@ -167,14 +167,13 @@ pub fn age(at: u64, clock: Clock) -> Option<String> {
 }
 
 /// Beside an amount converted at a price over [`AGED`](price::AGED) old
-/// (Home's balance, Send's ready line): "40 min old", "2 h old"; `None`
-/// while it's newer. Shown prices are under a day old, so never days.
-pub fn old(at: u64, now: u64) -> Option<String> {
+/// (Home's balance, Send's ready line); `None` while it's newer.
+pub fn old(at: u64, now: u64) -> Option<PriceAge> {
     let age = now.saturating_sub(at);
     match age {
         _ if age < price::AGED => None,
-        _ if age < 3_600 => Some(format!("{} min old", age / 60)),
-        _ => Some(format!("{} h old", age / 3_600)),
+        _ if age < 3_600 => Some(PriceAge::Minutes(age / 60)),
+        _ => Some(PriceAge::Hours(age / 3_600)),
     }
 }
 
@@ -279,11 +278,11 @@ mod tests {
         let now = 1_793_458_800;
         assert_eq!(old(now, now), None);
         assert_eq!(old(now - crate::price::AGED + 1, now), None);
-        assert_eq!(old(now - crate::price::AGED, now).as_deref(), Some("10 min old"));
-        assert_eq!(old(now - 59 * 60 - 59, now).as_deref(), Some("59 min old"));
-        assert_eq!(old(now - 3_600, now).as_deref(), Some("1 h old"));
-        assert_eq!(old(now - 2 * 3_600 - 1_799, now).as_deref(), Some("2 h old"));
-        assert_eq!(old(now - 23 * 3_600 - 3_599, now).as_deref(), Some("23 h old"));
+        assert_eq!(old(now - crate::price::AGED, now).map(fob_words::prices::age).as_deref(), Some("10 min old"));
+        assert_eq!(old(now - 59 * 60 - 59, now).map(fob_words::prices::age).as_deref(), Some("59 min old"));
+        assert_eq!(old(now - 3_600, now).map(fob_words::prices::age).as_deref(), Some("1 h old"));
+        assert_eq!(old(now - 2 * 3_600 - 1_799, now).map(fob_words::prices::age).as_deref(), Some("2 h old"));
+        assert_eq!(old(now - 23 * 3_600 - 3_599, now).map(fob_words::prices::age).as_deref(), Some("23 h old"));
         // A clock gone back: as just asked.
         assert_eq!(old(now + 60, now), None);
     }

@@ -56,7 +56,7 @@ impl Wallet {
             up_to: state.last_block_time,
             manual_sync: state.manual_sync,
             synced: state.manual_sync,
-            zmq_text: zmq.text(state.zmq_endpoint.as_deref()),
+            zmq_endpoint: state.zmq_endpoint.clone(),
             zmq,
             ..SyncStatus::default()
         };

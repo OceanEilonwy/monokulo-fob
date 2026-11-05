@@ -63,6 +63,23 @@ impl Wallet {
         }
     }
 
+    pub(super) async fn said_coins(&self, clock: Clock) -> fob_words::not_ready::Coins {
+        fob_words::not_ready::coins(self.coins(clock).await)
+    }
+
+    pub(super) async fn said_not_ready(&self, clock: Clock) -> Option<fob_words::not_ready::NotReady> {
+        self.not_ready(clock).await.map(fob_words::not_ready::not_ready)
+    }
+
+    pub(super) async fn said_split_view(&self, counts: &[u32], clock: Clock) -> fob_words::split::View {
+        fob_words::split::view(self.split_view(counts, clock).await)
+    }
+
+    pub(super) fn said_zmq(&self) -> String {
+        let status = self.status();
+        fob_words::catch_up::zmq_text(&status.zmq, status.zmq_endpoint.as_deref())
+    }
+
     pub(super) async fn said_payment(&self, tx: &str, clock: Clock) -> Option<fob_words::activity::Detail> {
         self.payment(tx, clock).await.map(fob_words::activity::detail)
     }

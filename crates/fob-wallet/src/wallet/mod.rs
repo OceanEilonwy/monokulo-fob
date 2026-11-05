@@ -64,7 +64,7 @@ use crate::{
     error::{CodeError, EndpointProblem, FobError, MoneroError, PriceError, Result, ScreenError, VaultError},
     backup,
     keys::{Keys, SeedKind, StoredKeys},
-    manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest},
+    manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest, ScanTitle},
     network::Network,
     node,
     not_ready::{self, Coins, NotReady, Piece, Source},
