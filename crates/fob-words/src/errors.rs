@@ -145,6 +145,20 @@ pub fn send(why: &str) -> String {
     format!("couldn't build the transaction: {why}")
 }
 
+/// Why a code can't be paid, when it's fine as a code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotTaken {
+    WalletCode,
+    NotPayment,
+}
+
+pub fn code_not_taken(why: NotTaken) -> String {
+    match why {
+        NotTaken::WalletCode => "That's a wallet code, not a payment code.".into(),
+        NotTaken::NotPayment => "That isn't a payment code.".into(),
+    }
+}
+
 /// Why two Fobs couldn't swap profiles by touching.
 pub fn swap_failed(problem: &swap::Problem) -> String {
     match problem {
