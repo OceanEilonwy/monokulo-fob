@@ -20,6 +20,7 @@ use crate::{
     confirm::{self, Confirm},
     contacts::{self, Contacts},
     home::{self, Home},
+    manual::{self, Manual},
     meet::{self, Meet},
     node::{self, Node},
     passphrase::{self, Passphrase},
@@ -28,6 +29,7 @@ use crate::{
     profile::{self, Profile},
     receive::{self, Receive},
     requests::{self, Request},
+    scan::{self, Scan},
     send::{self, Send},
     settings::{self, Settings},
     split::{self, Split},
@@ -89,6 +91,10 @@ pub enum Go {
     Share(u64),
     Node,
     Prices,
+    Scan,
+    /// A scan ended with its page showing.
+    ScanOver,
+    ManualSync,
     Back,
 }
 
@@ -136,6 +142,8 @@ pub struct Root {
     meet: Controller<Meet>,
     node: Controller<Node>,
     prices: Controller<Prices>,
+    scan: Controller<Scan>,
+    manual: Controller<Manual>,
     toasts: adw::ToastOverlay,
     nav: adw::NavigationView,
     screens: Option<Arc<Screens>>,
@@ -209,6 +217,8 @@ impl SimpleComponent for Root {
         let meet = Meet::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
         let node = Node::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
         let prices = Prices::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let scan = Scan::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
+        let manual = Manual::builder().launch(engine.clone()).forward(sender.input_sender(), forward);
         passphrase.emit(passphrase::Input::Phase(engine.phase()));
 
         let nav = adw::NavigationView::new();
@@ -222,7 +232,7 @@ impl SimpleComponent for Root {
         links_go_to(sender.input_sender().clone());
         let toasts = adw::ToastOverlay::new();
         let phase = engine.phase();
-        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, toasts: toasts.clone(), nav: nav.clone(), screens: None, pending: None, toast: None };
+        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, scan, manual, toasts: toasts.clone(), nav: nav.clone(), screens: None, pending: None, toast: None };
         let toasts = &toasts;
         let nav = &nav;
         let widgets = view_output!();
@@ -336,6 +346,13 @@ impl Root {
     }
 
     fn show_status(&self, status: Arc<SyncStatus>) {
+        if let Some(words) = &status.notice {
+            self.toasts.add_toast(adw::Toast::new(&format!("The chain changed · {words}")));
+            if let Some(wallet) = self.engine.wallet() {
+                wallet.clear_notice();
+            }
+        }
+        self.scan.emit(scan::Input::Status(View(status.clone())));
         self.home.emit(home::Input::Status(View(status.clone())));
         self.settings.emit(settings::Input::Status(View(status)));
     }
@@ -445,6 +462,19 @@ impl Root {
             Go::Prices => {
                 self.prices.emit(prices::Input::Opened);
                 self.push("prices", "Prices", self.prices.widget());
+            }
+            Go::Scan => {
+                self.scan.emit(scan::Input::Opened);
+                self.push("scan", "Scan", self.scan.widget());
+            }
+            Go::ScanOver => {
+                if self.nav.visible_page().and_then(|page| page.tag()).as_deref() == Some("scan") {
+                    self.nav.pop();
+                }
+            }
+            Go::ManualSync => {
+                self.manual.emit(manual::Input::Opened);
+                self.push("manual", "Manual Sync", self.manual.widget());
             }
             Go::Back => {
                 self.nav.pop();

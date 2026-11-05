@@ -25,6 +25,8 @@ pub enum Input {
     SwapBalance,
     ShowSync,
     SyncNow,
+    ScanAgain,
+    Say(String),
 }
 
 pub struct Home {
@@ -61,11 +63,22 @@ impl Home {
         self.screens.as_ref().and_then(|View(s)| s.reminder.as_ref()).map(|r| (r.title.clone(), r.line.clone()))
     }
 
+    /// Manual Sync shows Sync in the chip's place, unless something's wrong.
+    fn manual(&self) -> Option<&SyncStatus> {
+        self.status.as_ref().map(|View(s)| s.as_ref()).filter(|s| s.manual_sync && s.error.is_none())
+    }
+
     fn chip(&self) -> String {
+        if let Some(status) = self.manual() {
+            return status.scan.as_ref().map_or("Sync".to_owned(), |scan| format!("{}%", (scan.progress * 100.0) as u32));
+        }
         self.status.as_ref().map_or(String::new(), |View(s)| s.chip_text.clone())
     }
 
     fn chip_look(&self) -> &'static [&'static str] {
+        if let Some(status) = self.manual() {
+            return if status.scan.is_some() { &["sync-chip", "sync-ring", "flat"] } else { &["pill", "suggested-action"] };
+        }
         match self.status.as_ref().map(|View(s)| s.chip_look) {
             Some(ChipLook::Synced) => &["flat", "sync-chip", "sync-synced"],
             Some(ChipLook::Offline) => &["flat", "sync-chip", "sync-offline"],
@@ -121,7 +134,7 @@ impl SimpleComponent for Home {
                 },
                 pack_end = &gtk::Button {
                     set_icon_name: "view-refresh-symbolic",
-                    set_tooltip_text: Some("Check the node now"),
+                    set_tooltip_text: Some("Refresh"),
                     connect_clicked => Input::SyncNow,
                 },
             },
@@ -244,10 +257,30 @@ impl SimpleComponent for Home {
                     let _ = engine.change(move |wallet| async move { wallet.set_fiat_first(!first).await }).await;
                 });
             }
-            Input::ShowSync => self.show_sync(),
+            Input::ShowSync if self.manual().is_some() => {
+                let _ = sender.output(RootMsg::Go(Go::Scan));
+            }
+            Input::ShowSync => self.show_sync(&sender),
             Input::SyncNow => {
-                let engine = self.engine.clone();
-                relm4::spawn(async move { engine.sync_now().await });
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    match engine.sync_now().await {
+                        Ok(Some(said)) => sender.input(Input::Say(format!("{} · {}", said.title, said.line))),
+                        Ok(None) => {}
+                        Err(e) => sender.input(Input::Say(format!("Couldn't check · {e}"))),
+                    }
+                });
+            }
+            Input::ScanAgain => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Err(e) = engine.change(|wallet| async move { wallet.scan_again().await }).await {
+                        sender.input(Input::Say(e.to_string()));
+                    }
+                });
+            }
+            Input::Say(text) => {
+                let _ = sender.output(RootMsg::Say(text));
             }
         }
     }
@@ -255,7 +288,7 @@ impl SimpleComponent for Home {
 
 impl Home {
     /// The card behind the chip, every word from Rust.
-    fn show_sync(&self) {
+    fn show_sync(&self, sender: &ComponentSender<Self>) {
         let Some(details) = self.engine.sync_details() else { return };
         let list = widgets::list();
         for row in &details.rows {
@@ -268,6 +301,12 @@ impl Home {
         let body = [details.percent, details.note, details.error].into_iter().flatten().collect::<Vec<_>>().join("\n");
         let dialog = adw::AlertDialog::builder().heading(&details.title).body(&body).extra_child(&list).build();
         dialog.add_response("close", "_Close");
+        // Too deep a reorganisation to follow: the way out.
+        if let Some(words) = &details.scan_again {
+            dialog.add_response("again", words);
+            let then = sender.clone();
+            dialog.connect_response(Some("again"), move |_, _| then.input(Input::ScanAgain));
+        }
         dialog.present(Some(&self.days));
     }
 }

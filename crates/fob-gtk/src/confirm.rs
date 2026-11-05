@@ -36,6 +36,8 @@ pub enum Input {
     /// Left without sending: the wallet can let what it prepared go.
     Left,
     Sent(String),
+    /// The node refused it: a coin may already be spent.
+    Refused,
     Offer(View<SaveOffer>),
     Keep(View<SaveOffer>),
     Done,
@@ -162,6 +164,7 @@ impl SimpleComponent for Confirm {
                 relm4::spawn(async move {
                     sender.input(match engine.send(prepared, typed).await {
                         Ok(tx) => Input::Sent(tx),
+                        Err(fob_app::FobError::SpendRejected { .. }) => Input::Refused,
                         Err(e) => Input::Failed(e.to_string()),
                     });
                 });
@@ -179,6 +182,18 @@ impl SimpleComponent for Confirm {
                     }
                 });
                 self.sent = Some(tx);
+            }
+            Input::Refused => {
+                self.busy = false;
+                let dialog = adw::AlertDialog::builder().heading("Nothing was sent").body("Your node refused this payment. A coin in it may already be spent, maybe from another device. Sync so Fob knows, then try again.").build();
+                dialog.add_responses(&[("close", "_Close"), ("sync", "_Sync")]);
+                dialog.set_close_response("close");
+                dialog.set_response_appearance("sync", adw::ResponseAppearance::Suggested);
+                let then = sender.clone();
+                dialog.connect_response(Some("sync"), move |_, _| {
+                    let _ = then.output(RootMsg::Go(Go::Scan));
+                });
+                dialog.present(Some(&self.body));
             }
             Input::Offer(offer) => {
                 let button = gtk::Button::builder().label(&offer.0.button).halign(gtk::Align::Center).css_classes(["pill"]).build();

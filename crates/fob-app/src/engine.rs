@@ -13,7 +13,7 @@ use std::{
 };
 
 use fob_ffi::{
-    Contact, FobError, FobWallet, Network, PriceRetry, PriceToast, Prepared, ScanMode, ScannedProfile, Screens, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode, wallets_on,
+    Contact, FobError, FobWallet, Network, PriceRetry, PriceToast, Prepared, PullOutcome, ScanMode, ScannedProfile, Screens, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode, wallets_on,
 };
 use fob_wallet::passphrase;
 use serde::{Deserialize, Serialize};
@@ -551,12 +551,19 @@ impl Engine {
     }
 
     /// Asks the node now (and the price), and returns once that round is over.
-    pub async fn sync_now(&self) {
-        let Some(wallet) = self.wallet() else { return };
+    pub async fn sync_now(&self) -> Result<Option<PullOutcome>, FobError> {
+        let Some(wallet) = self.wallet() else { return Ok(None) };
         let this = self.clone();
         Self::run(async move {
-            wallet.sync_now().await;
+            // With Manual Sync, what a refresh does is the wallet's own setting.
+            let said = if wallet.manual_settings().await.on {
+                wallet.pull_refresh().await
+            } else {
+                wallet.sync_now().await;
+                Ok(None)
+            };
             this.read_screens().await;
+            said
         })
         .await
     }
@@ -842,6 +849,20 @@ mod tests {
         assert_eq!(again.id, contact.id);
         // Something that isn't a profile is refused.
         assert!(sam.meet_save("hello".into()).await.is_err());
+    }
+
+    /// Off the network, a refresh with Manual Sync on and refreshing disabled says nothing and asks no one.
+    #[tokio::test]
+    async fn refresh_follows_the_wallet_s_sync_mode() {
+        let dir = dir("refresh");
+        let (engine, _) = engine_at(&dir);
+        engine.set_up(PASS.into()).await.unwrap();
+        engine.create_wallet("One".into()).await.unwrap();
+        engine.change(|wallet| async move { wallet.set_manual_sync(true).await }).await.unwrap();
+        engine.change(|wallet| async move { wallet.set_pull_mode(fob_ffi::PullMode::Disabled).await }).await.unwrap();
+        assert!(engine.sync_now().await.unwrap().is_none());
+        let settings = engine.read(|wallet, _| async move { wallet.manual_settings().await }).await.unwrap();
+        assert!(settings.on);
     }
 
     #[tokio::test]

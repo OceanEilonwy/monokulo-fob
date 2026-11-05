@@ -64,6 +64,7 @@ pub struct Settings {
     currency_line: String,
     zmq_line: String,
     zmq_on: bool,
+    manual_on: bool,
     zmq_problem: Option<String>,
     profile_line: String,
     scan_row: adw::ComboRow,
@@ -140,15 +141,35 @@ impl SimpleComponent for Settings {
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Instant updates (ZMQ)",
+                                // Manual Sync listens for nothing.
+                                #[watch]
+                                set_visible: !model.manual_on,
                                 set_activatable: true,
                                 connect_activated => Input::Zmq,
                                 #[watch]
                                 set_subtitle: &gtk::glib::markup_escape_text(&model.zmq_line),
                             },
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: "Rescan",
+                                set_subtitle: "Look through past blocks again",
+                                set_activatable: true,
+                                add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
+                                connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Scan)); },
+                            },
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: "Manual Sync",
+                                set_activatable: true,
+                                #[watch]
+                                set_subtitle: if model.manual_on { "On" } else { "Off" },
+                                add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
+                                connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::ManualSync)); },
+                            },
                             #[local_ref]
                             add = scan_row -> adw::ComboRow {
                                 set_title: "Scanning",
-                                set_model: Some(&gtk::StringList::new(&["Auto: the main cores for a few blocks, the graphics chip for more", "GPU: the graphics chip", "CPU: only the main cores"])),
+                                set_model: Some(&gtk::StringList::new(&["Auto (Default)", "GPU: the graphics chip, using less power", "CPU: only the main cores"])),
                                 set_selected: match model.engine.scan_mode() { ScanMode::Auto => 0, ScanMode::Gpu => 1, ScanMode::Cpu => 2 },
                                 connect_selected_notify[sender] => move |row| sender.input(Input::Scan(row.selected())),
                             },
@@ -202,6 +223,7 @@ impl SimpleComponent for Settings {
             currency_line: String::new(),
             zmq_line: String::new(),
             zmq_on: false,
+            manual_on: false,
             zmq_problem: None,
             profile_line: String::new(),
             scan_row: scan_row.clone(),
@@ -221,6 +243,7 @@ impl SimpleComponent for Settings {
             Input::Status(View(status)) => {
                 self.zmq_line = status.zmq_text.clone();
                 self.zmq_on = !matches!(status.zmq, ZmqStatus::Off);
+                self.manual_on = status.manual_sync;
                 self.zmq_problem = match &status.zmq {
                     ZmqStatus::CantConnect { reason } => Some(reason.clone()),
                     _ => None,
