@@ -1,0 +1,18 @@
+[package]
+name = "fob-monero"
+description = "Networks, addresses, XMR amounts and fiat maths."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+monero-wallet = "0.2"
+serde = { version = "1", features = ["derive"] }
+sha3 = "0.10"
+thiserror = "2"
+unicode-normalization = "0.1.25"
+
+
+[dev-dependencies]
+hex = "0.4"

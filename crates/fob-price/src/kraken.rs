@@ -1,0 +1,312 @@
+//! Kraken's public REST API (<https://docs.kraken.com/api/>): no account,
+//! no key. `Ticker` for the price now, `OHLC` at a daily interval for the
+//! history, which reaches back 720 days and no further.
+//!
+//! Kraken trades XMR against dollars and euros only. For a few more
+//! currencies it multiplies XMR/USD by its own exchange market between the
+//! dollar and that currency: two requests for the price now, two for the
+//! history, joined by day. Prices now are the middle of the best bid and
+//! ask, never the last trade, which on a quiet market can be hours old or
+//! outside the spread; a market whose spread is too wide gives no price.
+
+use std::ops::Range;
+
+use serde_json::Value;
+
+use super::{Failure, Source, Transport, micro};
+use fob_monero::fiat::MICRO;
+use crate::error::{PriceError, Result};
+
+const API: &str = "https://api.kraken.com/0/public";
+
+/// How Kraken prices XMR in a currency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// An XMR market of its own: the pair to ask for, the key it answers
+    /// under.
+    Direct { pair: &'static str, key: &'static str },
+    /// XMR/USD times an exchange market: its pair and key, and whether it
+    /// quotes the currency per dollar (USD/JPY: multiply) rather than
+    /// dollars per unit of it (AUD/USD: divide).
+    ViaUsd { pair: &'static str, key: &'static str, per_dollar: bool },
+}
+
+/// XMR/USD's pair and key, which the exchange routes start from.
+const XMR_USD: (&str, &str) = ("XMRUSD", "XXMRZUSD");
+
+/// The currencies Kraken prices, as its `AssetPairs` listed the markets on
+/// 2026-10-31. Its other XMR pairs are against coins (USDC, USDT, XBT). It
+/// also lists USD/AED, which has never traded, and USD/JPY, which trades
+/// a dozen times a day across a 2% spread (its last trade 1.5% off the
+/// yen's rate), so the dirham and the yen are CoinGecko's.
+pub const ROUTES: [(&str, Route); 6] = [
+    ("USD", Route::Direct { pair: XMR_USD.0, key: XMR_USD.1 }),
+    ("EUR", Route::Direct { pair: "XMREUR", key: "XXMRZEUR" }),
+    ("GBP", Route::ViaUsd { pair: "GBPUSD", key: "ZGBPZUSD", per_dollar: false }),
+    ("AUD", Route::ViaUsd { pair: "AUDUSD", key: "AUDUSD", per_dollar: false }),
+    ("CAD", Route::ViaUsd { pair: "USDCAD", key: "ZUSDZCAD", per_dollar: true }),
+    ("CHF", Route::ViaUsd { pair: "USDCHF", key: "USDCHF", per_dollar: true }),
+];
+const CURRENCIES: [&str; 6] = {
+    let mut out = [""; 6];
+    let mut i = 0;
+    while i < ROUTES.len() {
+        out[i] = ROUTES[i].0;
+        i += 1;
+    }
+    out
+};
+/// The most daily candles `OHLC` returns.
+const HISTORY_DAYS: i64 = 720;
+/// One day, in OHLC's minutes.
+const DAILY: u32 = 1440;
+/// The widest spread, in millionths of the middle, a price now is taken
+/// across: 0.5% for an exchange market (the busy ones sit near 0.01%),
+/// 2% for an XMR market, whose price moves itself.
+const RATE_SPREAD: u64 = 5_000;
+const XMR_SPREAD: u64 = 20_000;
+/// The fewest trades an exchange market's day needs for its average to
+/// count; a quieter day takes the day before's.
+const MIN_TRADES: u64 = 100;
+/// The most days an exchange rate is carried forward (a weekend and a
+/// holiday, when currency markets close); past that a day goes without.
+const CARRY_DAYS: i64 = 4;
+
+pub struct Kraken;
+
+fn route(currency: &str) -> Result<Route> {
+    ROUTES.iter().find(|r| r.0 == currency).map(|r| r.1).ok_or_else(|| PriceError::Price(format!("Kraken has no XMR price in {currency}")))
+}
+
+/// The answer's `result`, or what Kraken said went wrong: busy for its rate
+/// limits, not answering for anything else it refused.
+fn result(body: &[u8]) -> Result<Value> {
+    let bad = || PriceError::Failed(Failure::BadAnswer);
+    let mut v: Value = serde_json::from_slice(body).map_err(|_| bad())?;
+    if let Some(errors) = v.get("error").and_then(Value::as_array).filter(|e| !e.is_empty()) {
+        let busy = errors.iter().filter_map(Value::as_str).any(|e| e.contains("Rate limit") || e.contains("Too many requests"));
+        return Err(PriceError::Failed(if busy { Failure::Busy } else { Failure::NotAnswering }));
+    }
+    v.get_mut("result").map(Value::take).ok_or_else(bad)
+}
+
+/// `Ticker`'s middle of the best ask (`a[0]`) and bid (`b[0]`), in
+/// millionths, when the spread is at most `spread` millionths of it.
+pub(crate) fn parse_ticker(body: &[u8], key: &str, spread: u64) -> Result<u64> {
+    let bad = PriceError::Failed(Failure::BadAnswer);
+    let result = result(body)?;
+    let side = |s: &str| result.get(key)?.get(s)?.get(0)?.as_str().and_then(micro).filter(|p| *p > 0);
+    let (ask, bid) = side("a").zip(side("b")).filter(|(a, b)| a >= b).ok_or(bad)?;
+    let middle = (ask + bid).div_ceil(2);
+    // Wider than allowed: a quiet market's quotes say little of the rate.
+    if ((ask - bid) as u128) * (MICRO as u128) > (spread as u128) * (middle as u128) {
+        return Err(PriceError::Failed(Failure::BadAnswer));
+    }
+    Ok(middle)
+}
+
+/// `OHLC`'s daily candles, `[time, open, high, low, close, vwap, volume,
+/// count]` each, as (day, price): the day's volume-weighted average price,
+/// nearer a moment picked at random in the day than its close, or the close
+/// for a day with no trades. A day with fewer than `min_trades` is left out.
+pub(crate) fn parse_ohlc(body: &[u8], key: &str, min_trades: u64) -> Result<Vec<(i64, u64)>> {
+    let result = result(body)?;
+    let rows = result.get(key).and_then(Value::as_array).ok_or(PriceError::Failed(Failure::BadAnswer))?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let time = row.get(0)?.as_i64()?;
+            let price = |i: usize| row.get(i)?.as_str().and_then(micro).filter(|p| *p > 0);
+            (row.get(7)?.as_u64()? >= min_trades).then_some(())?;
+            Some((time.div_euclid(86_400), price(5).or_else(|| price(4))?))
+        })
+        .collect())
+}
+
+/// XMR's price in dollars (`xmr_usd`) through an exchange rate (`rate`, in
+/// millionths), rounded half up; `None` at a rate of 0.
+pub(crate) fn through(xmr_usd: u64, rate: u64, per_dollar: bool) -> Option<u64> {
+    let (num, den) = if per_dollar { (xmr_usd as u128 * rate as u128, MICRO as u128) } else { (xmr_usd as u128 * MICRO as u128, rate as u128) };
+    if den == 0 {
+        return None;
+    }
+    u64::try_from((num + den / 2) / den).ok().filter(|p| *p > 0)
+}
+
+/// Daily XMR/USD prices through daily exchange rates, by day. A day the
+/// exchange market has no candle for takes the last rate before it, up to
+/// [`CARRY_DAYS`] old; a day with none that recent is left out.
+pub(crate) fn join_days(xmr_usd: &[(i64, u64)], rates: &[(i64, u64)], per_dollar: bool) -> Vec<(i64, u64)> {
+    let mut rates: Vec<(i64, u64)> = rates.to_vec();
+    rates.sort_by_key(|r| r.0);
+    xmr_usd
+        .iter()
+        .filter_map(|&(day, price)| {
+            let i = rates.partition_point(|r| r.0 <= day);
+            let &(rate_day, rate) = rates[..i].last()?;
+            (day - rate_day <= CARRY_DAYS).then_some(())?;
+            Some((day, through(price, rate, per_dollar)?))
+        })
+        .collect()
+}
+
+async fn ticker(pair: &str, key: &str, spread: u64, transport: Transport) -> Result<u64> {
+    parse_ticker(&transport.get(&format!("{API}/Ticker?pair={pair}")).await?, key, spread)
+}
+
+/// One request for the whole window Kraken keeps: `since` would tell
+/// Kraken the oldest day wanted.
+async fn ohlc(pair: &str, key: &str, min_trades: u64, transport: Transport) -> Result<Vec<(i64, u64)>> {
+    parse_ohlc(&transport.get(&format!("{API}/OHLC?pair={pair}&interval={DAILY}")).await?, key, min_trades)
+}
+
+impl Source for Kraken {
+    fn name(&self) -> &'static str {
+        "Kraken"
+    }
+
+    fn currencies(&self) -> &'static [&'static str] {
+        &CURRENCIES
+    }
+
+    /// The web only. Not confirmed, since Tor isn't built: Kraken is
+    /// expected to refuse Tor's exits, as its site does; look again then.
+    fn answers_over(&self, transport: Transport) -> bool {
+        transport == Transport::Web
+    }
+
+    async fn current(&self, currency: &str, transport: Transport) -> Result<u64> {
+        match route(currency)? {
+            Route::Direct { pair, key } => ticker(pair, key, XMR_SPREAD, transport).await,
+            Route::ViaUsd { pair, key, per_dollar } => {
+                let (xmr_usd, rate) = tokio::try_join!(ticker(XMR_USD.0, XMR_USD.1, XMR_SPREAD, transport), ticker(pair, key, RATE_SPREAD, transport))?;
+                through(xmr_usd, rate, per_dollar).ok_or(PriceError::Failed(Failure::BadAnswer))
+            }
+        }
+    }
+
+    /// The whole window Kraken keeps, whatever `days` asks.
+    async fn daily(&self, currency: &str, days: Range<i64>, transport: Transport) -> Result<Vec<(i64, u64)>> {
+        let all = match route(currency)? {
+            Route::Direct { pair, key } => ohlc(pair, key, 0, transport).await?,
+            Route::ViaUsd { pair, key, per_dollar } => {
+                let (xmr_usd, rates) = tokio::try_join!(ohlc(XMR_USD.0, XMR_USD.1, 0, transport), ohlc(pair, key, MIN_TRADES, transport))?;
+                join_days(&xmr_usd, &rates, per_dollar)
+            }
+        };
+        Ok(all.into_iter().filter(|(day, _)| days.contains(day)).collect())
+    }
+
+    fn history_days(&self) -> i64 {
+        HISTORY_DAYS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kraken_prices_xmr_in_six_currencies() {
+        assert_eq!(Kraken.currencies(), ["USD", "EUR", "GBP", "AUD", "CAD", "CHF"]);
+        assert_eq!(route("EUR").unwrap(), Route::Direct { pair: "XMREUR", key: "XXMRZEUR" });
+        assert!(matches!(route("CHF").unwrap(), Route::ViaUsd { per_dollar: true, .. }));
+        assert!(route("NZD").unwrap_err().to_string().contains("no XMR price in NZD"));
+        assert!(route("AED").is_err(), "USD/AED never trades");
+        assert!(route("JPY").is_err(), "USD/JPY's spread is too wide to price by");
+    }
+
+    /// Kraken's answers on 2026-10-31, cut down.
+    const XMR_USD_TICKER: &[u8] = br#"{"error":[],"result":{"XXMRZUSD":{"a":["593.80000000","1","1.000"],"b":["593.27000000","13","13.000"],"c":["593.73000000","0.02470432"],"v":["5106.77623027","8078.18059783"],"p":["594.41602778","592.35442506"],"t":[3599,6982],"l":["585.65000000","572.49000000"],"h":["601.05000000","601.05000000"],"o":"587.54000000"}}}"#;
+    const AUD_USD_TICKER: &[u8] = br#"{"error":[],"result":{"AUDUSD":{"a":["0.70306","188","188.000"],"b":["0.70299","20","20.000"],"c":["0.70295","134.57654198"],"v":["718657.78395624","1464965.78094039"],"p":["0.70300","0.70302"],"t":[1863,3218],"l":["0.70251","0.70119"],"h":["0.70377","0.70386"],"o":"0.70305"}}}"#;
+    const USD_JPY_TICKER: &[u8] = br#"{"error":[],"result":{"ZUSDZJPY":{"a":["159.730","51","51.000"],"b":["156.273","49","49.000"],"c":["159.731","5.85350000"],"v":["5754.48576341","6866.77938459"],"p":["159.911","159.643"],"t":[10,21],"l":["156.271","156.271"],"h":["159.992","159.992"],"o":"159.948"}}}"#;
+    const USD_AED_TICKER: &[u8] = br#"{"error":[],"result":{"USDAED":{"a":["5000.00000","50","50.000"],"b":["0.00000","0","0.000"],"c":["0.00000","0.00000000"],"v":["0.00000000","0.00000000"],"p":["0.00000","0.00000"],"t":[0,0],"l":["0.00000","0.00000"],"h":["0.00000","0.00000"],"o":"0.00000"}}}"#;
+
+    #[test]
+    fn a_ticker_answer_gives_the_middle_of_its_spread() {
+        // Bid 593.27, ask 593.80: the middle, not the last trade (593.73).
+        assert_eq!(parse_ticker(XMR_USD_TICKER, "XXMRZUSD", XMR_SPREAD).unwrap(), 593_535_000);
+        assert_eq!(parse_ticker(AUD_USD_TICKER, "AUDUSD", RATE_SPREAD).unwrap(), 703_025);
+        assert!(parse_ticker(XMR_USD_TICKER, "XXMRZEUR", XMR_SPREAD).is_err());
+        // USD/JPY that day: bid 156.273, ask 159.730, a 2.2% spread, its
+        // last trade above the ask. No price from that.
+        assert_eq!(parse_ticker(USD_JPY_TICKER, "ZUSDZJPY", RATE_SPREAD).unwrap_err().to_string(), "Answered without a price");
+        // A market that never traded has no price.
+        assert_eq!(parse_ticker(USD_AED_TICKER, "USDAED", RATE_SPREAD).unwrap_err().to_string(), "Answered without a price");
+        // An ask under the bid isn't a market.
+        let crossed = br#"{"error":[],"result":{"AUDUSD":{"a":["0.70200","1","1.000"],"b":["0.70300","1","1.000"]}}}"#;
+        assert!(parse_ticker(crossed, "AUDUSD", RATE_SPREAD).is_err());
+        let refused = br#"{"error":["EQuery:Unknown asset pair"]}"#;
+        assert_eq!(parse_ticker(refused, "XXMRZUSD", XMR_SPREAD).unwrap_err().to_string(), "Not answering");
+        let limited = br#"{"error":["EAPI:Rate limit exceeded"]}"#;
+        assert_eq!(parse_ticker(limited, "XXMRZUSD", XMR_SPREAD).unwrap_err().to_string(), "Busy, try again soon");
+        assert!(parse_ticker(b"<html>", "XXMRZUSD", XMR_SPREAD).is_err());
+    }
+
+    #[test]
+    fn other_currencies_go_through_the_dollar() {
+        let xmr_usd = parse_ticker(XMR_USD_TICKER, "XXMRZUSD", XMR_SPREAD).unwrap();
+        // AUD/USD is dollars per Australian dollar: divide. $593.535 is A$844.26.
+        let aud = through(xmr_usd, parse_ticker(AUD_USD_TICKER, "AUDUSD", RATE_SPREAD).unwrap(), false).unwrap();
+        assert_eq!(aud, 844_258_739);
+        // CoinGecko said A$844.02 that minute (coingecko.rs's answer): within 0.05%.
+        assert!(aud.abs_diff(844_020_000) * 10_000 < 844_020_000 * 5, "{aud}");
+        // A per-dollar market multiplies: ¥157.44 a dollar would be ¥93,446.
+        assert_eq!(through(xmr_usd, 157_440_000, true), Some(93_446_150_400));
+        assert_eq!(through(xmr_usd, 0, false), None);
+        assert_eq!(through(xmr_usd, 0, true), None);
+    }
+
+    #[test]
+    fn an_ohlc_answer_gives_each_day_s_average() {
+        let body = br#"{"error":[],"result":{"XXMRZEUR":[
+            [1731196800,"151.93","154.59","148.88","152.04","150.85","146.94429593",128],
+            [1731283200,"150.18","151.58","143.88","145.88","0.00000","0",0],
+            [1731369600,"bad"]
+        ],"last":1793318400}}"#;
+        assert_eq!(parse_ohlc(body, "XXMRZEUR", 0).unwrap(), [(20_037, 150_850_000), (20_038, 145_880_000)]);
+        // An exchange market's quiet day doesn't count.
+        assert_eq!(parse_ohlc(body, "XXMRZEUR", MIN_TRADES).unwrap(), [(20_037, 150_850_000)]);
+        // The never-traded market's whole history.
+        let empty = br#"{"error":[],"result":{"USDAED":[[0,"0.000","0.000","0.000","0.000","0.000","0.00000000",0]],"last":0}}"#;
+        assert_eq!(parse_ohlc(empty, "USDAED", 0).unwrap(), []);
+    }
+
+    #[test]
+    fn histories_through_the_dollar_are_joined_by_day() {
+        let xmr = br#"{"error":[],"result":{"XXMRZUSD":[
+            [1793232000,"597.92","649.40","582.03","601.94","608.41","17336.69890365",13911],
+            [1793318400,"602.50","638.87","572.49","587.49","597.05","11512.57850975",10732],
+            [1793404800,"587.54","601.05","585.65","593.54","594.41","5108.11007801",3614]
+        ],"last":1793318400}}"#;
+        let chf = br#"{"error":[],"result":{"USDCHF":[
+            [1793232000,"0.82500","0.82700","0.82400","0.82600","0.82550","6763.66208734",2033],
+            [1793404800,"0.82600","0.82700","0.82400","0.82570","0.82516","5754.48576341",2277]
+        ],"last":1793318400}}"#;
+        let days = join_days(&parse_ohlc(xmr, "XXMRZUSD", 0).unwrap(), &parse_ohlc(chf, "USDCHF", MIN_TRADES).unwrap(), true);
+        // The middle day has no exchange candle: the day before's rate.
+        assert_eq!(days, [(20_755, 502_242_455), (20_756, 492_864_775), (20_757, 490_483_356)]);
+        // A day before any rate is left out.
+        assert_eq!(join_days(&[(20_000, 1)], &[(20_001, 1_000_000)], true), []);
+        // A rate is carried four days at most.
+        let carried = join_days(&[(20_004, 1_000_000), (20_005, 1_000_000)], &[(20_000, 2_000_000)], true);
+        assert_eq!(carried, [(20_004, 2_000_000)]);
+    }
+
+    /// Real requests to Kraken, to check its answers still read.
+    /// Run by hand: `cargo test -p fob-wallet kraken_answers -- --ignored`.
+    #[tokio::test]
+    #[ignore = "asks Kraken over the internet"]
+    async fn kraken_answers_for_real() {
+        for code in CURRENCIES {
+            let now = Kraken.current(code, Transport::Web).await.unwrap();
+            assert!(now > 1_000_000, "XMR at {now} millionths of {code}");
+        }
+        let today = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / 86_400) as i64;
+        for code in ["EUR", "AUD"] {
+            let days = Kraken.daily(code, today - HISTORY_DAYS + 1..today + 1, Transport::Web).await.unwrap();
+            assert!(days.len() >= 700 && days.len() <= 720, "{} days of {code}", days.len());
+            assert_eq!(days.last().unwrap().0, today);
+        }
+    }
+}

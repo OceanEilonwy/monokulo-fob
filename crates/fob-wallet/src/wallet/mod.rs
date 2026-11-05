@@ -72,7 +72,7 @@ use crate::{
     receipt::ReceiptView,
     profile, requests, scan, split, store, swap,
     uri::{self, WalletCode},
-    network::ZmqStatus,
+    network::{UNLOCK, ZmqStatus},
     zmq,
 };
 
@@ -116,8 +116,6 @@ const SAVE_EVERY: Duration = Duration::from_secs(30);
 const REPORT_EVERY: Duration = Duration::from_secs(1);
 /// How often the app hears how long the node has kept it waiting for blocks.
 const WAIT_TICK: Duration = Duration::from_secs(5);
-/// Confirmations before money can be spent.
-pub(crate) const UNLOCK: u64 = monero_wallet::DEFAULT_LOCK_WINDOW as u64;
 const COINBASE_UNLOCK: u64 = monero_wallet::COINBASE_LOCK_WINDOW as u64;
 
 fn now() -> u64 {

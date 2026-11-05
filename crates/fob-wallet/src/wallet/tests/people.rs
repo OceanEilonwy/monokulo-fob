@@ -31,7 +31,7 @@ async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
     let t = now();
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let (sam_address, other) = (wallet.inner.keys.address(7), wallet.inner.keys.address(8));
-    let photo = crate::names::test_webp(400, 96);
+    let photo = fob_codes::names::test_webp(400, 96);
     let sam = wallet
         .add_contact(contacts::Draft { name: "Sam".into(), note: Some("Lunch money".into()), photo: Some(photo.clone()), send_address: Some(sam_address.clone()), ..Default::default() })
         .await

@@ -1,0 +1,32 @@
+[package]
+name = "fob-chain"
+description = "Talking to a Monero node: checks, blocks, decoys, fees and ZMQ."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# A fake node and ZMQ publisher, for other crates' tests.
+test-support = ["dep:tokio-rustls"]
+
+[dependencies]
+fob-monero = { path = "../fob-monero" }
+monero-daemon-rpc = "0.2"
+monero-epee = "0.2"
+monero-wallet = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
+# The rustls and roots reqwest uses, to check a node's certificate in Fob
+# (saying why one fails) and accept a self-signed one where asked.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+socket2 = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
+webpki-roots = "1"
+
+
+[dev-dependencies]
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+tokio = { version = "1", features = ["test-util"] }

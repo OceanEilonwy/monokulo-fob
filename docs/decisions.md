@@ -4,8 +4,8 @@ Calls made while building the first version, with why. Newest last.
 
 ## Shape
 
-1. **All wallet logic is in Rust (`crates/fob-core`); the Android app is a
-   thin layer.** Keys, seeds, syncing, scanning, sending, fees, payment and
+1. **All wallet logic is in Rust (`crates/fob-core`, split up by decision 334);
+   the Android app is a thin layer.** Keys, seeds, syncing, scanning, sending, fees, payment and
    wallet codes, ORF receipts, the wallet file format, amount and money
    formatting, and QR modules are all in fob-core. `crates/fob-ffi` only
    converts types for UniFFI. The app draws screens, runs the camera and the
@@ -2760,3 +2760,17 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      all, the next scan restores it. An answer that can't be read says nothing. A node
      that has been switched to may simply never have seen it, which is why releasing
      is left to a person: re-spending is safe, as only one spend of a coin can be mined.
+339. **The wallet is split into crates by what each part may touch.** `fob-core`
+     had become one crate holding orchestration, screen text, wire formats,
+     secrets and network code, with nearly every module in one dependency cycle.
+     It is now, bottom up: `fob-monero` (networks, addresses, amounts, fiat maths),
+     `fob-chain` (the node), `fob-price` (price lookups), `fob-vault` (keys and the
+     files that hold them), `fob-codes` (codes, receipts, NFC), `fob-screens` (what
+     each screen shows), `fob-scanner` (was `fob-scan`) and `fob-wallet` (was
+     `fob-core`: `Wallet` alone, split into modules). Cargo now enforces the layers:
+     `fob-screens` can't reach a node or a database, and `fob-vault` holds no screen
+     words. `fob-wallet` re-exports the modules, so `fob-ffi`'s paths are mostly as
+     they were; earlier decisions keep the old names. Each part has its own error,
+     flattening into `FobError` with the same variants and words, so an app sees no
+     change. A second client depends on `fob-ffi` alone, so anything it needs has to
+     be added where Android gets it too.

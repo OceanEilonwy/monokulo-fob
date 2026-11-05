@@ -442,6 +442,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "fob-chain"
+version = "0.1.10"
+dependencies = [
+ "fob-monero",
+ "monero-daemon-rpc",
+ "monero-epee",
+ "monero-wallet",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "fob-codes"
+version = "0.1.10"
+dependencies = [
+ "base64 0.22.1",
+ "fob-monero",
+ "fob-vault",
+ "hex",
+ "monero-wallet",
+ "orf-codec",
+ "percent-encoding",
+ "qrcode",
+ "rqrr",
+ "serde",
+ "serde_json",
+ "sha3",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+ "zeroize",
+]
+
+[[package]]
 name = "fob-ffi"
 version = "0.1.10"
 dependencies = [
@@ -451,11 +490,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "fob-monero"
+version = "0.1.10"
+dependencies = [
+ "hex",
+ "monero-wallet",
+ "serde",
+ "sha3",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "fob-price"
+version = "0.1.10"
+dependencies = [
+ "fob-monero",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "fob-scanner"
 version = "0.1.10"
 dependencies = [
  "ash",
  "curve25519-dalek",
+ "hex",
  "monero-wallet",
  "rand 0.8.8",
  "sha3",
@@ -464,36 +528,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "fob-screens"
+version = "0.1.10"
+dependencies = [
+ "fob-codes",
+ "fob-monero",
+ "fob-vault",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
+name = "fob-vault"
+version = "0.1.10"
+dependencies = [
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "fob-monero",
+ "hex",
+ "monero-seed",
+ "monero-wallet",
+ "polyseed",
+ "rand_core 0.6.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
 name = "fob-wallet"
 version = "0.1.10"
 dependencies = [
- "base64 0.22.1",
- "chacha20poly1305",
  "curve25519-dalek",
+ "fob-chain",
+ "fob-codes",
+ "fob-monero",
+ "fob-price",
  "fob-scanner",
+ "fob-screens",
+ "fob-vault",
  "hex",
  "monero-daemon-rpc",
  "monero-epee",
- "monero-seed",
  "monero-wallet",
  "orf-codec",
- "percent-encoding",
- "polyseed",
- "qrcode",
  "rand_core 0.6.4",
- "reqwest",
- "rqrr",
  "rusqlite",
- "rustls",
  "serde",
  "serde_json",
  "sha3",
- "socket2",
  "thiserror 2.0.21",
  "tokio",
- "tokio-rustls",
- "unicode-normalization",
- "webpki-roots",
  "zeroize",
 ]
 

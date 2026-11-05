@@ -13,6 +13,7 @@
 //! vectors on each cold start of the app, and with each wallet's view key
 //! (`vectors.rs`), or the CPU does the work.
 
+pub mod scan;
 mod engine;
 pub mod fe;
 pub mod gpu;
