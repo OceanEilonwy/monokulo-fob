@@ -35,6 +35,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -48,6 +49,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
+import com.monokulo.fob.ScanChoice
+import uniffi.fob.scanGpuFailed
 import com.monokulo.fob.Screen
 import com.monokulo.fob.Nfc
 import com.monokulo.fob.WalletModel
@@ -136,12 +139,15 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
 fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val wallet by model.wallet.collectAsState()
     val network by model.network.collectAsState()
+    val current by model.current.collectAsState()
     val theme by model.theme.collectAsState()
     val status by model.status.collectAsState()
     val scope = rememberCoroutineScope()
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
     var choosingTheme by remember { mutableStateOf(false) }
+    var choosingScanning by remember { mutableStateOf(false) }
+    val scanning by model.scanning.collectAsState()
     val prices by model.prices.collectAsState()
     // Every line here is the model's, read with the wallet, so the screen opens whole: your profile's row ("Add a
     // shareable Fob contact" before there's a name), Rust's Node line (again as syncing starts or stops failing)
@@ -165,6 +171,7 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             Column {
                 SectionLabel("Wallet")
                 Card {
+                    LeadRow(Icons.swap, "Wallets", current?.name ?: "") { nav.go(Screen.Wallets) }
                     you?.let { ProfileSettingRow(it.row, it.profile) { nav.go(Screen.Profile) } }
                     LeadRow(Icons.people, "Contacts", "Who you pay") { nav.go(Screen.Contacts) }
                     LeadRow(Icons.key, "Backup and keys", backupLine) { openBackup() }
@@ -214,6 +221,10 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 SectionLabel("Syncing")
                 Card {
                     SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
+                    // Read as the screen opens: the GPU's checks may fail at any time before then.
+                    val walletRefused by produceState(false) { value = model.wallet.value?.scanGpuCheckFailed() ?: false }
+                    val gpuFailed = remember { scanGpuFailed() } || walletRefused
+                    ValueRow("Scanning", if (gpuFailed && scanning != ScanChoice.CPU) "${scanning.label}: using the CPU" else scanning.label) { choosingScanning = true }
                     val zmqOn = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
                     SettingRow(
                         "Instant updates (ZMQ)", status?.zmqText ?: "Off", onClick = { nav.go(Screen.Zmq) },
@@ -270,10 +281,22 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             confirmButton = { TextButton("Done", { choosingTheme = false }, color = Fob.ink) },
         )
     }
+    if (choosingScanning) {
+        AlertDialog(
+            onDismissRequest = { choosingScanning = false },
+            title = { Text("Scanning") },
+            text = {
+                Column(Modifier.selectableGroup()) {
+                    ScanChoice.entries.forEach { choice -> Choice(choice.description, choice == scanning) { model.setScanning(choice); choosingScanning = false } }
+                }
+            },
+            confirmButton = { TextButton("Done", { choosingScanning = false }, color = Fob.ink) },
+        )
+    }
     if (forgetting) {
         AlertDialog(
             onDismissRequest = { forgetting = false },
-            title = { Text("Remove this wallet?") },
+            title = { Text("Remove ${current?.name ?: "this wallet"}?") },
             text = { Warning("It's deleted from this phone. Only its seed phrase or wallet code can bring it back, so check you have one first.") },
             confirmButton = { TextButton("Remove", { forgetting = false; model.forget(); nav.reset(Screen.Welcome) }, color = Fob.red) },
             dismissButton = { TextButton("Cancel", { forgetting = false }, color = Fob.ink) },

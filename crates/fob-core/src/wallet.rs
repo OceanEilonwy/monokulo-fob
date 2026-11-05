@@ -5,11 +5,12 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::db::Db;
 use crate::decoys::Decoys;
 use crate::send_context::SendContext;
 use crate::fetch::{Adaptive, Pipeline, Tuning};
@@ -23,7 +24,7 @@ use monero_wallet::{
     interface::prelude::*,
     ringct::RctType,
     send::{Change, SendError, SignableTransaction},
-    transaction::{Input, Timelock, Transaction},
+    transaction::Timelock,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ use crate::{
     not_ready::{self, Coins, NotReady, Piece, Source},
     price::{self, Source as _},
     receipt::ReceiptView,
-    profile, requests, split, store, swap,
+    profile, requests, scan, split, store, swap,
     uri::{self, WalletCode},
     zmq::{self, ZmqStatus},
 };
@@ -50,7 +51,7 @@ use crate::{
 
 /// The most blocks scanned per sync step: whatever the pipeline has ready,
 /// up to this, so progress shows often.
-const BATCH: u64 = 1_000;
+const BATCH: u64 = 500;
 /// Subaddresses watched past the last one handed out or paid: a restore
 /// finds payments up to this many addresses past the highest it has found
 /// so far (wallet2's gap limit). Requests and shares each take one, often
@@ -77,6 +78,14 @@ const POLL_LISTENING: Duration = Duration::from_secs(120);
 const POOL_GAP: Duration = Duration::from_secs(2);
 /// The longest [`Wallet::sync_now`] waits for its round.
 const SYNC_NOW_WAIT: Duration = Duration::from_secs(20);
+/// How often the file is saved while catching up. A crash loses this much of
+/// the scanning, found again from the chain; Cake's autosave is 30 s too.
+const SAVE_EVERY: Duration = Duration::from_secs(30);
+/// How often the app hears of progress while catching up: each time, it reads
+/// its screens again. Cake's listener ticks about this often.
+const REPORT_EVERY: Duration = Duration::from_secs(1);
+/// How often the app hears how long the node has kept it waiting for blocks.
+const WAIT_TICK: Duration = Duration::from_secs(5);
 /// Confirmations before money can be spent.
 pub(crate) const UNLOCK: u64 = monero_wallet::DEFAULT_LOCK_WINDOW as u64;
 const COINBASE_UNLOCK: u64 = monero_wallet::COINBASE_LOCK_WINDOW as u64;
@@ -150,6 +159,26 @@ struct Sent {
     recipient_name: Option<String>,
 }
 
+/// Where a wallet stands with the GPU it would scan on.
+#[derive(Debug, PartialEq)]
+enum GpuCheck {
+    Passed,
+    Failed,
+    Due,
+}
+
+/// From what the wallet saved and whether it's checked since opening. Another
+/// GPU or driver isn't what was checked, and a failure gets one more try each
+/// time the wallet opens, so a passing moment can't be missed for good.
+fn gpu_check_due(checked_on: Option<&str>, passed: bool, device: &str, checked_since_opening: bool) -> GpuCheck {
+    match (checked_on == Some(device), passed, checked_since_opening) {
+        (false, _, _) => GpuCheck::Due,
+        (true, true, _) => GpuCheck::Passed,
+        (true, false, true) => GpuCheck::Failed,
+        (true, false, false) => GpuCheck::Due,
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct State {
     node: String,
@@ -157,6 +186,16 @@ struct State {
     /// verified, still encrypted). Off in older files.
     #[serde(default)]
     node_self_signed: bool,
+    /// Nodes this wallet was given, besides its network's own: kept to change
+    /// back to. Each URL once, as [`node::normalize`] leaves it.
+    #[serde(default)]
+    custom_nodes: Vec<node::Setting>,
+    /// The GPU and driver this wallet's GPU check last ran on, and whether it
+    /// passed. A pass isn't run again on them; a failure is, once per opening.
+    #[serde(default)]
+    gpu_checked_on: Option<String>,
+    #[serde(default)]
+    gpu_check_passed: bool,
     /// The node's ZMQ publisher (`tcp://host:port`, on the node's host), as
     /// last set; kept while turned off, so turning it on again uses it.
     #[serde(default)]
@@ -223,12 +262,15 @@ struct State {
     backup_pending: bool,
 }
 
+/// What the sealed file before the database held, as a test writes one.
+#[cfg(test)]
 #[derive(Serialize)]
 struct FileOut<'a> {
     keys: StoredKeys,
     state: &'a State,
 }
 
+/// The sealed file wallets were kept in before the database.
 #[derive(Deserialize)]
 struct FileIn {
     keys: StoredKeys,
@@ -344,7 +386,14 @@ pub struct SyncStatus {
     pub scanned: u64,
     pub tip: u64,
     pub start: u64,
+    /// As far as the wallet knows: `tip` may be from the last time it asked,
+    /// until [`connected`](Self::connected) says the node has answered.
     pub synced: bool,
+    /// The node has answered since syncing started, and hasn't failed since.
+    pub connected: bool,
+    /// How long this wallet has been waiting for the node's next blocks; 0
+    /// when they're coming.
+    pub waiting_seconds: u64,
     /// 0 to 1, from the restore height to the tip.
     pub progress: f32,
     /// The time left as the chip shows it: none until the speed settles,
@@ -427,8 +476,8 @@ struct Outgoing {
 }
 
 struct Inner {
+    /// The wallet's database.
     path: PathBuf,
-    file_key: Zeroizing<[u8; 32]>,
     keys: Keys,
     state: Mutex<State>,
     rpc: Mutex<Option<(node::Setting, Connection)>>,
@@ -438,6 +487,18 @@ struct Inner {
     link: std::sync::Mutex<Option<(node::Setting, Transport)>>,
     /// Blocks being fetched ahead of the scanner.
     pipeline: Mutex<Option<Pipeline>>,
+    /// The scanner, with how far it watches: 200 addresses are slow to work
+    /// out again for every batch.
+    scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scan::Prefilter>)>>,
+    /// This wallet's GPU check has run since it was opened.
+    gpu_checked: AtomicBool,
+    /// Scanning since the last save.
+    unsaved: AtomicBool,
+    /// When the file was last saved.
+    saved_at: std::sync::Mutex<Instant>,
+    /// The database, held for each write; none once the wallet has been taken
+    /// off the phone, which no late save may bring back.
+    db: std::sync::Mutex<Option<Db>>,
     prepared: Mutex<Pending<PreparedTx>>,
     next_id: AtomicU64,
     status: std::sync::Mutex<SyncStatus>,
@@ -645,6 +706,9 @@ impl Wallet {
         let state = State {
             node: keys.network.default_nodes()[0].to_owned(),
             node_self_signed: false,
+            custom_nodes: vec![],
+            gpu_checked_on: None,
+            gpu_check_passed: false,
             zmq_endpoint: None,
             zmq_on: false,
             restore_height,
@@ -669,12 +733,14 @@ impl Wallet {
             fresh_from: None,
             backup_pending: restore_height.is_none(),
         };
-        let wallet = Wallet::from_parts(path, file_key, keys, state);
+        let path = path.with_extension("db");
+        let db = Db::create(&path, &file_key, &StoredKeys::from(&keys))?;
+        let wallet = Wallet::from_parts(&path, db, keys, state);
         wallet.save_state(&wallet.inner.state.try_lock().expect("a new wallet is not shared yet"))?;
         Ok(wallet)
     }
 
-    fn from_parts(path: &Path, file_key: [u8; 32], keys: Keys, state: State) -> Wallet {
+    fn from_parts(path: &Path, db: Db, keys: Keys, state: State) -> Wallet {
         let zmq = if state.zmq_on { ZmqStatus::Connecting } else { ZmqStatus::Off };
         let status = SyncStatus {
             scanned: state.next_block,
@@ -688,12 +754,16 @@ impl Wallet {
         Wallet {
             inner: Arc::new(Inner {
                 path: path.to_owned(),
-                file_key: Zeroizing::new(file_key),
                 keys,
                 state: Mutex::new(state),
                 rpc: Mutex::new(None),
                 link: std::sync::Mutex::new(None),
                 pipeline: Mutex::new(None),
+                scanner: std::sync::Mutex::new(None),
+                gpu_checked: AtomicBool::new(false),
+                unsaved: AtomicBool::new(false),
+                saved_at: std::sync::Mutex::new(Instant::now()),
+                db: std::sync::Mutex::new(Some(db)),
                 prepared: Mutex::new(Pending::default()),
                 next_id: AtomicU64::new(1),
                 status: std::sync::Mutex::new(status),
@@ -764,21 +834,96 @@ impl Wallet {
         Wallet::new(path, file_key, Keys::view_only(network, address, view_hex)?, Some(restore_height.unwrap_or(0)))
     }
 
-    /// The wallet saved at `path`. A photo saved before Fob read photos'
-    /// headers that it wouldn't take now is dropped (the contact or profile
-    /// stays): it could claim a picture too big to draw.
+    /// The wallet saved at `path`, its database, made first from the sealed
+    /// file beside it if it's still in that. The sealed file is deleted once the
+    /// database has opened whole. A photo saved before Fob read
+    /// photos' headers that it wouldn't take now is dropped (the contact or
+    /// profile stays): it could claim a picture too big to draw.
     pub fn open(path: &Path, file_key: [u8; 32]) -> Result<Wallet> {
-        let mut file: FileIn = store::load(path, &file_key)?;
-        let dropped = file.state.contacts.drop_bad_photos() | file.state.profile.drop_bad_photo();
-        let wallet = Wallet::from_parts(path, file_key, file.keys.into_keys()?, file.state);
+        let path = path.with_extension("db");
+        if !path.exists() {
+            Self::migrate(&path, &file_key)?;
+        }
+        let mut db = Db::open(&path, &file_key)?;
+        let keys = db.keys()?;
+        let saved = db.load()?;
+        let mut state: State = serde_json::from_value(saved).map_err(|e| FobError::Storage(e.to_string()))?;
+        db.loaded(Self::state_value(&state)?)?;
+        let dropped = state.contacts.drop_bad_photos() | state.profile.drop_bad_photo();
+        let wallet = Wallet::from_parts(&path, db, keys.into_keys()?, state);
         if dropped {
             wallet.save_state(&wallet.inner.state.try_lock().expect("an opened wallet is not shared yet"))?;
         }
+        // Best effort: one that can't go now goes on a later open.
+        let _ = Self::delete_sealed_file(&path);
         Ok(wallet)
     }
 
+    /// Deletes the sealed file beside the database at `path`, once the database
+    /// and its name are certain to be on the disk: a power cut can't lose both.
+    fn delete_sealed_file(path: &Path) -> Result<()> {
+        if !path.with_extension("fob").exists() && !path.with_extension("tmp").exists() {
+            return Ok(());
+        }
+        let sync = |to_sync: &Path| std::fs::File::open(to_sync).and_then(|file| file.sync_all()).map_err(|e| FobError::Storage(e.to_string()));
+        sync(path)?;
+        sync(path.parent().ok_or_else(|| FobError::Storage("a wallet's database has no folder".into()))?)?;
+        crate::wallets::remove_sealed_file(path)
+    }
+
+    /// Makes the database at `path` from the sealed file beside it. It takes
+    /// its name only once what it reads back is the same as the file, so a
+    /// failure or a crash leaves the file to try again from.
+    fn migrate(path: &Path, file_key: &[u8; 32]) -> Result<()> {
+        let sealed = path.with_extension("fob");
+        let file: FileIn = store::load(&sealed, file_key)?;
+        let making = path.with_extension("db.migrating");
+        let keys = Zeroizing::new(file.keys);
+        let mut db = Db::create(&making, file_key, &keys)?;
+        let expected = Self::state_value(&file.state)?;
+        db.save(expected.clone())?;
+        let back: State = serde_json::from_value(db.load()?).map_err(|e| FobError::Storage(e.to_string()))?;
+        if Self::state_value(&back)? != expected {
+            return Err(FobError::Storage("the wallet read back from its new database isn't the same".into()));
+        }
+        if !db.keys()?.same_as(&keys) {
+            return Err(FobError::Storage("the keys read back from the new database aren't the same".into()));
+        }
+        db.close()?;
+        crate::db::rename(&making, path)
+    }
+
+    fn state_value(state: &State) -> Result<serde_json::Value> {
+        serde_json::to_value(state).map_err(|e| FobError::Storage(e.to_string()))
+    }
+
     fn save_state(&self, state: &State) -> Result<()> {
-        store::save(&self.inner.path, &self.inner.file_key, &FileOut { keys: StoredKeys::from(&self.inner.keys), state })
+        let value = Self::state_value(state)?;
+        let mut db = self.inner.db.lock().expect("db lock");
+        let Some(db) = db.as_mut() else { return Ok(()) };
+        db.save(value)?;
+        self.inner.unsaved.store(false, Ordering::Relaxed);
+        *self.inner.saved_at.lock().expect("save lock") = Instant::now();
+        Ok(())
+    }
+
+    /// Saves scanning that hasn't been yet. Best effort: the chain has it.
+    async fn flush(&self) {
+        if self.inner.unsaved.load(Ordering::Relaxed) {
+            let state = self.inner.state.lock().await;
+            let _ = self.save_state(&state);
+        }
+    }
+
+    /// Takes the wallet's database, and any sealed file it came from, off the
+    /// phone for good: a save still on its way doesn't bring them back. Its seed
+    /// restores it.
+    pub fn remove_file(&self) -> Result<()> {
+        self.stop_sync();
+        let mut db = self.inner.db.lock().expect("db lock");
+        *db = None;
+        let _ = std::fs::remove_file(self.inner.path.with_extension("db.migrating"));
+        crate::wallets::remove_files(&self.inner.path)
     }
 
     pub fn network(&self) -> Network {
@@ -976,7 +1121,7 @@ impl Wallet {
             // A failed round drops the check before it: what's here is newer.
             Some((checked, verdict)) if checked == setting => Some(verdict),
             _ if status.error.is_some() && !status.error_local => Some("Can't reach node"),
-            _ if status.synced || status.tip > 0 => Some("Working"),
+            _ if status.connected => Some("Working"),
             _ => None,
         };
         verdict.map_or(address.clone(), |v| format!("{v} · {address}"))
@@ -993,19 +1138,71 @@ impl Wallet {
         report
     }
 
-    /// The nodes to offer besides the one in use: the network's own, then
-    /// `added` (ones checked on the Node screen), each once.
-    pub async fn other_nodes(&self, added: &[node::Setting]) -> Vec<node::Setting> {
-        let current = self.node().await.url;
+    /// The nodes to offer besides the one in use: the network's own, then this
+    /// wallet's custom ones, each once.
+    pub async fn other_nodes(&self) -> Vec<node::Setting> {
+        let (current, custom) = {
+            let state = self.inner.state.lock().await;
+            (state.node.clone(), state.custom_nodes.clone())
+        };
         let defaults = self.network().default_nodes().iter().map(|url| node::Setting { url: (*url).to_owned(), self_signed: false });
         let mut out: Vec<node::Setting> = vec![];
-        for n in defaults.chain(added.iter().cloned()) {
+        for n in defaults.chain(custom) {
             let url = node::normalize(&n.url);
             if url != current && !out.iter().any(|o| o.url == url) {
                 out.push(node::Setting { url, ..n });
             }
         }
         out
+    }
+
+    /// The nodes this wallet was given, besides its network's own.
+    pub async fn custom_nodes(&self) -> Vec<node::Setting> {
+        self.inner.state.lock().await.custom_nodes.clone()
+    }
+
+    /// Keeps a node to change to later. One of the network's own is on the list
+    /// already; one kept already takes the certificate choice given now.
+    pub async fn add_node(&self, url: &str, self_signed: bool) -> Result<()> {
+        let url = node::normalize(url);
+        node::reachable(&url).map_err(FobError::BadEndpoint)?;
+        let mut state = self.inner.state.lock().await;
+        if self.keep_node(&mut state, node::Setting { url, self_signed }) {
+            self.save_state(&state)?;
+        }
+        Ok(())
+    }
+
+    /// Forgets a custom node. The one in use carries on, and is kept again when
+    /// the wallet changes away from it.
+    pub async fn remove_node(&self, url: &str) -> Result<()> {
+        let url = node::normalize(url);
+        let mut state = self.inner.state.lock().await;
+        let before = state.custom_nodes.len();
+        state.custom_nodes.retain(|n| n.url != url);
+        if state.custom_nodes.len() != before {
+            self.save_state(&state)?;
+        }
+        Ok(())
+    }
+
+    /// Puts `setting` on the wallet's custom nodes, unless it's one of the
+    /// network's own. Whether that changed anything.
+    fn keep_node(&self, state: &mut State, setting: node::Setting) -> bool {
+        if self.network().default_nodes().iter().any(|url| node::normalize(url) == setting.url) {
+            return false;
+        }
+        match state.custom_nodes.iter_mut().find(|n| n.url == setting.url) {
+            Some(kept) if kept.self_signed == setting.self_signed => false,
+            Some(kept) => {
+                kept.self_signed = setting.self_signed;
+                true
+            }
+            None => {
+                state.custom_nodes.push(setting);
+                true
+            }
+        }
     }
 
     /// Checks the other nodes at once, each with its line for the list.
@@ -1015,13 +1212,23 @@ impl Wallet {
     }
 
     /// Talks to another node from now on; `self_signed` accepts its
-    /// certificate unverified.
+    /// certificate unverified. It's kept among the wallet's custom nodes even if
+    /// it's refused, and so is the one being left, as a wallet from before the
+    /// list has its custom node nowhere else.
     pub async fn set_node(&self, url: &str, self_signed: bool) -> Result<()> {
         let url = crate::node::normalize(url);
         // An onion node can't be reached without Tor, and isn't looked up.
         crate::node::reachable(&url).map_err(FobError::BadEndpoint)?;
         // A node on the other network would never find this wallet's money.
         let setting = node::Setting { url: url.clone(), self_signed };
+        {
+            let mut state = self.inner.state.lock().await;
+            let leaving = node::Setting { url: state.node.clone(), self_signed: state.node_self_signed };
+            let left = self.keep_node(&mut state, leaving);
+            if self.keep_node(&mut state, setting.clone()) | left {
+                self.save_state(&state)?;
+            }
+        }
         crate::node::on_network(self.network(), &setting).await.map_err(FobError::Node)?;
         let zmq_dropped = {
             let mut state = self.inner.state.lock().await;
@@ -1040,21 +1247,31 @@ impl Wallet {
         if zmq_dropped {
             self.restart_zmq().await;
         }
+        // The sync loop goes first: it may be waiting minutes on the old node,
+        // holding what's cleared below. It starts again on the new one at once,
+        // rather than at the end of a wait or a backoff.
+        let listener = self.inner.listener.lock().expect("listener lock").clone();
+        let looping = self.inner.syncing.lock().expect("sync lock").is_some();
+        self.stop_sync();
         *self.inner.rpc.lock().await = None;
         *self.inner.link.lock().expect("link lock") = None;
         *self.inner.pipeline.lock().await = None;
         *self.inner.node_verdict.lock().expect("node lock") = None;
-        // The old node's failure isn't this one's: the chip and Node line
-        // stop saying it now, and the sync loop tries the new node at once
-        // rather than at the end of its backoff.
+        // The old node's failure, and its Synced, aren't this one's: the chip
+        // and Node line stop saying them now.
         let status = self.set_status(|s| {
             s.error = None;
             s.error_local = false;
+            s.connected = false;
+            s.waiting_seconds = 0;
         });
-        if let Some(listener) = self.inner.listener.lock().expect("listener lock").clone() {
-            listener.on_status(status);
+        if let Some(listener) = listener {
+            if looping {
+                self.start_sync(listener);
+            } else {
+                listener.on_status(status);
+            }
         }
-        self.inner.wake.notify_one();
         Ok(())
     }
 
@@ -1130,22 +1347,40 @@ impl Wallet {
     /// daemon, and as a source of decoys with the output distribution cached.
     async fn connection(&self) -> Result<Connection> {
         let node = self.node().await;
-        let mut rpc = self.inner.rpc.lock().await;
         // Kept for the node and its mark together: a mark taken off while a
         // connection was being made never leaves one accepting any certificate.
-        if let Some((setting, connection)) = rpc.as_ref()
+        if let Some((setting, connection)) = self.inner.rpc.lock().await.as_ref()
             && *setting == node
         {
             return Ok(connection.clone());
         }
+        // Not held while the node is asked: a slow or dead one would keep
+        // anything else wanting a connection (changing node, say) waiting.
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
         let transport = Transport::new(&node.url, node.self_signed).map_err(err)?;
         *self.inner.link.lock().expect("link lock") = Some((node.clone(), transport.clone()));
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
-        let decoys = Decoys::new(daemon.clone(), transport.clone(), self.inner.path.with_extension("decoys"));
+        let decoys = Decoys::new(daemon.clone(), transport.clone(), self.decoys_path());
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
-        *rpc = Some((node, (transport.clone(), daemon.clone(), decoys.clone(), adaptive.clone())));
-        Ok((transport, daemon, decoys, adaptive))
+        let connection = (transport, daemon, decoys, adaptive);
+        let current = self.node().await;
+        let mut rpc = self.inner.rpc.lock().await;
+        if let Some((setting, made)) = rpc.as_ref()
+            && *setting == node
+        {
+            return Ok(made.clone());
+        }
+        // The node changed meanwhile: this one is only for whoever asked.
+        if current == node {
+            *rpc = Some((node, connection.clone()));
+        }
+        Ok(connection)
+    }
+
+    /// The output distribution's file. It's public chain data, the same for
+    /// every wallet on the network, and tens of megabytes: they share it.
+    fn decoys_path(&self) -> PathBuf {
+        self.inner.path.with_file_name(format!("wallet-{}.decoys", self.network().name()))
     }
 
     pub async fn balance(&self) -> Balance {
@@ -1400,7 +1635,74 @@ impl Wallet {
         status.clone()
     }
 
+    /// Hears the status now, if anyone's listening.
+    fn tell(&self, status: SyncStatus) {
+        let listener = self.inner.listener.lock().expect("listener lock").clone();
+        if let Some(listener) = listener {
+            listener.on_status(status);
+        }
+    }
+
+    /// A scanner watching up to `watching`, from the last one.
+    fn scanner(&self, watching: u32) -> (Scanner, Arc<fob_scan::Prefilter>) {
+        let pair = self.inner.keys.view_pair();
+        let mut kept = self.inner.scanner.lock().expect("scanner lock");
+        let (upto, scanner, prefilter) = kept.get_or_insert_with(|| {
+            (0, Scanner::new(pair.clone()), Arc::new(fob_scan::Prefilter::new(&pair, &self.inner.keys.view_bytes())))
+        });
+        if *upto < watching {
+            Self::watch(scanner, *upto + 1, watching);
+            // Scans under way hold the last one; this is only ever a little behind them.
+            let mut grown = (**prefilter).clone();
+            for i in *upto + 1..=watching {
+                if let Some(sub) = SubaddressIndex::new(0, i) {
+                    grown.watch(&pair, sub);
+                }
+            }
+            *prefilter = Arc::new(grown);
+            *upto = watching;
+        }
+        (scanner.clone(), prefilter.clone())
+    }
+
+    /// Whether this wallet may scan on the GPU now, running its check first if
+    /// that's due. False until the GPU has passed this cold start's check.
+    async fn gpu_allowed(&self) -> bool {
+        if fob_scan::mode() == fob_scan::Mode::Cpu {
+            return false;
+        }
+        let Some(device) = fob_scan::gpu_identity() else { return false };
+        {
+            let state = self.inner.state.lock().await;
+            let checked = self.inner.gpu_checked.load(Ordering::Relaxed);
+            match gpu_check_due(state.gpu_checked_on.as_deref(), state.gpu_check_passed, &device, checked) {
+                GpuCheck::Passed => return true,
+                GpuCheck::Failed => return false,
+                GpuCheck::Due => {}
+            }
+        }
+        let view = self.inner.keys.view_bytes();
+        let Ok(Some(passed)) = tokio::task::spawn_blocking(move || fob_scan::check_wallet(&view)).await else { return false };
+        self.inner.gpu_checked.store(true, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().await;
+        state.gpu_checked_on = Some(device);
+        state.gpu_check_passed = passed;
+        // Unsaved, the check runs again next time: nothing is lost.
+        let _ = self.save_state(&state);
+        passed
+    }
+
+    /// Whether this wallet's GPU check last failed, so the CPU scans it.
+    pub async fn gpu_check_failed(&self) -> bool {
+        let state = self.inner.state.lock().await;
+        state.gpu_checked_on.is_some() && !state.gpu_check_passed
+    }
+
     /// Scans the next batch of blocks. Returns whether more are waiting.
+    ///
+    /// The scan runs on the phone's cores with the state left free, so the
+    /// screens never wait on it; what it found is applied under the lock, in
+    /// block order.
     pub async fn sync_step(&self) -> Result<bool> {
         let (transport, rpc, decoys, adaptive) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
@@ -1409,9 +1711,11 @@ impl Wallet {
             let state = self.inner.state.lock().await;
             (state.next_block, state.tip, state.recent.last().cloned())
         };
-        // Ask for the tip only near the end of what's known: while catching
-        // up, every request goes to fetching blocks.
-        if tip == 0 || start + BATCH > tip {
+        let before = self.status();
+        // Ask for the tip only near the end of what's known, or first thing
+        // in a run, when what's known may be old: while catching up, every
+        // request goes to fetching blocks.
+        if tip == 0 || start + BATCH > tip || !before.connected {
             tip = rpc.latest_block_number().await.map_err(node_err)? as u64 + 1;
             let mut state = self.inner.state.lock().await;
             state.tip = tip;
@@ -1420,11 +1724,24 @@ impl Wallet {
                 let first = tip.saturating_sub(UNLOCK);
                 state.restore_height = Some(first);
                 state.next_block = first;
+                self.save_state(&state)?;
+            } else {
+                self.inner.unsaved.store(true, Ordering::Relaxed);
             }
             start = state.next_block;
-            self.save_state(&state)?;
         }
         self.refresh_status().await;
+        let status = self.set_status(|s| {
+            s.connected = true;
+            if !s.error_local {
+                s.error = None;
+            }
+        });
+        // The node has answered: Synced from last time is put right, or
+        // Connecting ends, now, not once the first blocks are in and scanned.
+        if !before.connected || before.synced != status.synced {
+            self.tell(status);
+        }
         if start >= tip {
             // Caught up: show payments on their way before they're mined. The
             // pool is a nicety: a node that won't share it doesn't stop syncing.
@@ -1433,6 +1750,7 @@ impl Wallet {
             if self.can_spend() {
                 let _ = decoys.update(tip as usize - 1).await;
             }
+            self.flush().await;
             return Ok(false);
         }
 
@@ -1447,7 +1765,20 @@ impl Wallet {
                 *pipeline = Some(Pipeline::start(transport.clone(), adaptive.clone(), start, tip - 1));
             }
             let running = pipeline.as_mut().expect("just started");
-            match running.next_batch(BATCH as usize).await {
+            // A slow node can keep this waiting for minutes, each request
+            // retried several times: the app hears how long.
+            let asked = Instant::now();
+            let batch = loop {
+                match tokio::time::timeout(WAIT_TICK, running.next_batch(BATCH as usize)).await {
+                    Ok(batch) => break batch,
+                    Err(_) => {
+                        let status = self.set_status(|s| s.waiting_seconds = asked.elapsed().as_secs());
+                        self.tell(status);
+                    }
+                }
+            };
+            self.set_status(|s| s.waiting_seconds = 0);
+            match batch {
                 Ok(blocks) if !blocks.is_empty() => blocks,
                 Ok(_) => {
                     // Ran out before the tip moved on: start again next step.
@@ -1469,50 +1800,56 @@ impl Wallet {
             return Ok(true);
         }
 
+        let watching = Self::watched(self.inner.state.lock().await.receive_index);
+        let (scanner, prefilter) = self.scanner(watching);
+        let gpu_allowed = self.gpu_allowed().await;
+        let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, gpu_allowed))
+            .await
+            .map_err(|e| FobError::Node(format!("scanning: {e}")))?;
+
         let mut state = self.inner.state.lock().await;
         if state.next_block != start {
-            // Rewound or reset while fetching: this batch is stale.
+            // Rewound or reset while fetching or scanning: this batch is stale.
             return Ok(true);
         }
         let keys = &self.inner.keys;
-        let mut scanner = Scanner::new(keys.view_pair());
-        let mut watching = Self::watched(state.receive_index);
-        Self::watch(&mut scanner, 1, watching);
-        for scannable in blocks {
-            // A payment near the edge moves it on, from the next block.
-            if Self::watched(state.receive_index) > watching {
-                Self::watch(&mut scanner, watching + 1, Self::watched(state.receive_index));
-                watching = Self::watched(state.receive_index);
+        // Looked up for every input of every transaction in the batch.
+        let mut images: HashMap<String, usize> = HashMap::with_capacity(state.outputs.len());
+        for (i, output) in state.outputs.iter().enumerate() {
+            if let Some(image) = &output.key_image {
+                images.entry(image.clone()).or_insert(i);
             }
-            let height = scannable.block.number() as u64;
-            let time = scannable.block.header.timestamp;
-            let block_hash = hex::encode(scannable.block.hash());
-            let miner_tx = hex::encode(scannable.block.miner_transaction().hash());
-
-            for (hash, tx) in scannable.block.transactions.iter().zip(&scannable.transactions) {
-                let hash = hex::encode(hash);
-                if let Some(sent) = state.sent.iter_mut().find(|s| s.tx == hash) {
-                    sent.height = Some(height);
+        }
+        let sent: HashMap<String, usize> = state.sent.iter().enumerate().map(|(i, s)| (s.tx.clone(), i)).collect();
+        let mut changed = false;
+        let mut watch_further = false;
+        for result in results {
+            // A payment near the edge, or an address just handed out, moves it
+            // on from this block. What's left of the batch was scanned watching
+            // too few: it's fetched and scanned again next step.
+            if Self::watched(state.receive_index) > watching {
+                watch_further = true;
+                break;
+            }
+            let scanned = result.map_err(FobError::Node)?;
+            let (height, time) = (scanned.height, scanned.time);
+            for tx in &scanned.txs {
+                if let Some(&i) = sent.get(&tx.hash) {
+                    state.sent[i].height = Some(height);
+                    changed = true;
                 }
-                let fee = match tx {
-                    Transaction::V2 { proofs: Some(proofs), .. } => proofs.base.fee,
-                    _ => 0,
-                };
-                for input in &tx.prefix().inputs {
-                    let Input::ToKey { key_image, .. } = input else { continue };
-                    let image = hex::encode(key_image.to_bytes());
-                    if let Some(output) = state.outputs.iter_mut().find(|o| o.key_image.as_deref() == Some(image.as_str())) {
-                        output.spent_in = Some(hash.clone());
-                        if !state.spends.iter().any(|s| s.tx == hash) {
-                            state.spends.push(ChainSpend { tx: hash.clone(), height, time, fee });
+                for image in &tx.key_images {
+                    if let Some(&i) = images.get(image) {
+                        state.outputs[i].spent_in = Some(tx.hash.clone());
+                        if !state.spends.iter().any(|s| s.tx == tx.hash) {
+                            state.spends.push(ChainSpend { tx: tx.hash.clone(), height, time, fee: tx.fee });
                         }
+                        changed = true;
                     }
                 }
             }
 
-            *self.inner.last_block.lock().expect("block lock") = Some(scannable.block.clone());
-            let found = scanner.scan(scannable).map_err(|e| FobError::Node(format!("scanning block {height}: {e:?}")))?;
-            for output in found.ignore_additional_timelock() {
+            for output in scanned.found {
                 // Locked to a block (a mined reward, rarely anything else):
                 // kept, and not spent before then. Locked to a time: not
                 // kept, as before, since a phone's clock can't say when.
@@ -1536,11 +1873,14 @@ impl Wallet {
                     state.receive_index = state.receive_index.max(subaddress);
                 }
                 let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
+                if let Some(image) = &key_image {
+                    images.entry(image.clone()).or_insert(state.outputs.len());
+                }
                 // An output arriving in a transaction already seen spending (our
                 // own change) is still ours to spend later.
                 state.outputs.push(Owned {
                     output: hex::encode(output.serialize()),
-                    coinbase: tx == miner_tx,
+                    coinbase: tx == scanned.miner_tx,
                     unlock_block,
                     key,
                     tx,
@@ -1551,19 +1891,33 @@ impl Wallet {
                     key_image,
                     spent_in: None,
                 });
+                changed = true;
             }
 
-            state.recent.push((height, block_hash));
+            state.recent.push((height, scanned.hash));
             if state.recent.len() > KEEP_HASHES {
                 state.recent.remove(0);
             }
             state.next_block = height + 1;
             state.last_block_time = time;
         }
-        self.record_prices(&mut state);
-        self.save_state(&state)?;
+        if last.is_some() {
+            *self.inner.last_block.lock().expect("block lock") = last;
+        }
+        changed |= self.record_prices(&mut state);
         let more = state.next_block < tip;
+        // Money found goes straight to the file. Otherwise only so often: the
+        // whole file is written each time, and the chain has it if it's lost.
+        let due = self.inner.saved_at.lock().expect("save lock").elapsed() >= SAVE_EVERY;
+        if changed || !more || due {
+            self.save_state(&state)?;
+        } else {
+            self.inner.unsaved.store(true, Ordering::Relaxed);
+        }
         drop(state);
+        if watch_further {
+            *self.inner.pipeline.lock().await = None;
+        }
         self.refresh_status().await;
         Ok(more)
     }
@@ -1707,6 +2061,9 @@ impl Wallet {
             s.blocks_per_second = speeds.map(|s| s.blocks_per_second);
             s.link_mb_per_second = speeds.map(|s| s.bytes_per_second / 1e6);
             s.error_local = error.as_ref().is_some_and(|(_, local)| *local);
+            if failed.is_some() {
+                s.connected = false;
+            }
             s.error = error.map(|(words, _)| words);
         });
         listener.on_status(status);
@@ -1727,15 +2084,30 @@ impl Wallet {
     pub fn start_sync(&self, listener: Arc<dyn SyncListener>) {
         self.stop_sync();
         *self.inner.listener.lock().expect("listener lock") = Some(listener.clone());
+        // Whatever it said last, from minutes or days ago, it doesn't know now.
+        let status = self.set_status(|s| {
+            s.connected = false;
+            s.waiting_seconds = 0;
+            if !s.error_local {
+                s.error = None;
+            }
+        });
+        listener.on_status(status);
         let wallet = self.clone();
         let handle = crate::runtime().spawn(async move {
             let mut pace = catch_up::Pace::default();
             let mut backoff = Duration::from_secs(2);
+            let mut reported: Option<Instant> = None;
             loop {
                 match wallet.sync_step().await {
                     Ok(more) => {
                         backoff = Duration::from_secs(2);
-                        wallet.report(listener.as_ref(), &mut pace, None).await;
+                        // Often enough to look alive: every report has the app
+                        // read its screens again, on the time scanning could use.
+                        if !more || reported.is_none_or(|at| at.elapsed() >= REPORT_EVERY) {
+                            wallet.report(listener.as_ref(), &mut pace, None).await;
+                            reported = Some(Instant::now());
+                        }
                         if !more {
                             pace.reset();
                             wallet.inner.rounds.send_modify(|n| *n += 1);
@@ -1768,6 +2140,11 @@ impl Wallet {
             self.set_zmq_status(ZmqStatus::Connecting, Some(&endpoint));
         }
         *self.inner.listener.lock().expect("listener lock") = None;
+        // Leaving Fob, or this wallet: the scanning since the last save stays.
+        if self.inner.unsaved.load(Ordering::Relaxed) {
+            let wallet = self.clone();
+            crate::runtime().spawn(async move { wallet.flush().await });
+        }
     }
 
     /// The sync loop's wait between rounds, cut short by [`sync_now`](Wallet::sync_now)
@@ -2589,7 +2966,7 @@ impl Wallet {
         self.save_state(&changed)?;
         *state = changed;
         *self.inner.fresh_share.lock().expect("share lock") = Some(share.id);
-        let code = profile::code(state.profile.profile().expect("a share needs a profile"), &share);
+        let code = profile::code(state.profile.profile(), &share);
         Ok((share, code))
     }
 
@@ -2609,14 +2986,13 @@ impl Wallet {
     /// address someone already has.
     pub async fn start_swap(&self, id: u64) -> Result<Arc<swap::Session>> {
         let state = self.inner.state.lock().await;
-        let profile = state.profile.profile().cloned().ok_or_else(|| FobError::Profile("Set up your profile first.".into()))?;
         let share = state.profile.get(id).ok_or_else(|| FobError::Profile("That share was deleted.".into()))?;
         if !self.can_touch(share) {
             return Err(FobError::Profile("NFC works on a new Share my profile only.".into()));
         }
         let session = Arc::new(swap::Session::new(
             self.network(),
-            &profile::swap_code(&profile, share),
+            &profile::swap_code(state.profile.profile(), share),
             share.subaddress,
             share.address.clone(),
         )?);
@@ -2644,7 +3020,8 @@ impl Wallet {
             return Ok(None);
         }
         let mut changed = state.clone();
-        let Some(share) = changed.profile.touched(id, ended.got.as_ref().map(|p| p.name.clone())) else { return Ok(None) };
+        let name = ended.got.as_ref().map(|p| p.name.clone()).filter(|name| !name.is_empty());
+        let Some(share) = changed.profile.touched(id, name) else { return Ok(None) };
         self.save_state(&changed)?;
         *state = changed;
         Ok(ended.got.map(|code| (share, profile::scanned(&state.contacts, code), ended.sure)))
@@ -2652,11 +3029,11 @@ impl Wallet {
 
     /// A share's code again (its address, the profile as it is now), and
     /// whether it can still swap by touching phones; `None` for no such
-    /// share or no profile.
+    /// share.
     pub async fn share_code(&self, id: u64) -> Option<(profile::Share, String, bool)> {
         let state = self.inner.state.lock().await;
         let share = state.profile.get(id)?;
-        Some((share.clone(), profile::code(state.profile.profile()?, share), self.can_touch(share)))
+        Some((share.clone(), profile::code(state.profile.profile(), share), self.can_touch(share)))
     }
 
     /// A share's code as Meet's second one, after the other phone's was
@@ -2664,7 +3041,7 @@ impl Wallet {
     pub async fn share_reply_code(&self, id: u64) -> Option<String> {
         let state = self.inner.state.lock().await;
         let share = state.profile.get(id)?;
-        Some(profile::reply_code(state.profile.profile()?, share))
+        Some(profile::reply_code(state.profile.profile(), share))
     }
 
     /// Copy link or Share pressed on a share's screen: kept as that kind.
@@ -3103,8 +3480,16 @@ mod tests {
 
     fn dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fob-wallet-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("wallet.fob")
+    }
+
+    /// Leaves `file` at `path` as Fob kept wallets before the database, with no
+    /// database beside it: the next open migrates it.
+    fn old_file(path: &Path, file: &serde_json::Value) {
+        crate::db::remove_files(&path.with_extension("db")).unwrap();
+        store::save(&path.with_extension("fob"), &[1; 32], file).unwrap();
     }
 
     #[test]
@@ -3386,6 +3771,353 @@ mod tests {
         assert!(matches!(again.set_zmq(true, Some("tcp://stagenet.xmr-tw.org:38083")).await, Err(FobError::BadEndpoint(_))));
     }
 
+    /// Every part of a wallet that has been used, for the database's tests.
+    async fn a_used_wallet(path: &Path) -> Wallet {
+        let wallet = Wallet::create(path, [1; 32], Network::Stagenet).unwrap();
+        wallet.new_receive_address().await.unwrap();
+        wallet.remember_receive_note(1, "Coffee beans").await.unwrap();
+        wallet.add_node("https://mine.example:18081", true).await.unwrap();
+        wallet.set_profile("Henry", Some(contacts::test_webp(300, 96))).await.unwrap();
+        wallet.share_profile().await.unwrap();
+        let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), note: Some("Neighbour".into()), photo: Some(contacts::test_webp(300, 96)), ..Default::default() }).await.unwrap();
+        wallet.make_request(Some(sam.id), Some("0.5"), false, Some("Tickets")).await.unwrap();
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.push(Owned { subaddress: 1, coinbase: true, unlock_block: 77, key_image: Some("aa".into()), spent_in: Some("bb".into()), ..received("in", 1_700_000_000, u64::MAX) });
+        state.outputs.push(received("in2", 1_700_000_100, XMR));
+        state.spends.push(ChainSpend { tx: "bb".into(), height: 12, time: 1_700_000_200, fee: 30 });
+        state.sent.push(Sent {
+            tx: "out".into(),
+            to: "addr".into(),
+            amount: XMR,
+            fee: 30,
+            change: 7,
+            time: 1_700_000_300,
+            height: Some(13),
+            receipt: Some("{\"total\":\"1\"}".into()),
+            note: Some("Rent".into()),
+            pieces: Some(2),
+            back: vec![3, 4],
+            recipient_name: Some("Sam".into()),
+        });
+        state.recent.push((13, "hash".into()));
+        state.tip = 20;
+        state.next_block = 14;
+        state.restore_height = Some(1);
+        state.split_index = Some(9);
+        state.fresh_from = Some(4);
+        state.prices.currency = Some("EUR".into());
+        state.price_cache.current = Some(price::Current { currency: "NZD".into(), provider: "Kraken".into(), price: 166_000_000, at: 1_700_000_400 });
+        state.price_cache.history.push(price::History { currency: "NZD".into(), provider: "Kraken".into(), fetched: 5, days: vec![(-1, 2), (3, 4)] });
+        state.price_records.entry("in".into()).or_default().push(price::Record { currency: "NZD".into(), price: 1, provider: "Kraken".into(), at: 2, daily: true });
+        state.price_records.entry("in".into()).or_default().push(price::Record { currency: "USD".into(), price: 3, provider: "CoinGecko".into(), at: 4, daily: false });
+        wallet.save_state(&state).unwrap();
+        drop(state);
+        wallet
+    }
+
+    async fn saved(wallet: &Wallet) -> serde_json::Value {
+        serde_json::to_value(&*wallet.inner.state.lock().await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_used_wallet_comes_back_from_its_database_whole() {
+        let path = dir("db-whole");
+        let wallet = a_used_wallet(&path).await;
+        let again = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(saved(&again).await, saved(&wallet).await);
+        assert_eq!(again.seed_words().unwrap().1, wallet.seed_words().unwrap().1);
+        assert_eq!(again.primary_address(), wallet.primary_address());
+    }
+
+    /// The migration on what matters: nothing of an old file lost, the same
+    /// wallet after it, the file deleted, and nothing done twice.
+    #[tokio::test]
+    async fn an_old_file_becomes_a_database_with_nothing_lost() {
+        let path = dir("db-migrate");
+        let wallet = a_used_wallet(&path).await;
+        let state = saved(&wallet).await;
+        let file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        old_file(&path, &file);
+        let sealed = path.with_extension("fob");
+        std::fs::write(path.with_extension("tmp"), b"left by a crash").unwrap();
+
+        let migrated = Wallet::open(&sealed, [1; 32]).unwrap();
+        assert_eq!(saved(&migrated).await, state);
+        assert_eq!(migrated.seed_words().unwrap().1, wallet.seed_words().unwrap().1);
+        assert_eq!(migrated.primary_address(), wallet.primary_address());
+        assert!(path.with_extension("db").exists());
+        assert!(!path.with_extension("db.migrating").exists());
+        assert!(!sealed.exists(), "the old file goes once the database opens");
+        assert!(!path.with_extension("tmp").exists(), "and any temporary one");
+
+        // What's done after it stays: the database is the wallet from now on.
+        migrated.remember_receive_note(1, "Newer").await.unwrap();
+        let next = saved(&migrated).await;
+        assert_eq!(saved(&Wallet::open(&sealed, [1; 32]).unwrap()).await, next, "not migrated again");
+    }
+
+    /// A wallet the build before this one migrated still has its old file.
+    #[tokio::test]
+    async fn an_old_file_left_beside_a_database_goes_when_it_opens() {
+        let path = dir("db-left-beside");
+        let wallet = a_used_wallet(&path).await;
+        let state = saved(&wallet).await;
+        std::fs::write(path.with_extension("fob"), b"old").unwrap();
+        assert_eq!(saved(&Wallet::open(&path, [1; 32]).unwrap()).await, state);
+        assert!(!path.with_extension("fob").exists());
+    }
+
+    /// The old file stays until its database has opened: it's the wallet until then.
+    #[tokio::test]
+    async fn an_old_file_stays_while_its_database_will_not_open() {
+        let path = dir("db-keeps-file");
+        let wallet = a_used_wallet(&path).await;
+        drop(wallet);
+        std::fs::write(path.with_extension("fob"), b"old").unwrap();
+        assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+        assert!(path.with_extension("fob").exists(), "wrong key");
+        crate::db::remove_files(&path.with_extension("db")).unwrap();
+        std::fs::write(path.with_extension("db"), b"not a database, and long enough to look at its header").unwrap();
+        assert!(Wallet::open(&path, [1; 32]).is_err());
+        assert!(path.with_extension("fob").exists(), "unreadable database");
+    }
+
+    /// A database from before the custom nodes table gets it, and loses nothing.
+    #[tokio::test]
+    async fn a_second_version_database_is_brought_up_to_date() {
+        let path = dir("db-version-2");
+        let wallet = a_used_wallet(&path).await;
+        let state = saved(&wallet).await;
+        drop(wallet);
+        let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
+        old.execute_batch(&format!(
+            "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; PRAGMA user_version = 2;",
+            hex::encode([1u8; 32])
+        ))
+        .unwrap();
+        drop(old);
+        let upgraded = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(saved(&upgraded).await, state);
+        assert!(!upgraded.gpu_check_failed().await);
+        {
+            let mut state = upgraded.inner.state.lock().await;
+            state.gpu_checked_on = Some("A GPU 0x1".into());
+            upgraded.save_state(&state).unwrap();
+        }
+        drop(upgraded);
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(reopened.inner.state.lock().await.gpu_checked_on.as_deref(), Some("A GPU 0x1"));
+        assert!(reopened.gpu_check_failed().await, "checked, and not passed");
+    }
+
+    #[test]
+    fn a_wallets_gpu_check_runs_when_due_and_no_more() {
+        use GpuCheck::{Due, Failed, Passed};
+        assert_eq!(gpu_check_due(None, false, "A 1", false), Due, "never checked");
+        assert_eq!(gpu_check_due(Some("A 1"), true, "A 1", false), Passed, "kept from before");
+        assert_eq!(gpu_check_due(Some("A 1"), true, "A 1", true), Passed);
+        assert_eq!(gpu_check_due(Some("A 1"), true, "A 2", false), Due, "a new driver");
+        assert_eq!(gpu_check_due(Some("A 1"), false, "A 1", false), Due, "one more try after opening");
+        assert_eq!(gpu_check_due(Some("A 1"), false, "A 1", true), Failed, "and only one");
+    }
+
+    #[tokio::test]
+    async fn two_wallets_without_profiles_meet_by_code_and_name_each_other() {
+        let ann = Wallet::create(&dir("meet-nameless-a"), [1; 32], Network::Stagenet).unwrap();
+        let bo = Wallet::create(&dir("meet-nameless-b"), [2; 32], Network::Stagenet).unwrap();
+        let (ann_share, first) = ann.share_profile().await.unwrap();
+        let (bo_share, _) = bo.share_profile().await.unwrap();
+        assert!(ann.start_swap(ann_share.id).await.is_ok(), "touching needs no profile either");
+
+        // Bo scans Ann's code and names her, then shows the reply.
+        assert!(bo.scanned_profile(&first).await.is_err(), "it needs a name first");
+        let named = uri::name_meet_code(Network::Stagenet, &first, "Ann").unwrap();
+        let contact = bo.add_contact_from_profile(&named, false, true).await.unwrap();
+        assert_eq!((contact.name.as_str(), contact.send_address.as_deref(), contact.half), ("Ann", Some(ann_share.address.as_str()), false));
+        bo.share_met(bo_share.id, "Ann").await.unwrap();
+
+        let reply = bo.share_reply_code(bo_share.id).await.unwrap();
+        assert!(!reply.contains("recipient_name"), "no name goes out");
+        let named = uri::name_meet_code(Network::Stagenet, &reply, "Bo").unwrap();
+        assert!(ann.scanned_profile(&named).await.unwrap().code.reply);
+        let contact = ann.add_contact_from_profile(&named, false, true).await.unwrap();
+        assert_eq!(contact.send_address.as_deref(), Some(bo_share.address.as_str()));
+        assert!(ann.profile().await.is_none() && bo.profile().await.is_none(), "neither has had to make one");
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a GPU; run with --ignored"]
+    async fn a_wallet_keeps_its_gpu_check() {
+        fob_scan::set_mode(fob_scan::Mode::Gpu);
+        for _ in 0..1200 {
+            if fob_scan::gpu_ready() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let device = fob_scan::gpu_identity().expect("the GPU passed its cold-start check");
+        let path = dir("gpu-check");
+        let wallet = a_used_wallet(&path).await;
+        assert!(wallet.gpu_allowed().await);
+        assert!(wallet.gpu_allowed().await, "and from what it kept");
+        drop(wallet);
+        let reopened = Wallet::open(&path, [1; 32]).unwrap();
+        {
+            let mut state = reopened.inner.state.lock().await;
+            assert_eq!(state.gpu_checked_on.as_deref(), Some(device.as_str()));
+            assert!(state.gpu_check_passed);
+            // A failure is tried again once, and a sound GPU then passes.
+            state.gpu_check_passed = false;
+        }
+        assert!(reopened.gpu_check_failed().await);
+        assert!(reopened.gpu_allowed().await);
+        assert!(!reopened.gpu_check_failed().await);
+    }
+
+    #[tokio::test]
+    async fn a_first_version_database_is_brought_up_to_date() {
+        let path = dir("db-version-1");
+        let wallet = a_used_wallet(&path).await;
+        wallet.remove_node("https://mine.example:18081").await.unwrap();
+        let state = saved(&wallet).await;
+        drop(wallet);
+        let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
+        old.execute_batch(&format!(
+            "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; PRAGMA user_version = 1;",
+            hex::encode([1u8; 32])
+        ))
+        .unwrap();
+        drop(old);
+        let upgraded = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(saved(&upgraded).await, state);
+        upgraded.add_node("node.example:18081", false).await.unwrap();
+        drop(upgraded);
+        assert_eq!(Wallet::open(&path, [1; 32]).unwrap().custom_nodes().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn custom_nodes_are_kept_per_wallet_until_removed() {
+        let path = dir("nodes-kept");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        wallet.add_node("node.example:38081/", true).await.unwrap();
+        wallet.add_node("http://node.example:38081", true).await.unwrap();
+        let kept = node::Setting { url: "http://node.example:38081".into(), self_signed: true };
+        assert_eq!(wallet.custom_nodes().await, std::slice::from_ref(&kept), "each once, as normalised");
+
+        // One of the network's own is on the list already; an onion can't be reached.
+        wallet.add_node(Network::Stagenet.default_nodes()[1], false).await.unwrap();
+        assert!(matches!(wallet.add_node("abc.onion:38081", false).await, Err(FobError::BadEndpoint(_))));
+        assert_eq!(wallet.custom_nodes().await.len(), 1);
+
+        // Across a reopen, offered after the network's own; another wallet doesn't have it.
+        drop(wallet);
+        let wallet = Wallet::open(&path, [1; 32]).unwrap();
+        let others = wallet.other_nodes().await;
+        assert_eq!(others.len(), Network::Stagenet.default_nodes().len());
+        assert_eq!(others.last(), Some(&kept));
+        let other_wallet = Wallet::create(&dir("nodes-other"), [1; 32], Network::Stagenet).unwrap();
+        assert!(other_wallet.custom_nodes().await.is_empty());
+
+        // A different certificate choice replaces the first.
+        wallet.add_node("node.example:38081", false).await.unwrap();
+        assert_eq!(wallet.custom_nodes().await, [node::Setting { self_signed: false, ..kept.clone() }]);
+
+        wallet.remove_node("node.example:38081").await.unwrap();
+        drop(wallet);
+        assert!(Wallet::open(&path, [1; 32]).unwrap().custom_nodes().await.is_empty());
+    }
+
+    /// A node stays on the list when it's refused, and a custom node from before
+    /// the list is kept on changing away from it.
+    #[tokio::test]
+    async fn changing_node_keeps_the_one_left_and_the_one_refused() {
+        let path = dir("nodes-change");
+        let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+        let before_the_list = node::Setting { url: "http://mine.example:38081".into(), self_signed: true };
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.node = before_the_list.url.clone();
+            state.node_self_signed = true;
+        }
+        assert!(wallet.set_node("http://127.0.0.1:9", false).await.is_err(), "nothing answers there");
+        let refused = node::Setting { url: "http://127.0.0.1:9".into(), self_signed: false };
+        assert_eq!(wallet.custom_nodes().await, [before_the_list.clone(), refused.clone()]);
+        assert_eq!(wallet.node().await, before_the_list, "still on the one it had");
+        drop(wallet);
+        assert_eq!(Wallet::open(&path, [1; 32]).unwrap().custom_nodes().await, [before_the_list, refused]);
+    }
+
+    #[tokio::test]
+    async fn a_migration_that_stopped_part_way_starts_again_from_the_file() {
+        let path = dir("db-interrupted");
+        let wallet = a_used_wallet(&path).await;
+        let state = saved(&wallet).await;
+        let file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        old_file(&path, &file);
+        std::fs::write(path.with_extension("db.migrating"), b"half written").unwrap();
+        assert_eq!(saved(&Wallet::open(&path, [1; 32]).unwrap()).await, state);
+    }
+
+    #[tokio::test]
+    async fn the_wrong_key_opens_neither_a_file_nor_a_database() {
+        let path = dir("db-key");
+        let wallet = a_used_wallet(&path).await;
+        let file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+        assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+        old_file(&path, &file);
+        assert!(matches!(Wallet::open(&path, [2; 32]), Err(FobError::WrongKey)));
+        assert!(!path.with_extension("db").exists(), "no database from a failed migration");
+        assert!(Wallet::open(&path, [1; 32]).is_ok(), "and the file is still good");
+    }
+
+    /// What's on disk gives nothing away: not the seed, a name, or that it's SQLite.
+    #[tokio::test]
+    async fn nothing_in_the_database_can_be_read_without_the_key() {
+        let path = dir("db-sealed");
+        let wallet = a_used_wallet(&path).await;
+        let words = wallet.seed_words().unwrap().1;
+        let first = words.split_whitespace().next().unwrap().to_owned();
+        for file in std::fs::read_dir(path.parent().unwrap()).unwrap() {
+            let bytes = std::fs::read(file.unwrap().path()).unwrap();
+            for secret in [first.as_bytes(), b"Neighbour", b"SQLite format 3", b"Tickets"] {
+                assert!(!bytes.windows(secret.len()).any(|w| w == secret), "{:?} in the clear", String::from_utf8_lossy(secret));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removed_wallet_stays_removed_and_takes_its_old_file() {
+        let path = dir("db-remove");
+        let wallet = a_used_wallet(&path).await;
+        let state = wallet.inner.state.lock().await.clone();
+        std::fs::write(path.with_extension("fob"), b"old").unwrap();
+        wallet.remove_file().unwrap();
+        wallet.save_state(&state).unwrap();
+        for name in ["db", "fob", "db-wal", "db-shm"] {
+            assert!(!path.with_extension(name).exists(), "{name}");
+        }
+    }
+
+    /// A save writes what changed, so a list that shrinks or a value that goes
+    /// comes back as it now is, not as it was.
+    #[tokio::test]
+    async fn saves_after_changes_and_removals_read_back_as_they_stand() {
+        let path = dir("db-changes");
+        let wallet = a_used_wallet(&path).await;
+        {
+            let mut state = wallet.inner.state.lock().await;
+            state.outputs.remove(0);
+            state.spends.clear();
+            state.price_cache.current = None;
+            state.split_index = None;
+            state.notes.clear();
+            state.price_records.clear();
+            wallet.save_state(&state).unwrap();
+        }
+        wallet.delete_contact(1).await.ok();
+        assert_eq!(saved(&Wallet::open(&path, [1; 32]).unwrap()).await, saved(&wallet).await);
+    }
+
     /// How often a counting node was asked for the tip and for the fee.
     #[derive(Default)]
     struct NodeCalls {
@@ -3449,7 +4181,7 @@ mod tests {
         let path = dir(name);
         let mut kept = 2_999_000u64.to_le_bytes().to_vec();
         kept.extend((0..2_000u64).flat_map(|i| (i * 10).to_le_bytes()));
-        std::fs::write(path.with_extension("decoys"), kept).unwrap();
+        std::fs::write(path.with_file_name("wallet-stagenet.decoys"), kept).unwrap();
         let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
         wallet.inner.state.lock().await.node = node.into();
         wallet
@@ -3768,7 +4500,7 @@ mod tests {
         let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         file["state"]["prices"] = serde_json::json!({"currency": "USD", "provider": "kraken", "transport": "tor", "fiat_first": false});
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(old.price_settings().await.transport, price::Transport::Tor);
         let fake = FakePrices::new(166_100_000, vec![]);
@@ -4242,7 +4974,7 @@ mod tests {
         for new in ["prices", "price_cache", "price_records"] {
             assert!(state.remove(new).is_some(), "{new} is saved");
         }
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(old.price_settings().await, price::Settings::default());
     }
@@ -4254,12 +4986,12 @@ mod tests {
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         // As files had them before currencies: a switch and a currency.
         file["state"]["prices"] = serde_json::json!({"on": false, "currency": "EUR", "provider": "kraken", "transport": "web", "fiat_first": true});
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         let settings = old.price_settings().await;
         assert_eq!((settings.code(), settings.fiat_first), (None, true));
         file["state"]["prices"] = serde_json::json!({"on": true, "currency": "EUR", "provider": "kraken", "transport": "web", "fiat_first": false});
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         drop(old);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(old.price_settings().await.code(), Some("EUR"));
@@ -4275,10 +5007,10 @@ mod tests {
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         // Without fiat_first at all: XMR first.
         file["state"]["prices"] = serde_json::json!({"currency": "EUR", "provider": "kraken", "transport": "web"});
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         assert!(!Wallet::open(&path, [1; 32]).unwrap().price_settings().await.fiat_first);
         file["state"]["prices"] = serde_json::json!({"currency": "EUR", "provider": "kraken", "transport": "web", "fiat_first": true});
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         let t = now();
         let order = |can_swap, fiat_first| price::BalanceOrder { can_swap, fiat_first };
@@ -4592,6 +5324,7 @@ mod tests {
         let restored = Wallet::restore_words(&path, [1; 32], Network::Stagenet, &words, Some(0)).unwrap();
         let marks = |s: &State| (s.receive_index, s.receive_own, s.fresh_from);
         let before = marks(&*restored.inner.state.lock().await);
+        let path = restored.inner.path.clone();
         let file = std::fs::read(&path).unwrap();
         assert_eq!(restored.shown_receive_address().await, None, "Receive hands one out as it opens");
         assert_eq!(marks(&*restored.inner.state.lock().await), before);
@@ -4749,7 +5482,7 @@ mod tests {
         let state = file["state"].as_object_mut().unwrap();
         assert!(state.remove("requests").is_some(), "requests are saved");
         assert!(state.remove("receive_own").is_some(), "Receive's address is saved");
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         // Before requests, Receive showed the last one handed out.
         let last = old.receive_address().await.unwrap();
@@ -4766,7 +5499,7 @@ mod tests {
         let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         assert!(file["state"].as_object_mut().unwrap().remove("contacts").is_some(), "contacts are saved");
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
         assert!(old.contacts("", clock).await.is_empty());
@@ -4783,7 +5516,7 @@ mod tests {
         // From before the mark: opens, unmarked.
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         assert!(file["state"].as_object_mut().unwrap().remove("node_self_signed").is_some(), "the mark is saved");
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let wallet = Wallet::open(&path, [1; 32]).unwrap();
         assert!(!wallet.node().await.self_signed);
         assert_eq!(wallet.node_line().await, "stagenet.xmr-tw.org:38081");
@@ -4802,7 +5535,7 @@ mod tests {
         assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
         // Syncing failing since, the line says so, as Home's chip, over the
         // check (and over having synced before).
-        reopened.set_status(|s| s.synced = true);
+        reopened.set_status(|s| { s.synced = true; s.connected = true; });
         let offline = FobError::Node(format!("{:?}", InterfaceError::InterfaceError("dns error: failed to lookup address".into())));
         reopened.report(&Quiet, &mut catch_up::Pace::default(), Some(&offline)).await;
         assert_eq!(reopened.status().error.as_deref(), Some("Address not found"));
@@ -4817,13 +5550,15 @@ mod tests {
         assert!(reopened.status().error_local);
         assert_eq!(reopened.node_line().await, format!("Doesn't send blocks · 127.0.0.1:{port}"));
         *reopened.inner.node_verdict.lock().unwrap() = None;
-        reopened.set_status(|s| s.synced = true);
+        reopened.set_status(|s| { s.synced = true; s.connected = true; });
         assert_eq!(reopened.node_line().await, format!("Working · 127.0.0.1:{port}"));
-        // The list leaves out the node in use, and an added one comes once.
-        let added = node::Setting { url: "node.example:38081/".into(), self_signed: true };
-        let others = reopened.other_nodes(&[added.clone(), added]).await;
-        assert_eq!(others.len(), Network::Stagenet.default_nodes().len() + 1);
+        // The list leaves out the node in use, and a custom one comes once.
+        reopened.add_node("node.example:38081/", true).await.unwrap();
+        reopened.add_node("node.example:38081", true).await.unwrap();
+        let others = reopened.other_nodes().await;
         assert_eq!(others.last(), Some(&node::Setting { url: "http://node.example:38081".into(), self_signed: true }));
+        assert_eq!(others.iter().filter(|n| n.url == "http://node.example:38081").count(), 1);
+        assert!(!others.iter().any(|n| n.url == format!("https://127.0.0.1:{port}")));
     }
 
     /// Switching to a working node while syncing fails stops the chip and
@@ -4915,7 +5650,6 @@ mod tests {
         let t = now();
         let clock = Clock { now: t, utc_offset: 0, hours_24: true };
         let address = |i: u32| wallet.inner.keys.address(i);
-        assert!(wallet.share_profile().await.is_err(), "no profile yet");
         assert_eq!(wallet.profile_row().await.title, "Add a shareable Fob contact");
         wallet.set_profile("Henry", Some(webp(300))).await.unwrap();
         let own = wallet.receive_address().await.unwrap();
@@ -4971,12 +5705,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn touching_phones_works_without_a_name_and_the_share_is_named_once_chosen() {
+        let ann = Wallet::create(&dir("touch-nameless"), [1; 32], Network::Stagenet).unwrap();
+        let sam = Wallet::create(&dir("touch-named"), [2; 32], Network::Stagenet).unwrap();
+        sam.set_profile("Sam", None).await.unwrap();
+        let (_, ours) = share_and_swap(&ann).await;
+        let (shown, theirs) = share_and_swap(&sam).await;
+        assert!(matches!(touch(&ours, &theirs), swap::Step::Done(_)));
+
+        let (_, got, _) = ann.end_swap(&ours).await.unwrap().unwrap();
+        assert_eq!(got.code.name, "Sam");
+        let (share, got, _) = sam.end_swap(&theirs).await.unwrap().unwrap();
+        assert_eq!(got.code.name, "", "Ann's phone sent no name");
+        assert_eq!(share.kind, profile::ShareKind::TouchedPhones { name: None });
+
+        let text = uri::nameless_uri(&got.code.address, false);
+        let named = uri::name_meet_code(Network::Stagenet, &text, "Ann").unwrap();
+        assert_eq!(sam.add_contact_from_profile(&named, false, true).await.unwrap().name, "Ann");
+        sam.share_met(shown.id, "Ann").await.unwrap();
+        assert_eq!(sam.share_code(shown.id).await.unwrap().0.kind, profile::ShareKind::Met { name: "Ann".into() });
+    }
+
+    #[tokio::test]
     async fn touching_phones_swaps_profiles_on_the_share_s_own_address() {
         let path = dir("swap-henry");
         let henry = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
         let sam = Wallet::create(&dir("swap-sam"), [2; 32], Network::Stagenet).unwrap();
         let clock = Clock { now: now(), utc_offset: 0, hours_24: true };
-        assert!(henry.start_swap(1).await.is_err(), "no profile yet");
         henry.set_profile("Henry", Some(webp(1200))).await.unwrap();
         sam.set_profile("Sam", None).await.unwrap();
         assert!(henry.start_swap(99).await.is_err(), "no such share");
@@ -5152,7 +5907,7 @@ mod tests {
         wallet.set_profile("Henry", None).await.unwrap();
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         assert!(file["state"].as_object_mut().unwrap().remove("profile").is_some(), "the profile is saved");
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let old = Wallet::open(&path, [1; 32]).unwrap();
         assert!(old.profile().await.is_none());
         assert!(old.profile_shares(Clock { now: now(), utc_offset: 0, hours_24: true }).await.is_empty());
@@ -5171,7 +5926,7 @@ mod tests {
         let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
         file["state"]["contacts"]["contacts"][1]["photo"] = hex::encode(&huge).into();
         file["state"]["profile"]["profile"]["photo"] = hex::encode(&huge).into();
-        store::save(&path, &[1; 32], &file).unwrap();
+        old_file(&path, &file);
         let opened = Wallet::open(&path, [1; 32]).unwrap();
         assert_eq!(opened.contact(sam.id).await.unwrap().photo, Some(good));
         let jo = opened.contact(jo.id).await.unwrap();

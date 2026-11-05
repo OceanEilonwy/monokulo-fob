@@ -3,6 +3,7 @@
 //!
 //! - [`Wallet`]: create, restore, open; sync, balance, activity; prepare and
 //!   send payments.
+//! - [`wallets`]: the wallets on this phone, their names, and which is open.
 //! - [`uri`]: payment codes (with ORF receipts) and wallet codes.
 //! - [`zmq`]: instant updates from the node's ZMQ publisher, when turned on.
 //! - [`price`]: what XMR is worth, now and when each payment moved.
@@ -15,10 +16,13 @@
 //! - [`amount`], [`activity`], [`catch_up`], [`not_ready`], [`receipt`], [`qr`],
 //!   [`pattern`]: text and pictures ready for the screen.
 
+pub use fob_scan as scanning;
+
 pub mod activity;
 pub mod amount;
 pub mod catch_up;
 pub mod contacts;
+mod db;
 mod decoys;
 pub mod error;
 pub mod fetch;
@@ -32,6 +36,7 @@ pub mod node;
 pub mod qr;
 pub mod receipt;
 pub mod requests;
+mod scan;
 pub mod split;
 pub mod ndef;
 pub mod pay;
@@ -41,6 +46,7 @@ mod send_context;
 mod store;
 pub mod uri;
 pub mod wallet;
+pub mod wallets;
 pub mod zmq;
 mod zmtp;
 

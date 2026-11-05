@@ -1,6 +1,7 @@
 package com.monokulo.fob.ui.screens
 
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -114,26 +115,46 @@ fun NetworkLine(model: WalletModel) {
 }
 
 @Composable
-fun WelcomeScreen(model: WalletModel, nav: Nav) {
+fun WelcomeScreen(model: WalletModel, nav: Nav, adding: Boolean = false) {
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val wallet by model.wallet.collectAsState()
-    LaunchedEffect(wallet) { if (wallet != null && !busy) nav.reset(Screen.Home) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var nextName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(adding) { if (adding) nextName = runCatching { model.nextWalletName() }.getOrNull() }
+    LaunchedEffect(wallet) { if (wallet != null && !busy && !adding) nav.reset(Screen.Home) }
     Page(bottom = {
         ErrorText(error)
         PrimaryButton("Create a wallet", enabled = !busy, onClick = {
             busy = true
+            error = null
             scope.launch {
+                model.pendingName = name
                 runCatching { model.create() }
                     .onSuccess { nav.reset(Screen.Home); nav.go(Screen.Backup) }
                     .onFailure { error = it.reason() }
                 busy = false
             }
         })
-        OutlineButton("Restore a wallet", { nav.go(Screen.RestoreChoose) }, Modifier.fillMaxWidth())
+        OutlineButton("Restore a wallet", {
+            error = null
+            scope.launch {
+                model.pendingName = name
+                runCatching { model.checkWalletName(name) }
+                    .onSuccess { nav.go(Screen.RestoreChoose) }
+                    .onFailure { error = it.reason() }
+            }
+        }, Modifier.fillMaxWidth())
         NetworkLine(model)
     }) {
+        if (adding) {
+            TopBar("Add a wallet", onBack = { nav.back() })
+            Column(Modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
+                Field(name, { name = it; error = null }, "Name", placeholder = nextName, hint = "You can change it later.")
+            }
+            return@Page
+        }
         Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 72.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
             FobMark(112.dp)
             Text("Fob", style = display(36))

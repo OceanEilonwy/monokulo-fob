@@ -29,6 +29,9 @@ const RISE: u64 = 30;
 /// measured since.
 const RESETTLE: Duration = Duration::from_secs(10);
 
+/// Blocks this slow to come are worth saying so.
+const WAIT_SHOWN: u64 = 15;
+
 /// One look at the sync loop: when, and its running totals.
 #[derive(Clone, Copy, Debug)]
 struct Sample {
@@ -201,6 +204,12 @@ pub fn long_time(seconds: u64) -> String {
     }
 }
 
+/// "40 s", "2 min": how long the node has kept the wallet waiting, unrounded
+/// below a minute.
+fn waited(seconds: u64) -> String {
+    if seconds < 60 { format!("{seconds} s") } else { format!("{} min", seconds / 60) }
+}
+
 /// "28", or "0.8" for slow going.
 fn blocks_a_second(blocks: f64) -> String {
     if blocks >= 9.95 { grouped(blocks.round() as u64) } else { format!("{blocks:.1}") }
@@ -273,10 +282,17 @@ impl SyncStatus {
             let text = if self.error_local { "Can't save" } else { "Can't reach node" };
             return Chip { look: Look::Offline, text: text.into(), label: failed_title(self).into() };
         }
+        // First: Synced from before the node has answered would be a guess.
+        if !self.connected {
+            return Chip { look: Look::Ring, text: "Connecting".into(), label: "Connecting to the node".into() };
+        }
         if self.synced {
             return Chip { look: Look::Synced, text: "Synced".into(), label: "Synced".into() };
         }
         let percent = percent(self);
+        if self.waiting_seconds >= WAIT_SHOWN {
+            return Chip { look: Look::Ring, text: "Waiting for node".into(), label: format!("Catching up, {percent}, waiting for the node") };
+        }
         match self.seconds_left {
             Some(s) => Chip {
                 look: Look::Ring,
@@ -334,10 +350,11 @@ fn date_time(time: u64, clock: Clock) -> String {
 /// The card's words for `status`.
 pub fn details(status: &SyncStatus, clock: Clock) -> Details {
     let speeds = status.blocks_per_second.zip(status.link_mb_per_second);
-    let catching_up = !status.synced && status.tip > 0;
+    let waiting = status.connected && !status.synced && status.waiting_seconds >= WAIT_SHOWN;
+    let catching_up = !status.synced && status.tip > 0 && status.connected;
     let row = |label: &str, value: String, spoken: String| Row { label: label.to_owned(), spoken: format!("{label}: {spoken}"), value };
     let mut rows = vec![];
-    if catching_up && status.error.is_none() {
+    if catching_up && status.error.is_none() && !waiting {
         let (left, spoken) = match status.seconds_left {
             Some(s) => (format!("about {}", short_time(s)), format!("about {}", long_time(s))),
             None => ("Working it out".to_owned(), "working it out".to_owned()),
@@ -355,27 +372,35 @@ pub fn details(status: &SyncStatus, clock: Clock) -> Details {
             None => (blocks.clone(), blocks),
         };
         rows.push(row("Blocks", value, spoken));
-        if status.error.is_none() {
+        if status.error.is_none() && !waiting {
             let (value, spoken) = match speeds {
                 Some((_, mb)) => (link_speed(mb * 1e6), link_speed_spoken(mb * 1e6)),
                 None => ("Measuring".to_owned(), "measuring".to_owned()),
             };
             rows.push(row("Link speed", value, spoken));
         }
-    } else if status.tip > 0 {
+    } else if status.tip > 0 && status.connected {
         let latest = grouped(status.tip - 1);
         rows.push(row("Latest block", latest.clone(), latest));
     }
     let title = match () {
         _ if status.error.is_some() => failed_title(status),
+        _ if !status.connected => "Connecting",
         _ if status.synced => "Synced",
+        _ if waiting => "Waiting for node",
         _ => "Catching up",
     };
-    let note = status.error.is_some().then(|| "Fob keeps trying on its own.".to_owned());
+    let note = match () {
+        _ if status.error.is_some() => Some("Fob keeps trying on its own.".to_owned()),
+        _ if !status.connected => Some("Asking the node how far the chain has got.".to_owned()),
+        _ if waiting => Some(format!("The node hasn't sent any blocks for {}. Fob keeps asking, and another node may be quicker.", waited(status.waiting_seconds))),
+        _ => None,
+    };
+    let unsure = !status.connected && status.error.is_none();
     Details {
         title: title.to_owned(),
-        percent: (!status.synced).then(|| percent(status)),
-        progress: (!status.synced).then_some(status.progress.clamp(0.0, 1.0)),
+        percent: (!status.synced && !unsure).then(|| percent(status)),
+        progress: (!status.synced && !unsure).then_some(status.progress.clamp(0.0, 1.0)),
         rows,
         note,
         error: status.error.clone(),
@@ -615,7 +640,7 @@ mod tests {
     }
 
     fn catching_up() -> SyncStatus {
-        SyncStatus { scanned: 1_003_360, tip: 1_009_880, start: 1_000_000, progress: 3_360.0 / 9_880.0, seconds_left: Some(240), up_to: NOW - 2 * 86_400, ..SyncStatus::default() }
+        SyncStatus { connected: true, scanned: 1_003_360, tip: 1_009_880, start: 1_000_000, progress: 3_360.0 / 9_880.0, seconds_left: Some(240), up_to: NOW - 2 * 86_400, ..SyncStatus::default() }
     }
 
     const NOW: u64 = 1_793_000_000;
@@ -644,9 +669,43 @@ mod tests {
         assert_eq!((s.chip().look, s.chip().text.as_str()), (Look::Offline, "Can't reach node"));
     }
 
+    /// Back on screen with the wallet caught up as of last time, or just on
+    /// another node: it isn't Synced until the node has said so.
+    #[test]
+    fn synced_from_last_time_waits_for_the_node_to_answer() {
+        let mut s = catching_up();
+        (s.synced, s.scanned, s.progress, s.connected) = (true, s.tip, 1.0, false);
+        let chip = s.chip();
+        assert_eq!((chip.look, chip.text.as_str(), chip.label.as_str()), (Look::Ring, "Connecting", "Connecting to the node"));
+        let d = details(&s, clock());
+        assert_eq!((d.title.as_str(), d.percent, d.progress), ("Connecting", None, None));
+        assert_eq!(d.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["Payments up to"]);
+        assert_eq!(d.note.as_deref(), Some("Asking the node how far the chain has got."));
+        s.connected = true;
+        assert_eq!(s.chip().text, "Synced");
+    }
+
+    /// A node that answers but sends nothing says so, in place of a time left
+    /// counting down on nothing.
+    #[test]
+    fn a_node_keeping_it_waiting_is_named() {
+        let mut s = catching_up();
+        s.waiting_seconds = WAIT_SHOWN - 1;
+        assert_eq!(s.chip().text, "4 min left");
+        s.waiting_seconds = 40;
+        let chip = s.chip();
+        assert_eq!((chip.look, chip.text.as_str(), chip.label.as_str()), (Look::Ring, "Waiting for node", "Catching up, 34%, waiting for the node"));
+        let d = details(&s, clock());
+        assert_eq!((d.title.as_str(), d.percent.as_deref()), ("Waiting for node", Some("34%")));
+        assert_eq!(d.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["Payments up to", "Blocks"]);
+        assert_eq!(d.note.as_deref(), Some("The node hasn't sent any blocks for 40 s. Fob keeps asking, and another node may be quicker."));
+        s.waiting_seconds = 130;
+        assert!(details(&s, clock()).note.unwrap().contains("for 2 min."));
+    }
+
     #[test]
     fn nearly_done_still_reads_99_percent() {
-        let s = SyncStatus { progress: 0.999, tip: 10, ..SyncStatus::default() };
+        let s = SyncStatus { connected: true, progress: 0.999, tip: 10, ..SyncStatus::default() };
         assert_eq!(s.chip().label, "Catching up, 99%");
     }
 

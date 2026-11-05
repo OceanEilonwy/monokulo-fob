@@ -34,7 +34,7 @@ impl From<fob_core::FobError> for FobError {
         use fob_core::FobError as E;
         let reason = e.to_string();
         match e {
-            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) | E::Profile(_) => {
+            E::BadSeed | E::BadAddress(_) | E::BadKey | E::BadAmount | E::BadCode | E::BadEndpoint(_) | E::WrongNetwork { .. } | E::Split(_) | E::Contact(_) | E::Request(_) | E::Profile(_) | E::BadName(_) => {
                 FobError::Invalid { reason }
             }
             E::Node(_) => FobError::Node { reason },
@@ -1004,6 +1004,126 @@ pub enum CodeKind {
     Unknown,
 }
 
+/// A wallet on this phone.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct WalletEntry {
+    /// The wallet's file name, which never changes: its id.
+    pub file: String,
+    pub name: String,
+    pub network: Network,
+}
+
+impl From<&fob_core::wallets::Entry> for WalletEntry {
+    fn from(e: &fob_core::wallets::Entry) -> Self {
+        WalletEntry { file: e.file.clone(), name: e.name.clone(), network: e.network.into() }
+    }
+}
+
+/// What does the arithmetic of a scan.
+#[derive(uniffi::Enum)]
+pub enum ScanMode {
+    Gpu,
+    Auto,
+    Cpu,
+}
+
+/// Sets what scans, for every wallet in this process. `cache_dir` keeps the
+/// compiled shader, which is the slow part of a GPU's first use.
+#[uniffi::export]
+pub fn set_scan_mode(mode: ScanMode, cache_dir: String) {
+    use fob_core::scanning::{Mode, set_cache_dir, set_mode};
+    set_cache_dir(cache_dir.into());
+    set_mode(match mode {
+        ScanMode::Auto => Mode::Auto,
+        ScanMode::Gpu => Mode::Gpu,
+        ScanMode::Cpu => Mode::Cpu,
+    });
+}
+
+/// Whether the GPU can't be used on this phone, so the CPU scans whatever the
+/// setting says.
+#[uniffi::export]
+pub fn scan_gpu_failed() -> bool {
+    fob_core::scanning::gpu_failed()
+}
+
+/// Whether the folder `dir` holds a wallet on `network`; asks nothing of the
+/// keystore, so it can be asked while the first screen is chosen.
+#[uniffi::export]
+pub fn wallets_on(dir: String, network: Network) -> bool {
+    fob_core::wallets::any_on(&PathBuf::from(dir), network.into())
+}
+
+/// The wallets on this phone: names, networks, and which was last open.
+#[derive(uniffi::Object)]
+pub struct WalletList {
+    inner: std::sync::Mutex<fob_core::wallets::Wallets>,
+}
+
+impl WalletList {
+    fn book(&self) -> std::sync::MutexGuard<'_, fob_core::wallets::Wallets> {
+        self.inner.lock().expect("wallet list lock")
+    }
+}
+
+#[uniffi::export]
+impl WalletList {
+    /// The list kept in `dir`, sealed under `key`; wallets from before there
+    /// was a list join it.
+    #[uniffi::constructor]
+    pub fn open(dir: String, key: Vec<u8>) -> Result<Arc<Self>> {
+        Ok(Arc::new(WalletList { inner: std::sync::Mutex::new(fob_core::wallets::Wallets::open(&PathBuf::from(dir), file_key(key)?)?) }))
+    }
+
+    pub fn list(&self) -> Vec<WalletEntry> {
+        self.book().list().iter().map(Into::into).collect()
+    }
+
+    /// The wallet to open on `network`, if it has any.
+    pub fn current(&self, network: Network) -> Option<WalletEntry> {
+        self.book().current(network.into()).map(Into::into)
+    }
+
+    pub fn select(&self, file: String) -> Result<()> {
+        Ok(self.book().select(&file)?)
+    }
+
+    /// Where a wallet's file is.
+    pub fn path(&self, file: String) -> String {
+        self.book().path(&file).to_string_lossy().into_owned()
+    }
+
+    /// The name a new wallet gets unless it's given one: "Wallet 2".
+    pub fn next_name(&self) -> String {
+        self.book().next_name()
+    }
+
+    /// A file name for a new wallet on `network`.
+    pub fn new_file(&self, network: Network) -> String {
+        self.book().new_file(network.into())
+    }
+
+    /// Throws why a new wallet can't have `name`; blank takes the next name.
+    pub fn check_name(&self, name: String) -> Result<()> {
+        self.book().check_name(&name)?;
+        Ok(())
+    }
+
+    /// Lists a wallet just made in `file`, as the one open on its network.
+    pub fn add(&self, file: String, name: String) -> Result<WalletEntry> {
+        Ok((&self.book().add(&file, &name)?).into())
+    }
+
+    pub fn rename(&self, file: String, name: String) -> Result<()> {
+        Ok(self.book().rename(&file, &name)?)
+    }
+
+    /// Takes a wallet's file and line away.
+    pub fn remove(&self, file: String) -> Result<()> {
+        Ok(self.book().remove(&file)?)
+    }
+}
+
 /// A Fob wallet, saved in one file.
 #[derive(uniffi::Object)]
 pub struct FobWallet {
@@ -1168,6 +1288,11 @@ impl FobWallet {
         self.inner.network().into()
     }
 
+    /// Takes this wallet's file off the phone for good, stopping its syncing.
+    pub fn remove_file(&self) -> Result<()> {
+        Ok(self.inner.remove_file()?)
+    }
+
     pub fn can_spend(&self) -> bool {
         self.inner.can_spend()
     }
@@ -1273,18 +1398,18 @@ impl FobWallet {
         self.inner.check_node(&node.into(), &|report| observer.on_progress(report.clone().into())).await.into()
     }
 
-    /// The other nodes to offer (the network's, then `added`), each saying
-    /// "Checking…" until [`check_nodes`](Self::check_nodes) answers.
-    pub async fn other_nodes(&self, added: Vec<NodeSetting>) -> Vec<NodeChoice> {
+    /// The other nodes to offer (the network's, then this wallet's own), each
+    /// saying "Checking…" until [`check_nodes`](Self::check_nodes) answers.
+    pub async fn other_nodes(&self) -> Vec<NodeChoice> {
         let network = self.inner.network();
-        let added: Vec<_> = added.into_iter().map(Into::into).collect();
+        let custom = self.inner.custom_nodes().await;
         self.inner
-            .other_nodes(&added)
+            .other_nodes()
             .await
             .into_iter()
             .map(|n| {
                 let report = fob_core::node::Report::pending(network, &n);
-                NodeChoice::new(&report, report.line(false))
+                NodeChoice::new(&report, report.line(false), &custom)
             })
             .collect()
     }
@@ -1292,7 +1417,18 @@ impl FobWallet {
     /// Checks the other nodes at once: each one's line and whether it can be used.
     pub async fn check_nodes(&self, nodes: Vec<NodeSetting>) -> Vec<NodeChoice> {
         let nodes: Vec<_> = nodes.into_iter().map(Into::into).collect();
-        self.inner.check_nodes(&nodes).await.iter().map(|(report, line)| NodeChoice::new(report, line.clone())).collect()
+        let custom = self.inner.custom_nodes().await;
+        self.inner.check_nodes(&nodes).await.iter().map(|(report, line)| NodeChoice::new(report, line.clone(), &custom)).collect()
+    }
+
+    /// Keeps a node on this wallet's list, to change to later.
+    pub async fn add_node(&self, node: NodeSetting) -> Result<()> {
+        Ok(self.inner.add_node(&node.url, node.self_signed).await?)
+    }
+
+    /// Takes a node off this wallet's list.
+    pub async fn remove_node(&self, url: String) -> Result<()> {
+        Ok(self.inner.remove_node(&url).await?)
     }
 
     /// The node's ZMQ publisher: the one set, else the usual port on the
@@ -1458,6 +1594,11 @@ impl FobWallet {
         self.inner.warm_up_send().await;
     }
 
+    /// Whether the GPU failed this wallet's check, so the CPU scans it.
+    pub async fn scan_gpu_check_failed(&self) -> bool {
+        self.inner.gpu_check_failed().await
+    }
+
     /// Asks the node its fee rate, so Split up's fee estimate is the node's.
     pub async fn refresh_fee_rate(&self) {
         self.inner.refresh_fee_rate().await;
@@ -1504,6 +1645,7 @@ impl FobWallet {
         let d = self.inner.payment(&tx, activity::Clock { now, utc_offset, hours_24 }).await?;
         Some(PaymentDetail {
             amount_text: d.amount,
+            amount_exact: d.exact,
             when: d.when,
             priced: d.priced,
             worth_now: d.worth_now,
@@ -1735,7 +1877,11 @@ impl FobWallet {
     pub async fn end_swap(&self, swap: Arc<TouchSwap>) -> Result<Option<Swapped>> {
         Ok(self.inner.end_swap(&swap.inner).await?.map(|(share, scanned, sure)| {
             let (title, line) = profile::swapped_words(&scanned.code.name, sure);
-            let text = uri::profile_uri(&scanned.code.address, &scanned.code.name, scanned.code.photo.as_deref());
+            let text = if scanned.code.name.is_empty() {
+                uri::nameless_uri(&scanned.code.address, false)
+            } else {
+                uri::profile_uri(&scanned.code.address, &scanned.code.name, scanned.code.photo.as_deref())
+            };
             Swapped { share: share.id, title, line, text, profile: scanned.into() }
         }))
     }
@@ -2126,6 +2272,25 @@ pub fn profile_code_problem(network: Network, text: String) -> Option<String> {
     uri::parse_profile(network.into(), &text).err().map(|e| e.to_string())
 }
 
+/// Why Meet can't take a scanned code; none for a profile, or an address from
+/// someone with no profile.
+#[uniffi::export]
+pub fn meet_code_problem(network: Network, text: String) -> Option<String> {
+    uri::parse_meet_code(network.into(), &text).err().map(|e| e.to_string())
+}
+
+/// Whether a code Meet took came with no name, so its receiver must give one.
+#[uniffi::export]
+pub fn meet_code_needs_name(network: Network, text: String) -> bool {
+    uri::parse_meet_code(network.into(), &text).is_ok_and(|code| code.name.is_empty())
+}
+
+/// A nameless Meet code with the name its receiver chose, as a profile's code.
+#[uniffi::export]
+pub fn name_meet_code(network: Network, text: String, name: String) -> Result<String> {
+    Ok(uri::name_meet_code(network.into(), &text, &name)?)
+}
+
 /// Reads a scanned or pasted payment code.
 #[uniffi::export]
 pub fn parse_payment(network: Network, text: String) -> Result<PaymentRequest> {
@@ -2491,8 +2656,10 @@ pub fn contact_initial(name: String) -> String {
 /// A payment's own screen, every word from Rust.
 #[derive(uniffi::Record)]
 pub struct PaymentDetail {
-    /// "+0.5", "−0.1421"
+    /// "+0.5", "−0.1421", cut to four decimals as in Activity.
     pub amount_text: String,
+    /// Every digit, for the details: "0.142135791113 XMR".
+    pub amount_exact: String,
     /// "Today 08:40 · Coffee beans"
     pub when: String,
     /// A default currency besides XMR: show the two boxes.
@@ -2723,10 +2890,12 @@ pub struct NodeChoice {
     pub mark: CheckMark,
     /// Offer Use.
     pub can_use: bool,
+    /// One this wallet was given, so it can be taken off the list.
+    pub removable: bool,
 }
 
 impl NodeChoice {
-    fn new(report: &fob_core::node::Report, line: String) -> NodeChoice {
+    fn new(report: &fob_core::node::Report, line: String, custom: &[fob_core::node::Setting]) -> NodeChoice {
         let can_use = report.usable() == fob_core::node::Usable::Use;
         NodeChoice {
             node: NodeSetting { url: report.url.clone(), self_signed: report.self_signed },
@@ -2734,6 +2903,7 @@ impl NodeChoice {
             line,
             mark: if report.checking() { CheckMark::Checking } else if can_use { CheckMark::Pass } else { CheckMark::Fail },
             can_use,
+            removable: custom.iter().any(|node| node.url == report.url),
         }
     }
 }

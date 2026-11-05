@@ -41,6 +41,9 @@ pub enum FobError {
     /// can't be read, and why.
     #[error("{0}")]
     Profile(String),
+    /// A wallet's name can't be used, or the wallet isn't on the list, and why.
+    #[error("{0}")]
+    BadName(String),
     #[error("couldn't build the transaction: {0}")]
     Send(String),
     #[error("couldn't read or save the wallet: {0}")]

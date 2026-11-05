@@ -147,6 +147,11 @@ impl Keys {
         self.spend.as_ref().ok_or(FobError::ViewOnly)
     }
 
+    /// The view key's bytes, for the prefilter.
+    pub(crate) fn view_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(<[u8; 32]>::from(*self.view))
+    }
+
     pub(crate) fn view_pair(&self) -> ViewPair {
         ViewPair::new(self.spend_pub, self.view.clone()).expect("a wallet's own keys make a view pair")
     }
@@ -412,6 +417,45 @@ impl From<&Keys> for StoredKeys {
 }
 
 impl StoredKeys {
+    /// Keeps these keys in `connection`'s keys table.
+    pub(crate) fn write(&self, connection: &rusqlite::Connection) -> std::result::Result<(), rusqlite::Error> {
+        let kind = self.seed.as_ref().map(|(kind, _)| match kind {
+            SeedKind::Polyseed => "polyseed",
+            SeedKind::Classic => "classic",
+        });
+        connection.execute(
+            "INSERT OR REPLACE INTO keys (id, network, spend, view, spend_pub, seed_kind, seed_words) VALUES (1, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![self.network.name(), self.spend, self.view, self.spend_pub, kind, self.seed.as_ref().map(|(_, words)| words)],
+        )?;
+        Ok(())
+    }
+
+    /// The keys kept in `connection`'s keys table.
+    pub(crate) fn read(connection: &rusqlite::Connection) -> std::result::Result<StoredKeys, rusqlite::Error> {
+        connection.query_row("SELECT network, spend, view, spend_pub, seed_kind, seed_words FROM keys WHERE id = 1", [], |row| {
+            let unknown = |i: usize, what: &str| rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Text, format!("unknown {what}").into());
+            let network = match row.get::<_, String>(0)?.as_str() {
+                "mainnet" => Network::Mainnet,
+                "stagenet" => Network::Stagenet,
+                _ => return Err(unknown(0, "network")),
+            };
+            let kind: Option<String> = row.get(4)?;
+            let words: Option<String> = row.get(5)?;
+            let seed = match (kind.as_deref(), words) {
+                (Some("polyseed"), Some(words)) => Some((SeedKind::Polyseed, words)),
+                (Some("classic"), Some(words)) => Some((SeedKind::Classic, words)),
+                (None, None) => None,
+                _ => return Err(unknown(4, "seed")),
+            };
+            Ok(StoredKeys { network, spend: row.get(1)?, view: row.get(2)?, spend_pub: row.get(3)?, seed })
+        })
+    }
+
+    /// Whether `other` holds the same keys.
+    pub(crate) fn same_as(&self, other: &StoredKeys) -> bool {
+        self.network == other.network && self.spend == other.spend && self.view == other.view && self.spend_pub == other.spend_pub && self.seed == other.seed
+    }
+
     pub(crate) fn into_keys(self) -> Result<Keys> {
         let stored = Zeroizing::new(self);
         let view = parse_scalar(&stored.view)?;

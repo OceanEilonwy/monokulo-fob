@@ -159,11 +159,9 @@ impl Book {
         self.profile.as_ref().filter(|p| p.name_in_requests).map(|p| p.name.as_str())
     }
 
-    /// Records a share on `subaddress`, which must be one no share has had.
+    /// Records a share on `subaddress`, which must be one no share has had. It
+    /// needs no profile: Meet goes without a name.
     pub fn share(&mut self, subaddress: u32, address: String, kind: ShareKind, now: u64) -> Result<Share> {
-        if self.profile.is_none() {
-            return Err(FobError::Profile("Set up your profile first.".into()));
-        }
         if self.at(subaddress).is_some() {
             return Err(FobError::Profile("That address was already given to a share.".into()));
         }
@@ -233,21 +231,30 @@ impl Book {
 }
 
 /// A share's code, shown or sent as a link: its address and the profile's
-/// name as they are now. No photo: photos go only by touching phones, so
-/// the code stays small and quick to scan.
-pub fn code(profile: &Profile, share: &Share) -> String {
-    uri::profile_uri(&share.address, &profile.name, None)
+/// name as they are now, or only the address without a profile. No photo:
+/// photos go only by touching phones, so the code stays small and quick to scan.
+pub fn code(profile: Option<&Profile>, share: &Share) -> String {
+    match profile {
+        Some(profile) => uri::profile_uri(&share.address, &profile.name, None),
+        None => uri::nameless_uri(&share.address, false),
+    }
 }
 
 /// A share's code as Meet's second one, after the other phone's was
 /// scanned: the same, marked as a reply.
-pub fn reply_code(profile: &Profile, share: &Share) -> String {
-    uri::profile_uri_with(&share.address, &profile.name, None, true)
+pub fn reply_code(profile: Option<&Profile>, share: &Share) -> String {
+    match profile {
+        Some(profile) => uri::profile_uri_with(&share.address, &profile.name, None, true),
+        None => uri::nameless_uri(&share.address, true),
+    }
 }
 
 /// A share's code with the photo, which touching phones swap.
-pub fn swap_code(profile: &Profile, share: &Share) -> String {
-    uri::profile_uri(&share.address, &profile.name, profile.photo.as_deref())
+pub fn swap_code(profile: Option<&Profile>, share: &Share) -> String {
+    match profile {
+        Some(profile) => uri::profile_uri(&share.address, &profile.name, profile.photo.as_deref()),
+        None => uri::nameless_uri(&share.address, false),
+    }
 }
 
 /// What `share`'s address received, "+$4.98" in the money prices are shown
@@ -347,6 +354,9 @@ pub const VIA: &str = "Via your profile";
 /// ours (`sure`); otherwise only what this phone knows, since its last
 /// answer may not have reached Sam's.
 pub fn swapped_words(name: &str, sure: bool) -> (String, String) {
+    if name.is_empty() {
+        return ("Swapped".into(), "You got their address and sent yours. They didn't share a name.".into());
+    }
     let line = if sure {
         format!("{name} got your profile, and you got {name}'s.")
     } else {
@@ -461,7 +471,7 @@ pub fn scanned(book: &contacts::Book, code: uri::ProfileCode) -> Scanned {
             (c, why, false)
         })
         .or_else(|| {
-            book.named(&code.name).map(|c| {
+            book.named(&code.name).filter(|_| !code.name.is_empty()).map(|c| {
                 let why = if c.name.to_lowercase() == code.name.to_lowercase() {
                     format!("You have a contact named {}.", c.name)
                 } else {
@@ -492,8 +502,8 @@ pub fn scanned(book: &contacts::Book, code: uri::ProfileCode) -> Scanned {
     Scanned {
         initial: contacts::initial(&code.name),
         address_short: contacts::three_part(&code.address),
-        note: format!("A Fob profile. The name and photo are {}'s own, not checked by Fob.", code.name),
-        pay: format!("Pay {}", code.name),
+        note: if code.name.is_empty() { "A Fob user who didn't share a name.".into() } else { format!("A Fob profile. The name and photo are {}'s own, not checked by Fob.", code.name) },
+        pay: if code.name.is_empty() { "Pay them".into() } else { format!("Pay {}", code.name) },
         add: "Add contact".into(),
         clash,
         code,
@@ -581,10 +591,22 @@ mod tests {
     }
 
     #[test]
-    fn a_share_needs_a_profile_and_an_address_of_its_own_and_goes_out_as_pressed() {
+    fn a_share_without_a_profile_gives_only_its_address() {
         let keys = Keys::generate(Network::Stagenet).keys;
         let mut book = Book::default();
-        assert!(book.share(5, keys.address(5), ShareKind::CodeShown, NOW).is_err(), "no profile yet");
+        let share = book.share(4, keys.address(4), ShareKind::CodeShown, NOW).unwrap();
+        for text in [super::code(None, &share), swap_code(None, &share), reply_code(None, &share)] {
+            assert!(!text.contains("recipient_name"));
+            let read = uri::parse_meet_code(Network::Stagenet, &text).unwrap();
+            assert_eq!((read.name.as_str(), read.address.as_str()), ("", share.address.as_str()));
+        }
+        assert!(uri::parse_meet_code(Network::Stagenet, &reply_code(None, &share)).unwrap().reply);
+    }
+
+    #[test]
+    fn a_share_needs_an_address_of_its_own_and_goes_out_as_pressed() {
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let mut book = Book::default();
         book.set("Henry", None).unwrap();
         let first = book.share(5, keys.address(5), ShareKind::CodeShown, NOW - DAY * 3).unwrap();
         assert!(book.share(5, keys.address(5), ShareKind::CodeShown, NOW).is_err(), "that address is the first share's");

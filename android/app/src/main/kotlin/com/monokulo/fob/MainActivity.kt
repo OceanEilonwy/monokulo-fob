@@ -80,6 +80,7 @@ import com.monokulo.fob.ui.screens.SendScreen
 import com.monokulo.fob.ui.screens.SettingsScreen
 import com.monokulo.fob.ui.screens.SplitScreen
 import com.monokulo.fob.ui.screens.WalletCodeScreen
+import com.monokulo.fob.ui.screens.WalletsScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
 import com.monokulo.fob.ui.screens.ZmqScreen
 import kotlinx.coroutines.CompletableDeferred
@@ -126,6 +127,10 @@ sealed interface Screen {
     data object Coins : Screen
     /** Split up: what's ready to spend paid back to this wallet as pieces. */
     data object Split : Screen
+    /** The wallets on this phone: open another, rename, or add one. */
+    data object Wallets : Screen
+    /** Welcome again over the open wallet, to make or restore another, with its name. */
+    data object AddWallet : Screen
     data object Settings : Screen
     /** Price from: each provider, checked as it opens; from Settings or the price toast's cog. */
     data object PriceFrom : Screen
@@ -430,6 +435,8 @@ class MainActivity : FragmentActivity() {
             is Screen.Payment -> PaymentScreen(model, nav, screen.activity)
             Screen.Coins -> CoinsScreen(model, nav)
             Screen.Split -> SplitScreen(model, nav)
+            Screen.Wallets -> WalletsScreen(model, nav)
+            Screen.AddWallet -> WelcomeScreen(model, nav, adding = true)
             Screen.Settings -> SettingsScreen(model, nav, ::openLocked)
             Screen.PriceFrom -> PriceFromScreen(model, nav)
             Screen.CurrencyList -> CurrencyListScreen(model, nav)

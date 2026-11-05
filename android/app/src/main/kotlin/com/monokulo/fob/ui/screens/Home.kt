@@ -100,6 +100,8 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
     val notReady by model.notReady.collectAsState()
     val prices by model.prices.collectAsState()
     val network by model.network.collectAsState()
+    val current by model.current.collectAsState()
+    val wallets by model.wallets.collectAsState()
     val synced = status?.synced == true
     val canSpend = wallet?.canSpend() != false
     val scope = rememberCoroutineScope()
@@ -130,7 +132,9 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
         // Tapping the chip opens Rust's details card under it, Node settings on it.
         var syncOpen by rememberSaveable { mutableStateOf(false) }
         // Meet takes the place your photo had, beside the cog; your profile is in Settings.
-        TopBar(network == Network.STAGENET, onMeet = { nav.go(Screen.Meet) }, onSettings = { nav.go(Screen.Settings) }) {
+        // Fob's name until there's a second wallet to tell this one from.
+        val title = current?.name?.takeIf { wallets.size > 1 }
+        TopBar(network == Network.STAGENET, title, onWallets = { nav.go(Screen.Wallets) }, onMeet = { nav.go(Screen.Meet) }, onSettings = { nav.go(Screen.Settings) }) {
             SyncChip(status, syncOpen, { syncOpen = it }, model::syncDetails) { nav.go(Screen.Node) }
         }
 
@@ -308,17 +312,26 @@ private fun Chip(icon: String, label: String, onClick: () -> Unit) {
  * the badge stay as far as they fit.
  */
 @Composable
-private fun TopBar(stagenet: Boolean, onMeet: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
+private fun TopBar(stagenet: Boolean, wallet: String?, onWallets: () -> Unit, onMeet: () -> Unit, onSettings: () -> Unit, chip: @Composable () -> Unit) {
+    val walletsLabel = wallet?.let { "Wallets, $it open" } ?: "Wallets"
     Layout(
         content = {
-            Box(Modifier.layoutId("mark")) { FobMark(26.dp) }
-            Text("Fob", style = display(22), maxLines = 1, modifier = Modifier.layoutId("word"))
+            // With no room for the word, the mark is still the way to the wallets.
+            Box(
+                Modifier.layoutId("mark").size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClickLabel = walletsLabel, onClick = onWallets)
+                    .semantics { contentDescription = walletsLabel },
+                contentAlignment = Alignment.Center,
+            ) { FobMark(26.dp) }
+            Text(
+                wallet?.let { if (it.length > 12) it.take(11).trimEnd() + "…" else it } ?: "Fob", style = display(22), maxLines = 1,
+                modifier = Modifier.layoutId("word").clip(RoundedCornerShape(8.dp)).clickable(onClick = onWallets).clearAndSetSemantics {},
+            )
             if (stagenet) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.layoutId("badge").clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
             Box(Modifier.layoutId("chip")) { chip() }
             MeetButton(onMeet, Modifier.layoutId("you"))
             EdgeIconButton(Icons.gear, "Settings", onSettings, Modifier.layoutId("cog"), width = 1.8f)
         },
-        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = EdgeButton.inset).heightIn(min = 64.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 9.dp, end = EdgeButton.inset).heightIn(min = 64.dp),
     ) { parts, c ->
         fun part(id: String) = parts.firstOrNull { it.layoutId == id }
         val loose = c.copy(minWidth = 0, minHeight = 0)

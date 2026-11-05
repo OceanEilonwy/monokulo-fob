@@ -180,7 +180,7 @@ impl Assembly {
 
     /// The profile it carries, read as a scanned one is.
     fn profile(&self, network: Network) -> std::result::Result<ProfileCode, Problem> {
-        uri::parse_profile(network, &self.code()?).map_err(|e| Problem::NotProfile(e.to_string()))
+        uri::parse_meet_code(network, &self.code()?).map_err(|e| Problem::NotProfile(e.to_string()))
     }
 }
 

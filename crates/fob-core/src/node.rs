@@ -83,7 +83,7 @@ pub fn address(url: &str) -> String {
 }
 
 /// A node and whether its self-signed certificate is accepted.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Setting {
     pub url: String,
     pub self_signed: bool,

@@ -170,6 +170,8 @@ pub const NOT_AVAILABLE: &str = "Not available";
 pub struct Detail {
     /// With its sign and every digit: "+0.5", "−0.1421".
     pub amount: String,
+    /// Every digit, for the details: "0.142135791113 XMR".
+    pub exact: String,
     /// "Today 08:40 · Coffee beans"
     pub when: String,
     /// A default currency besides XMR: the two price boxes show.
@@ -259,7 +261,8 @@ pub fn detail(activity: &Activity, now: Option<(&price::Currency, u64)>, priced:
     let shown = priced && (now.is_some() || then.is_some());
     let tx = &activity.tx;
     Detail {
-        amount: format!("{}{}", if out { "−" } else { "+" }, amount::format(activity.amount)),
+        amount: format!("{}{}", if out { "−" } else { "+" }, amount::format_short(activity.amount)),
+        exact: format!("{} XMR", amount::format(activity.amount)),
         when: format!("{}{note}", when(activity.time, clock)),
         priced,
         worth_now: now.map(|(c, p)| worth(p, c)).unwrap_or_else(|| NOT_AVAILABLE.into()),
@@ -622,6 +625,7 @@ mod tests {
         received.pieces = vec![200_000_000_000, 300_000_000_000];
         let d = detail(&received, Some((&usd, 166_060_000)), true, "Kraken", c);
         assert_eq!((d.amount.as_str(), d.when.as_str()), ("+0.5", "Today 08:40 · Coffee beans"));
+        assert_eq!(d.exact, "0.5 XMR");
         assert_eq!((d.worth_now.as_str(), d.rate_now.as_deref()), ("$83.03", Some("1 XMR = $166.06")));
         assert_eq!((d.then_label.as_str(), d.worth_then.as_str(), d.rate_then.as_deref()), ("When received", "$79.40", Some("1 XMR = $158.80")));
         assert_eq!((d.change.as_deref(), d.up), (Some("Up $3.63 (4.6%) since then"), true));

@@ -50,6 +50,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,11 +68,13 @@ import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.Avatar
 import com.monokulo.fob.ui.BarIcons
+import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.EdgeButton
 import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.ErrorText
+import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.Icons
 import com.monokulo.fob.ui.OutlineButton
@@ -97,7 +100,9 @@ import uniffi.fob.ProfileShare
 import uniffi.fob.ScannedProfile
 import uniffi.fob.Swapped
 import uniffi.fob.TouchSwap
-import uniffi.fob.profileCodeProblem
+import uniffi.fob.meetCodeNeedsName
+import uniffi.fob.meetCodeProblem
+import uniffi.fob.nameMeetCode
 import uniffi.fob.qrCode
 
 /** What Meet is showing. */
@@ -118,7 +123,9 @@ private sealed interface Stage {
  * default, listening as it opens) swaps both ways in one touch, photos
  * included. QR code does it with two scans: the first phone shows its code
  * and the second scans it, then the second shows its code (marked as a
- * reply) and the first scans that. Either way ends on Met.
+ * reply) and the first scans that. Either way ends on Met. No profile is
+ * needed: a code without a name is only an address, and whoever gets it
+ * chooses what to call you.
  */
 @Composable
 fun MeetScreen(model: WalletModel, nav: Nav) {
@@ -136,6 +143,9 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
     var stage by remember { mutableStateOf<Stage>(Stage.Show) }
     // A scanned or touched profile that would change a contact: asked about before anything is.
     var asking by remember { mutableStateOf<Pair<String, ScannedProfile>?>(null) }
+    // Their code came with no name, and how it came: asked for before anything is saved.
+    var naming by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    var namingError by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var lastRead by remember { mutableStateOf<String?>(null) }
@@ -144,27 +154,31 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
     // Opening Meet makes one share, an address for whoever you meet (kept as a share, as Share my profile did).
     LaunchedEffect(wallet) {
         val w = wallet ?: return@LaunchedEffect
-        val p = w.profile()
-        if (p == null) { nav.replace(Screen.ProfileEdit()); return@LaunchedEffect }
-        profile = p
+        profile = w.profile()
         if (share == null) share = runCatching { model.shareProfile() }.onFailure { error = it.reason() }.getOrNull()
     }
 
     /** Their profile was saved: a reply (their phone has ours already) or their touch is Met; a first code is answered. */
-    fun saved(contact: Contact, found: ScannedProfile, viaTouch: Boolean = false) {
+    fun saved(contact: Contact, found: ScannedProfile, viaTouch: Boolean = false, typedName: Boolean = false) {
         asking = null
         tick()
-        // By code, the share is kept as met so Activity lists it (a touch is kept by the swap itself).
-        if (!viaTouch) share?.let { sh -> scope.launch { runCatching { wallet?.shareMet(sh.id, contact.name) }; model.refresh() } }
+        // By code, or by a touch that brought no name, the share is kept as met so Activity lists it (the swap keeps a named touch).
+        if (!viaTouch || typedName) share?.let { sh -> scope.launch { runCatching { wallet?.shareMet(sh.id, contact.name) }; model.refresh() } }
         stage = if (viaTouch || found.reply) Stage.Done(contact, viaTouch) else Stage.Replied(contact)
     }
 
-    fun meet(text: String, viaTouch: Boolean) {
+    fun meet(text: String, viaTouch: Boolean, typedName: Boolean = false) {
+        if (meetCodeNeedsName(network, text)) {
+            namingError = null
+            naming = text to viaTouch
+            stage = Stage.Show
+            return
+        }
         scope.launch {
             runCatching { model.meetSave(text) }
                 .onSuccess { r ->
                     when (r) {
-                        is Met.Saved -> saved(r.contact, r.found, viaTouch)
+                        is Met.Saved -> saved(r.contact, r.found, viaTouch, typedName)
                         is Met.Ask -> { asking = text to r.found; stage = Stage.Show }
                     }
                 }
@@ -173,7 +187,7 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
     }
 
     // Touch: the swap runs while Meet is open on its Touch tab, answering and reading as phones touch.
-    val touching = shownTab == 0 && stage is Stage.Show && asking == null
+    val touching = shownTab == 0 && stage is Stage.Show && asking == null && naming == null
     RememberSwap(model, share?.id, allowed = touching && touch.meetActive && share?.canTouch == true) { done -> meet(done.text, viaTouch = true) }
 
     BackHandler(enabled = stage is Stage.Scanning) { stage = Stage.Show }
@@ -190,7 +204,7 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
             onText = { text ->
                 if (text == lastRead) return@ScanView
                 lastRead = text
-                val problem = profileCodeProblem(network, text)
+                val problem = meetCodeProblem(network, text)
                 if (problem != null) { notice = problem; return@ScanView }
                 notice = null
                 meet(text, viaTouch = false)
@@ -208,9 +222,23 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
                 if (replied == null && hasNfc) MeetTabs(shownTab) { tab = it }
                 when {
                     replied != null -> YourCode(profile, replied.contact, replyCode, savedLine = "${replied.contact.name} saved", hint = "Let ${replied.contact.name} scan this, and you're done.")
-                    shownTab == 0 -> TouchTab(profile, touch, onSettings = { nav.go(Screen.Settings) })
-                    else -> YourCode(profile, null, share?.code, savedLine = null, hint = "Let them scan this, then tap Scan their code.")
+                    shownTab == 0 -> TouchTab(profile, loaded = share != null, touch, onSettings = { nav.go(Screen.Settings) })
+                    else -> YourCode(
+                        profile, null, share?.code, savedLine = null,
+                        hint = "Let them scan this, then tap Scan their code." + if (profile == null && share != null) " Your name isn't shared: they choose what to call you." else "",
+                    )
                 }
+            }
+            naming?.let { (text, viaTouch) ->
+                NameThem(
+                    namingError,
+                    onDismiss = { naming = null; lastRead = null },
+                    onSave = { typed ->
+                        runCatching { nameMeetCode(network, text, typed) }
+                            .onSuccess { named -> naming = null; meet(named, viaTouch, typedName = true) }
+                            .onFailure { namingError = it.reason() }
+                    },
+                )
             }
             asking?.let { (text, found) ->
                 Box(Modifier.fillMaxSize().background(Fob.scrim).clickable(onClickLabel = "Close", indication = null, interactionSource = null) { asking = null })
@@ -223,6 +251,22 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
                     )
                 }
             }
+        }
+    }
+}
+
+/** Their code came with no name: what you'll call them, which stays on this phone. */
+@Composable
+private fun NameThem(error: String?, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }
+    BottomSheet("What do you call them?", onDismiss) {
+        SheetHandle()
+        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("What do you call them?", style = display(24), modifier = Modifier.semantics { heading() })
+            Text("They didn't share a name. Only you will see this one.", color = Fob.muted, fontSize = 15.sp, lineHeight = 21.sp)
+            LabelledInput("Their name", name, { name = it }, "A name, any name", fontSize = 17, capitalization = KeyboardCapitalization.Words)
+            ErrorText(error)
+            PrimaryButton("Save", { onSave(name) }, enabled = name.isNotBlank())
         }
     }
 }
@@ -250,7 +294,7 @@ private fun MeetTabs(selected: Int, onSelect: (Int) -> Unit) {
 
 /** Touch phones' rings round your photo, how to hold the phones, and a warning when NFC can't listen. */
 @Composable
-private fun TouchTab(profile: Profile?, touch: TouchState, onSettings: () -> Unit) {
+private fun TouchTab(profile: Profile?, loaded: Boolean, touch: TouchState, onSettings: () -> Unit) {
     val problem by TouchPhones.problem.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     // The warning (when there is one) sits 16 dp under the tabs.
@@ -274,11 +318,12 @@ private fun TouchTab(profile: Profile?, touch: TouchState, onSettings: () -> Uni
             Box(Modifier.matchParentSize().graphicsLayer(breathe).border2(Fob.line))
             Box(Modifier.matchParentSize().padding(30.dp).graphicsLayer(breathe).border2(Fob.track))
             Box(Modifier.matchParentSize().padding(60.dp).clip(CircleShape).background(Fob.highlight))
-            profile?.let { Avatar(it.name, it.initial, it.photo, 88.dp) }
+            profile?.let { Avatar(it.name, it.initial, it.photo, 88.dp) } ?: if (loaded) StrokeIcon(Icons.meet, tint = Fob.muted, size = 40.dp, width = 1.8f) else Unit
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Hold phones back to back", style = display(26), textAlign = TextAlign.Center, modifier = Modifier.semantics { heading() })
-            Text("The other person opens Meet on their Fob too.", color = Fob.muted, fontSize = 20.sp, lineHeight = 29.sp, textAlign = TextAlign.Center)
+            val nameless = if (profile == null && loaded) " Your name isn't shared: they choose what to call you." else ""
+            Text("The other person opens Meet on their Fob too.$nameless", color = Fob.muted, fontSize = 20.sp, lineHeight = 29.sp, textAlign = TextAlign.Center)
         }
         problem?.let { Text(it, fontSize = 14.sp, lineHeight = 20.sp, textAlign = TextAlign.Center, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -365,7 +410,7 @@ private fun MetView(model: WalletModel, nav: Nav, profile: Profile?, share: Prof
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                profile?.let { Avatar(it.name, it.initial, it.photo, 80.dp, describe = true) }
+                Avatar(profile?.name ?: "You", profile?.initial ?: "?", profile?.photo, 80.dp, describe = true)
                 Box(Modifier.size(44.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.swap, tint = Fob.onGreen, size = 22.dp, width = 2.4f) }
                 Avatar(contact.name, contact.initial, contact.photo, 80.dp, describe = true)
             }

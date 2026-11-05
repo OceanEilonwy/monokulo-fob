@@ -18,6 +18,8 @@ import android.text.format.DateFormat
 import com.monokulo.fob.ui.PriceToastState
 import com.monokulo.fob.ui.ThemeChoice
 import uniffi.fob.ActivityDay
+import uniffi.fob.ScanMode
+import uniffi.fob.setScanMode
 import uniffi.fob.AmountEntry
 import uniffi.fob.Balance
 import uniffi.fob.BackupReminder
@@ -53,7 +55,9 @@ import uniffi.fob.TouchSwap
 import uniffi.fob.SyncObserver
 import uniffi.fob.SyncStatus
 import uniffi.fob.SyncDetails
-import java.io.File
+import uniffi.fob.WalletEntry
+import uniffi.fob.WalletList
+import uniffi.fob.walletsOn
 import java.util.TimeZone
 
 /**
@@ -166,6 +170,21 @@ class WalletModel(private val app: Application) {
         _cameraAuto.value = on
     }
 
+    /**
+     * Scanning (Settings): what does the arithmetic of a catch-up, Auto unless chosen otherwise. It's the phone's, so
+     * it's kept here rather than with a wallet; Rust falls back to the CPU in any mode when the GPU can't do the work.
+     */
+    private val _scanning = MutableStateFlow(
+        ScanChoice.entries.firstOrNull { it.name == prefs.getString("scan_mode", null) } ?: ScanChoice.AUTO,
+    ).also { setScanMode(it.value.mode, app.cacheDir.absolutePath) }
+    val scanning: StateFlow<ScanChoice> = _scanning
+
+    fun setScanning(choice: ScanChoice) {
+        prefs.edit().putString("scan_mode", choice.name).apply()
+        _scanning.value = choice
+        setScanMode(choice.mode, app.cacheDir.absolutePath)
+    }
+
     private val _status = MutableStateFlow<SyncStatus?>(null)
     val status: StateFlow<SyncStatus?> = _status
 
@@ -248,22 +267,89 @@ class WalletModel(private val app: Application) {
     val opening: Boolean
         get() = hasWallet() && _balance.value == null && _openError.value == null
 
+    // Before init: opening reads these before it first suspends.
+    /** Every wallet on this phone. */
+    private val _wallets = MutableStateFlow<List<WalletEntry>>(emptyList())
+    val wallets: StateFlow<List<WalletEntry>> = _wallets
+
+    /** The wallet open, or opening. */
+    private val _current = MutableStateFlow<WalletEntry?>(null)
+    val current: StateFlow<WalletEntry?> = _current
+
+    /** What Add a wallet named the wallet about to be made; blank takes the next name. */
+    var pendingName = ""
+
+    /** Asks the keystore, so read off the main thread, and once. */
+    private var book: WalletList? = null
+    private val booking = Mutex()
+
     init {
         open()
     }
 
-    private fun path(network: Network) = File(app.filesDir, "wallet-${network.name.lowercase()}.fob").absolutePath
+    private suspend fun book(): WalletList = booking.withLock {
+        book ?: withContext(Dispatchers.IO) { WalletList.open(app.filesDir.absolutePath, vault.fileKey()) }.also { book = it }
+    }
 
-    fun hasWallet(network: Network = _network.value) = File(path(network)).exists()
+    private suspend fun listChanged(book: WalletList) {
+        val (all, current) = withContext(Dispatchers.IO) { book.list() to book.current(_network.value) }
+        _wallets.value = all
+        _current.value = current
+    }
 
+    fun hasWallet(network: Network = _network.value) = walletsOn(app.filesDir.absolutePath, network)
+
+    /** Opens the wallet last open on this network, if it has one. */
     private fun open() {
         val network = _network.value
         if (!hasWallet(network)) return
         scope.launch {
-            runCatching { withContext(Dispatchers.IO) { FobWallet.open(path(network), vault.fileKey()) } }
-                .onSuccess { use(it) }
+            runCatching {
+                val book = book()
+                listChanged(book)
+                val file = _current.value?.file ?: return@launch
+                withContext(Dispatchers.IO) { FobWallet.open(book.path(file), vault.fileKey()) }
+            }.onSuccess { if (_network.value == network) use(it) else it.close() }
                 .onFailure { _openError.value = it.message }
         }
+    }
+
+    /** Opens wallet [file] in place of this one, moving network with it if it's on the other. */
+    fun switchWallet(file: String) {
+        if (file == _current.value?.file && _wallet.value != null) return
+        val entry = _wallets.value.firstOrNull { it.file == file } ?: return
+        closeOpen()
+        moveTo(entry.network)
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { book().select(file) } }
+            open()
+        }
+    }
+
+    private fun moveTo(network: Network) {
+        prefs.edit().putString("network", network.name.lowercase()).apply()
+        _network.value = network
+    }
+
+    /** Throws why a new wallet can't be called [name]. */
+    suspend fun checkWalletName(name: String) {
+        val book = book()
+        withContext(Dispatchers.IO) { book.checkName(name) }
+    }
+
+    /** The name a new wallet gets unless it's given one. */
+    suspend fun nextWalletName(): String = book().nextName()
+
+    /** Renames wallet [file]; throws what Rust refused. */
+    suspend fun renameWallet(file: String, name: String) {
+        val book = book()
+        withContext(Dispatchers.IO) { book.rename(file, name) }
+        listChanged(book)
+    }
+
+    /** The list, for a screen opening before any wallet has (the list is read with the first one). */
+    fun readWallets() {
+        scope.launch { runCatching { listChanged(book()) } }
     }
 
     private suspend fun use(wallet: FobWallet) {
@@ -315,9 +401,11 @@ class WalletModel(private val app: Application) {
     private suspend fun readScreens() {
         val wallet = _wallet.value ?: return
         val (seconds, offset, hours24) = clock()
-        // Closed meanwhile (another network, or forgotten): Rust refuses a closed wallet, and there's nothing of it to show.
+        val lock = phoneLock(app)
+        // Rust's async calls run on the thread that calls them: off the main one, as this is a lot to write out.
+        // Closed meanwhile (another wallet, or forgotten): Rust refuses a closed wallet, and there's nothing of it to show.
         val s = try {
-            wallet.screens(seconds, offset, hours24, phoneLock(app))
+            withContext(Dispatchers.Default) { wallet.screens(seconds, offset, hours24, lock) }
         } catch (closed: IllegalStateException) {
             return
         }
@@ -515,15 +603,37 @@ class WalletModel(private val app: Application) {
         refresh()
     }
 
+    /** The address of the node being changed to; null when none is. */
+    private val _nodeChanging = MutableStateFlow<String?>(null)
+    val nodeChanging: StateFlow<String?> = _nodeChanging
+
+    /** What Rust refused of the last change of node. */
+    private val _nodeError = MutableStateFlow<Throwable?>(null)
+    val nodeError: StateFlow<Throwable?> = _nodeError
+
     /**
      * Talks to another node, accepting its self-signed certificate with [selfSigned];
-     * on another host, instant updates go off. Throws what Rust refused.
+     * on another host, instant updates go off. On the model's scope, so leaving
+     * the Node screen doesn't cut it short; [nodeChanging] says it's under way.
      */
-    suspend fun setNode(url: String, selfSigned: Boolean) {
+    fun useNode(url: String, selfSigned: Boolean) {
         val wallet = _wallet.value ?: return
-        wallet.setNode(url, selfSigned)
-        _status.value = wallet.status()
-        refresh()
+        if (_nodeChanging.value != null) return
+        _nodeError.value = null
+        _nodeChanging.value = url
+        scope.launch {
+            runCatching { withContext(Dispatchers.Default) { wallet.setNode(url, selfSigned) } }
+                .onSuccess {
+                    if (_wallet.value === wallet) _status.value = wallet.status()
+                    refresh()
+                }
+                .onFailure { _nodeError.value = it }
+            _nodeChanging.value = null
+        }
+    }
+
+    fun clearNodeError() {
+        _nodeError.value = null
     }
 
     /** Instant updates (ZMQ) on or off; [endpoint], if given, replaces the one set. Throws what Rust refused. */
@@ -561,9 +671,18 @@ class WalletModel(private val app: Application) {
         _wallet.value?.stopSync()
     }
 
+    /** Makes a new wallet in a file of its own, under [pendingName], and opens it in place of any open. */
     private suspend fun adopt(make: (String, ByteArray, Network) -> FobWallet) {
         val network = _network.value
-        val wallet = withContext(Dispatchers.IO) { make(path(network), vault.fileKey(), network) }
+        val book = book()
+        val name = pendingName
+        val wallet = withContext(Dispatchers.IO) {
+            book.checkName(name)
+            val file = book.newFile(network)
+            make(book.path(file), vault.fileKey(), network).also { book.add(file, name) }
+        }
+        pendingName = ""
+        listChanged(book)
         use(wallet)
     }
 
@@ -578,27 +697,16 @@ class WalletModel(private val app: Application) {
     suspend fun restoreViewOnly(address: String, viewKey: String, restorePoint: String?) =
         adopt { path, key, network -> FobWallet.restoreViewOnly(path, key, network, address, viewKey, restorePoint) }
 
-    /** Moves to the other network's wallet, if there is one. */
+    /** Moves to the wallet last open on the other network, if there is one. */
     fun switchNetwork(network: Network) {
         if (network == _network.value) return
-        _wallet.value?.let { close(it) }
-        _wallet.value = null
-        _balance.value = null
-        _activity.value = emptyList()
-        _notReady.value = null
-        _prices.value = null
-        _priceToast.value = null
-        _status.value = null
-        _you.value = null
-        clearScreens()
-        prefs.edit().putString("network", network.name.lowercase()).apply()
-        _network.value = network
+        closeOpen()
+        moveTo(network)
         open()
     }
 
-    /** Removes this network's wallet from the phone. Its seed restores it. */
-    fun forget() {
-        val network = _network.value
+    /** Closes the open wallet and forgets what the screens showed of it. */
+    private fun closeOpen() {
         _wallet.value?.let { close(it) }
         _wallet.value = null
         _balance.value = null
@@ -608,8 +716,31 @@ class WalletModel(private val app: Application) {
         _priceToast.value = null
         _status.value = null
         _you.value = null
+        _current.value = null
+        _openError.value = null
         clearScreens()
-        File(path(network)).delete()
+    }
+
+    /**
+     * Removes the open wallet from the phone; its seed restores it. Another
+     * on the phone then opens, this network's first; with none left, Welcome.
+     */
+    fun forget() {
+        val entry = _current.value
+        runCatching { _wallet.value?.removeFile() }
+        closeOpen()
+        scope.launch {
+            runCatching {
+                val book = book()
+                withContext(Dispatchers.IO) { if (entry != null) book.remove(entry.file) }
+                val next = withContext(Dispatchers.IO) { book.current(_network.value) ?: book.list().firstOrNull() }
+                listChanged(book)
+                if (next != null) {
+                    moveTo(next.network)
+                    open()
+                }
+            }
+        }
     }
 
     /** No wallet open: what the other screens open with goes too. */
@@ -777,4 +908,11 @@ data class SendPeople(val contacts: List<ContactRow>, val anyContact: Boolean, v
     companion object {
         val NONE = SendPeople(emptyList(), false, emptyList())
     }
+}
+
+/** The choices for what scans, with what Settings says of each. */
+enum class ScanChoice(val label: String, val description: String, val mode: ScanMode) {
+    GPU("GPU", "GPU: the graphics chip, using less power", ScanMode.GPU),
+    AUTO("Auto", "Auto: the main cores for a few blocks, the graphics chip for more, and both for a lot", ScanMode.AUTO),
+    CPU("CPU", "CPU: only the main cores", ScanMode.CPU),
 }

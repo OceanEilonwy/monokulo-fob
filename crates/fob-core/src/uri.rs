@@ -144,7 +144,8 @@ pub fn payment_uri(address: &str, amount: Option<u64>, note: Option<&str>, name:
 pub struct ProfileCode {
     /// A new address of the sharer's, for this share alone.
     pub address: String,
-    /// Cleaned and cut as a contact's name.
+    /// Cleaned and cut as a contact's name. Empty only from [`parse_meet_code`],
+    /// when the sharer has no profile: whoever gets it chooses a name.
     pub name: String,
     /// A WebP of at most [`PHOTO_MAX`](crate::contacts::PHOTO_MAX) bytes.
     /// Only touching phones carry one; a shown code never does.
@@ -185,10 +186,36 @@ pub fn profile_uri_with(address: &str, name: &str, photo: Option<&[u8]>, reply: 
     uri
 }
 
+/// Meet's code from someone with no profile: an address, marked (`fob_meet=1`,
+/// which other wallets ignore) so a plain address isn't taken for a meeting.
+pub fn nameless_uri(address: &str, reply: bool) -> String {
+    let mut uri = format!("{}?fob_meet=1", payment_uri(address, None, None, None));
+    if reply {
+        uri.push_str("&fob_reply=1");
+    }
+    uri
+}
+
+/// A code Meet takes: a profile, or an address marked as [`nameless_uri`] has it.
+pub fn parse_meet_code(network: Network, text: &str) -> Result<ProfileCode> {
+    read_profile(network, text, true)
+}
+
+/// A nameless Meet code with the name its receiver chose, as a profile code.
+pub fn name_meet_code(network: Network, text: &str, typed: &str) -> Result<String> {
+    let code = parse_meet_code(network, text)?;
+    let name = crate::contacts::check_name(typed)?;
+    Ok(profile_uri_with(&code.address, &name, code.photo.as_deref(), code.reply))
+}
+
 /// A scanned profile code: an address with a name and maybe a photo, and
 /// nothing to pay (an amount, a note or a receipt make it a payment code).
 /// A photo that isn't a WebP Fob would keep refuses the whole code.
 pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
+    read_profile(network, text, false)
+}
+
+fn read_profile(network: Network, text: &str, nameless_too: bool) -> Result<ProfileCode> {
     use base64::Engine;
     use crate::contacts::{PHOTO_MAX, check_photo};
     let not = |why: &str| Err(FobError::Profile(why.into()));
@@ -196,9 +223,13 @@ pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
     if payment.amount.is_some() || payment.description.is_some() || payment.receipt.is_some() {
         return not("That's a payment code, not a profile.");
     }
-    let Some(name) = payment.recipient_name else { return not("That code has no name, so it isn't a profile.") };
     let rest = split_scheme(text.trim(), &["monero"]).unwrap_or(text);
     let (_, pairs) = split_query(rest);
+    let name = match payment.recipient_name {
+        Some(name) => name,
+        None if nameless_too && get(&pairs, &["fob_meet"]).map(str::trim) == Some("1") => String::new(),
+        None => return not("That code has no name, so it isn't a profile."),
+    };
     let too_big = "The photo in that profile is too big for Fob.";
     let photo = match get(&pairs, &["recipient_avatar"]).map(str::trim) {
         None => None,
@@ -693,6 +724,26 @@ mod tests {
         let with = profile_uri(&address, "Henry", Some(&webp(crate::contacts::PHOTO_MAX)));
         assert!(parse_profile(Network::Stagenet, &with).is_ok());
         assert!(crate::qr::encode(&with).is_err());
+    }
+
+    #[test]
+    fn a_meet_code_can_go_without_a_name_and_its_receiver_gives_one() {
+        let address = wallet().address(3);
+        let first = nameless_uri(&address, false);
+        let read = parse_meet_code(Network::Stagenet, &first).unwrap();
+        assert_eq!((read.name.as_str(), read.address.as_str(), read.reply), ("", address.as_str(), false));
+        // Anywhere but Meet it's no profile: only an address to pay.
+        assert!(parse_profile(Network::Stagenet, &first).is_err());
+        assert_eq!(parse_payment(Network::Stagenet, &first).unwrap().address, address);
+        // A plain address isn't someone at Meet.
+        assert!(parse_meet_code(Network::Stagenet, &format!("monero:{address}")).is_err());
+        assert!(parse_meet_code(Network::Mainnet, &first).is_err(), "another network's");
+
+        let named = name_meet_code(Network::Stagenet, &nameless_uri(&address, true), " Sam\n").unwrap();
+        let read = parse_profile(Network::Stagenet, &named).unwrap();
+        assert_eq!((read.name.as_str(), read.address.as_str(), read.reply), ("Sam", address.as_str(), true));
+        assert!(name_meet_code(Network::Stagenet, &first, "  ").is_err(), "a name is what it's asking for");
+        assert!(crate::qr::encode(&nameless_uri(&address, true)).is_ok());
     }
 
     #[test]

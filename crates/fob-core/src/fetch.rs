@@ -191,13 +191,13 @@ pub struct Tuning {
 
 impl Tuning {
     pub const DEFAULT: Tuning = Tuning {
-        target_bytes: 2 * 1024 * 1024,
+        target_bytes: 4 * 1024 * 1024,
         min_chunk: 10,
         max_chunk: 500,
         first_chunk: 20,
         start_parallel: 3,
-        max_parallel: 8,
-        queue: 6,
+        max_parallel: 4,
+        queue: 4,
     };
 }
 
@@ -446,7 +446,7 @@ mod tests {
         let a = Adaptive::new(Tuning::DEFAULT);
         assert_eq!(a.chunk(), Tuning::DEFAULT.first_chunk);
         a.record_ok(100, 100 * 80_000); // mainnet-sized blocks
-        assert_eq!(a.chunk(), (2 * 1024 * 1024 / 80_000) as u64);
+        assert_eq!(a.chunk(), (4 * 1024 * 1024 / 80_000) as u64);
         let small = Adaptive::new(Tuning::DEFAULT);
         small.record_ok(100, 100 * 500); // tiny stagenet blocks
         assert_eq!(small.chunk(), Tuning::DEFAULT.max_chunk);

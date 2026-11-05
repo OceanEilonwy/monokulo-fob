@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -71,9 +73,10 @@ import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.fob.CheckMark
 import uniffi.fob.NodeCheckObserver
 import uniffi.fob.NodeCheckRow
@@ -85,7 +88,8 @@ import uniffi.fob.NodeUse
 /**
  * Node (board 11): the node in use with Rust's checks, checked on opening
  * and by the refresh at the top; other nodes to change to, each checked
- * with Use on the ones that pass; and Add your own node's sheet (board 12).
+ * with Use on the ones that pass, the wallet's own removable; and Add your
+ * own node's sheet (board 12).
  */
 @Composable
 fun NodeScreen(model: WalletModel, nav: Nav) {
@@ -93,16 +97,17 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
     val scope = rememberCoroutineScope()
     var current by remember { mutableStateOf<NodeReport?>(null) }
     var choices by remember { mutableStateOf<List<NodeChoice>>(emptyList()) }
-    // Nodes checked in the sheet, or left for another, offered in the list too.
-    var added by remember { mutableStateOf<List<NodeSetting>>(emptyList()) }
     var round by remember { mutableIntStateOf(0) }
     var adding by rememberSaveable { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val changing by model.nodeChanging.collectAsState()
+    val failed by model.nodeError.collectAsState()
+    val error = failed?.reason()
+    // Rust's async calls run on the thread that calls them: these do a lot, and nothing here is on the main thread for them.
     LaunchedEffect(wallet, round) {
         val w = wallet ?: return@LaunchedEffect
         val mine = round
-        val node = w.node()
-        coroutineScope {
+        withContext(Dispatchers.Default) {
+            val node = w.node()
             launch {
                 // Each check as it finishes; a round started since is left alone.
                 val observer = object : NodeCheckObserver {
@@ -112,42 +117,49 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
                 if (round == mine) current = done
             }
             launch {
-                val others = w.otherNodes(added)
-                choices = others
+                val others = w.otherNodes()
+                if (round == mine) choices = others
                 val checked = w.checkNodes(others.map { it.node })
                 if (round == mine) choices = checked
             }
         }
     }
+    // The change is over: what's checked now is the node in use (or, refused, the one before).
+    var wasChanging by remember { mutableStateOf(changing != null) }
+    LaunchedEffect(changing) {
+        if (wasChanging && changing == null) round++
+        wasChanging = changing != null
+    }
     val checking = current?.checking ?: true
+    // At once: the sheet goes and the card says what's happening, however long the node takes to answer.
     fun use(node: NodeSetting) {
+        adding = false
+        model.useNode(node.url, node.selfSigned)
+    }
+    // Off the list at once; the checks then run on what Rust has kept.
+    fun remove(node: NodeSetting) {
+        val w = wallet ?: return
+        choices = choices.filter { it.node.url != node.url }
         scope.launch {
-            val before = wallet?.node()
-            runCatching { model.setNode(node.url, node.selfSigned) }
-                .onSuccess {
-                    error = null
-                    adding = false
-                    // The one left stays on the list.
-                    before?.let { b -> if (added.none { it.url == b.url }) added = added + b }
-                    round++
-                }
-                .onFailure { error = it.reason() }
+            withContext(Dispatchers.Default) { runCatching { w.removeNode(node.url) } }
+            round++
         }
     }
     Box(Modifier.fillMaxSize()) {
         Page {
             TopBar("Node", onBack = { nav.back() }) {
-                RefreshButton(checking) { if (!checking) round++ }
+                RefreshButton(checking || changing != null) { if (!checking && changing == null) round++ }
             }
             Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                current?.let { WorkingCard(it) }
+                val to = changing
+                if (to != null) ChangingCard(to) else current?.let { WorkingCard(it) }
                 ErrorText(error)
                 Column {
                     SectionLabel("Change node")
                     Card {
-                        choices.forEach { c -> ChoiceRow(c) { use(c.node) } }
+                        choices.forEach { c -> ChoiceRow(c, using = c.node.url == to, canUse = to == null, onUse = { use(c.node) }, onRemove = { remove(c.node) }) }
                         Row(
-                            Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button) { error = null; adding = true }.padding(horizontal = 20.dp, vertical = 6.dp),
+                            Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button) { model.clearNodeError(); adding = true }.padding(horizontal = 20.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             StrokeIcon(Icons.plus, tint = Fob.orangeText, size = 20.dp)
@@ -159,16 +171,36 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
         }
         if (adding) {
             AddNodeSheet(
-                model, error,
+                model,
                 onUse = ::use,
                 onClose = { checked ->
                     adding = false
-                    if (checked != null && added.none { it.url == checked.url }) {
-                        added = added + checked
-                        round++
+                    val w = wallet
+                    if (w != null && checked != null) {
+                        scope.launch {
+                            withContext(Dispatchers.Default) { runCatching { w.addNode(checked) } }
+                            round++
+                        }
                     }
                 },
             )
+        }
+    }
+}
+
+/** Changing to another node, until it's answered and the checks can start. */
+@Composable
+private fun ChangingCard(address: String) {
+    Card(padding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 18.dp)) {
+        Row(
+            Modifier.fillMaxWidth().semantics(mergeDescendants = true) { heading(); liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            MarkCircle(CheckMark.CHECKING, 40.dp)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Changing node", style = display(22))
+                Text(address, fontSize = 13.sp, color = Fob.muted)
+            }
         }
     }
 }
@@ -243,9 +275,9 @@ private fun WorkingCard(report: NodeReport) {
     }
 }
 
-/** Another node: its dot, address and one line, and Use when it passed. */
+/** Another node: its dot, address and one line, Use when it passed, and Remove when it's the wallet's own. */
 @Composable
-private fun ChoiceRow(choice: NodeChoice, onUse: () -> Unit) {
+private fun ChoiceRow(choice: NodeChoice, using: Boolean, canUse: Boolean, onUse: () -> Unit, onRemove: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(start = 20.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -260,7 +292,9 @@ private fun ChoiceRow(choice: NodeChoice, onUse: () -> Unit) {
             Text(choice.address, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(choice.line, fontSize = 12.5.sp, color = Fob.muted)
         }
-        if (choice.canUse) {
+        if (using) {
+            Text("Changing", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 12.dp))
+        } else if (choice.canUse && canUse) {
             Box(
                 Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
                     .clickable(role = Role.Button, onClickLabel = "Use ${choice.address}", onClick = onUse)
@@ -271,16 +305,19 @@ private fun ChoiceRow(choice: NodeChoice, onUse: () -> Unit) {
                 Text("Use", color = Fob.orangeText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         }
+        if (choice.removable && canUse && !using) {
+            EdgeIconButton(Icons.trash, "Remove ${choice.address}", onRemove, tint = Fob.muted)
+        }
     }
 }
 
 /**
  * Add your own node (board 12): an address, whether to accept a
  * self-signed certificate, and the same checks; Use, or Use it anyway when
- * only Up to date failed. Closing hands back the node if it was checked.
+ * only Up to date failed. Closing hands back the node if it passed, to keep.
  */
 @Composable
-private fun AddNodeSheet(model: WalletModel, error: String?, onUse: (NodeSetting) -> Unit, onClose: (NodeSetting?) -> Unit) {
+private fun AddNodeSheet(model: WalletModel, onUse: (NodeSetting) -> Unit, onClose: (NodeSetting?) -> Unit) {
     val wallet by model.wallet.collectAsState()
     val scope = rememberCoroutineScope()
     var address by rememberSaveable { mutableStateOf("") }
@@ -302,14 +339,22 @@ private fun AddNodeSheet(model: WalletModel, error: String?, onUse: (NodeSetting
         val show = { r: NodeReport -> if (attempt == mine) report = r }
         job?.cancel()
         job = scope.launch {
-            show(w.checkNode(node, object : NodeCheckObserver {
-                override fun onProgress(report: NodeReport) = show(report)
-            }))
+            withContext(Dispatchers.Default) {
+                show(w.checkNode(node, object : NodeCheckObserver {
+                    override fun onProgress(report: NodeReport) = show(report)
+                }))
+            }
         }
     }
-    BottomSheet("Add your own node", onDismiss = { job?.cancel(); onClose(report?.node) }) {
+    val close = { job?.cancel(); onClose(report?.takeIf { !it.checking && it.usable != NodeUse.NO }?.node) }
+    BottomSheet("Add your own node", onDismiss = { close() }) {
         SheetHandle()
-        Text("Add your own node", style = display(22), modifier = Modifier.padding(top = 4.dp).semantics { heading() })
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Add your own node", style = display(22), modifier = Modifier.weight(1f).semantics { heading() })
+            EdgeIconButton(Icons.close, "Close", { close() })
+        }
+        // The checks' rows and the keyboard can be more than the screen holds: the buttons stay reachable.
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Field(address, { address = it; edited() }, "Address", mono = true, hint = "Your own node, or a public one: host:port, http:// or https://")
         Row(
             Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
@@ -331,18 +376,18 @@ private fun AddNodeSheet(model: WalletModel, error: String?, onUse: (NodeSetting
                 CheckRows(r.rows, minHeight = 44.dp, lines = false)
             }
         }
-        ErrorText(error)
         val r = report
         if (r == null) {
             PrimaryButton("Check", ::check, enabled = address.isNotBlank(), height = 52.dp)
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlineButton("Check again", ::check, Modifier.weight(1f), enabled = !r.checking, height = 52.dp)
+                OutlineButton(if (r.checking) "Checking…" else "Check again", ::check, Modifier.weight(1f), enabled = !r.checking, height = 52.dp)
                 PrimaryButton(
-                    if (r.usable == NodeUse.USE_ANYWAY) "Use it anyway" else "Use", { onUse(r.node) }, Modifier.weight(1f),
+                    if (r.usable == NodeUse.USE_ANYWAY) "Use it anyway" else "Use", { job?.cancel(); onUse(r.node) }, Modifier.weight(1f),
                     enabled = r.usable != NodeUse.NO, height = 52.dp,
                 )
             }
+        }
         }
     }
 }

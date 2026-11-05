@@ -49,9 +49,9 @@ impl Network {
     pub fn default_nodes(self) -> &'static [&'static str] {
         match self {
             Network::Mainnet => &[
-                "https://node.monerodevs.org:18089",
-                "http://node.sethforprivacy.com:18089",
                 "https://xmr-node.cakewallet.com:18081",
+                "https://node.sethforprivacy.com:443",
+                "https://node.monerodevs.org:18089",
             ],
             Network::Stagenet => &[
                 "http://stagenet.xmr-tw.org:38081",

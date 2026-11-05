@@ -19,7 +19,7 @@ const KEY: [u8; 32] = [0x46; 32];
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = Path::new(&args[0]);
-    let wallet = if path.exists() { Wallet::open(path, KEY).unwrap() } else { Wallet::create(path, KEY, Network::Stagenet).unwrap() };
+    let wallet = if path.with_extension("db").exists() || path.with_extension("fob").exists() { Wallet::open(path, KEY).unwrap() } else { Wallet::create(path, KEY, Network::Stagenet).unwrap() };
     match args.get(1).map(String::as_str) {
         Some("address") => println!("{}", wallet.primary_address()),
         Some("sync") => {

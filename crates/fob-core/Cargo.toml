@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 monero-wallet = "0.2"
+fob-scan = { path = "../fob-scan" }
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
@@ -17,6 +18,8 @@ webpki-roots = "1"
 monero-seed = { path = "../../third_party/monero-seed" }
 polyseed = { path = "../../third_party/polyseed" }
 orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "e104a17c0f1a443d826b3d4b8efbeab705cfc39a" }
+# The wallet's database, encrypted. OpenSSL comes from source, for every ABI alike.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"

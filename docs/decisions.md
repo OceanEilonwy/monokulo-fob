@@ -2575,6 +2575,13 @@ Review fixes.
 312. **Half set up** (`Contact::half`): a contact added by scanning a profile
     outside Meet has no address of yours, so its card shows an alert with a
     Meet button. Meet (either way) clears it. Older contacts are not marked.
+334. **Meet needs no profile.** Requiring a name goes against what Monero users
+    want. Without a profile the Meet icon still opens Meet, and its code is the
+    share's address marked `fob_meet=1` (`uri::nameless_uri`), by QR or NFC. Whoever
+    gets it is asked "What do you call them?", and that name stays on their phone
+    (`uri::name_meet_code` turns it into a named code for the usual flow, clashes
+    included). A plain address isn't taken as a meeting, and the code stays an
+    address to pay anywhere but Meet. Fob 0.1.7 and older refuse a nameless code.
 313. **Met** says "Met Sam", both avatars centred with a swap between them,
     and the send and receive addresses with the same arrows as Send and
     Receive.
@@ -2591,3 +2598,126 @@ Review fixes.
     becoming the swipe); a code without an amount opens Send instead.
 316. **Receive says "Receiving from"** as a field above Amount; the chip on
     the code's top edge is gone. Its sheet is retitled to match.
+
+## Catching up like Cake, and several wallets
+
+Cake Wallet's Monero sync (`cw_monero`, on wallet2 through monero_c) was read
+against Fob's after a mainnet trial felt slower than it. Measured with
+`examples/sync_profile.rs`.
+
+317. **Scanning uses the cores** (`scan.rs`), as wallet2's thread pool does.
+     Mainnet now carries about 135 outputs a block, so scanning, not the node,
+     limited a fast link: 4 s for 720 blocks on one desktop core, and a phone's
+     core is slower. Each thread takes the next block when done with the last,
+     so big cores do more than little ones; one core is left for the screen.
+     With a node on a fast link, a catch-up went from about 135 to 300-600
+     blocks a second (desktop).
+318. **The state isn't locked while scanning.** The scan works on a kept clone
+     of the scanner and its results are applied in block order under the lock,
+     so screens and changing node never wait on it. A batch scanned watching too
+     few addresses (a payment near the edge, an address just handed out) is
+     dropped from that block on and fetched again.
+319. **Not every step is saved or reported.** Like Cake: the file is written
+     every 30 s, when money is found or spent, when caught up, and on stopping
+     (it was every batch, and the chain has anything lost). The app hears about
+     once a second while catching up (it was every batch, and each has it read
+     every screen).
+320. **Screens are read off the main thread.** UniFFI polls a Rust future on the
+     calling thread, so `suspend` calls from the main dispatcher ran Rust's
+     synchronous stretches there. The screen read and the Node checks now run on
+     `Dispatchers.Default`.
+321. **4 MB requests, at most 4 at once, 4 queued.** 4 MB beat 2 MB on every
+     paired run across three public and private nodes; 8 MB was no better
+     reliably and costs more memory. wallet2's single large request was quickest
+     on two nodes but well behind parallel ones on a third (23 against 79 blocks
+     a second), so requests stay parallel.
+322. **Cake's own node is mainnet's default.** Measured uncached, the previous
+     default (node.monerodevs.org) sent 0-2 blocks a second; xmr-node.cakewallet.com
+     sent about 140-340. Wallets keep the node they have.
+323. **Synced is only said once the node has answered.** `SyncStatus::connected`
+     goes false whenever a sync loop starts or the node changes: the chip says
+     Connecting, whatever was true last time, and the tip is asked for first
+     thing. The app hears as soon as the node answers, before any blocks. A node
+     that keeps the wallet waiting 15 s for blocks is named: Waiting for node.
+324. **Changing node doesn't wait for the old one.** `set_node` stops the sync
+     loop, which may be waiting minutes on the old node holding the pipeline, and
+     starts it on the new one; `connection` no longer holds its lock while asking
+     a node. The change runs on the model's scope, the sheet closes at once and
+     the Node screen says Changing node.
+325. **Not copied from Cake:** one request at a time (Fob's pipeline is faster),
+     calling it Synced with under 100 blocks left, and block hash lists (Fob
+     keeps none). **Not done, worth measuring on a phone:** wallet2 works out one
+     shared secret per transaction where monero-oxide works out one per output,
+     about 2.3 times as many. A view-tag filter before the scanner could recover
+     that, but a bug there would miss money, and the cores already put the scan
+     ahead of the link.
+326. **Several wallets** (`wallets.rs`). Each is its own file; old files stay
+     where they are and join the list, under "Wallet 1". The list holds names and
+     the last open per network, sealed like the wallets. Files are what count: a
+     lost list costs names, never wallets. Only the open wallet syncs, as in Cake.
+     Wallets on a network share one decoy cache, as it's public chain data. A
+     wallet removed can't be brought back by a late save (`Wallet::remove_file`).
+327. **A wallet is a SQLCipher database** (`db.rs`): one file per wallet, every
+     page encrypted under the Keystore-wrapped key, used as a raw key so opening
+     needs no key stretching. It replaces the sealed JSON file, whose every save
+     rewrote and re-encrypted the whole wallet: 650 ms against 49 ms for one
+     change among 5,000 outputs (desktop). OpenSSL is built from source for each
+     ABI, adding about 6 MB to the library per ABI (10.1 to 16.4 MB on arm64).
+328. **Real tables, written by difference.** Each part of the state has a table
+     with a column per field; small lists inside a row stay JSON in a column. The
+     state stays in memory: a save compares every row with a hash of what's on
+     disk and writes the changed ones in one transaction. Mapping goes through
+     serde's JSON form, so `#[serde(default)]` still applies, and saving refuses
+     a field with no column rather than dropping it. A u64 keeps its 64 bits in
+     SQLite's signed integer: as text, SQLite would turn a large one into an
+     inexact float.
+329. **Migrating an old file.** On opening a wallet with no database, it's built
+     under a temporary name, read back, compared with the file field by field,
+     and only then takes its name. A failure or crash leaves the file to try
+     again from. **The old `.fob` file is then deleted**, with any `.tmp` a crash
+     left beside it, as both hold the seed: once the database has opened whole,
+     and its contents and name have been synced to disk. A wallet whose database
+     won't open keeps its file. There's no going back to an older Fob without
+     restoring from the seed.
+330. **Custom nodes belong to a wallet** (`custom_nodes` table, schema version 2;
+     version 1 databases gain the table on opening). A node is kept when it's
+     used, even if refused, when it passes its checks in the sheet, and when the
+     wallet changes away from it, which is what saves a custom node chosen before
+     the list existed. A node that fails its checks in the sheet isn't kept, so a
+     typo doesn't stay. The network's own nodes are never stored or removable.
+331. **Scanning goes through a prefilter** (`crates/fob-scan`). monero-oxide's
+     `Scanner` works out 8aR once per output and decompresses every output key;
+     the prefilter does it once per transaction key and only decompresses past a
+     matching view tag, on its own field arithmetic with one inversion across each
+     64 keys. A block it flags goes whole to the unmodified `Scanner`, which alone
+     finds outputs and amounts, so no fork of monero-wallet is needed. Its one duty
+     is never to miss, and anything it doesn't understand is flagged. Its reading of
+     `Extra` and of bad keys is held to monero-oxide's by tests.
+332. **The GPU scans, and the CPU is the fallback**, for power rather than speed.
+     On a Mali-G715 Vulkan uses about half the energy per block of the CPU and holds
+     its speed where the CPU throttles (rough: charger current subtracted, sampled
+     once a second). Whole syncs on the test node were no faster, as fetching is the
+     limit there. Settings offers Auto (the default), GPU and CPU, kept per phone.
+     `AutoSyncModePolicy` in `policy.rs` uses the CPU below 512 keys, about nine
+     blocks, the GPU from there, and adds the cores from 4,096, about 70 blocks. Per
+     batch on a Mali-G715, charging, batches 300 ms apart: one block CPU 6 mJ (+-9),
+     GPU 46 (+-16); ten blocks 26 (+-14) and 24 (+-13); 100 blocks 290 (+-24) and 143
+     (+-42). The gap is under 0.1% of a battery a day. The GPU
+     returns projective points, for the CPU to invert in a batch, and overlaps with
+     the CPU finishing its last batch. The shader reads every table entry for each
+     digit and selects with masks, so its memory access doesn't depend on the view
+     key, and buffers are cleared and freed. The view key does reach driver-managed
+     memory as push constants. Compiled shaders are cached, as compiling takes 20 to
+     30 s, during which the CPU scans. A Vulkan failure retires the GPU until the app
+     restarts and its work goes to the cores. Software renderers aren't used.
+333. **A GPU passes test vectors on each cold start** (`vectors.rs`), or isn't
+     used: field arithmetic on values around 0, p, 2^255 and 2^256, and 8aR against
+     curve25519-dalek on awkward view keys, torsioned, small-order and off-curve keys,
+     at sizes either side of a workgroup. **Each wallet also has its own check**, of
+     its view key on the same kinds of key. The result is saved in the wallet's
+     database with the GPU and driver it ran on. A pass isn't run again until those
+     change, and a failure leaves that wallet on the CPU and is tried again each time
+     the wallet opens. Answers aren't checked while scanning. So a fault the vectors
+     don't reach, or one that begins later, could hide money.
+     `examples/gpu_check.rs` is the long form, for development on real GPUs, and
+     `--ignored` runs the wallet's payment cases through the GPU.

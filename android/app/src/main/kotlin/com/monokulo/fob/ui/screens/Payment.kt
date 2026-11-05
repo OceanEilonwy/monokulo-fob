@@ -104,6 +104,8 @@ fun PaymentDetails(d: PaymentDetail) {
     Card {
         InfoRow("Status", d.status)
         d.progress?.let { Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) { ProgressBar(it, height = 4.dp, fill = Fob.green) } }
+        Divider()
+        InfoRow("Amount", d.amountExact)
         d.party?.let { Divider(); InfoRow(d.partyLabel, it) }
         d.pieces?.let { Divider(); InfoRow(d.piecesLabel, it) }
         d.fee?.let { Divider(); InfoRow("Network fee", it) }
