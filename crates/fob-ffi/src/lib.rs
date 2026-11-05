@@ -3083,6 +3083,8 @@ impl From<qr::QrMatrix> for QrCode {
 /// An address's pattern: dots on a 5 × 5 grid in one of eight colours.
 #[derive(uniffi::Record)]
 pub struct AddressPattern {
+    /// Its colour: red, green and blue, one byte each. Never changes with the theme.
+    pub rgb: u32,
     /// 15 bits: 5 rows of 3 columns, bit `3 × row + column`.
     pub cells: u16,
     /// 0–7, an index into the app's fixed palette.
@@ -3095,7 +3097,8 @@ pub struct AddressPattern {
 #[uniffi::export]
 pub fn address_pattern(address: String) -> AddressPattern {
     let p = pattern::address_pattern(&address);
-    AddressPattern { cells: p.cells, colour: p.colour, dots: p.dots() }
+    let (r, g, b) = pattern::COLOURS[usize::from(p.colour) % pattern::COLOURS.len()];
+    AddressPattern { cells: p.cells, colour: p.colour, dots: p.dots(), rgb: u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b) }
 }
 
 /// A node, and whether its self-signed certificate is accepted.

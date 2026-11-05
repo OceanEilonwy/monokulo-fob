@@ -22,12 +22,16 @@ use sha3::{Digest, Keccak256};
 const FEWEST: u32 = 3;
 const MOST: u32 = 12;
 
+/// The eight colours a pattern is drawn in, red, green and blue, the same in
+/// every theme and on every device, so two people's screens can be compared.
+pub const COLOURS: [(u8, u8, u8); 8] = [(0xB3, 0x47, 0x00), (0x1F, 0x7A, 0x45), (0x2F, 0x5A, 0xA8), (0x7A, 0x3F, 0xA0), (0xA3, 0x32, 0x4A), (0x1D, 0x6F, 0x7A), (0x5B, 0x5F, 0x17), (0x3D, 0x3A, 0x8C)];
+
 /// An address's pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pattern {
     /// 15 bits, 5 rows of 3 columns; bit `3 × row + column`.
     pub cells: u16,
-    /// 0–7: an index into the apps' fixed palette.
+    /// 0–7: an index into [`COLOURS`].
     pub colour: u8,
 }
 
@@ -105,4 +109,16 @@ mod tests {
     /// From Keccak-256("") = c5d246…: 0xd2c5 & 0x7fff, 0x46 & 7.
     const EMPTY: (u16, u8) = (0x52c5, 6);
     const REHASHED: (&str, u16, u8) = ("fob-17", 28_262, 2);
+
+    /// Android still draws these from its own list, which must not drift.
+    #[test]
+    fn android_draws_the_same_colours() {
+        let theme = include_str!("../../../android/app/src/main/kotlin/com/monokulo/fob/ui/Theme.kt");
+        let start = theme.find("patternColours").unwrap();
+        let list = &theme[start..start + 200];
+        for (r, g, b) in COLOURS {
+            let colour = format!("Color(0xFF{r:02X}{g:02X}{b:02X})");
+            assert!(list.contains(&colour), "{colour}");
+        }
+    }
 }

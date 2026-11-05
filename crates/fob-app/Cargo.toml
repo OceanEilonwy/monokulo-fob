@@ -1,0 +1,17 @@
+[package]
+name = "fob-app"
+description = "The app behind a client's screens: unlocking, which wallet is open, syncing, and the rules of its forms."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fob-ffi = { path = "../fob-ffi" }
+fob-wallet = { path = "../fob-wallet" }
+# Reads a QR code from a picture, on a device with no camera to scan with.
+rqrr = { version = "0.11", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+zeroize = "1"
