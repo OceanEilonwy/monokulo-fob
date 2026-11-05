@@ -13,7 +13,7 @@ use std::{
 };
 
 use fob_ffi::{
-    FobError, FobWallet, Network, PriceRetry, PriceToast, Prepared, ScanMode, Screens, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode, wallets_on,
+    Contact, FobError, FobWallet, Network, PriceRetry, PriceToast, Prepared, ScanMode, ScannedProfile, Screens, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode, wallets_on,
 };
 use fob_wallet::passphrase;
 use serde::{Deserialize, Serialize};
@@ -63,12 +63,33 @@ pub struct Options {
     pub online: bool,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Settings {
     #[serde(default)]
     mainnet: bool,
     #[serde(default)]
     scan_mode: Option<String>,
+    /// Minutes untouched before locking; 0 for never.
+    #[serde(default = "default_lock_after")]
+    lock_after: u32,
+}
+
+fn default_lock_after() -> u32 {
+    15
+}
+
+/// A profile code taken in Meet.
+pub enum Met {
+    /// Saved as this contact.
+    Saved(Contact, ScannedProfile),
+    /// It would change a contact someone should look at first.
+    Ask(ScannedProfile),
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { mainnet: false, scan_mode: None, lock_after: default_lock_after() }
+    }
 }
 
 fn scan_name(mode: &ScanMode) -> &'static str {
@@ -106,6 +127,10 @@ struct Inner {
     read_queued: AtomicBool,
     /// The last toast swiped away: not shown again until Rust gives a new one.
     toast_done: AtomicU64,
+    /// When someone last did something, in seconds since the epoch.
+    touched: AtomicU64,
+    /// Payments going out, which locking mustn't cut off.
+    sending: AtomicU64,
 }
 
 /// The app behind a client's screens.
@@ -134,6 +159,7 @@ impl Engine {
         let settings: Settings = std::fs::read(options.dir.join("settings.json")).ok().and_then(|text| serde_json::from_slice(&text).ok()).unwrap_or_default();
         set_scan_mode(scan_named(settings.scan_mode.as_deref()), options.cache_dir.to_string_lossy().into_owned());
         let phase = if passphrase::exists(&options.dir) { Phase::Locked } else { Phase::NoPassphrase };
+        let touched = clock().now;
         Engine {
             inner: Arc::new(Inner {
                 options,
@@ -145,6 +171,8 @@ impl Engine {
                 reading: tokio::sync::Mutex::new(()),
                 read_queued: AtomicBool::new(false),
                 toast_done: AtomicU64::new(0),
+                touched: AtomicU64::new(touched),
+                sending: AtomicU64::new(0),
             }),
         }
     }
@@ -241,10 +269,42 @@ impl Engine {
         self.set_phase(if passphrase::exists(self.dir()) { Phase::Locked } else { Phase::NoPassphrase });
     }
 
+    /// Someone did something: the idle clock starts again.
+    pub fn touched(&self) {
+        self.inner.touched.store(self.clock().now, Ordering::Relaxed);
+    }
+
+    /// Minutes untouched before locking; 0 for never.
+    pub fn lock_after(&self) -> u32 {
+        self.inner.settings.lock().expect("settings lock").lock_after
+    }
+
+    pub fn set_lock_after(&self, minutes: u32) -> Result<(), FobError> {
+        self.inner.settings.lock().expect("settings lock").lock_after = minutes;
+        self.touched();
+        self.save_settings()
+    }
+
+    /// Locks if unlocked and left long enough, unless a payment is going out.
+    /// A client calls this now and then; returns whether it locked.
+    pub fn lock_if_idle(&self) -> bool {
+        let minutes = self.lock_after();
+        if minutes == 0 || self.inner.sending.load(Ordering::SeqCst) > 0 || self.inner.open.lock().expect("open lock").is_none() {
+            return false;
+        }
+        let idle = self.clock().now.saturating_sub(self.inner.touched.load(Ordering::Relaxed));
+        if idle < u64::from(minutes) * 60 {
+            return false;
+        }
+        self.lock();
+        true
+    }
+
     async fn unlocked(&self, key: Zeroizing<[u8; 32]>) -> Result<(), FobError> {
         std::fs::create_dir_all(self.dir()).map_err(|e| FobError::Other { reason: e.to_string() })?;
         let book = WalletList::open(self.dir_text(), key.to_vec())?;
         *self.inner.open.lock().expect("open lock") = Some(Open { book, key, wallet: None, current: None });
+        self.touched();
         self.open_current().await;
         Ok(())
     }
@@ -531,11 +591,34 @@ impl Engine {
             let dir = this.inner.options.dir.clone();
             tokio::task::spawn_blocking(move || passphrase::unlock(&dir, &typed)).await.expect("derive").map_err(key_error)?;
             let wallet = this.wallet().ok_or_else(|| FobError::Other { reason: "no wallet open".into() })?;
+            this.inner.sending.fetch_add(1, Ordering::SeqCst);
             let sent = wallet.send(prepared.id).await;
+            this.inner.sending.fetch_sub(1, Ordering::SeqCst);
+            this.touched();
             this.read_screens().await;
             sent
         })
         .await
+    }
+
+    // ---- Meeting someone
+
+    /// Their profile, from a code: saved at once unless it would change a
+    /// contact, which is asked first. It came from both people showing a code,
+    /// so they have this wallet's address too.
+    pub async fn meet_save(&self, text: String) -> Result<Met, FobError> {
+        let wallet = self.wallet().ok_or_else(|| FobError::Other { reason: "no wallet open".into() })?;
+        let asked = text.clone();
+        let found = Self::run(async move { wallet.scanned_profile(asked).await }).await?;
+        let contact = match &found.clash {
+            None => self.change(move |wallet| async move { wallet.add_contact_from_profile(text, false, true).await }).await?,
+            Some(clash) if clash.changes.is_empty() => {
+                let id = clash.contact.id;
+                self.change(move |wallet| async move { wallet.update_contact_from_profile(id, text, true).await }).await?
+            }
+            Some(_) => return Ok(Met::Ask(found)),
+        };
+        Ok(Met::Saved(contact, found))
     }
 
     /// Forgets a prepared payment left without sending.
@@ -720,6 +803,40 @@ mod tests {
         assert!(engine.unlock(PASS.into()).await.is_err());
         engine.unlock("battery staple".into()).await.unwrap();
         assert_eq!(engine.wallet().unwrap().primary_address(), address);
+    }
+
+    #[tokio::test]
+    async fn an_untouched_app_locks_after_its_time_and_not_before() {
+        let dir = dir("idle");
+        let now = Arc::new(AtomicU64::new(1_000_000));
+        let (at, heard) = (now.clone(), Arc::new(Heard::default()));
+        let options = Options { dir: dir.clone(), cache_dir: dir.join("cache"), online: false };
+        let engine = Engine::new(options, heard, move || Clock { now: at.load(Ordering::SeqCst), utc_offset: 0, hours_24: true });
+
+        assert!(!engine.lock_if_idle(), "nothing's unlocked yet");
+        engine.set_up(PASS.into()).await.unwrap();
+        assert_eq!(engine.lock_after(), 15);
+
+        now.fetch_add(14 * 60, Ordering::SeqCst);
+        assert!(!engine.lock_if_idle());
+        engine.touched();
+        now.fetch_add(14 * 60, Ordering::SeqCst);
+        assert!(!engine.lock_if_idle(), "being touched starts the clock again");
+
+        engine.inner.sending.fetch_add(1, Ordering::SeqCst);
+        now.fetch_add(60 * 60, Ordering::SeqCst);
+        assert!(!engine.lock_if_idle(), "a payment going out isn't cut off");
+        engine.inner.sending.fetch_sub(1, Ordering::SeqCst);
+
+        engine.set_lock_after(0).unwrap();
+        now.fetch_add(60 * 60, Ordering::SeqCst);
+        assert!(!engine.lock_if_idle(), "never means never");
+
+        engine.set_lock_after(5).unwrap();
+        now.fetch_add(5 * 60, Ordering::SeqCst);
+        assert!(engine.lock_if_idle());
+        assert_eq!(engine.phase(), Phase::Locked);
+        assert!(!engine.lock_if_idle(), "already locked");
     }
 
     #[tokio::test]
