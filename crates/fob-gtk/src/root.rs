@@ -358,6 +358,7 @@ impl Root {
     }
 
     fn show_wallets(&self, all: Vec<WalletEntry>, current: Option<WalletEntry>, network: fob_app::views::Network) {
+        self.receive.emit(receive::Input::Wallet(current.as_ref().map(|c| c.file.clone())));
         let wallets = Arc::new(settings::Wallets { all, current, network });
         self.home.emit(home::Input::Wallets(View(wallets.clone())));
         self.settings.emit(settings::Input::Wallets(View(wallets)));

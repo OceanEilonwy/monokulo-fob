@@ -208,7 +208,77 @@ async fn walk(engine: &Engine, png: &str) -> Result<(), String> {
     fill("Passphrase", PASS).await?;
     press("Unlock").await?;
     see("Nothing yet").await?;
+
+    // Another wallet: Receive shows its address, never the last one's. Second
+    // hasn't handed one out yet, so nothing published can correct a kept one.
+    make_wallet(engine, "Second").await?;
+    make_wallet(engine, "Third").await?;
+    press("Receive").await?;
+    let third = shows_own_address(engine).await?;
+    press("Back").await?;
+    press("Settings").await?;
+    press("Second").await?;
+    settle().await;
+    press("Back").await?;
+    press("Receive").await?;
+    let second = shows_own_address(engine).await?;
+    if second == third {
+        return Err("two wallets gave one address".into());
+    }
+    press("Back").await?;
     Ok(())
+}
+
+async fn make_wallet(engine: &Engine, name: &str) -> Result<(), String> {
+    let (e, name) = (engine.clone(), name.to_owned());
+    off(async move { e.create_wallet(name).await }).await.map_err(|e| e.to_string())?;
+    settle().await;
+    Ok(())
+}
+
+/// The open wallet's address, which Receive must show and Copy must give.
+async fn shows_own_address(engine: &Engine) -> Result<String, String> {
+    let wallet = engine.wallet().ok_or("no wallet open")?;
+    let own = off(async move { wallet.receive_address().await }).await.map_err(|e| e.to_string())?.address;
+    let wanted = own.clone();
+    find("the open wallet's address", move |widget| widget.downcast_ref::<gtk::Label>().filter(|label| label.text().replace(char::is_whitespace, "") == wanted).map(|_| ())).await?;
+    press("Copy").await?;
+    let window = gtk::Window::list_toplevels().into_iter().next().ok_or("no window")?;
+    let copied = window.clipboard().read_text_future().await.map_err(|e| e.to_string())?.unwrap_or_default();
+    if !copied.contains(&own) {
+        return Err(format!("Copy gave {copied}, not the open wallet's {own}"));
+    }
+    Ok(own)
+}
+
+/// With FOB_SCENE_ONLINE: the sync card follows the wallet while it stays open.
+async fn sync_card_moves() -> Result<(), String> {
+    let chip = find("the sync chip", |widget| widget.downcast_ref::<gtk::Button>().filter(|button| button.has_css_class("sync-chip")).cloned()).await?;
+    chip.emit_clicked();
+    settle().await;
+    let words = || showing().iter().filter(|widget| widget.ancestor(adw::AlertDialog::static_type()).is_some()).filter_map(|widget| widget.downcast_ref::<gtk::Label>().map(|label| label.text().to_string())).collect::<Vec<_>>();
+    let first = words();
+    if first.is_empty() {
+        return Err("the sync card didn't open".into());
+    }
+    eprintln!("live-card: {first:?}");
+    // A synced wallet's card moves with the next block, minutes away.
+    let mut gone = 0;
+    for _ in 0..1000 {
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let now = words();
+        if now.is_empty() {
+            eprintln!("live-card: not showing");
+            gone += 1;
+            if gone == 6 {
+                return Err("the sync card closed by itself".into());
+            }
+        } else if now != first {
+            eprintln!("live-card: {now:?}");
+            return Ok(());
+        }
+    }
+    Err(format!("the sync card stayed on {first:?}"))
 }
 
 const PASS: &str = "correct horse";
@@ -303,6 +373,10 @@ async fn play(engine: &Engine, to: &Sender<Msg>, scene: &str) -> Result<(), Stri
                     return Err(why);
                 }
             }
+            None
+        }
+        "live-card" => {
+            sync_card_moves().await?;
             None
         }
         "receive" => Some(Go::Receive),
