@@ -2809,3 +2809,24 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      pull down, so `Pull to refresh` reads `Refresh on Home`, with the same three
      settings. What it does for each wallet is decided in `fob-app`, not the window.
      Scanning is a page rather than a drawer, and picks dates on calendars.
+346. **Receive asks the open wallet for its address every time it opens.** It used to
+     keep the last address, and a wallet that hadn't handed one out published
+     nothing to replace it, so after a switch it showed the last wallet's address
+     and money sent there would have gone to the wrong wallet. Now nothing is shown
+     until the open wallet has answered, a code that comes back for another address
+     is dropped, and what was typed goes when the wallet changes. The `walk` scene
+     switches to a wallet with no address yet and checks both the words and Copy.
+347. **The sync card follows the wallet while it's open.** It redraws from
+     `sync_details` once a second when its words have changed, instead of holding
+     what was true when it opened.
+348. **The window carries its own icon.** With no installed menu entry to name one,
+     a compositor shows a blank icon, so Fob hands PNGs to GTK itself, and Wayland's
+     toplevel-icon protocol carries them. That covers a plain build and an AppImage.
+349. **The desktop's releases are an AppImage and a Flatpak bundle, x86_64 only.** The
+     AppImage is built on Debian 13, the oldest with the GTK and libadwaita Fob needs,
+     so it needs glibc 2.41. It has its own small AppRun: linuxdeploy's GTK plugin
+     forces X11 and a theme, which would cost Wayland and dark mode. Its tools are
+     fixed versions checked by hash, because they end up inside a wallet. The Flatpak
+     keeps wallets in its own folder, where the sandbox holds them; Cargo fetches
+     crates during its build, checked against `Cargo.lock`, which Flathub itself
+     wouldn't allow, so publishing there would mean generating the sources first.

@@ -1,0 +1,46 @@
+# Fob as a Flatpak. Wallets live in the app's own folder,
+# ~/.var/app/com.monokulo.Fob/data/fob, not in ~/.local/share/fob.
+#
+#   flatpak-builder --force-clean --user --install build-dir crates/fob-gtk/data/com.monokulo.Fob.yml
+#
+# The release workflow builds this into a bundle. Cargo fetches the crates during
+# the build, each checked against Cargo.lock: Flathub wouldn't allow that network
+# access, so publishing there would mean generating the sources first.
+id: com.monokulo.Fob
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: fob
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+modules:
+  - name: fob
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/fob/cargo
+    build-commands:
+      - cargo build --release --locked -p fob-gtk
+      - install -Dm755 target/release/fob /app/bin/fob
+      - install -Dm644 crates/fob-gtk/data/com.monokulo.Fob.desktop /app/share/applications/com.monokulo.Fob.desktop
+      - install -Dm644 crates/fob-gtk/data/com.monokulo.Fob.svg /app/share/icons/hicolor/scalable/apps/com.monokulo.Fob.svg
+      - install -Dm644 crates/fob-gtk/data/com.monokulo.Fob.metainfo.xml /app/share/metainfo/com.monokulo.Fob.metainfo.xml
+    sources:
+      - type: dir
+        path: ../../..
+        skip:
+          - .claude
+          - .flatpak-builder
+          - .git
+          - android
+          - dist
+          - target
