@@ -8,3 +8,8 @@ android/local.properties
 android/.idea/
 android/app/src/main/jniLibs/
 android/app/src/main/java/uniffi/
+/dist/*.AppImage
+/dist/*.flatpak
+.flatpak-builder/
+flatpak-build/
+flatpak-repo/

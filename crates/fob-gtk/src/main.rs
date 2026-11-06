@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use fob_app::{Clock, Device, set_device};
 use relm4::{
     RelmApp, adw, gtk,
-    gtk::{gio, gio::prelude::*, glib},
+    gtk::{gdk, gdk::prelude::*, gio, glib, prelude::*},
 };
 
 pub const APP_ID: &str = "com.monokulo.Fob";
@@ -55,6 +55,28 @@ fn clock() -> impl Fn() -> Clock + Send + Sync + 'static {
     }
 }
 
+/// Gives a window Fob's icon. The installed menu entry names it too, but a Fob
+/// run without one, from a build or an AppImage, would otherwise show the
+/// desktop's blank icon.
+fn set_window_icon(window: &gtk::Window) {
+    let set = |window: &gtk::Window| {
+        let icons = [
+            include_bytes!("../data/icons/fob-48.png").as_slice(),
+            include_bytes!("../data/icons/fob-128.png").as_slice(),
+            include_bytes!("../data/icons/fob-256.png").as_slice(),
+        ]
+        .map(|png| gdk::Texture::from_bytes(&glib::Bytes::from_static(png)).expect("Fob's icon is a PNG"));
+        if let Some(toplevel) = window.surface().and_downcast::<gdk::Toplevel>() {
+            toplevel.set_icon_list(&icons);
+        }
+    };
+    if window.is_realized() {
+        set(window);
+    } else {
+        window.connect_realize(set);
+    }
+}
+
 fn main() {
     set_device(Device::Computer);
     gtk::init().expect("a display to draw on");
@@ -62,6 +84,7 @@ fn main() {
     // A scene must not hand off to a Fob that's already open.
     let unique = if scene::dir().is_some() { gio::ApplicationFlags::NON_UNIQUE } else { gio::ApplicationFlags::empty() };
     let application = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN | unique).build();
+    application.connect_window_added(|_, window| set_window_icon(window));
     application.connect_open(|app, files, _| {
         if let Some(file) = files.first() {
             root::link_opened(file.uri().to_string());

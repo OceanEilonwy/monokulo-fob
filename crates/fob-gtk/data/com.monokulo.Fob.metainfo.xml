@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.monokulo.Fob</id>
+  <name>Fob</name>
+  <summary>A small Monero wallet</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="com.monokulo">
+    <name>Monokulo</name>
+  </developer>
+  <description>
+    <p>Fob holds your Monero, sealed under a passphrase you choose. Send and receive, keep contacts, and make requests.</p>
+  </description>
+  <launchable type="desktop-id">com.monokulo.Fob.desktop</launchable>
+  <url type="homepage">https://github.com/OceanEilonwy/monokulo-fob</url>
+  <content_rating type="oars-1.1">
+    <content_attribute id="money-purchasing">intense</content_attribute>
+  </content_rating>
+</component>
