@@ -16,11 +16,15 @@ use crate::{
 #[derive(Debug)]
 pub enum Input {
     Screens(View<Screens>),
+    /// The wallet now open, by its file name.
+    Wallet(Option<String>),
     Opened,
+    Address(String),
     NewAddress,
     Copy,
     Asked,
-    Code(View<ReceiveCode>),
+    /// The code for this address.
+    Code(String, View<ReceiveCode>),
     People(View<Vec<ContactRow>>),
     MakeRequest,
     Made(u64),
@@ -29,6 +33,7 @@ pub enum Input {
 
 pub struct Receive {
     engine: Engine,
+    wallet: Option<String>,
     address: Option<String>,
     uri: Option<String>,
     headline: Option<String>,
@@ -132,7 +137,7 @@ impl SimpleComponent for Receive {
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let code = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let (amount, note, who) = (adw::EntryRow::new(), adw::EntryRow::new(), adw::ComboRow::new());
-        let model = Receive { engine, address: None, uri: None, headline: None, error: None, code: code.clone(), amount: amount.clone(), note: note.clone(), who: who.clone(), people: vec![] };
+        let model = Receive { engine, wallet: None, address: None, uri: None, headline: None, error: None, code: code.clone(), amount: amount.clone(), note: note.clone(), who: who.clone(), people: vec![] };
         let (code, amount, note, who) = (&code, &amount, &note, &who);
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -147,20 +152,34 @@ impl SimpleComponent for Receive {
                     self.ask(&sender);
                 }
             }
+            Input::Wallet(file) => {
+                if file != self.wallet {
+                    self.wallet = file;
+                    self.forget();
+                    self.amount.set_text("");
+                    self.note.set_text("");
+                }
+            }
+            // Every time, the open wallet says its address: one kept from before
+            // could be another wallet's, and money sent there wouldn't come here.
             // Rust hands one out only now, never on a refresh, so a restored
             // wallet hands none out before its scan has found the others.
-            Input::Opened if self.address.is_none() => {
+            Input::Opened => {
+                self.forget();
                 self.ask_people(&sender);
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
-                    if let Err(e) = engine.change(|wallet| async move { wallet.receive_address().await.map(|_| ()) }).await {
-                        sender.input(Input::Failed(e.to_string()));
+                    match engine.change(|wallet| async move { wallet.receive_address().await }).await {
+                        Ok(own) => sender.input(Input::Address(own.address)),
+                        Err(e) => sender.input(Input::Failed(e.to_string())),
                     }
                 });
             }
-            Input::Opened => {
-                self.ask_people(&sender);
-                self.ask(&sender);
+            Input::Address(address) => {
+                if self.address.as_ref() != Some(&address) {
+                    self.address = Some(address);
+                    self.ask(&sender);
+                }
             }
             Input::People(View(rows)) => {
                 let mut names = vec!["No one in particular"];
@@ -189,7 +208,9 @@ impl SimpleComponent for Receive {
                 }
             }
             Input::Asked => self.ask(&sender),
-            Input::Code(View(code)) => {
+            // A code for an address no longer shown came too late.
+            Input::Code(address, _) if self.address.as_ref() != Some(&address) => {}
+            Input::Code(_, View(code)) => {
                 self.error = None;
                 self.headline = code.headline.clone();
                 self.draw(&code.uri);
@@ -201,6 +222,15 @@ impl SimpleComponent for Receive {
 }
 
 impl Receive {
+    /// Takes what's on show down, until the open wallet has said its address.
+    fn forget(&mut self) {
+        self.address = None;
+        self.uri = None;
+        self.headline = None;
+        self.error = None;
+        widgets::empty(&self.code);
+    }
+
     /// Asks Rust for the code with what's typed.
     fn ask(&self, sender: &ComponentSender<Self>) {
         let Some(address) = self.address.clone() else { return };
@@ -208,9 +238,10 @@ impl Receive {
         let note = Some(self.note.text().to_string()).filter(|n| !n.trim().is_empty());
         let (engine, sender) = (self.engine.clone(), sender.clone());
         relm4::spawn(async move {
+            let asked = address.clone();
             let code = engine.read(move |wallet, _| async move { wallet.receive_code(address, amount, false, note).await }).await;
             match code {
-                Some(Ok(code)) => sender.input(Input::Code(View(code.into()))),
+                Some(Ok(code)) => sender.input(Input::Code(asked, View(code.into()))),
                 Some(Err(e)) => sender.input(Input::Failed(e.to_string())),
                 None => {}
             }

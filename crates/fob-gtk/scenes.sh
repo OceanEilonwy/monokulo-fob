@@ -4,6 +4,9 @@
 # GSK_RENDERER=cairo). A scene passes when it exits cleanly and left a picture.
 #
 #   cargo build -p fob-gtk && crates/fob-gtk/scenes.sh [out-dir]
+#
+# Live scenes ask real nodes and can take minutes:
+#   FOB_SCENE_ONLINE=1 SCENE_TIMEOUT=600 SCENES=live-card crates/fob-gtk/scenes.sh
 set -uo pipefail
 
 SCENES=${SCENES:-"first-run start locked home receive send pay-code settings add-wallet coins contacts request split profile node prices scan manual walk"}
@@ -23,7 +26,7 @@ sleep 3
 fail=0
 for scene in $SCENES; do
 	dir=$(mktemp -d)
-	WAYLAND_DISPLAY=$sock GDK_BACKEND=wayland FOB_SCENE_DIR=$dir FOB_SCENE=$scene FOB_SCENE_PNG=$out/$scene.png timeout 60 "$bin" 2>"$out/$scene.log"
+	WAYLAND_DISPLAY=$sock GDK_BACKEND=wayland FOB_SCENE_DIR=$dir FOB_SCENE=$scene FOB_SCENE_PNG=$out/$scene.png timeout "${SCENE_TIMEOUT:-60}" "$bin" 2>"$out/$scene.log"
 	code=$?
 	rm -rf "$dir"
 	if [ $code -eq 0 ] && [ -s "$out/$scene.png" ]; then
