@@ -2,7 +2,7 @@
 
 use fob_app::{
     Engine,
-    views::{ChipLook, Screens, SyncStatus},
+    views::{ChipLook, Screens, SyncDetails, SyncStatus},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -24,6 +24,8 @@ pub enum Input {
     Wallets(View<Wallets>),
     SwapBalance,
     ShowSync,
+    SyncTick,
+    SyncClosed,
     SyncNow,
     ScanAgain,
     Say(String),
@@ -35,6 +37,7 @@ pub struct Home {
     status: Option<View<SyncStatus>>,
     title: String,
     days: gtk::Box,
+    sync_card: Option<SyncCard>,
 }
 
 impl Home {
@@ -230,7 +233,7 @@ impl SimpleComponent for Home {
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let days = gtk::Box::new(gtk::Orientation::Vertical, 18);
         let window_title = adw::WindowTitle::new("Fob", "");
-        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone() };
+        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None };
         let (days, window_title) = (&days, &window_title);
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -261,6 +264,16 @@ impl SimpleComponent for Home {
                 let _ = sender.output(RootMsg::Go(Go::Scan));
             }
             Input::ShowSync => self.show_sync(&sender),
+            Input::SyncTick => {
+                if let (Some(card), Some(details)) = (&mut self.sync_card, self.engine.sync_details()) {
+                    card.draw(details);
+                }
+            }
+            Input::SyncClosed => {
+                if let Some(card) = self.sync_card.take() {
+                    card.ticking.remove();
+                }
+            }
             Input::SyncNow => {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
@@ -287,9 +300,47 @@ impl SimpleComponent for Home {
 }
 
 impl Home {
-    /// The card behind the chip, every word from Rust.
-    fn show_sync(&self, sender: &ComponentSender<Self>) {
+    /// The card behind the chip, every word from Rust. It follows the wallet
+    /// while it's open, as its times and counts move on their own.
+    fn show_sync(&mut self, sender: &ComponentSender<Self>) {
+        if self.sync_card.is_some() {
+            return;
+        }
         let Some(details) = self.engine.sync_details() else { return };
+        let dialog = adw::AlertDialog::new(None, None);
+        dialog.add_response("close", "_Close");
+        let then = sender.clone();
+        dialog.connect_response(Some("again"), move |_, _| then.input(Input::ScanAgain));
+        let then = sender.clone();
+        dialog.connect_closed(move |_| then.input(Input::SyncClosed));
+        let then = sender.clone();
+        let ticking = gtk::glib::timeout_add_seconds_local(1, move || {
+            then.input(Input::SyncTick);
+            gtk::glib::ControlFlow::Continue
+        });
+        let mut card = SyncCard { dialog, ticking, shown: vec![] };
+        card.draw(details);
+        card.dialog.present(Some(&self.days));
+        self.sync_card = Some(card);
+    }
+}
+
+/// The card behind the chip, while it's open.
+struct SyncCard {
+    dialog: adw::AlertDialog,
+    ticking: gtk::glib::SourceId,
+    /// What it's showing, so the same words aren't drawn over themselves.
+    shown: Vec<String>,
+}
+
+impl SyncCard {
+    fn draw(&mut self, details: SyncDetails) {
+        let mut words = vec![details.title.clone(), details.percent.clone().unwrap_or_default(), details.note.clone().unwrap_or_default(), details.error.clone().unwrap_or_default(), details.scan_again.clone().unwrap_or_default()];
+        words.extend(details.rows.iter().flat_map(|row| [row.label.clone(), row.value.clone()]));
+        if self.shown == words {
+            return;
+        }
+        self.shown = words;
         let list = widgets::list();
         for row in &details.rows {
             let view = widgets::row(&row.label, "");
@@ -298,15 +349,16 @@ impl Home {
             view.add_suffix(&value);
             list.append(&view);
         }
-        let body = [details.percent, details.note, details.error].into_iter().flatten().collect::<Vec<_>>().join("\n");
-        let dialog = adw::AlertDialog::builder().heading(&details.title).body(&body).extra_child(&list).build();
-        dialog.add_response("close", "_Close");
+        let body = [details.percent.as_deref(), details.note.as_deref(), details.error.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n");
+        self.dialog.set_heading(Some(&details.title));
+        self.dialog.set_body(&body);
+        self.dialog.set_extra_child(Some(&list));
         // Too deep a reorganisation to follow: the way out.
-        if let Some(words) = &details.scan_again {
-            dialog.add_response("again", words);
-            let then = sender.clone();
-            dialog.connect_response(Some("again"), move |_, _| then.input(Input::ScanAgain));
+        match &details.scan_again {
+            Some(words) if self.dialog.has_response("again") => self.dialog.set_response_label("again", words),
+            Some(words) => self.dialog.add_response("again", words),
+            None if self.dialog.has_response("again") => self.dialog.remove_response("again"),
+            None => {}
         }
-        dialog.present(Some(&self.days));
     }
 }
