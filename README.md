@@ -56,12 +56,27 @@ sits beside it.
 
 ## On the desktop
 
-`crates/fob-gtk/install.sh` builds Fob and adds it to your menu; it needs Rust,
-GTK 4.18 and libadwaita 1.7 or newer. It starts on stagenet, like the debug
-Android build. Your wallets are sealed under a passphrase you choose, in
-`~/.local/share/fob`, and lock after 15 minutes left alone. A camera isn't used:
-a code is pasted or read from a picture. `crates/fob-gtk/scenes.sh` checks the
-windows on a headless display, and its `walk` scene presses through the app.
+Every `v*` tag also puts two builds for x86_64 Linux on the
+[Releases](https://github.com/OceanEilonwy/monokulo-fob/releases) page, in the
+same `SHA256SUMS`:
+
+- `fob-<version>-x86_64.flatpak`: `flatpak install --user fob-<version>-x86_64.flatpak`.
+  It fetches the GNOME runtime from Flathub. Being sandboxed, it keeps wallets in
+  `~/.var/app/com.monokulo.Fob/data/fob`, so it won't see any you already have
+  until you move them there.
+- `fob-<version>-x86_64.AppImage`: `chmod +x` it and run it. It needs glibc 2.41
+  or newer (Debian 13, Ubuntu 25.04, Fedora 42 or later) and FUSE, and adds no
+  menu entry of its own.
+
+Or `crates/fob-gtk/install.sh` builds Fob and adds it to your menu; it needs Rust,
+GTK 4.18 and libadwaita 1.7 or newer. `crates/fob-gtk/appimage.sh` and
+`crates/fob-gtk/data/com.monokulo.Fob.yml` build the other two.
+
+It starts on stagenet, like the debug Android build. Your wallets are sealed under
+a passphrase you choose, in `~/.local/share/fob`, and lock after 15 minutes left
+alone. A camera isn't used: a code is pasted or read from a picture.
+`crates/fob-gtk/scenes.sh` checks the windows on a headless display, and its
+`walk` scene presses through the app.
 
 ## Building
 
