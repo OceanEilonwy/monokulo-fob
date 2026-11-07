@@ -23,4 +23,5 @@ bindgen = ["uniffi/cli"]
 [dependencies]
 fob-core = { path = "../fob-core" }
 thiserror = "2"
+zeroize = "1"
 uniffi = { version = "=0.32.2", features = ["tokio"] }

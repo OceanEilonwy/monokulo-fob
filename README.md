@@ -27,6 +27,16 @@ https://stagenet-faucet.xmr-tw.org.
 adb install -r dist/fob-debug.apk
 ```
 
+### A wallet on a Trezor
+
+Restore › **Connect a Trezor** makes a wallet whose spend key stays on a
+Trezor Model T, Safe 3 or Safe 5 (Model One can't hold Monero), plugged into
+the phone over USB. The device hands Fob the view key, so Fob watches and
+catches up as usual; it asks the device for key images (Home says when) and
+for each payment's signatures, which the device confirms on its own screen.
+The PIN is typed on the phone by the positions the device shows. Tested so
+far against the protocol in software only: try it on stagenet first.
+
 ### Installing and updating with Obtainium
 
 Every `v*` tag publishes signed APKs on the

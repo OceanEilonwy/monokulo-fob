@@ -29,6 +29,16 @@ pub enum FobError {
     /// been spent since the last scan.
     #[error("{reason}")]
     SpendRejected { reason: String },
+    /// A Trezor couldn't be reached or refused, and why.
+    #[error("{reason}")]
+    Trezor { reason: String },
+    /// The person said no on the Trezor, or to its PIN or passphrase.
+    #[error("{reason}")]
+    TrezorCancelled { reason: String },
+    /// This wallet's spend key is on a Trezor, which has to be connected
+    /// for this: to give key images, or to sign.
+    #[error("{reason}")]
+    TrezorNeeded { reason: String },
     #[error("{reason}")]
     Other { reason: String },
 }
@@ -46,6 +56,9 @@ impl From<fob_core::FobError> for FobError {
             E::WrongKey => FobError::WrongKey { reason },
             E::ViewOnly => FobError::ViewOnly { reason },
             E::SpendRejected(_) => FobError::SpendRejected { reason },
+            E::Trezor(_) => FobError::Trezor { reason },
+            E::TrezorCancelled => FobError::TrezorCancelled { reason },
+            E::TrezorNeeded => FobError::TrezorNeeded { reason },
             E::Send(_) | E::Storage(_) | E::NoSuchPayment | E::ReorgTooDeep | E::Price(_) | E::PriceFailed(_) => FobError::Other { reason },
         }
     }
@@ -999,6 +1012,73 @@ pub trait SyncObserver: Send + Sync {
 
 struct Observer(Arc<dyn SyncObserver>);
 
+/// The bytes to and from a Trezor, one 64-byte USB report at a time;
+/// implemented by the app over Android's USB host API. `read` blocks until
+/// the device answers, which may be when a finger does.
+#[uniffi::export(with_foreign)]
+pub trait TrezorLink: Send + Sync {
+    fn write(&self, report: Vec<u8>) -> Result<()>;
+    fn read(&self) -> Result<Vec<u8>>;
+}
+
+/// What the person says to a Trezor's passphrase prompt.
+#[derive(uniffi::Enum)]
+pub enum TrezorPassphrase {
+    /// Typed on the device itself.
+    OnDevice,
+    /// Typed on the phone; empty for the wallet without one.
+    Typed { text: String },
+    Cancelled,
+}
+
+/// A Trezor's questions, put to the person by the app. Called on Fob's
+/// own thread, which waits for the answer: show the prompt and block until
+/// it's answered.
+#[uniffi::export(with_foreign)]
+pub trait TrezorPrompts: Send + Sync {
+    /// The device shows something to confirm; `what` names its screen.
+    fn on_button(&self, what: String);
+    /// The device wants its PIN: the positions (1 to 9) of the digits on
+    /// the scrambled keypad it shows. `None` cancels.
+    fn pin(&self) -> Option<String>;
+    /// `on_device` says the device can take the passphrase itself.
+    fn passphrase(&self, on_device: bool) -> TrezorPassphrase;
+    /// `done` of `total` steps of a long exchange are through.
+    fn progress(&self, done: u32, total: u32);
+}
+
+struct Link(Arc<dyn TrezorLink>);
+
+impl fob_core::trezor::Link for Link {
+    fn write(&self, report: &[u8]) -> std::result::Result<(), String> {
+        self.0.write(report.to_vec()).map_err(|e| e.to_string())
+    }
+    fn read(&self) -> std::result::Result<Vec<u8>, String> {
+        self.0.read().map_err(|e| e.to_string())
+    }
+}
+
+struct Prompts(Arc<dyn TrezorPrompts>);
+
+impl fob_core::trezor::Prompts for Prompts {
+    fn button(&self, what: &str) {
+        self.0.on_button(what.to_owned());
+    }
+    fn pin(&self) -> Option<zeroize::Zeroizing<String>> {
+        self.0.pin().map(zeroize::Zeroizing::new)
+    }
+    fn passphrase(&self, on_device: bool) -> fob_core::trezor::Passphrase {
+        match self.0.passphrase(on_device) {
+            TrezorPassphrase::OnDevice => fob_core::trezor::Passphrase::OnDevice,
+            TrezorPassphrase::Typed { text } => fob_core::trezor::Passphrase::Typed(zeroize::Zeroizing::new(text)),
+            TrezorPassphrase::Cancelled => fob_core::trezor::Passphrase::Cancelled,
+        }
+    }
+    fn progress(&self, done: u32, total: u32) {
+        self.0.progress(done, total);
+    }
+}
+
 impl fob_core::SyncListener for Observer {
     fn on_status(&self, status: fob_core::SyncStatus) {
         self.0.on_status(status.into());
@@ -1463,9 +1543,50 @@ impl FobWallet {
         wallet(fob_core::Wallet::restore_view_only(&PathBuf::from(path), file_key(key)?, network.into(), &address, &view_key, height))
     }
 
+    /// A wallet whose keys are on the Trezor reached over `link`: the device
+    /// exports the view key (asking first) and keeps the spend key. Without
+    /// a `restore_point` it starts at the chain's tip, as a new wallet does.
+    #[uniffi::constructor]
+    pub fn restore_trezor(
+        path: String,
+        key: Vec<u8>,
+        network: Network,
+        link: Arc<dyn TrezorLink>,
+        prompts: Arc<dyn TrezorPrompts>,
+        restore_point: Option<String>,
+    ) -> Result<Arc<Self>> {
+        let height = height(network, restore_point)?;
+        wallet(fob_core::Wallet::restore_trezor(&PathBuf::from(path), file_key(key)?, network.into(), &Link(link), &Prompts(prompts), height))
+    }
+
     #[uniffi::constructor]
     pub fn open(path: String, key: Vec<u8>) -> Result<Arc<Self>> {
         wallet(fob_core::Wallet::open(&PathBuf::from(path), file_key(key)?))
+    }
+
+    /// Whether this wallet's spend key is on a Trezor, which signs its
+    /// payments and gives its key images.
+    pub fn is_trezor(&self) -> bool {
+        self.inner.is_trezor()
+    }
+
+    /// How many outputs the Trezor hasn't given the key image of yet:
+    /// they can't be spent, and a spend of them elsewhere goes unseen,
+    /// until it has.
+    pub async fn trezor_unsynced(&self) -> u32 {
+        self.inner.trezor_unsynced().await
+    }
+
+    /// Asks the Trezor for the key images it hasn't given, then the node
+    /// which are spent. How many outputs it covered.
+    pub async fn trezor_sync(&self, link: Arc<dyn TrezorLink>, prompts: Arc<dyn TrezorPrompts>) -> Result<u32> {
+        Ok(self.inner.trezor_sync(Arc::new(Link(link)), Arc::new(Prompts(prompts))).await?)
+    }
+
+    /// Signs a prepared payment on the Trezor and sends it. Its transaction
+    /// hash. Cancelled on the device, the payment stays prepared.
+    pub async fn send_with_trezor(&self, id: u64, link: Arc<dyn TrezorLink>, prompts: Arc<dyn TrezorPrompts>) -> Result<String> {
+        Ok(self.inner.send_with_trezor(id, Arc::new(Link(link)), Arc::new(Prompts(prompts))).await?)
     }
 
     pub fn network(&self) -> Network {

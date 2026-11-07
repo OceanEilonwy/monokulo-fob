@@ -3,7 +3,7 @@
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use monero_seed::{Language as SeedLanguage, Seed};
 use monero_wallet::{
-    ViewPair,
+    ViewPair, WalletOutput,
     address::{MoneroAddress, SubaddressIndex},
     ed25519::{Point, Scalar},
 };
@@ -35,7 +35,22 @@ impl SeedKind {
     }
 }
 
-/// The secrets a wallet holds. A view-only wallet has no spend key.
+/// A hardware wallet holding the spend key, which never comes to the phone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Device {
+    Trezor,
+}
+
+impl Device {
+    pub fn name(self) -> &'static str {
+        match self {
+            Device::Trezor => "Trezor",
+        }
+    }
+}
+
+/// The secrets a wallet holds. A view-only wallet has no spend key; nor
+/// has one whose spend key lives on a [`Device`], which signs instead.
 #[derive(Clone)]
 pub struct Keys {
     pub network: Network,
@@ -44,6 +59,7 @@ pub struct Keys {
     spend_pub: Point,
     /// The seed phrase, kept so Backup can show it again.
     seed: Option<(SeedKind, Zeroizing<String>)>,
+    device: Option<Device>,
 }
 
 /// What restoring from words found: the keys and, for a Polyseed, when the
@@ -66,7 +82,7 @@ fn scalar_bytes(s: &Scalar) -> Zeroizing<[u8; 32]> {
 }
 
 /// A 32-byte hex key as written in wallet codes; refuses non-canonical ones.
-fn parse_scalar(hex_key: &str) -> Result<Zeroizing<Scalar>> {
+pub(crate) fn parse_scalar(hex_key: &str) -> Result<Zeroizing<Scalar>> {
     let bytes = Zeroizing::new(hex::decode(hex_key.trim()).map_err(|_| FobError::BadKey)?);
     if bytes.len() != 32 {
         return Err(FobError::BadKey);
@@ -77,7 +93,7 @@ fn parse_scalar(hex_key: &str) -> Result<Zeroizing<Scalar>> {
 impl Keys {
     fn from_spend(network: Network, spend: Scalar, seed: Option<(SeedKind, Zeroizing<String>)>) -> Keys {
         let view = Scalar::hash(*scalar_bytes(&spend));
-        Keys { network, spend_pub: public(&spend), spend: Some(Zeroizing::new(spend)), view: Zeroizing::new(view), seed }
+        Keys { network, spend_pub: public(&spend), spend: Some(Zeroizing::new(spend)), view: Zeroizing::new(view), seed, device: None }
     }
 
     /// A brand new wallet, with a 16-word Polyseed. Returns its birthday too.
@@ -136,11 +152,55 @@ impl Keys {
         if public(&view) != address.view() {
             return Err(FobError::BadKey);
         }
-        Ok(Keys { network, spend: None, view, spend_pub: address.spend(), seed: None })
+        Ok(Keys { network, spend: None, view, spend_pub: address.spend(), seed: None, device: None })
     }
 
+    /// A wallet whose spend key is on a Trezor: its primary address and
+    /// private view key, as the device exports them.
+    pub fn trezor(network: Network, address: &str, view: &[u8; 32]) -> Result<Keys> {
+        let mut keys = Keys::view_only(network, address, &hex::encode(view))?;
+        keys.device = Some(Device::Trezor);
+        Ok(keys)
+    }
+
+    /// Whether this wallet can pay: with a spend key here, or on a device.
     pub fn can_spend(&self) -> bool {
-        self.spend.is_some()
+        self.spend.is_some() || self.device.is_some()
+    }
+
+    pub fn device(&self) -> Option<Device> {
+        self.device
+    }
+
+    /// The transaction key (and the extra key at `output`'s index, if its
+    /// transaction had those) that `output` was made with, out of `keys`
+    /// and `additional` from its transaction's extra: the one whose shared
+    /// secret gives the output's key. A device needs it to make the
+    /// output's key image and to spend it.
+    pub(crate) fn tx_key_for(&self, output: &WalletOutput, keys: &[[u8; 32]], additional: Option<&[[u8; 32]]>) -> Option<([u8; 32], Option<[u8; 32]>)> {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        let index = output.index_in_transaction();
+        let subaddress = output.subaddress().map(|s| s.address()).unwrap_or(0);
+        let spend_pub: curve25519_dalek::EdwardsPoint = match SubaddressIndex::new(0, subaddress) {
+            Some(sub) => self.view_pair().subaddress(self.network.monero(), sub).spend().into(),
+            None => self.spend_pub.into(),
+        };
+        let view: curve25519_dalek::Scalar = (*self.view).into();
+        let made_with = |key: &[u8; 32]| {
+            let point = CompressedEdwardsY(*key).decompress()?;
+            let derivation = (point * view).mul_by_cofactor();
+            let mut data = derivation.compress().to_bytes().to_vec();
+            data.extend_from_slice(&crate::trezor::proto::varint(index));
+            let scalar: curve25519_dalek::Scalar = Scalar::hash(&data).into();
+            let made = &scalar * ED25519_BASEPOINT_TABLE + spend_pub;
+            (made == output.key().into()).then_some(())
+        };
+        let extra = additional.and_then(|a| a.get(index as usize)).copied();
+        if let Some(key) = keys.iter().find(|k| made_with(k).is_some()) {
+            return Some((*key, extra));
+        }
+        let extra = extra?;
+        made_with(&extra).map(|()| (keys.first().copied().unwrap_or(extra), Some(extra)))
     }
 
     pub(crate) fn spend(&self) -> Result<&Zeroizing<Scalar>> {
@@ -169,7 +229,7 @@ impl Keys {
     }
 
     /// How many words [`seed_words`](Keys::seed_words) has, without
-    /// building the phrase: `None` for a view-only wallet.
+    /// building the phrase: `None` for a view-only wallet or a device's.
     pub fn seed_word_count(&self) -> Option<usize> {
         match &self.seed {
             Some((kind, _)) => Some(kind.words()),
@@ -336,10 +396,11 @@ pub struct Hub {
 }
 
 /// Backup and keys for a wallet whose seed phrase has `words` words (none
-/// for a view-only wallet), written down or not as `backed` says, on a
-/// phone with a screen lock set or not (`phone_lock`: without one, Backup
-/// and keys opens straight away, so the warning doesn't promise a lock).
-pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
+/// for a view-only wallet, or one whose keys are on a `device`), written
+/// down or not as `backed` says, on a phone with a screen lock set or not
+/// (`phone_lock`: without one, Backup and keys opens straight away, so the
+/// warning doesn't promise a lock).
+pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool, device: Option<Device>) -> Hub {
     let row = |item, title: &str, line: String| HubRow { item, title: title.to_owned(), line };
     let mut backup = Vec::new();
     if let Some(n) = words {
@@ -363,12 +424,11 @@ pub fn hub(words: Option<usize>, backed: Backed, phone_lock: bool) -> Hub {
         warning: format!("{who} {hides}"),
         backup,
         other,
-        footer: if spends {
-            "The seed phrase is all you need. The code and keys are for moving this wallet to another app."
-        } else {
-            "This wallet only watches. The code and keys are for moving it to another app."
-        }
-        .into(),
+        footer: match device {
+            Some(device) => format!("The spend key is on your {}, with its own backup. The code and keys let another app watch this wallet.", device.name()),
+            None if spends => "The seed phrase is all you need. The code and keys are for moving this wallet to another app.".into(),
+            None => "This wallet only watches. The code and keys are for moving it to another app.".into(),
+        },
         settings_line: if spends { "Seed phrase, wallet code, keys" } else { "Wallet code, keys" }.into(),
     }
 }
@@ -402,6 +462,8 @@ pub(crate) struct StoredKeys {
     view: String,
     spend_pub: String,
     seed: Option<(SeedKind, String)>,
+    #[serde(default)]
+    device: Option<Device>,
 }
 
 impl From<&Keys> for StoredKeys {
@@ -412,6 +474,7 @@ impl From<&Keys> for StoredKeys {
             view: keys.view_key_hex().to_string(),
             spend_pub: keys.public_spend_key_hex(),
             seed: keys.seed.as_ref().map(|(kind, words)| (*kind, words.to_string())),
+            device: keys.device,
         }
     }
 }
@@ -423,16 +486,19 @@ impl StoredKeys {
             SeedKind::Polyseed => "polyseed",
             SeedKind::Classic => "classic",
         });
+        let device = self.device.map(|d| match d {
+            Device::Trezor => "trezor",
+        });
         connection.execute(
-            "INSERT OR REPLACE INTO keys (id, network, spend, view, spend_pub, seed_kind, seed_words) VALUES (1, ?, ?, ?, ?, ?, ?)",
-            rusqlite::params![self.network.name(), self.spend, self.view, self.spend_pub, kind, self.seed.as_ref().map(|(_, words)| words)],
+            "INSERT OR REPLACE INTO keys (id, network, spend, view, spend_pub, seed_kind, seed_words, device) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![self.network.name(), self.spend, self.view, self.spend_pub, kind, self.seed.as_ref().map(|(_, words)| words), device],
         )?;
         Ok(())
     }
 
     /// The keys kept in `connection`'s keys table.
     pub(crate) fn read(connection: &rusqlite::Connection) -> std::result::Result<StoredKeys, rusqlite::Error> {
-        connection.query_row("SELECT network, spend, view, spend_pub, seed_kind, seed_words FROM keys WHERE id = 1", [], |row| {
+        connection.query_row("SELECT network, spend, view, spend_pub, seed_kind, seed_words, device FROM keys WHERE id = 1", [], |row| {
             let unknown = |i: usize, what: &str| rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Text, format!("unknown {what}").into());
             let network = match row.get::<_, String>(0)?.as_str() {
                 "mainnet" => Network::Mainnet,
@@ -447,13 +513,18 @@ impl StoredKeys {
                 (None, None) => None,
                 _ => return Err(unknown(4, "seed")),
             };
-            Ok(StoredKeys { network, spend: row.get(1)?, view: row.get(2)?, spend_pub: row.get(3)?, seed })
+            let device = match row.get::<_, Option<String>>(6)?.as_deref() {
+                None => None,
+                Some("trezor") => Some(Device::Trezor),
+                Some(_) => return Err(unknown(6, "device")),
+            };
+            Ok(StoredKeys { network, spend: row.get(1)?, view: row.get(2)?, spend_pub: row.get(3)?, seed, device })
         })
     }
 
     /// Whether `other` holds the same keys.
     pub(crate) fn same_as(&self, other: &StoredKeys) -> bool {
-        self.network == other.network && self.spend == other.spend && self.view == other.view && self.spend_pub == other.spend_pub && self.seed == other.seed
+        self.network == other.network && self.spend == other.spend && self.view == other.view && self.spend_pub == other.spend_pub && self.seed == other.seed && self.device == other.device
     }
 
     pub(crate) fn into_keys(self) -> Result<Keys> {
@@ -469,6 +540,7 @@ impl StoredKeys {
             view,
             spend_pub,
             seed: stored.seed.as_ref().map(|(kind, words)| (*kind, Zeroizing::new(words.clone()))),
+            device: stored.device,
         })
     }
 }
@@ -656,7 +728,7 @@ mod tests {
 
     #[test]
     fn the_hub_says_how_many_words_and_whether_they_are_written_down() {
-        let made = hub(Some(16), Backed::Up, true);
+        let made = hub(Some(16), Backed::Up, true, None);
         assert_eq!(made.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [HubItem::SeedPhrase, HubItem::WalletCode]);
         assert_eq!(made.backup[0].title, "Seed phrase");
         assert_eq!(made.backup[0].line, "16 words that restore everything · backed up");
@@ -665,8 +737,8 @@ mod tests {
         assert_eq!(made.other[0].line, "View and spend keys, address, restore height");
         assert_eq!(made.footer, "The seed phrase is all you need. The code and keys are for moving this wallet to another app.");
         assert_eq!(made.settings_line, "Seed phrase, wallet code, keys");
-        assert_eq!(hub(Some(16), Backed::Pending, true).backup[0].line, "16 words that restore everything · not written down yet");
-        assert_eq!(hub(Some(25), Backed::Restored, true).backup[0].line, "25 words that restore everything");
+        assert_eq!(hub(Some(16), Backed::Pending, true, None).backup[0].line, "16 words that restore everything · not written down yet");
+        assert_eq!(hub(Some(25), Backed::Restored, true, None).backup[0].line, "25 words that restore everything");
     }
 
     #[test]
@@ -674,24 +746,24 @@ mod tests {
         // Any lock (PIN, pattern, fingerprint, face) is asked for, so the
         // words name none in particular.
         assert_eq!(
-            hub(Some(16), Backed::Up, true).warning,
+            hub(Some(16), Backed::Up, true, None).warning,
             "Anyone who sees these can take or watch your money. Fob hides them from screenshots and asks for your phone's lock first."
         );
         assert_eq!(
-            hub(None, Backed::Restored, true).warning,
+            hub(None, Backed::Restored, true, None).warning,
             "Anyone who sees these can watch your money. Fob hides them from screenshots and asks for your phone's lock first."
         );
         // No lock set: Backup and keys opens straight away, so nothing is promised.
         assert_eq!(
-            hub(Some(16), Backed::Up, false).warning,
+            hub(Some(16), Backed::Up, false, None).warning,
             "Anyone who sees these can take or watch your money. Fob hides them from screenshots."
         );
-        assert_eq!(hub(None, Backed::Restored, false).warning, "Anyone who sees these can watch your money. Fob hides them from screenshots.");
+        assert_eq!(hub(None, Backed::Restored, false, None).warning, "Anyone who sees these can watch your money. Fob hides them from screenshots.");
     }
 
     #[test]
     fn a_view_only_wallet_s_hub_has_no_seed_phrase() {
-        let watch = hub(None, Backed::Restored, true);
+        let watch = hub(None, Backed::Restored, true, None);
         assert_eq!(watch.backup.iter().map(|r| r.item).collect::<Vec<_>>(), [HubItem::WalletCode]);
         assert_eq!(watch.other.len(), 1);
         assert!(watch.warning.starts_with("Anyone who sees these can watch your money."));

@@ -60,6 +60,15 @@ pub enum FobError {
     /// been spent since the last scan.
     #[error("your node refused this payment{0}")]
     SpendRejected(String),
+    /// A Trezor couldn't be reached, refused, or answered wrongly, and why.
+    #[error("{0}")]
+    Trezor(String),
+    /// The person said no on the Trezor, or to its PIN or passphrase.
+    #[error("cancelled on the Trezor")]
+    TrezorCancelled,
+    /// This wallet's spend key is on a Trezor: the device has to be there.
+    #[error("connect the Trezor this wallet belongs to")]
+    TrezorNeeded,
 }
 
 pub type Result<T> = std::result::Result<T, FobError>;

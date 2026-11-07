@@ -15,6 +15,8 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
+    <!-- A Trezor on the phone's USB port, for wallets whose keys are on one. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <!-- Nothing is backed up: the wallet's seed is the backup. The node
          connection is made by the Rust library, which Android's network

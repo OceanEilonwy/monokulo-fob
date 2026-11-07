@@ -11,13 +11,16 @@
 //! [`fob_scan::Prefilter`] goes first and finds the few blocks that could hold
 //! the wallet's money. Only those cost a scanner's time.
 
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use fob_scan::Prefilter;
-use monero_wallet::{Scanner, WalletOutput, block::Block, interface::ScannableBlock, transaction::{Input, Transaction}};
+use monero_wallet::{Scanner, WalletOutput, block::Block, extra::Extra, interface::ScannableBlock, transaction::{Input, Transaction}};
 
 /// Fewer blocks than this aren't worth starting threads for: a wallet near the
 /// tip sees one or two at a time.
@@ -33,6 +36,11 @@ pub(crate) struct SeenTx {
     pub key_images: Vec<String>,
 }
 
+/// The public keys a transaction's extra carries: the transaction keys,
+/// and the extra ones (one per output) if it has those. Without torsion,
+/// as a hardware wallet takes them.
+pub(crate) type TxKeys = (Vec<[u8; 32]>, Option<Vec<[u8; 32]>>);
+
 /// One block, scanned.
 pub(crate) struct Scanned {
     pub height: u64,
@@ -41,6 +49,15 @@ pub(crate) struct Scanned {
     pub miner_tx: String,
     pub txs: Vec<SeenTx>,
     pub found: Vec<WalletOutput>,
+    /// For each transaction something was found in, its keys.
+    pub tx_keys: HashMap<String, TxKeys>,
+}
+
+/// The keys in `extra`, as [`TxKeys`].
+pub(crate) fn tx_keys(extra: &[u8]) -> Option<TxKeys> {
+    let (keys, additional) = Extra::read(&mut &extra[..]).ok()?.keys()?;
+    let clean = |points: Vec<monero_wallet::ed25519::Point>| points.into_iter().map(|p| crate::trezor::clear_torsion(p.into()).compress().to_bytes()).collect::<Vec<_>>();
+    Some((clean(keys), additional.map(clean)))
 }
 
 fn scan_block(scanner: &mut Scanner, block: ScannableBlock, flagged: bool) -> Result<Scanned, String> {
@@ -70,8 +87,26 @@ fn scan_block(scanner: &mut Scanner, block: ScannableBlock, flagged: bool) -> Re
                 .collect(),
         })
         .collect();
-    let found = if flagged { scanner.scan(block).map_err(|e| format!("scanning block {height}: {e:?}"))?.ignore_additional_timelock() } else { vec![] };
-    Ok(Scanned { height, time, hash, miner_tx, txs, found })
+    let (found, tx_keys) = if flagged {
+        // Each transaction's extra, kept aside: the scan takes the block.
+        let mut extras: Vec<(String, Vec<u8>)> = vec![(miner_tx.clone(), block.block.miner_transaction().prefix().extra.clone())];
+        extras.extend(block.block.transactions.iter().zip(&block.transactions).map(|(hash, tx)| (hex::encode(hash), tx.prefix().extra.clone())));
+        let found = scanner.scan(block).map_err(|e| format!("scanning block {height}: {e:?}"))?.ignore_additional_timelock();
+        let mut tx_keys = HashMap::new();
+        for output in &found {
+            let tx = hex::encode(output.transaction());
+            if tx_keys.contains_key(&tx) {
+                continue;
+            }
+            if let Some(keys) = extras.iter().find(|(h, _)| *h == tx).and_then(|(_, extra)| self::tx_keys(extra)) {
+                tx_keys.insert(tx, keys);
+            }
+        }
+        (found, tx_keys)
+    } else {
+        (vec![], HashMap::new())
+    };
+    Ok(Scanned { height, time, hash, miner_tx, txs, found, tx_keys })
 }
 
 /// How many threads to scan `blocks` blocks on, of `cores`: one is left for the

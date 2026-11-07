@@ -162,6 +162,8 @@ object Icons {
     const val copy = "M9 9h11v11H9z M5 15H4V4h11v1"
     /** A key (drawn at stroke 1.8): Backup and keys. */
     const val key = "M8 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M12 11h9 M18 11v3 M15 11v2"
+    /** A USB plug: the trident mark. */
+    const val usb = "M12 3v15 M12 18a1.5 1.5 0 1 0 0.01 0Z M12 3l-2.5 3h5Z M12 9l-4 2v3 M8 14a1.3 1.3 0 1 0 0.01 0Z M12 12l4-2V7 M14.5 5.5h3v3h-3Z"
     /** A globe (drawn at stroke 1.8): a price provider that answers over the web. */
     const val globe = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M3 12h18 M12 3c3 3 3 15 0 18 M12 3c-3 3-3 15 0 18"
     /** An onion (drawn at stroke 1.6): one that answers over Tor. */
@@ -723,6 +725,9 @@ fun Throwable.reason(): String = when (this) {
     is uniffi.fob.FobException.WrongKey -> reason
     is uniffi.fob.FobException.ViewOnly -> reason
     is uniffi.fob.FobException.SpendRejected -> reason.replaceFirstChar { it.uppercase() }
+    is uniffi.fob.FobException.Trezor -> reason
+    is uniffi.fob.FobException.TrezorCancelled -> "Cancelled on the Trezor."
+    is uniffi.fob.FobException.TrezorNeeded -> reason
     is uniffi.fob.FobException.Other -> reason
     else -> message ?: toString()
 }.replaceFirstChar { it.uppercase() }

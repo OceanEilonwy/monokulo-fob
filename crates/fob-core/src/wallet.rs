@@ -37,7 +37,7 @@ use crate::{
     amount,
     contacts::{self, Contact},
     error::{FobError, Result},
-    keys::{self, Keys, SeedKind, StoredKeys},
+    keys::{self, Device, Keys, SeedKind, StoredKeys},
     manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest},
     network::Network,
     node,
@@ -45,6 +45,7 @@ use crate::{
     price::{self, Source as _},
     receipt::ReceiptView,
     profile, requests, scan, split, store, swap,
+    trezor::{self, sign::Plan},
     uri::{self, WalletCode},
     zmq::{self, ZmqStatus},
 };
@@ -64,6 +65,11 @@ const LOOKAHEAD: u32 = 200;
 const RESTORE_SKIP: u32 = 50;
 /// Ring size for transactions since the 2022 hard fork.
 const RING_LEN: u8 = 16;
+/// The hard fork a hardware wallet is told it signs for: v16, Bulletproofs+.
+const HARD_FORK: u32 = 16;
+/// What an output's `spent_in` says when a device's key image sync found it
+/// spent before the key image was known: the spending transaction isn't.
+pub(crate) const SPENT_BEFORE_SYNC: &str = "spent-before-sync";
 /// The most Fob pays per unit of weight, whatever a node asks: about 100× the
 /// usual normal fee.
 const MAX_FEE_PER_WEIGHT: u64 = 2_000_000;
@@ -117,9 +123,18 @@ struct Owned {
     /// is the burning bug and isn't counted.
     #[serde(default)]
     key: String,
-    /// `None` in a view-only wallet, which can't tell when it's spent.
+    /// `None` in a view-only wallet, which can't tell when it's spent, and
+    /// in a device's until the device has been asked.
     key_image: Option<String>,
     spent_in: Option<String>,
+    /// The transaction key the output was made with, and the extra key at
+    /// its index if its transaction carried those: what a device needs to
+    /// make its key image and spend it. In hex; `None` before Fob kept
+    /// them.
+    #[serde(default)]
+    tx_key: Option<String>,
+    #[serde(default)]
+    extra_key: Option<String>,
 }
 
 /// A transaction on the chain that spent the wallet's outputs.
@@ -535,6 +550,9 @@ pub struct Preview {
 struct PreparedTx {
     signable: SignableTransaction,
     out: Outgoing,
+    /// The same payment as a device signs it, in a wallet whose keys are
+    /// on one.
+    plan: Option<Plan>,
 }
 
 /// What a payment records once sent, beside its transaction.
@@ -671,6 +689,12 @@ impl<T> Pending<T> {
     fn take(&mut self, id: u64) -> Option<T> {
         self.prune();
         self.items.remove(&id).map(|(_, item)| item)
+    }
+
+    /// The one with `id`, left in place.
+    fn get(&mut self, id: u64) -> Option<&T> {
+        self.prune();
+        self.items.get(&id).map(|(_, item)| item)
     }
 }
 
@@ -934,6 +958,32 @@ impl Wallet {
         Wallet::new(path, file_key, Keys::view_only(network, address, view_hex)?, Some(restore_height.unwrap_or(0)))
     }
 
+    /// A wallet whose keys are on the Trezor reached over `link`: the
+    /// device exports the view key (asking first) and keeps the spend key.
+    /// Without a `restore_height` it starts at the chain's tip, as a new
+    /// wallet does: right for a Trezor that hasn't held Monero before.
+    pub fn restore_trezor(
+        path: &Path,
+        file_key: [u8; 32],
+        network: Network,
+        link: &dyn trezor::Link,
+        prompts: &dyn trezor::Prompts,
+        restore_height: Option<u64>,
+    ) -> Result<Wallet> {
+        let session = trezor::Session::open(link, prompts)?;
+        let (view, address) = session.watch_key(network)?;
+        let keys = Keys::trezor(network, &address, &view)?;
+        let wallet = Wallet::new(path, file_key, keys, restore_height)?;
+        {
+            // Nothing to write down here: the device has its own backup.
+            let mut state = wallet.inner.state.try_lock().expect("a new wallet is not shared yet");
+            state.backup_pending = false;
+            state.restored = true;
+            wallet.save_state(&state)?;
+        }
+        Ok(wallet)
+    }
+
     /// The wallet saved at `path`, its database, made first from the sealed
     /// file beside it if it's still in that. The sealed file is deleted once the
     /// database has opened whole. A photo saved before Fob read
@@ -1034,6 +1084,11 @@ impl Wallet {
         self.inner.keys.can_spend()
     }
 
+    /// Whether the spend key is on a Trezor, which signs and gives key images.
+    pub fn is_trezor(&self) -> bool {
+        self.inner.keys.device() == Some(Device::Trezor)
+    }
+
     pub fn seed_words(&self) -> Option<(SeedKind, Zeroizing<String>)> {
         self.inner.keys.seed_words()
     }
@@ -1085,7 +1140,7 @@ impl Wallet {
             _ if state.backup_pending => keys::Backed::Pending,
             _ => keys::Backed::Up,
         };
-        keys::hub(self.inner.keys.seed_word_count(), backed, phone_lock)
+        keys::hub(self.inner.keys.seed_word_count(), backed, phone_lock, self.inner.keys.device())
     }
 
     /// Keys' page: every key in full, the restore height with its date
@@ -2047,6 +2102,11 @@ impl Wallet {
             if let Some(image) = &key_image {
                 images.entry(image.clone()).or_insert(state.outputs.len());
             }
+            let (tx_key, extra_key) = scanned
+                .tx_keys
+                .get(&tx)
+                .and_then(|(tx_keys, additional)| keys.tx_key_for(&output, tx_keys, additional.as_deref()))
+                .map_or((None, None), |(tx_key, extra)| (Some(hex::encode(tx_key)), extra.map(hex::encode)));
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
             state.outputs.push(Owned {
@@ -2061,6 +2121,8 @@ impl Wallet {
                 subaddress,
                 key_image,
                 spent_in: None,
+                tx_key,
+                extra_key,
             });
             changed = true;
         }
@@ -2800,7 +2862,7 @@ impl Wallet {
     /// from, if any, whose name and receipt go with it as
     /// [`uri::code_terms`] says.
     pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
-        self.inner.keys.spend()?;
+        self.spendable()?;
         let (destination, terms) = self.payment_terms(to, amount, code)?;
         let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
         self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await
@@ -2902,19 +2964,20 @@ impl Wallet {
         pieces: Option<u32>,
     ) -> Result<Prepared> {
         let amount: u64 = payments.iter().map(|p| p.1).sum();
-        let (_, rpc, decoys, _) = self.connection().await?;
-        let (fee_rate, latest) = self.send_ready(&rpc, &decoys).await?;
 
-        let (mut candidates, available) = {
+        let device = self.inner.keys.device();
+        let (mut candidates, available, unsynced) = {
             let state = self.inner.state.lock().await;
+            let ready = |o: &Owned| o.spent_in.is_none() && confirmations(&state, o.height) >= state.needed(o);
+            // A device's output can't be spent before the device has given
+            // its key image (which says whether it's spent already).
+            let synced = |o: &Owned| device.is_none() || (o.key_image.is_some() && o.tx_key.is_some());
+            let unsynced = state.outputs.iter().filter(|o| ready(o) && !synced(o)).count();
             let mut candidates: Vec<(usize, u64, WalletOutput)> = state
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, o)| {
-                    o.spent_in.is_none()
-                        && confirmations(&state, o.height) >= state.needed(o)
-                })
+                .filter(|(_, o)| ready(o) && synced(o))
                 .filter_map(|(i, o)| {
                     let bytes = hex::decode(&o.output).ok()?;
                     Some((i, o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
@@ -2922,12 +2985,19 @@ impl Wallet {
                 .collect();
             candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
             let available = candidates.iter().map(|c| c.1).sum::<u64>();
-            (candidates, available)
+            (candidates, available, unsynced)
         };
-        let not_enough = |needed: u64| FobError::NotEnoughFunds { available: amount::format(available), needed: amount::format(needed) };
+        let not_enough = |needed: u64| {
+            if unsynced > 0 {
+                return FobError::TrezorNeeded;
+            }
+            FobError::NotEnoughFunds { available: amount::format(available), needed: amount::format(needed) }
+        };
         if available < amount {
             return Err(not_enough(amount));
         }
+        let (_, rpc, decoys, _) = self.connection().await?;
+        let (fee_rate, latest) = self.send_ready(&rpc, &decoys).await?;
 
         // Start with the inputs that cover the amount and a generous fee guess,
         // then add one at a time while the real fee needs more.
@@ -2978,13 +3048,43 @@ impl Wallet {
                 Err(e) => return Err(FobError::Send(format!("{e:?}"))),
             }
         };
-        let fee = signable.necessary_fee();
+        let mut fee = signable.necessary_fee();
+        let plan = match device {
+            None => None,
+            Some(Device::Trezor) => {
+                // The device's transaction has the same shape as this one,
+                // give or take a few bytes of extra: the fee for a little
+                // more weight covers it, and is what the device shows.
+                let weight = fee_rate.calculate_weight_from_fee(fee).unwrap_or(0) as u64 + trezor::sign::WEIGHT_MARGIN;
+                fee = u64::try_from(fee_rate.calculate_fee_from_weight(weight)).map_err(|_| FobError::Send("the fee is too large".into()))?;
+                if total < amount + fee {
+                    return Err(not_enough(amount + fee));
+                }
+                let network = self.network();
+                let change_address = MoneroAddress::from_str(network.monero(), &self.inner.keys.primary_address()).map_err(|_| FobError::BadAddress(network.name()))?;
+                let state = self.inner.state.lock().await;
+                let mut inputs = Vec::with_capacity(chosen.len());
+                for (c, with_decoys) in chosen.iter().zip(with_decoys.iter()) {
+                    let owned = state.outputs.get(c.0).ok_or(FobError::NoSuchPayment)?;
+                    let key = |hex_key: &Option<String>| hex_key.as_deref().and_then(|k| hex::decode(k).ok()).and_then(|k| <[u8; 32]>::try_from(k).ok());
+                    inputs.push(trezor::sign::SpendInput {
+                        with_decoys: with_decoys.clone(),
+                        tx_pub_key: key(&owned.tx_key).ok_or(FobError::TrezorNeeded)?,
+                        additional: key(&owned.extra_key),
+                        index_in_tx: c.2.index_in_transaction(),
+                        subaddress_minor: owned.subaddress,
+                    });
+                }
+                Some(Plan { network, inputs, payments: payments.clone(), change: total - amount - fee, change_address, fee, hard_fork: HARD_FORK })
+            }
+        };
         let receipt = receipt_json.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok());
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         self.inner.prepared.lock().await.insert(
             id,
             PreparedTx {
                 signable,
+                plan,
                 out: Outgoing {
                     to: to.to_owned(),
                     amount,
@@ -3081,7 +3181,7 @@ impl Wallet {
     /// Builds a split: `counts` of each note paid to this wallet's split
     /// address, the rest back as change, for the confirm screen.
     pub async fn prepare_split(&self, counts: &[u32]) -> Result<Prepared> {
-        self.inner.keys.spend()?;
+        self.spendable()?;
         let (_, notes, budget) = self.split_setup().await;
         let amounts = split::amounts(&notes, counts);
         if amounts.is_empty() {
@@ -3098,8 +3198,19 @@ impl Wallet {
         Ok(prepared)
     }
 
+    /// Whether this wallet can pay at all: with its own spend key, or a
+    /// device's.
+    fn spendable(&self) -> Result<()> {
+        if self.inner.keys.can_spend() { Ok(()) } else { Err(FobError::ViewOnly) }
+    }
+
     /// Signs and broadcasts a prepared payment. Returns its transaction hash.
+    /// A wallet whose keys are on a device signs with
+    /// [`send_with_trezor`](Wallet::send_with_trezor) instead.
     pub async fn send(&self, id: u64) -> Result<String> {
+        if self.inner.keys.device().is_some() {
+            return Err(FobError::TrezorNeeded);
+        }
         let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::NoSuchPayment)?;
         let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
@@ -3112,6 +3223,125 @@ impl Wallet {
             rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
         };
         self.publish_and_record(hash, fee, prepared.out, publish).await
+    }
+
+    /// Signs a prepared payment on the Trezor over `link`, the device's
+    /// questions put through `prompts`, and broadcasts it. Returns its
+    /// transaction hash. The device shows the payment and asks before it
+    /// signs; saying no there cancels, with the payment kept prepared.
+    pub async fn send_with_trezor(&self, id: u64, link: Arc<dyn trezor::Link>, prompts: Arc<dyn trezor::Prompts>) -> Result<String> {
+        let plan = {
+            let mut prepared = self.inner.prepared.lock().await;
+            let Some(prepared) = prepared.get(id) else { return Err(FobError::NoSuchPayment) };
+            prepared.plan.as_ref().ok_or_else(|| FobError::Send("this payment wasn't prepared for a Trezor".into()))?.clone()
+        };
+        let fee = plan.fee;
+        let signed = tokio::task::spawn_blocking(move || {
+            let session = trezor::Session::open(link.as_ref(), prompts.as_ref())?;
+            trezor::sign::sign(&session, &plan, &mut OsRng)
+        })
+        .await
+        .map_err(|e| FobError::Send(format!("{e}")))?;
+        let tx = match signed {
+            Ok(tx) => tx,
+            // Not signed: still prepared, for another go.
+            Err(e) => return Err(e),
+        };
+        let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::NoSuchPayment)?;
+        let hash = hex::encode(tx.hash());
+        let wallet = self.clone();
+        let manual_sync = self.inner.state.lock().await.manual_sync;
+        let publish = async move {
+            let rpc = wallet.rpc().await?;
+            rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
+        };
+        self.publish_and_record(hash, fee, prepared.out, publish).await
+    }
+
+    /// How many of this wallet's outputs its Trezor hasn't been asked the
+    /// key image of: until it has, they can't be spent, and a spend of
+    /// them elsewhere goes unseen.
+    pub async fn trezor_unsynced(&self) -> u32 {
+        if self.inner.keys.device() != Some(Device::Trezor) {
+            return 0;
+        }
+        let state = self.inner.state.lock().await;
+        state.outputs.iter().filter(|o| o.spent_in.is_none() && o.key_image.is_none() && o.tx_key.is_some()).count() as u32
+    }
+
+    /// Asks the Trezor over `link` for the key images it hasn't given yet,
+    /// then the node which of those are spent already. Returns how many
+    /// outputs it covered. The device asks before it answers.
+    pub async fn trezor_sync(&self, link: Arc<dyn trezor::Link>, prompts: Arc<dyn trezor::Prompts>) -> Result<u32> {
+        if self.inner.keys.device() != Some(Device::Trezor) {
+            return Err(FobError::Send("this wallet's keys aren't on a Trezor".into()));
+        }
+        let network = self.network();
+        let (indices, transfers, minors) = {
+            let state = self.inner.state.lock().await;
+            let mut indices = vec![];
+            let mut transfers = vec![];
+            let mut minors = vec![0];
+            for (i, o) in state.outputs.iter().enumerate() {
+                if o.spent_in.is_some() || o.key_image.is_some() {
+                    continue;
+                }
+                let key = |hex_key: &str| hex::decode(hex_key).ok().and_then(|k| <[u8; 32]>::try_from(k).ok());
+                let (Some(tx_key), Some(out_key)) = (o.tx_key.as_deref().and_then(key), key(&o.key)) else { continue };
+                let Some(output) = hex::decode(&o.output).ok().and_then(|b| WalletOutput::read(&mut b.as_slice()).ok()) else { continue };
+                indices.push(i);
+                transfers.push(trezor::Transfer {
+                    out_key,
+                    tx_pub_key: tx_key,
+                    additional: o.extra_key.as_deref().and_then(key),
+                    index_in_tx: output.index_in_transaction(),
+                    subaddress_minor: o.subaddress,
+                });
+                minors.push(o.subaddress);
+            }
+            minors.sort_unstable();
+            minors.dedup();
+            (indices, transfers, minors)
+        };
+        if transfers.is_empty() {
+            return Ok(0);
+        }
+        let images = tokio::task::spawn_blocking(move || {
+            let session = trezor::Session::open(link.as_ref(), prompts.as_ref())?;
+            session.key_images(network, &transfers, &minors)
+        })
+        .await
+        .map_err(|e| FobError::Send(format!("{e}")))??;
+        let images: Vec<String> = images.iter().map(hex::encode).collect();
+        let spent = self.key_images_spent(&images).await?;
+        let count = {
+            let mut state = self.inner.state.lock().await;
+            for ((i, image), status) in indices.iter().zip(images).zip(spent) {
+                let Some(output) = state.outputs.get_mut(*i) else { continue };
+                output.key_image = Some(image);
+                if status != 0 && output.spent_in.is_none() {
+                    output.spent_in = Some(SPENT_BEFORE_SYNC.into());
+                }
+            }
+            self.save_state(&state)?;
+            indices.len() as u32
+        };
+        Ok(count)
+    }
+
+    /// The node's word on `images`: 0 unspent, 1 spent on the chain, 2 in
+    /// the pool.
+    async fn key_images_spent(&self, images: &[String]) -> Result<Vec<u8>> {
+        use monero_daemon_rpc::HttpTransport as _;
+        let (transport, _, _, _) = self.connection().await?;
+        let body = serde_json::json!({ "key_images": images }).to_string().into_bytes();
+        let response = transport.post("is_key_image_spent", body, Some(1 << 20)).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        let value: serde_json::Value = serde_json::from_slice(&response).map_err(|e| FobError::Node(format!("reading the node's answer: {e}")))?;
+        let statuses = value.get("spent_status").and_then(|s| s.as_array()).ok_or_else(|| FobError::Node("the node didn't say which key images are spent".into()))?;
+        if statuses.len() != images.len() {
+            return Err(FobError::Node("the node answered for the wrong number of key images".into()));
+        }
+        Ok(statuses.iter().map(|s| s.as_u64().unwrap_or(0) as u8).collect())
     }
 
     /// Publishes a signed payment with `publish`, then records it (its
@@ -4218,6 +4448,8 @@ mod tests {
             key: tx.into(),
             key_image: None,
             spent_in: None,
+            tx_key: None,
+            extra_key: None,
         };
         let sent = |tx: &str, height: Option<u64>, change: u64| Sent {
             not_confirmed: false,
@@ -4348,6 +4580,8 @@ mod tests {
             key: "in".into(),
             key_image: None,
             spent_in: None,
+            tx_key: None,
+            extra_key: None,
         }];
         watch.inner.state.lock().await.tip = 100;
         let coins = watch.coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;
@@ -4596,7 +4830,7 @@ mod tests {
         drop(wallet);
         let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
         old.execute_batch(&format!(
-            "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; PRAGMA user_version = 2;",
+            "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; ALTER TABLE keys DROP COLUMN device; ALTER TABLE outputs DROP COLUMN tx_key; ALTER TABLE outputs DROP COLUMN extra_key; PRAGMA user_version = 2;",
             hex::encode([1u8; 32])
         ))
         .unwrap();
@@ -4688,7 +4922,7 @@ mod tests {
         drop(wallet);
         let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
         old.execute_batch(&format!(
-            "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; PRAGMA user_version = 1;",
+            "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; ALTER TABLE keys DROP COLUMN device; ALTER TABLE outputs DROP COLUMN tx_key; ALTER TABLE outputs DROP COLUMN extra_key; PRAGMA user_version = 1;",
             hex::encode([1u8; 32])
         ))
         .unwrap();
@@ -4869,6 +5103,8 @@ mod tests {
                     } else if text.contains("get_fee_estimate") {
                         seen.fee.fetch_add(1, Ordering::Relaxed);
                         r#"{"jsonrpc":"2.0","id":0,"result":{"fee":20000,"quantization_mask":10000,"status":"OK"}}"#
+                    } else if text.contains("is_key_image_spent") {
+                        r#"{"spent_status":[1],"status":"OK"}"#
                     } else {
                         // Connecting asks something of json_rpc; any answer will do.
                         r#"{"jsonrpc":"2.0","id":0,"result":{}}"#
@@ -5231,6 +5467,8 @@ mod tests {
             key: tx.into(),
             key_image: None,
             spent_in: None,
+            tx_key: None,
+            extra_key: None,
         }
     }
 
@@ -6886,5 +7124,160 @@ mod tests {
         assert_eq!(opened.profile().await.map(|p| (p.name, p.photo)), Some(("Henry".into(), None)));
         // And saved so: opened again, it's still gone.
         assert_eq!(Wallet::open(&path, [1; 32]).unwrap().contact(jo.id).await.unwrap().photo, None);
+    }
+
+    /// A block paying `amount` to `keys`' primary address at `height`, made
+    /// by hand: one transaction whose extra names a stray public key first
+    /// and the real one second, as some do.
+    fn block_paying(keys: &Keys, amount: u64, height: usize) -> (monero_wallet::interface::ScannableBlock, [u8; 32]) {
+        use curve25519_dalek::{EdwardsPoint, Scalar as DScalar, constants::ED25519_BASEPOINT_TABLE};
+        use monero_wallet::{
+            block::{Block, BlockHeader},
+            ed25519::{Commitment, CompressedPoint, Scalar},
+            extra::ExtraField,
+            ringct::{EncryptedAmount, PrunedRctProofs, RctBase, RctType},
+            transaction::{Input, Output, Pruned, Timelock, Transaction, TransactionPrefix},
+        };
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        let r = DScalar::from_bytes_mod_order(bytes);
+        let big_r = &r * ED25519_BASEPOINT_TABLE;
+        OsRng.fill_bytes(&mut bytes);
+        let stray = &DScalar::from_bytes_mod_order(bytes) * ED25519_BASEPOINT_TABLE;
+        let address = MoneroAddress::from_str(keys.network.monero(), &keys.primary_address()).unwrap();
+        let a: DScalar = (*crate::keys::parse_scalar(&keys.view_key_hex()).unwrap()).into();
+        let b: EdwardsPoint = address.spend().into();
+        let derivation = (big_r * a).mul_by_cofactor().compress().to_bytes();
+        let mut data = derivation.to_vec();
+        data.push(0);
+        let shared = Scalar::hash(&data);
+        let shared_d: DScalar = shared.into();
+        let view_tag = crate::trezor::crypto::keccak(&[b"view_tag".as_slice(), &data].concat())[0];
+        let key = (&shared_d * ED25519_BASEPOINT_TABLE + b).compress().to_bytes();
+        let mask = Scalar::hash([b"commitment_mask".as_slice(), &<[u8; 32]>::from(shared)].concat());
+        let commitment = Commitment { mask, amount }.commit().compress();
+        let amount_mask = crate::trezor::crypto::keccak(&[b"amount".as_slice(), &<[u8; 32]>::from(shared)].concat());
+        let encrypted = (amount ^ u64::from_le_bytes(amount_mask[..8].try_into().unwrap())).to_le_bytes();
+        let mut extra = ExtraField::PublicKey(CompressedPoint::from(stray.compress().to_bytes())).serialize();
+        extra.extend(ExtraField::PublicKey(CompressedPoint::from(big_r.compress().to_bytes())).serialize());
+        let tx: Transaction<Pruned> = Transaction::V2 {
+            prefix: TransactionPrefix {
+                additional_timelock: Timelock::None,
+                inputs: vec![Input::ToKey { amount: None, key_offsets: vec![1; 16], key_image: CompressedPoint::from(stray.compress().to_bytes()) }],
+                outputs: vec![Output { amount: None, key: CompressedPoint::from(key), view_tag: Some(view_tag) }],
+                extra,
+            },
+            proofs: Some(PrunedRctProofs { rct_type: RctType::ClsagBulletproofPlus, base: RctBase { fee: 1000, pseudo_outs: vec![], encrypted_amounts: vec![EncryptedAmount::Compact { amount: encrypted }], commitments: vec![commitment] } }),
+        };
+        let hash = tx.hash_with_prunable_hash([0; 32]).unwrap();
+        let miner = Transaction::V2 {
+            prefix: TransactionPrefix {
+                additional_timelock: Timelock::Block(height + 60),
+                inputs: vec![Input::Gen(height)],
+                outputs: vec![Output { amount: Some(1), key: CompressedPoint::from(stray.compress().to_bytes()), view_tag: Some(0) }],
+                extra: ExtraField::PublicKey(CompressedPoint::from(stray.compress().to_bytes())).serialize(),
+            },
+            proofs: None,
+        };
+        let block = Block::new(BlockHeader { hardfork_version: 16, hardfork_signal: 16, timestamp: 1_700_000_000, previous: [0; 32], nonce: 0 }, miner, vec![hash]).unwrap();
+        (monero_wallet::interface::ScannableBlock { block, transactions: vec![tx], output_index_for_first_ringct_output: Some(0) }, big_r.compress().to_bytes())
+    }
+
+    /// A Trezor in software holding `full`'s keys, answering as the device
+    /// would: its view key, and key images made with the spend key.
+    fn fake_trezor(full: &Keys) -> crate::trezor::session::fake::Fake {
+        use curve25519_dalek::{EdwardsPoint, Scalar as DScalar, constants::ED25519_BASEPOINT_TABLE};
+        let mut fake = crate::trezor::session::fake::Fake::new();
+        fake.address = full.primary_address();
+        fake.view_key = <[u8; 32]>::from(*crate::keys::parse_scalar(&full.view_key_hex()).unwrap());
+        let spend: DScalar = (*crate::keys::parse_scalar(&full.spend_key_hex().unwrap()).unwrap()).into();
+        let view: DScalar = (*crate::keys::parse_scalar(&full.view_key_hex()).unwrap()).into();
+        fake.key_image = Box::new(move |t: &crate::trezor::Transfer| {
+            // The output's secret key from its transaction key, as the device makes it.
+            let big_r = curve25519_dalek::edwards::CompressedEdwardsY(t.tx_pub_key).decompress().unwrap();
+            let mut data = (big_r * view).mul_by_cofactor().compress().to_bytes().to_vec();
+            data.extend_from_slice(&crate::trezor::proto::varint(t.index_in_tx));
+            let x: DScalar = monero_wallet::ed25519::Scalar::hash(&data).into() + spend;
+            assert_eq!((&x * ED25519_BASEPOINT_TABLE).compress().to_bytes(), t.out_key, "the transaction key given is the output's");
+            let hashed: EdwardsPoint = monero_wallet::ed25519::Point::biased_hash(t.out_key).into();
+            let image = (hashed * x).compress().to_bytes();
+            let (c, r) = crate::trezor::crypto::sign_key_image(&image, &x, &t.out_key);
+            (image, c, r)
+        });
+        fake
+    }
+
+    /// A wallet on a Trezor: the device gives the view key, the wallet
+    /// opens again as a device's, and payments wait for the device.
+    #[tokio::test]
+    async fn a_trezor_wallet_keeps_its_keys_on_the_device() {
+        let full = Keys::generate(Network::Stagenet).keys;
+        let fake = fake_trezor(&full);
+        let person = crate::trezor::session::fake::Person::new();
+        let path = dir("trezor");
+        let wallet = Wallet::restore_trezor(&path, [1; 32], Network::Stagenet, &fake, &person, Some(5)).unwrap();
+        assert!(wallet.can_spend());
+        assert_eq!(wallet.primary_address(), full.primary_address());
+        assert_eq!(wallet.inner.keys.device(), Some(Device::Trezor));
+        assert!(wallet.inner.keys.spend_key_hex().is_none());
+        let hub = wallet.backup_hub(true).await;
+        assert!(hub.backup.iter().all(|r| r.item != keys::HubItem::SeedPhrase), "no seed phrase to show");
+        assert!(hub.footer.contains("on your Trezor"));
+        assert!(wallet.backup_reminder().await.is_none(), "nothing to write down");
+        drop(wallet);
+        let again = Wallet::open(&path, [1; 32]).unwrap();
+        assert_eq!(again.inner.keys.device(), Some(Device::Trezor));
+        assert!(again.can_spend());
+        assert!(matches!(again.send(0).await, Err(FobError::TrezorNeeded)));
+        assert_eq!(again.trezor_unsynced().await, 0);
+    }
+
+    /// Money found for a Trezor wallet keeps the key its transaction was
+    /// made with (the right one of several), can't be spent until the
+    /// device has given its key image, and the node is asked whether that
+    /// image is spent already.
+    #[tokio::test]
+    async fn a_trezor_wallet_s_outputs_wait_for_their_key_images() {
+        let full = Keys::generate(Network::Stagenet).keys;
+        let fake = fake_trezor(&full);
+        let person = crate::trezor::session::fake::Person::new();
+        let (url, _) = counting_node(Duration::ZERO).await;
+        let wallet = Wallet::restore_trezor(&dir("trezor-sync"), [1; 32], Network::Stagenet, &fake, &person, Some(5)).unwrap();
+        wallet.inner.state.lock().await.node = url;
+
+        let (block, tx_key) = block_paying(&wallet.inner.keys, 7_000_000_000, 10);
+        let pair = wallet.inner.keys.view_pair();
+        let scanner = Scanner::new(pair.clone());
+        let prefilter = fob_scan::Prefilter::new(&pair, &wallet.inner.keys.view_bytes());
+        let (results, _) = scan::scan(&scanner, &prefilter, vec![block], false);
+        let scanned = results.into_iter().next().unwrap().unwrap();
+        assert_eq!(scanned.found.len(), 1);
+        {
+            let mut state = wallet.inner.state.lock().await;
+            let mut images = Wallet::key_images(&state);
+            assert!(wallet.take_block(&mut state, &mut images, &HashMap::new(), scanned));
+            state.tip = 100;
+            assert_eq!(state.outputs.len(), 1);
+            assert_eq!(state.outputs[0].tx_key.as_deref(), Some(hex::encode(tx_key).as_str()), "the real key, not the stray one");
+            assert_eq!(state.outputs[0].extra_key, None);
+            assert_eq!(state.outputs[0].key_image, None, "no spend key here to make it");
+            assert_eq!(state.outputs[0].amount, 7_000_000_000);
+        }
+        assert_eq!(wallet.trezor_unsynced().await, 1);
+        // Not spendable until the device has been asked.
+        match wallet.prepare(&full.address(3), 1_000_000, None, None).await {
+            Err(FobError::TrezorNeeded) => {}
+            other => panic!("expected the device to be asked for, got {other:?}"),
+        }
+
+        let synced = wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
+        assert_eq!(synced, 1);
+        assert_eq!(wallet.trezor_unsynced().await, 0);
+        let state = wallet.inner.state.lock().await;
+        let image = state.outputs[0].key_image.clone().unwrap();
+        let output = WalletOutput::read(&mut hex::decode(&state.outputs[0].output).unwrap().as_slice()).unwrap();
+        assert_eq!(image, hex::encode(full.key_image(output.key(), output.key_offset()).unwrap()), "the device's key image is the one the spend key gives");
+        // The counting node says every key image is spent: so it is marked, with no transaction to name.
+        assert_eq!(state.outputs[0].spent_in.as_deref(), Some(SPENT_BEFORE_SYNC));
     }
 }

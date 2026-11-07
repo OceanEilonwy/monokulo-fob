@@ -558,12 +558,23 @@ fun ConfirmScreen(
             .onFailure { error = it.reason() }
     }
 
+    val trezor = model.wallet.value?.isTrezor() == true
     fun swiped() {
         val ready = prepared ?: return
         busy = true
         error = null
         scope.launch {
-            if (!confirmIdentity(title)) {
+            if (trezor) {
+                // The device shows the payment and asks; saying no there keeps it prepared.
+                runCatching { model.sendWithTrezor(ready) }
+                    .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(ready, tx)) }
+                    .onFailure {
+                        error = it.reason()
+                        val stillPrepared = it is uniffi.fob.FobException.TrezorCancelled || it is uniffi.fob.FobException.Trezor
+                        failed = !stillPrepared
+                        refused = it is uniffi.fob.FobException.SpendRejected
+                    }
+            } else if (!confirmIdentity(title)) {
                 error = "Not sent."
             } else {
                 runCatching { model.send(ready) }
@@ -581,9 +592,10 @@ fun ConfirmScreen(
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = model::openScan)
         else ErrorText(error)
         val label = when {
-            busy -> "Sending…"
+            busy -> if (trezor) "Confirm on the Trezor…" else "Sending…"
             failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+            trezor -> "Swipe, then confirm on the Trezor"
             else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
         }
         SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
