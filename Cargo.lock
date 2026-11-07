@@ -626,13 +626,12 @@ dependencies = [
 name = "fob-scanner"
 version = "0.1.11"
 dependencies = [
- "ash",
  "curve25519-dalek",
  "hex",
  "monero-wallet",
+ "monokulo-8ar",
  "rand 0.8.8",
  "sha3",
- "subtle",
  "zeroize",
 ]
 
@@ -705,6 +704,7 @@ dependencies = [
  "fob-codes",
  "fob-monero",
  "fob-price",
+ "fob-scanner",
  "fob-screens",
  "fob-vault",
  "serde_json",
@@ -1947,6 +1947,20 @@ dependencies = [
  "std-shims",
  "subtle",
  "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
+name = "monokulo-8ar"
+version = "0.1.0"
+source = "git+https://github.com/OceanEilonwy/monokulo-8ar?rev=1de7768#1de7768c870b9a6d33ab12aa7b1f6bd07066e971"
+dependencies = [
+ "ash",
+ "crypto-bigint",
+ "curve25519-dalek",
+ "libc",
+ "monero-wallet",
+ "sha3",
  "zeroize",
 ]
 

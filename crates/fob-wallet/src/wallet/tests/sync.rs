@@ -78,7 +78,7 @@ fn a_wallets_gpu_check_runs_when_due_and_no_more() {
 #[tokio::test]
 #[ignore = "needs a GPU; run with --ignored"]
 async fn a_wallet_keeps_its_gpu_check() {
-    fob_scanner::set_mode(fob_scanner::Mode::Gpu);
+    fob_scanner::warm_up();
     for _ in 0..1200 {
         if fob_scanner::gpu_ready() {
             break;

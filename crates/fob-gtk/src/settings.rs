@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use fob_app::{
     Confirmed, Engine, FobError,
-    views::{BackupHub, HubItem, KeyGroup, Network, ScanMode, Screens, SeedPhrase, SyncStatus, WalletEntry, ZmqStatus},
+    views::{BackupHub, HubItem, KeyGroup, Network, Screens, SeedPhrase, SyncStatus, WalletEntry, ZmqStatus},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -39,7 +39,6 @@ pub enum Input {
     Rename(String, String),
     Forget,
     Zmq,
-    Scan(u32),
     LockAfter(u32),
     ProfileLine(String),
     GpuFailed(bool),
@@ -69,7 +68,10 @@ pub struct Settings {
     manual_on: bool,
     zmq_problem: Option<String>,
     profile_line: String,
-    scan_row: adw::ComboRow,
+    /// The Scanning row: what's scanning, read-only.
+    scan_line: String,
+    /// Whether the open wallet's GPU check failed.
+    gpu_refused: bool,
 }
 
 /// How long untouched before locking, as the row lists them.
@@ -168,12 +170,12 @@ impl SimpleComponent for Settings {
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::ManualSync)); },
                             },
-                            #[local_ref]
-                            add = scan_row -> adw::ComboRow {
+                            // Nothing to choose: the GPU scans when it can.
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
                                 set_title: "Scanning",
-                                set_model: Some(&gtk::StringList::new(&["Auto (Default)", "GPU: the graphics chip, using less power", "CPU: only the main cores"])),
-                                set_selected: match model.engine.scan_mode() { ScanMode::Auto => 0, ScanMode::Gpu => 1, ScanMode::Cpu => 2 },
-                                connect_selected_notify[sender] => move |row| sender.input(Input::Scan(row.selected())),
+                                #[watch]
+                                set_subtitle: &gtk::glib::markup_escape_text(&model.scan_line),
                             },
                         },
                         adw::PreferencesGroup {
@@ -212,7 +214,8 @@ impl SimpleComponent for Settings {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
-        let (network_row, scan_row) = (adw::ComboRow::new(), adw::ComboRow::new());
+        let network_row = adw::ComboRow::new();
+        let scan_line = engine.scan_engine(false).line;
         let model = Settings {
             engine,
             wallets_group: wallets_group.clone(),
@@ -228,9 +231,10 @@ impl SimpleComponent for Settings {
             manual_on: false,
             zmq_problem: None,
             profile_line: String::new(),
-            scan_row: scan_row.clone(),
+            scan_line,
+            gpu_refused: false,
         };
-        let (wallets_group, backup_group, network_row, scan_row) = (&wallets_group, &backup_group, &network_row, &scan_row);
+        let (wallets_group, backup_group, network_row) = (&wallets_group, &backup_group, &network_row);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -250,6 +254,8 @@ impl SimpleComponent for Settings {
                     ZmqStatus::CantConnect { reason } => Some(reason.clone()),
                     _ => None,
                 };
+                // The GPU may have finished starting, or failed, since.
+                self.scan_line = self.engine.scan_engine(self.gpu_refused).line;
             }
             Input::Wallets(View(wallets)) => self.draw_wallets(&wallets, &sender),
             Input::Opened => {
@@ -304,16 +310,9 @@ impl SimpleComponent for Settings {
                 }
             }
             Input::ProfileLine(line) => self.profile_line = line,
-            Input::GpuFailed(failed) => self.scan_row.set_subtitle(if failed { "The graphics chip failed its check: using the main cores" } else { "" }),
-            Input::Scan(i) => {
-                let mode = match i {
-                    1 => ScanMode::Gpu,
-                    2 => ScanMode::Cpu,
-                    _ => ScanMode::Auto,
-                };
-                if let Err(e) = self.engine.set_scan(mode) {
-                    sender.input(Input::Say(e.to_string()));
-                }
+            Input::GpuFailed(failed) => {
+                self.gpu_refused = failed;
+                self.scan_line = self.engine.scan_engine(failed).line;
             }
             Input::Lock => self.engine.lock(),
             Input::ChangePassphrase => self.ask_new_passphrase(&sender),
