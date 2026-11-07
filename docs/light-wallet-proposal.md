@@ -404,12 +404,19 @@ different `R` by the same `a`. A server has the opposite shape: few new
   the GPU too and returns only tag hits, leaving the CPU one scalar
   multiplication per hit (one in 256 outputs per account). That is phase B;
   phase A is already a different class of server.
-- **One GPU, one process.** The engine's `OnceLock<Mutex<Gpu>>`, `warm_up`,
-  the self-test vectors, the 20–30 s shader compile with its pipeline cache,
-  `Mode::{Gpu, Auto, Cpu}` and the retire-on-failure path all carry over:
-  `monokulo-lws serve --scan gpu|cpu|auto --cache-dir …`. No GPU means the
-  same prefilter on CPU threads, which still beats one full scan per account
-  because nothing is hashed for accounts that can't own an output.
+- **One device, an arena per user of it.** The engine's `OnceLock<Mutex<Gpu>>`
+  holds the device *and* its one arena (the 39 MB state buffer, output
+  buffer, command buffer, fence) and keeps the lock for a whole batch. It
+  splits into a shared `Device` (instance, logical device, queues, pipeline
+  and cache, self-test) and per-caller `Arena`s of about 43 MB, the lock
+  shrinking to the `vkQueueSubmit` Vulkan requires per queue, or to nothing
+  where the GPU has several compute queues. Fob keeps one device and one
+  arena, unchanged. `warm_up`, the self-test vectors, the 20–30 s shader
+  compile with its pipeline cache, `Mode::{Gpu, Auto, Cpu}` and the
+  retire-on-failure path all carry over: `monokulo-lws serve --scan
+  gpu|cpu|auto --cache-dir …`. No GPU means the same prefilter on CPU
+  threads, which still beats one full scan per account because nothing is
+  hashed for accounts that can't own an output.
 
 What changes in `monokulo-lws`'s loop (`scanner.rs`):
 
@@ -437,7 +444,8 @@ keyring of every caught-up account and follows the tip; a *catch-up lane*
 fetches from the newcomer's start height with a keyring of only the
 accounts behind, takes in others as its cursor passes their start heights,
 and merges into the live keyring when it reaches the tip. One daemon
-connection (live first), one GPU (batches interleave), nothing new in the
+connection (live first), one GPU device with an arena per lane (about 43 MB
+each, so lanes never wait on each other's batch), nothing new in the
 database: an account's `scan_height` says which lane it is in. Fob sees
 `scanned_height` below `blockchain_height` until the merge, hence the
 "Server scanning from 2019" chip. Lanes are configurable
