@@ -2914,6 +2914,7 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      because it has two users, Fob and monokulo-lws, and depended on no other Fob
      crate; Monokular's `orf-codec` (4) is the precedent for shared code in its own
      repo. Behaviour is the same: the same tuning, the same `scan.spv`, Auto by
-     default, the same cache file. Until monokulo-8ar has a remote it's a path
-     dependency, relative to this checkout; then a git dependency pinned by rev, as
-     `orf-codec` is.
+     default, the same cache file. It is a git dependency on
+     `github.com/OceanEilonwy/monokulo-8ar` pinned by rev, as `orf-codec` is; the
+     repository is private, which cargo fetches through the same git credentials
+     as a push.

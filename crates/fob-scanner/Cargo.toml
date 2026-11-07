@@ -9,11 +9,8 @@ description = "Finds the blocks that may hold a wallet's money, quickly, for mon
 [dependencies]
 hex = "0.4"
 monero-wallet = "0.2"
-# The prefilter itself (decision 359). A path dependency until monokulo-8ar has a
-# remote; then a git dependency pinned by rev, as orf-codec is (decision 4). The
-# path is from this worktree (.claude/worktrees/light-wallet-proposal) to
-# ~/Downloads/monokulo-8ar.
-monokulo-8ar = { path = "../../../../../../monokulo-8ar/crates/monokulo-8ar" }
+# The prefilter itself (decision 359), pinned by rev as orf-codec is (decision 4).
+monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "27bfb4d" }
 
 [dev-dependencies]
 curve25519-dalek = { version = "4", features = ["precomputed-tables"] }

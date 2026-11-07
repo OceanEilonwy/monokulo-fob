@@ -1938,6 +1938,7 @@ dependencies = [
 [[package]]
 name = "monokulo-8ar"
 version = "0.1.0"
+source = "git+https://github.com/OceanEilonwy/monokulo-8ar?rev=27bfb4d#27bfb4d3b423ee17ebdbdb42fea42ba3bfbfb9c9"
 dependencies = [
  "ash",
  "curve25519-dalek",
