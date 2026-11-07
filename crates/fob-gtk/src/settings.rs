@@ -62,6 +62,7 @@ pub struct Settings {
     backup_rows: Vec<adw::ActionRow>,
     node_line: String,
     backup_line: String,
+    hub_key: String,
     currency_line: String,
     zmq_line: String,
     zmq_on: bool,
@@ -225,6 +226,7 @@ impl SimpleComponent for Settings {
             backup_rows: vec![],
             node_line: String::new(),
             backup_line: String::new(),
+            hub_key: String::new(),
             currency_line: String::new(),
             zmq_line: String::new(),
             zmq_on: false,
@@ -243,8 +245,9 @@ impl SimpleComponent for Settings {
         match input {
             Input::Screens(View(screens)) => {
                 self.node_line = screens.node_line.clone();
-                self.backup_line = screens.backup_line.clone();
                 self.currency_line = screens.prices.currency_text.clone();
+                // Backup and keys is drawn whole before Settings opens, not on opening.
+                self.fetch_hub(&sender);
             }
             Input::Status(View(status)) => {
                 self.zmq_line = status.zmq_text.clone();
@@ -259,11 +262,9 @@ impl SimpleComponent for Settings {
             }
             Input::Wallets(View(wallets)) => self.draw_wallets(&wallets, &sender),
             Input::Opened => {
+                self.fetch_hub(&sender);
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
-                    if let Some(hub) = engine.read(|wallet, _| async move { wallet.backup_hub(false).await }).await {
-                        sender.input(Input::Hub(View(hub.into())));
-                    }
                     if let Some(row) = engine.read(|wallet, _| async move { wallet.profile_row().await }).await {
                         sender.input(Input::ProfileLine(row.name.unwrap_or(row.title)));
                     }
@@ -388,7 +389,22 @@ impl Settings {
         }
     }
 
+    fn fetch_hub(&self, sender: &ComponentSender<Self>) {
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        relm4::spawn(async move {
+            if let Some(hub) = engine.read(|wallet, _| async move { wallet.backup_hub(false).await }).await {
+                sender.input(Input::Hub(View(hub.into())));
+            }
+        });
+    }
+
     fn draw_hub(&mut self, hub: &BackupHub, sender: &ComponentSender<Self>) {
+        // The same hub again changes nothing, so nothing is redrawn.
+        let key = format!("{}\n{}", hub.warning, hub.backup.iter().chain(&hub.other).map(|i| format!("{}|{}", i.title, i.line)).collect::<Vec<_>>().join("\n"));
+        if key == self.hub_key {
+            return;
+        }
+        self.hub_key = key;
         for row in self.backup_rows.drain(..) {
             self.backup_group.remove(&row);
         }
