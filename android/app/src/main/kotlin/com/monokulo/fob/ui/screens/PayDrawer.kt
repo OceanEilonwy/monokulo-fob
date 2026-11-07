@@ -36,6 +36,7 @@ import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.InfoRow
+import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.display
@@ -90,6 +91,7 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     val title = request?.recipientName?.let { "Pay $it" } ?: "Send"
     var failed by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
+    var checked by remember { mutableStateOf(false) }
     fun swiped() {
         val ready = prepared ?: return
         busy = true
@@ -114,8 +116,10 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         val fiat = prepared?.amountFiat ?: preview?.amountFiat
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, fontSize = 17.sp, fontWeight = FontWeight.Medium, modifier = Modifier.semantics { heading() })
-            Text(receipt?.total ?: "$amountText XMR", style = display(44), modifier = Modifier.padding(top = 4.dp))
-            if (receipt != null) Text("$amountText XMR", color = Fob.muted, fontSize = 16.sp) else fiat?.let { Text(it, color = Fob.muted, fontSize = 16.sp) }
+            // The XMR sent and Fob's own valuation first; the receipt's total is only what the code claims.
+            Text("$amountText XMR", style = display(44), modifier = Modifier.padding(top = 4.dp))
+            fiat?.let { Text(it, color = Fob.muted, fontSize = 16.sp) }
+            receipt?.let { Text("Receipt says ${it.total}", color = Fob.muted, fontSize = 14.sp) }
             request?.description?.let { Text(it, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
         }
         val to = prepared?.to ?: preview?.to ?: request?.address ?: ""
@@ -131,6 +135,10 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             Divider()
             InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
         }
+        // A total Fob's price disagrees with must be looked at before the swipe works.
+        val mismatch = receipt?.mismatch
+        mismatch?.let { Warning(it, title = "The receipt doesn't match the amount") }
+        if (mismatch != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
         else ErrorText(error)
         val label = when {
@@ -139,6 +147,6 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
             else -> "Swipe to send ${prepared!!.amountText} XMR"
         }
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (mismatch == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
     }
 }

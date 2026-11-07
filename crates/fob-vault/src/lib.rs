@@ -3,7 +3,11 @@
 
 pub mod db;
 pub mod error;
+pub mod files;
 pub mod keys;
+pub mod locked;
 pub mod passphrase;
+pub mod process;
+pub mod sealed;
 pub mod store;
 pub mod wallets;

@@ -7,6 +7,7 @@ impl Wallet {
         let state = State {
             node: keys.network.default_nodes()[0].to_owned(),
             node_self_signed: false,
+            node_pin: None,
             custom_nodes: vec![],
             gpu_checked_on: None,
             gpu_check_passed: false,

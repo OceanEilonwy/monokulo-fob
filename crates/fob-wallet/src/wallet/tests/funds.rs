@@ -31,6 +31,7 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
         pieces: None,
         back: vec![],
         recipient_name: None,
+        signed: None,
     };
     {
         let mut state = wallet.inner.state.lock().await;
@@ -118,7 +119,7 @@ async fn notes_go_with_payments_in_and_out() {
         let mut state = wallet.inner.state.lock().await;
         state.outputs.push(received("in", t, XMR / 2));
         state.outputs.push(Owned { key: "in-2".into(), output: "2".into(), ..received("in", t, XMR / 4) });
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
     }
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let shown = wallet.said_payment("in", clock).await.unwrap();
@@ -129,4 +130,29 @@ async fn notes_go_with_payments_in_and_out() {
     // A blank note forgets it.
     wallet.remember_receive_note(1, "").await.unwrap();
     assert_eq!(wallet.said_payment("in", clock).await.unwrap().party.as_deref(), Some("Address 1"));
+}
+
+/// Money locked to a time is kept, not dropped (audit #27), and ready once
+/// the chain's blocks, not the phone's clock, are that late.
+#[tokio::test]
+async fn money_locked_to_a_time_is_ready_once_the_chain_is_that_late() {
+    let wallet = Wallet::create(&dir("time-lock"), [1; 32], Network::Stagenet).unwrap();
+    let until = 1_800_000_000;
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.tip = 100;
+        state.last_block_time = until - 3_600;
+        state.outputs.push(Owned { unlock_block: until, ..received("later", 1, XMR) });
+    }
+    assert_eq!(wallet.balance().await, Balance { total: XMR, unlocked: 0 });
+    {
+        let state = wallet.inner.state.lock().await;
+        // An hour of two-minute blocks past the 90 it has.
+        assert_eq!(state.needed(&state.outputs[0]), 90 + 30);
+    }
+    wallet.inner.state.lock().await.last_block_time = until;
+    assert_eq!(wallet.balance().await, Balance { total: XMR, unlocked: XMR });
+    // A block lock is still a block lock.
+    wallet.inner.state.lock().await.outputs[0].unlock_block = 200;
+    assert_eq!(wallet.balance().await.unlocked, 0);
 }

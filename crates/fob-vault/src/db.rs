@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 5;
+const VERSION: i32 = 6;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -86,6 +86,8 @@ const WALLET: Table = Table {
         ("settled_confirmations", Int),
         ("pull_mark_height", Int),
         ("pull_mark_hash", Text),
+        // Since version 6.
+        ("node_pin", Text),
     ],
 };
 const RECENT: Table = Table { name: "recent_blocks", columns: &[("height", Int), ("hash", Text)] };
@@ -124,6 +126,8 @@ const SENT: Table = Table {
         // Since version 5.
         ("not_confirmed", Bool),
         ("released", Bool),
+        // Since version 6.
+        ("signed", Text),
     ],
 };
 const NOTES: Table = Table { name: "notes", columns: &[("subaddress", Int), ("note", Text)] };
@@ -413,6 +417,11 @@ pub struct Db {
 impl Db {
     fn connect(path: &Path, key: &[u8; 32]) -> Result<Connection> {
         let connection = Connection::open(path).map_err(failed)?;
+        // SQLCipher leaves freed memory as it was unless told otherwise, and
+        // that memory held the key and decrypted pages of keys and history.
+        // The setting is process-wide and can only be turned on, so it goes
+        // first, before the key is handed over.
+        connection.execute_batch("PRAGMA cipher_memory_security = ON;").map_err(failed)?;
         let keyed = Zeroizing::new(format!("PRAGMA key = \"x'{}'\";", hex::encode(key)));
         connection.execute_batch(&keyed).map_err(failed)?;
         // The first read is what finds out whether the key is right.
@@ -467,6 +476,11 @@ impl Db {
             let upgrade = "BEGIN;\nALTER TABLE sent ADD COLUMN not_confirmed INTEGER DEFAULT 0;\nALTER TABLE sent ADD COLUMN released INTEGER DEFAULT 0;\nPRAGMA user_version = 5;\nCOMMIT;";
             connection.execute_batch(upgrade).map_err(failed)?;
             version = 5;
+        }
+        if version == 5 {
+            let upgrade = "BEGIN;\nALTER TABLE sent ADD COLUMN signed TEXT;\nALTER TABLE wallet ADD COLUMN node_pin TEXT;\nPRAGMA user_version = 6;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 6;
         }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));
@@ -568,4 +582,24 @@ pub fn remove_files(path: &Path) -> Result<()> {
 /// Moves a closed database to `to`.
 pub fn rename(from: &Path, to: &Path) -> Result<()> {
     std::fs::rename(from, to).map_err(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::Keys;
+    use fob_monero::network::Network;
+
+    #[test]
+    fn freed_memory_is_wiped_once_a_wallet_is_open() {
+        let dir = std::env::temp_dir().join(format!("fob-db-wipe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.db");
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
+        let on: String = db.connection.query_row("PRAGMA cipher_memory_security", [], |row| row.get(0)).unwrap();
+        assert_eq!(on, "1");
+        db.close().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

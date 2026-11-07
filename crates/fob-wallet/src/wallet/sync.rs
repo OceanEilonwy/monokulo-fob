@@ -128,6 +128,7 @@ impl Wallet {
             // Caught up: show payments on their way before they're mined. The
             // pool is a nicety: a node that won't share it doesn't stop syncing.
             let _ = self.scan_pool(&rpc).await;
+            self.publish_unanswered(&rpc).await;
             self.check_quiet_payments(&rpc).await;
             // And keep the decoy data current, so a payment is quick to prepare.
             if self.can_spend() {
@@ -260,6 +261,12 @@ impl Wallet {
         let in_pool: HashSet<String> = hashes.iter().cloned().collect();
         self.inner.pool.lock().expect("pool lock").retain(|tx, _| in_pool.contains(tx));
         self.inner.pool_seen.lock().expect("pool lock").retain(|tx| in_pool.contains(tx));
+        {
+            let mut state = self.inner.state.lock().await;
+            if pool_left(&mut state, &in_pool) {
+                self.save_state(&state)?;
+            }
+        }
 
         let ours: HashSet<String> = self.inner.state.lock().await.sent.iter().map(|s| s.tx.clone()).collect();
         let new: Vec<[u8; 32]> = {
@@ -285,6 +292,15 @@ impl Wallet {
             }
         };
         let txs = rpc.transactions(&new).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+        // Spending this wallet's coins, however it got there: a payment the
+        // node gave Fob no answer for, or one from another wallet with these keys.
+        let spending: Vec<(String, Vec<[u8; 32]>)> = new.iter().zip(&txs).map(|(hash, tx)| (hex::encode(hash), spent_images(tx))).collect();
+        {
+            let mut state = self.inner.state.lock().await;
+            if pool_spends(&mut state, &spending) {
+                self.save_state(&state)?;
+            }
+        }
         let miner = block.miner_transaction().hash();
         block.transactions = new.clone();
         let stand_in = monero_wallet::interface::ScannableBlock {
@@ -359,6 +375,9 @@ impl Wallet {
         }
         state.recent = anchor.into_iter().collect();
         state.next_block = from;
+        // A pool payment's coins just freed above are marked again by the
+        // next look at the pool, which looks at every transaction afresh.
+        self.inner.pool_seen.lock().expect("pool lock").clear();
         *self.inner.pipeline.lock().await = None;
         self.save_state(&state)
     }
@@ -559,6 +578,7 @@ impl Wallet {
                 // It went through after all.
                 state.sent[i].not_confirmed = false;
                 state.sent[i].released = false;
+                state.sent[i].signed = None;
                 changed = true;
                 ours = true;
             }
@@ -579,13 +599,14 @@ impl Wallet {
         }
 
         for output in scanned.found {
-            // Locked to a block (a mined reward, rarely anything else):
-            // kept, and not spent before then. Locked to a time: not
-            // kept, as before, since a phone's clock can't say when.
+            // Locked to a block (a mined reward, rarely anything else) or to
+            // a time: kept, and not spent before then. A time is kept as
+            // Monero writes it, past the highest block number; it's judged
+            // by the chain's own clock, the blocks' times, not the phone's.
             let unlock_block = match output.additional_timelock() {
                 Timelock::None => 0,
                 Timelock::Block(block) => block as u64,
-                Timelock::Time(_) => continue,
+                Timelock::Time(time) => time.max(state::TIME_LOCK_FROM),
             };
             let tx = hex::encode(output.transaction());
             let key = hex::encode(output.key().compress().to_bytes());
@@ -669,6 +690,53 @@ fn hash_bytes(text: &str) -> Option<[u8; 32]> {
     hex::decode(text).ok()?.try_into().ok()
 }
 
+/// The key images of the coins `tx` spends.
+fn spent_images(tx: &monero_wallet::transaction::Transaction) -> Vec<[u8; 32]> {
+    use monero_wallet::transaction::Input;
+    tx.prefix()
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::ToKey { key_image, .. } => Some(key_image.to_bytes()),
+            Input::Gen(_) => None,
+        })
+        .collect()
+}
+
+/// Marks the coins pool transactions spend, from each transaction's hash and
+/// the key images it spends, as wallet2 does: a payment in the pool holds its
+/// coins until it's mined or leaves. Whether any was marked.
+pub(super) fn pool_spends(state: &mut State, spending: &[(String, Vec<[u8; 32]>)]) -> bool {
+    let mut changed = false;
+    for output in state.outputs.iter_mut().filter(|o| o.spent_in.is_none()) {
+        let Some(image) = output.key_image.as_deref().and_then(hash_bytes) else { continue };
+        if let Some((tx, _)) = spending.iter().find(|(_, images)| images.contains(&image)) {
+            output.spent_in = Some(tx.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Frees the coins [`pool_spends`] marked for a transaction no longer in the
+/// pool (`in_pool`) that the wallet hasn't seen mined or sent: it left without
+/// being mined. One mined in a block not yet scanned is marked again when the
+/// scan gets there. Whether any was freed.
+pub(super) fn pool_left(state: &mut State, in_pool: &HashSet<String>) -> bool {
+    let known: HashSet<&str> = state.spends.iter().map(|s| s.tx.as_str()).chain(state.sent.iter().map(|s| s.tx.as_str())).collect();
+    let left: Vec<usize> = state
+        .outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.spent_in.as_deref().is_some_and(|tx| !known.contains(tx) && !in_pool.contains(tx)))
+        .map(|(i, _)| i)
+        .collect();
+    for &i in &left {
+        state.outputs[i].spent_in = None;
+    }
+    !left.is_empty()
+}
+
 /// How far back a reorganisation reaches, against the hashes kept.
 #[derive(Debug, PartialEq)]
 pub(super) enum ReorgReach {
@@ -688,13 +756,29 @@ pub(super) fn reorg_reach(oldest: u64, still_on_chain: bool, wallet_start: u64) 
     }
 }
 
+/// Why a payment wasn't published.
+#[derive(Debug)]
+pub(super) enum Unpublished {
+    /// The node turned it down, or was never reached: nothing left the wallet.
+    Refused(FobError),
+    /// The node gave no answer to go on (it timed out, the line dropped
+    /// mid-answer): it may have taken the payment and passed it on.
+    Unsure,
+}
+
 /// Why publishing failed. With Manual Sync on, a refusal may mean a coin was
 /// spent since the last scan, whatever words the node used, so it's told apart.
-pub(super) fn publish_failure(e: monero_wallet::interface::PublishTransactionError, manual_sync: bool) -> FobError {
+/// Only the node's own refusal, or a request that never reached it, says the
+/// payment didn't go.
+pub(super) fn publish_failure(e: monero_wallet::interface::PublishTransactionError, manual_sync: bool) -> Unpublished {
     use monero_wallet::interface::PublishTransactionError as E;
     match e {
         // Many nodes give no reason.
-        E::TransactionRejected(reason) if manual_sync => FobError::SpendRejected(if reason.trim().is_empty() { String::new() } else { format!(": {}", reason.trim()) }),
-        e => FobError::Node(format!("{e:?}")),
+        E::TransactionRejected(reason) if manual_sync => Unpublished::Refused(FobError::SpendRejected(if reason.trim().is_empty() { String::new() } else { format!(": {}", reason.trim()) })),
+        e @ E::TransactionRejected(_) => Unpublished::Refused(FobError::Node(format!("{e:?}"))),
+        e => {
+            let text = format!("{e:?}");
+            if transport::never_reached(&text) { Unpublished::Refused(FobError::Node(text)) } else { Unpublished::Unsure }
+        }
     }
 }

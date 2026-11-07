@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::error::{Result, VaultError};
+use crate::locked::Locked;
+use crate::sealed::Sealed;
 use fob_monero::error::MoneroError;
 use fob_monero::network::Network;
 
@@ -37,14 +39,20 @@ impl SeedKind {
 }
 
 /// The secrets a wallet holds. A view-only wallet has no spend key.
+///
+/// The view key, needed all the time to scan, is on locked pages ([`Locked`]).
+/// The spend key and seed phrase are kept [`Sealed`] and opened only for the
+/// moment each is used: see [`sealed`](crate::sealed) for what that does and
+/// doesn't stop.
 #[derive(Clone)]
 pub struct Keys {
     pub network: Network,
-    spend: Option<Zeroizing<Scalar>>,
-    view: Zeroizing<Scalar>,
+    /// The spend key's 32 bytes.
+    spend: Option<Sealed>,
+    view: Locked<Scalar>,
     spend_pub: Point,
     /// The seed phrase, kept so Backup can show it again.
-    seed: Option<(SeedKind, Zeroizing<String>)>,
+    seed: Option<(SeedKind, Sealed)>,
 }
 
 /// What restoring from words found: the keys and, for a Polyseed, when the
@@ -54,8 +62,8 @@ pub struct Restored {
     pub birthday: Option<u64>,
 }
 
-fn reduce(bytes: &[u8; 32]) -> Scalar {
-    Scalar::from(curve25519_dalek::Scalar::from_bytes_mod_order(*bytes))
+fn reduce(bytes: &[u8; 32]) -> Zeroizing<Scalar> {
+    Zeroizing::new(Scalar::from(curve25519_dalek::Scalar::from_bytes_mod_order(*bytes)))
 }
 
 fn public(secret: &Scalar) -> Point {
@@ -75,10 +83,21 @@ fn parse_scalar(hex_key: &str) -> Result<Zeroizing<Scalar>> {
     Scalar::read(&mut bytes.as_slice()).map(Zeroizing::new).map_err(|_| VaultError::BadKey)
 }
 
+fn seal_scalar(s: &Scalar) -> Sealed {
+    Sealed::seal(&*scalar_bytes(s))
+}
+
 impl Keys {
-    fn from_spend(network: Network, spend: Scalar, seed: Option<(SeedKind, Zeroizing<String>)>) -> Keys {
-        let view = Scalar::hash(*scalar_bytes(&spend));
-        Keys { network, spend_pub: public(&spend), spend: Some(Zeroizing::new(spend)), view: Zeroizing::new(view), seed }
+    fn from_spend(network: Network, spend: Zeroizing<Scalar>, seed: Option<(SeedKind, Zeroizing<String>)>) -> Keys {
+        let view = Locked::new(Scalar::hash(*scalar_bytes(&spend)));
+        let seed = seed.map(|(kind, words)| (kind, Sealed::seal(words.as_bytes())));
+        Keys { network, spend_pub: public(&spend), spend: Some(seal_scalar(&spend)), view, seed }
+    }
+
+    /// The spend key, opened from its seal, or `None` for a view-only wallet.
+    fn open_spend(&self) -> Option<Zeroizing<Scalar>> {
+        let bytes = self.spend.as_ref()?.open().ok()?;
+        Scalar::read(&mut bytes.as_slice()).ok().map(Zeroizing::new)
     }
 
     /// A brand new wallet, with a 16-word Polyseed. Returns its birthday too.
@@ -94,7 +113,10 @@ impl Keys {
     /// Words someone typed or scanned: a 16-word Polyseed or a 25-word seed,
     /// in English.
     pub fn from_words(network: Network, words: &str) -> Result<Restored> {
-        let words = Zeroizing::new(words.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>().join(" "));
+        // Each lowercased word is a copy of part of the seed, so the list is
+        // wiped too, not just the phrase made from it.
+        let lowered = Zeroizing::new(words.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>());
+        let words = Zeroizing::new(lowered.join(" "));
         match words.split(' ').count() {
             16 => {
                 let seed = Polyseed::from_string(PolyLanguage::English, words.clone()).map_err(|_| VaultError::BadSeed)?;
@@ -118,7 +140,7 @@ impl Keys {
     /// from it; if the code gave one too, it must match.
     pub fn from_spend_key(network: Network, spend_hex: &str, view_hex: Option<&str>) -> Result<Keys> {
         let spend = parse_scalar(spend_hex)?;
-        let keys = Keys::from_spend(network, *spend, None);
+        let keys = Keys::from_spend(network, spend, None);
         if let Some(view_hex) = view_hex
             && *parse_scalar(view_hex)? != *keys.view
         {
@@ -137,15 +159,20 @@ impl Keys {
         if public(&view) != address.view() {
             return Err(VaultError::BadKey);
         }
-        Ok(Keys { network, spend: None, view, spend_pub: address.spend(), seed: None })
+        Ok(Keys { network, spend: None, view: Locked::new(*view), spend_pub: address.spend(), seed: None })
     }
 
     pub fn can_spend(&self) -> bool {
         self.spend.is_some()
     }
 
-    pub fn spend(&self) -> Result<&Zeroizing<Scalar>> {
-        self.spend.as_ref().ok_or(VaultError::ViewOnly)
+    /// The spend key, opened from its seal for the caller to sign with: a copy,
+    /// wiped when the caller drops it. Keep it no longer than the signing.
+    pub fn spend(&self) -> Result<Zeroizing<Scalar>> {
+        match &self.spend {
+            None => Err(VaultError::ViewOnly),
+            Some(_) => self.open_spend().ok_or(VaultError::BadKey),
+        }
     }
 
     /// The view key's bytes, for the prefilter.
@@ -154,7 +181,7 @@ impl Keys {
     }
 
     pub fn view_pair(&self) -> ViewPair {
-        ViewPair::new(self.spend_pub, self.view.clone()).expect("a wallet's own keys make a view pair")
+        ViewPair::new(self.spend_pub, Zeroizing::new(*self.view)).expect("a wallet's own keys make a view pair")
     }
 
     pub fn primary_address(&self) -> String {
@@ -181,15 +208,18 @@ impl Keys {
     /// The seed phrase to show in Backup. A wallet restored from a spend key
     /// still has 25 words: they encode the same key.
     pub fn seed_words(&self) -> Option<(SeedKind, Zeroizing<String>)> {
-        if let Some(seed) = &self.seed {
-            return Some(seed.clone());
+        if let Some((kind, sealed)) = &self.seed {
+            let mut bytes = sealed.open().ok()?;
+            // Takes the opened buffer as it is, so no copy of the words is left unwiped.
+            let words = String::from_utf8(std::mem::take(&mut *bytes)).ok()?;
+            return Some((*kind, Zeroizing::new(words)));
         }
-        let spend = self.spend.as_ref()?;
-        Seed::from_entropy(SeedLanguage::English, scalar_bytes(spend)).map(|s| (SeedKind::Classic, s.to_string()))
+        let spend = self.open_spend()?;
+        Seed::from_entropy(SeedLanguage::English, scalar_bytes(&spend)).map(|s| (SeedKind::Classic, s.to_string()))
     }
 
     pub fn spend_key_hex(&self) -> Option<Zeroizing<String>> {
-        self.spend.as_ref().map(|s| Zeroizing::new(hex::encode(*scalar_bytes(s))))
+        self.open_spend().map(|s| Zeroizing::new(hex::encode(*scalar_bytes(&s))))
     }
 
     pub fn view_key_hex(&self) -> Zeroizing<String> {
@@ -209,8 +239,8 @@ impl Keys {
     /// The key image an output with this one-time `key` and `key_offset`
     /// shows when spent; `None` for a view-only wallet.
     pub fn key_image(&self, key: Point, key_offset: Scalar) -> Option<[u8; 32]> {
-        let spend = self.spend.as_ref()?;
-        let secret = Zeroizing::new((**spend).into() + key_offset.into());
+        let spend = self.open_spend()?;
+        let secret = Zeroizing::new((*spend).into() + key_offset.into());
         let image = Point::from(*secret * Point::biased_hash(key.compress().to_bytes()).into());
         Some(image.compress().to_bytes())
     }
@@ -233,7 +263,9 @@ impl From<&Keys> for StoredKeys {
             spend: keys.spend_key_hex().map(|s| s.to_string()),
             view: keys.view_key_hex().to_string(),
             spend_pub: keys.public_spend_key_hex(),
-            seed: keys.seed.as_ref().map(|(kind, words)| (*kind, words.to_string())),
+            // Only a seeded wallet has its words kept; one from a spend key shows
+            // the 25 words that encode it, made again each time.
+            seed: keys.seed.as_ref().and(keys.seed_words()).map(|(kind, words)| (kind, words.to_string())),
         }
     }
 }
@@ -279,18 +311,19 @@ impl StoredKeys {
     }
 
     pub fn into_keys(self) -> Result<Keys> {
-        let stored = Zeroizing::new(self);
+        let stored = self;
         let view = parse_scalar(&stored.view)?;
-        let spend = stored.spend.as_deref().map(parse_scalar).transpose()?;
+        // Sealed as soon as it's read; the parsed copy is wiped here.
+        let spend = stored.spend.as_deref().map(parse_scalar).transpose()?.map(|s| seal_scalar(&s));
         let spend_pub_bytes: [u8; 32] =
             hex::decode(&stored.spend_pub).ok().and_then(|b| b.try_into().ok()).ok_or(VaultError::BadKey)?;
         let spend_pub = monero_wallet::ed25519::CompressedPoint::from(spend_pub_bytes).decompress().ok_or(VaultError::BadKey)?;
         Ok(Keys {
             network: stored.network,
             spend,
-            view,
+            view: Locked::new(*view),
             spend_pub,
-            seed: stored.seed.as_ref().map(|(kind, words)| (*kind, Zeroizing::new(words.clone()))),
+            seed: stored.seed.as_ref().map(|(kind, words)| (*kind, Sealed::seal(words.as_bytes()))),
         })
     }
 }
@@ -304,6 +337,16 @@ impl zeroize::Zeroize for StoredKeys {
         }
     }
 }
+
+// Every StoredKeys is wiped when it goes, including the short-lived ones
+// made to write the keys or compare them with another wallet's.
+impl Drop for StoredKeys {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for StoredKeys {}
 
 #[cfg(test)]
 mod tests {
@@ -419,6 +462,38 @@ mod tests {
             assert_eq!(key.len(), 64);
         }
         assert_eq!(keys.primary_address().len(), 95, "the whole address, not cut");
+    }
+
+    #[test]
+    fn the_spend_key_is_kept_sealed_and_opens_to_the_same_key() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let spend = keys.spend().unwrap();
+        assert_eq!(hex::encode(<[u8; 32]>::from(*spend)), "c0af65c0dd837e666b9d0dfed62745f4df35aed7ea619b2798a709f0fe545403");
+        // Neither the key nor the words are held as they are.
+        let raw = <[u8; 32]>::from(*spend);
+        let Some(sealed) = &keys.spend else { panic!("a spend key") };
+        assert!(!format!("{sealed:?}").contains("c0af"));
+        let opened = sealed.open().unwrap();
+        assert_eq!(opened.as_slice(), raw);
+        let (_, words) = keys.seed.as_ref().unwrap();
+        assert_eq!(words.open().unwrap().as_slice(), CLASSIC.split_whitespace().collect::<Vec<_>>().join(" ").as_bytes());
+        // A copy opens alike, and through the wallet file it's sealed again.
+        assert_eq!(*keys.clone().spend().unwrap(), *spend);
+        let back = serde_json::from_str::<StoredKeys>(&serde_json::to_string(&StoredKeys::from(&keys)).unwrap()).unwrap().into_keys().unwrap();
+        assert_eq!(*back.spend().unwrap(), *spend);
+        assert_eq!(back.seed_words().unwrap().1, keys.seed_words().unwrap().1);
+        // A wallet from a spend key keeps no words, as before.
+        let bare = Keys::from_spend_key(Network::Mainnet, &keys.spend_key_hex().unwrap(), None).unwrap();
+        assert!(serde_json::to_value(StoredKeys::from(&bare)).unwrap()["seed"].is_null());
+    }
+
+    #[test]
+    fn a_view_only_wallet_has_no_spend_key_to_open() {
+        let full = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let watch = Keys::view_only(Network::Mainnet, &full.primary_address(), &full.view_key_hex()).unwrap();
+        assert!(matches!(watch.spend(), Err(VaultError::ViewOnly)));
+        assert!(watch.key_image(full.view_pair().spend(), Scalar::hash([1; 32])).is_none());
+        assert!(full.key_image(full.view_pair().spend(), Scalar::hash([1; 32])).is_some());
     }
 
     #[test]

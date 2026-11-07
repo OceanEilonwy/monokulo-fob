@@ -39,6 +39,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -84,8 +85,15 @@ fun fieldColors() = OutlinedTextFieldDefaults.colors(
 @Composable
 fun Field(
     value: String, onChange: (String) -> Unit, label: String, mono: Boolean = false, lines: Int = 1, hint: String? = null,
-    placeholder: String? = null, prose: Boolean = false, icon: String? = null,
+    placeholder: String? = null, prose: Boolean = false, icon: String? = null, secret: Boolean = false,
 ) {
+    // A secret (seed words, a private key) is typed into a password field,
+    // still shown in full, so the keyboard neither suggests nor learns it.
+    val keyboard = when {
+        secret -> KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Password)
+        prose -> KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
+        else -> KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false)
+    }
     // Focused, the whole field and its hint show above the keyboard once it is up.
     val whole = androidx.compose.runtime.remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -97,7 +105,7 @@ fun Field(
             shape = RoundedCornerShape(16.dp), colors = fieldColors(),
             modifier = Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) scope.launch { kotlinx.coroutines.delay(350); whole.bringIntoView() } },
             textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default),
-            keyboardOptions = if (prose) KeyboardOptions(capitalization = KeyboardCapitalization.Sentences) else KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
+            keyboardOptions = keyboard,
         )
         if (hint != null) Text(hint, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
     }
@@ -190,7 +198,11 @@ private fun Point(path: String, title: String, text: String) {
 fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
     NoScreenshots()
     val wallet by model.wallet.collectAsState()
-    val seed = remember(wallet) { wallet?.seedPhrase() }
+    // The words come as bytes, zeroed as soon as they're words: the strings
+    // can't be wiped, so they live only as long as this screen.
+    val seed = remember(wallet) {
+        wallet?.seedPhrase()?.let { s -> String(s.phrase, Charsets.UTF_8).split(' ').also { s.phrase.fill(0) } }
+    }
     val scope = rememberCoroutineScope()
     // Home's reminder brings you here until the words are said to be written down.
     val reminder by model.reminder.collectAsState()
@@ -212,7 +224,7 @@ fun BackupScreen(model: WalletModel, nav: Nav, afterCreate: Boolean) {
                 Text("This wallet only watches, so it has no seed phrase.", color = Fob.muted, fontSize = 16.sp, lineHeight = 22.sp)
             } else {
                 reminder?.let { Warning(it.seedWarning) }
-                Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed.words) }
+                Card(padding = androidx.compose.foundation.layout.PaddingValues(16.dp)) { SeedWords(seed) }
             }
         }
     }
@@ -309,13 +321,14 @@ private fun Restoring(model: WalletModel, nav: Nav, label: String, enabled: Bool
 
 @Composable
 fun RestoreSeedScreen(model: WalletModel, nav: Nav) {
+    NoScreenshots()
     var words by remember { mutableStateOf("") }
     var start by remember { mutableStateOf("") }
     val count = words.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
     Restoring(model, nav, "Restore wallet", count == 16 || count == 25, { restoreWords(words, start.ifBlank { null }) }) {
         TopBar("Type your seed phrase", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Field(words, { words = it }, "Seed phrase", lines = 4, hint = "$count of 16 or 25 words")
+            Field(words, { words = it }, "Seed phrase", lines = 4, hint = "$count of 16 or 25 words", secret = true)
             Field(start, { start = it }, "Start from (optional)", hint = if (count == 16) "A 16-word seed knows when it was made; leave this empty." else START_HINT)
         }
     }
@@ -323,6 +336,7 @@ fun RestoreSeedScreen(model: WalletModel, nav: Nav) {
 
 @Composable
 fun RestoreViewOnlyScreen(model: WalletModel, nav: Nav) {
+    NoScreenshots()
     var address by remember { mutableStateOf("") }
     var key by remember { mutableStateOf("") }
     var start by remember { mutableStateOf("") }
@@ -330,7 +344,7 @@ fun RestoreViewOnlyScreen(model: WalletModel, nav: Nav) {
         TopBar("View-only wallet", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Field(address, { address = it }, "Primary address", mono = true, lines = 3)
-            Field(key, { key = it }, "Private view key", mono = true, lines = 2)
+            Field(key, { key = it }, "Private view key", mono = true, lines = 2, secret = true)
             Field(start, { start = it }, "Start from (optional)", hint = START_HINT)
         }
     }
@@ -338,6 +352,8 @@ fun RestoreViewOnlyScreen(model: WalletModel, nav: Nav) {
 
 @Composable
 fun RestoreScanScreen(model: WalletModel, nav: Nav) {
+    // The camera preview shows the wallet code, spend key and all.
+    NoScreenshots()
     val network by model.network.collectAsState()
     var notice by remember { mutableStateOf<String?>(null) }
     Box(Modifier.fillMaxSize().background(Fob.camera)) {
@@ -367,6 +383,7 @@ fun RestoreScanScreen(model: WalletModel, nav: Nav) {
 
 @Composable
 fun RestoreFoundScreen(model: WalletModel, nav: Nav, code: String) {
+    NoScreenshots()
     val network by model.network.collectAsState()
     val preview = remember(code) { runCatching { previewWalletCode(network, code) } }
     var start by remember { mutableStateOf("") }

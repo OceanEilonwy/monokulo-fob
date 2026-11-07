@@ -11,6 +11,106 @@ pub fn read_code(width: usize, height: usize, grey: &[u8]) -> Option<String> {
     image.detect_grids().into_iter().find_map(|grid| grid.decode().ok().map(|(_, text)| text))
 }
 
+/// How big a picture may be before a client hands it to a decoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub bytes: usize,
+    /// The longer side, in pixels.
+    pub side: u32,
+    pub pixels: u64,
+}
+
+/// A picture of someone's code: it comes from someone else, so it's held to
+/// what a screenshot or a photo of a QR code needs. 4096 × 4096 is 64 MiB as
+/// RGBA, the most a decoder is let allocate for one.
+pub const CODE_PICTURE: Limits = Limits { bytes: 4 << 20, side: 4096, pixels: 4096 * 4096 };
+
+/// A picture of your own, made into your photo: a phone camera's full size
+/// passes, a decompression bomb doesn't.
+pub const OWN_PHOTO: Limits = Limits { bytes: 32 << 20, side: 12_000, pixels: 50_000_000 };
+
+/// Whether `bytes` is a picture within `limits`, by the size its header says.
+///
+/// A desktop decodes pictures with the system's C libraries (GDK, gdk-pixbuf),
+/// which Fob doesn't replace. What it can do is hand them only small pictures in
+/// formats whose size it can read first: PNG, JPEG, GIF, WebP and BMP. Anything
+/// else, TIFF and the rest of gdk-pixbuf's loaders among them, is refused, as
+/// a code is never sent that way.
+pub fn picture_fits(bytes: &[u8], limits: Limits) -> bool {
+    if bytes.len() > limits.bytes {
+        return false;
+    }
+    picture_size(bytes).is_some_and(|(width, height)| width > 0 && height > 0 && width.max(height) <= limits.side && u64::from(width) * u64::from(height) <= limits.pixels)
+}
+
+/// The width and height a picture's header gives, for the formats [`picture_fits`] takes.
+pub fn picture_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let be32 = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    let le16 = |at: usize| Some(u32::from(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?)));
+    let le24 = |at: usize| Some(u32::from_le_bytes([*bytes.get(at)?, *bytes.get(at + 1)?, *bytes.get(at + 2)?, 0]));
+    let le32 = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.get(12..16) == Some(b"IHDR") {
+        return Some((be32(16)?, be32(20)?));
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some((le16(6)?, le16(8)?));
+    }
+    if bytes.starts_with(b"BM") {
+        // Height is negative for a picture stored top down.
+        return Some((le32(18)?, (le32(22)? as i32).unsigned_abs()));
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        return match bytes.get(12..16)? {
+            b"VP8 " if bytes.get(23..26) == Some(&[0x9d, 0x01, 0x2a]) => Some((le16(26)? & 0x3fff, le16(28)? & 0x3fff)),
+            b"VP8L" if bytes.get(20) == Some(&0x2f) => {
+                let bits = le32(21)?;
+                Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+            }
+            b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
+            _ => None,
+        };
+    }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        return jpeg_size(bytes);
+    }
+    None
+}
+
+/// A JPEG's size, from its first start-of-frame marker.
+fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut at = 2;
+    loop {
+        // Markers may be padded with any number of 0xFF.
+        while *bytes.get(at)? == 0xff && *bytes.get(at + 1)? == 0xff {
+            at += 1;
+        }
+        if *bytes.get(at)? != 0xff {
+            return None;
+        }
+        let marker = *bytes.get(at + 1)?;
+        at += 2;
+        match marker {
+            // Markers with no length.
+            0x01 | 0xd0..=0xd7 => continue,
+            // End of image, or the scan begun, with no frame seen.
+            0xd9 | 0xda => return None,
+            // Every start of frame, but DHT (C4), JPG (C8) and DAC (CC).
+            0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
+                let height = u16::from_be_bytes(bytes.get(at + 3..at + 5)?.try_into().ok()?);
+                let width = u16::from_be_bytes(bytes.get(at + 5..at + 7)?.try_into().ok()?);
+                return Some((u32::from(width), u32::from(height)));
+            }
+            _ => {
+                let length = usize::from(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+                if length < 2 {
+                    return None;
+                }
+                at += length;
+            }
+        }
+    }
+}
+
 /// (side, WebP quality) tried in turn until the photo fits: quality 90 down to
 /// 40 at the larger sides, and only when none fits, lower ones and smaller
 /// sides, so a busy photo fits without every other one going blocky.
@@ -132,6 +232,45 @@ mod tests {
     fn a_code_in_a_picture_is_read() {
         let (side, grey) = drawn("monero:hello");
         assert_eq!(read_code(side, side, &grey).as_deref(), Some("monero:hello"));
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        bytes.extend(width.to_be_bytes());
+        bytes.extend(height.to_be_bytes());
+        bytes.extend([8, 6, 0, 0, 0]);
+        bytes
+    }
+
+    fn jpeg(width: u16, height: u16) -> Vec<u8> {
+        // SOI, an APP0 segment to skip, then a baseline frame.
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x4a, 0x46, 0xff, 0xc0, 0x00, 0x11, 0x08];
+        bytes.extend(height.to_be_bytes());
+        bytes.extend(width.to_be_bytes());
+        bytes.extend([3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        bytes
+    }
+
+    #[test]
+    fn a_picture_is_held_to_its_limits_before_it_is_decoded() {
+        assert_eq!(picture_size(&png(640, 480)), Some((640, 480)));
+        assert_eq!(picture_size(&jpeg(1024, 768)), Some((1024, 768)));
+        assert_eq!(picture_size(b"GIF89a\x20\x00\x10\x00"), Some((32, 16)));
+        assert!(picture_fits(&png(640, 480), CODE_PICTURE));
+        assert!(picture_fits(&jpeg(4000, 3000), CODE_PICTURE));
+        // A decompression bomb says how big it is before it says anything else.
+        assert!(!picture_fits(&png(30_000, 30_000), CODE_PICTURE));
+        assert!(!picture_fits(&png(30_000, 30_000), OWN_PHOTO));
+        assert!(!picture_fits(&jpeg(5000, 100), CODE_PICTURE), "too long a side");
+        assert!(picture_fits(&jpeg(8000, 6000), OWN_PHOTO), "a camera's own size");
+        assert!(!picture_fits(&png(0, 10), OWN_PHOTO));
+        let mut big = png(100, 100);
+        big.resize(CODE_PICTURE.bytes + 1, 0);
+        assert!(!picture_fits(&big, CODE_PICTURE), "too many bytes");
+        // Formats whose size isn't read first aren't handed on.
+        assert!(!picture_fits(b"II*\0\x08\0\0\0", OWN_PHOTO), "TIFF");
+        assert!(!picture_fits(b"not a picture", OWN_PHOTO));
+        assert!(!picture_fits(&[0xff, 0xd8, 0xff, 0xda], OWN_PHOTO), "a JPEG with no frame");
     }
 
     #[test]

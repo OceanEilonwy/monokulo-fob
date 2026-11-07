@@ -15,7 +15,7 @@ use std::{
 use fob_ffi::{
     Contact, FobError, FobWallet, Network, PriceRetry, PriceToast, Prepared, PullOutcome, ScanMode, ScannedProfile, Screens, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode, wallets_on,
 };
-use fob_wallet::passphrase;
+use fob_wallet::{files, passphrase};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -142,11 +142,12 @@ pub struct Engine {
 struct Observer(std::sync::Weak<Inner>);
 
 impl SyncObserver for Observer {
-    fn on_status(&self, status: SyncStatus) {
-        let Some(inner) = self.0.upgrade() else { return };
+    fn on_status(&self, status: SyncStatus) -> Result<(), FobError> {
+        let Some(inner) = self.0.upgrade() else { return Ok(()) };
         inner.listener.on_update(Update::Status(Arc::new(status)));
         let engine = Engine { inner };
         fob_wallet::runtime().spawn(async move { engine.refresh().await });
+        Ok(())
     }
 }
 
@@ -210,8 +211,8 @@ impl Engine {
 
     fn save_settings(&self) -> Result<(), FobError> {
         let text = serde_json::to_vec_pretty(&*self.inner.settings.lock().expect("settings lock")).map_err(|e| FobError::Other { reason: e.to_string() })?;
-        std::fs::create_dir_all(self.dir()).map_err(|e| FobError::Other { reason: e.to_string() })?;
-        std::fs::write(self.dir().join("settings.json"), text).map_err(|e| FobError::Other { reason: e.to_string() })
+        // Only this user's: which network and how soon it locks are nobody else's business.
+        files::write_private(&self.dir().join("settings.json"), &text).map_err(|e| FobError::Other { reason: e.to_string() })
     }
 
     /// Runs on the wallet's runtime, where its background work lives, wherever it's awaited from.
@@ -308,8 +309,8 @@ impl Engine {
     }
 
     async fn unlocked(&self, key: Zeroizing<[u8; 32]>) -> Result<(), FobError> {
-        std::fs::create_dir_all(self.dir()).map_err(|e| FobError::Other { reason: e.to_string() })?;
-        let book = WalletList::open(self.dir_text(), key.to_vec())?;
+        files::private_dir(self.dir()).map_err(|e| FobError::Other { reason: e.to_string() })?;
+        let book = WalletList::open(self.dir_text(), Self::key_for_ffi(&key))?;
         *self.inner.open.lock().expect("open lock") = Some(Open { book, key, wallet: None, current: None });
         self.touched();
         self.open_current().await;
@@ -318,10 +319,18 @@ impl Engine {
 
     // ---- Which wallet
 
-    fn parts(&self) -> Result<(Arc<WalletList>, Vec<u8>), FobError> {
+    fn parts(&self) -> Result<(Arc<WalletList>, Zeroizing<[u8; 32]>), FobError> {
         let open = self.inner.open.lock().expect("open lock");
         let open = open.as_ref().ok_or_else(|| FobError::Other { reason: "locked".into() })?;
-        Ok((open.book.clone(), open.key.to_vec()))
+        Ok((open.book.clone(), open.key.clone()))
+    }
+
+    /// The file key as `fob-ffi` takes it, by value as a `Vec` because that's
+    /// what crosses to Kotlin too. The copy is made only at the call, and `fob-ffi`
+    /// drops it there, where its allocator wipes freed memory; everywhere else
+    /// in here the key stays `Zeroizing`.
+    fn key_for_ffi(key: &Zeroizing<[u8; 32]>) -> Vec<u8> {
+        key.to_vec()
     }
 
     fn publish_wallets(&self) {
@@ -357,7 +366,7 @@ impl Engine {
         };
         self.set_phase(Phase::Opening);
         let path = book.path(entry.file.clone());
-        match FobWallet::open(path, key) {
+        match FobWallet::open(path, Self::key_for_ffi(&key)) {
             Ok(wallet) => self.use_wallet(wallet, entry).await,
             Err(e) => self.set_phase(Phase::Failed(e.to_string())),
         }
@@ -394,7 +403,7 @@ impl Engine {
             let (book, key) = this.parts()?;
             book.check_name(name.clone())?;
             let file = book.new_file(network);
-            let wallet = make(book.path(file.clone()), key, network)?;
+            let wallet = make(book.path(file.clone()), Self::key_for_ffi(&key), network)?;
             let entry = book.add(file, name)?;
             this.use_wallet(wallet, entry).await;
             Ok(())
@@ -406,12 +415,14 @@ impl Engine {
         self.adopt(name, FobWallet::create).await
     }
 
-    pub async fn restore_words(&self, name: String, words: String, restore_point: Option<String>) -> Result<(), FobError> {
-        self.adopt(name, move |path, key, network| FobWallet::restore_words(path, key, network, words, restore_point)).await
+    /// The words are wiped here if the wallet is never made; `fob-ffi` takes
+    /// its own copy by value, as Kotlin's bindings need.
+    pub async fn restore_words(&self, name: String, words: Zeroizing<String>, restore_point: Option<String>) -> Result<(), FobError> {
+        self.adopt(name, move |path, key, network| FobWallet::restore_words(path, key, network, String::clone(&words), restore_point)).await
     }
 
-    pub async fn restore_code(&self, name: String, code: String, restore_point: Option<String>) -> Result<(), FobError> {
-        self.adopt(name, move |path, key, network| FobWallet::restore_code(path, key, network, code, restore_point)).await
+    pub async fn restore_code(&self, name: String, code: Zeroizing<String>, restore_point: Option<String>) -> Result<(), FobError> {
+        self.adopt(name, move |path, key, network| FobWallet::restore_code(path, key, network, String::clone(&code), restore_point)).await
     }
 
     pub async fn restore_view_only(&self, name: String, address: String, view_key: String, restore_point: Option<String>) -> Result<(), FobError> {
@@ -476,9 +487,15 @@ impl Engine {
 
     /// Takes the open wallet off this device; its seed restores it. Another
     /// then opens, this network's first; with none left, a new one is asked for.
-    pub async fn forget_wallet(&self) -> Result<(), FobError> {
+    /// It asks for the passphrase first, as showing keys does: a wallet whose
+    /// seed was never written down is lost with its file, and a desktop is
+    /// often left unlocked.
+    pub async fn forget_wallet(&self, typed: String) -> Result<(), FobError> {
+        let typed = Zeroizing::new(typed);
         let this = self.clone();
         Self::run(async move {
+            let dir = this.inner.options.dir.clone();
+            tokio::task::spawn_blocking(move || passphrase::unlock(&dir, &typed)).await.expect("derive").map_err(key_error)?;
             let (book, _) = this.parts()?;
             let (wallet, current) = {
                 let open = this.inner.open.lock().expect("open lock");
@@ -772,10 +789,14 @@ mod tests {
         engine.create_wallet("One".into()).await.unwrap();
         let one = engine.wallet().unwrap().primary_address();
         engine.create_wallet("Two".into()).await.unwrap();
-        engine.forget_wallet().await.unwrap();
+        let two = engine.wallet().unwrap().primary_address();
+        let refused = engine.forget_wallet("not the passphrase".into()).await.unwrap_err();
+        assert_eq!(refused.to_string(), "That isn't the passphrase");
+        assert_eq!(engine.wallet().unwrap().primary_address(), two, "nothing removed without it");
+        engine.forget_wallet(PASS.into()).await.unwrap();
         assert_eq!(engine.phase(), Phase::Open);
         assert_eq!(engine.wallet().unwrap().primary_address(), one);
-        engine.forget_wallet().await.unwrap();
+        engine.forget_wallet(PASS.into()).await.unwrap();
         assert_eq!(engine.phase(), Phase::NoWallet);
         assert!(engine.wallet().is_none());
     }
@@ -812,6 +833,14 @@ mod tests {
         engine.set_up(PASS.into()).await.unwrap();
         engine.create_wallet("Spending".into()).await.unwrap();
         let address = engine.wallet().unwrap().primary_address();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            engine.set_scan(ScanMode::Auto).unwrap();
+            let mode = |name: &str| std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode("settings.json"), 0o600, "only this user's");
+            assert_eq!(mode("vault.json"), 0o600);
+        }
         engine.change_passphrase(PASS.into(), "battery staple".into()).await.unwrap();
         engine.lock();
         assert!(engine.unlock(PASS.into()).await.is_err());

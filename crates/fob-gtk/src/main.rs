@@ -78,6 +78,12 @@ fn set_window_icon(window: &gtk::Window) {
 }
 
 fn main() {
+    // Before anything that could hold a key: a crash must not write the
+    // unlocked wallet into a core file, and other programs of this user must
+    // not read its memory. Then nothing Fob writes is readable by other
+    // accounts, including the databases SQLCipher creates.
+    fob_app::harden_process();
+    fob_app::keep_files_private();
     set_device(Device::Computer);
     gtk::init().expect("a display to draw on");
     adw::init().expect("libadwaita");

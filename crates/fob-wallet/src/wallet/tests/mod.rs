@@ -150,6 +150,7 @@ async fn a_used_wallet(path: &Path) -> Wallet {
         pieces: Some(2),
         back: vec![3, 4],
         recipient_name: Some("Sam".into()),
+        signed: None,
     });
     state.recent.push((13, "hash".into()));
     state.tip = 20;
@@ -323,11 +324,12 @@ fn price_of(activity: &[Activity], tx: &str) -> Option<(u64, bool)> {
     activity.iter().find(|a| a.tx == tx).and_then(|a| a.price.as_ref()).map(|p| (p.price, p.daily))
 }
 
-fn outgoing(to: &str, inputs: Vec<usize>) -> Outgoing {
+/// A payment spending the coins `received` made for each of `coins`.
+fn outgoing(to: &str, coins: &[&str]) -> Outgoing {
     Outgoing {
         to: to.into(),
         amount: XMR / 10,
-        inputs,
+        inputs: coins.iter().map(|tx| ((*tx).to_owned(), String::new())).collect(),
         input_total: XMR,
         receipt: None,
         note: Some("Lunch".into()),

@@ -161,7 +161,7 @@ pub fn choose_photo_then(parent: &gtk::Widget, then: impl Fn(Result<Vec<u8>, Str
         let Ok(file) = file else { return };
         let then = then.clone();
         gtk::glib::spawn_future_local(async move {
-            let made = file.load_bytes_future().await.ok().and_then(|(bytes, _)| gdk::Texture::from_bytes(&bytes).ok()).and_then(|texture| {
+            let made = file.load_bytes_future().await.ok().and_then(|(bytes, _)| texture(&bytes, fob_app::picture::OWN_PHOTO)).and_then(|texture| {
                 let (width, height) = (texture.width() as u32, texture.height() as u32);
                 fob_app::picture::small_photo(width, height, &texture_rgba(&texture))
             });
@@ -177,6 +177,16 @@ fn picture_filters() -> gio::ListStore {
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     filters
+}
+
+/// A picture decoded by GDK, if its header says it's within `limits`. The
+/// decoders are the system's, in C, and Fob doesn't replace them; it only keeps
+/// what reaches them small and in a few formats (see `fob_app::picture`).
+fn texture(bytes: &gtk::glib::Bytes, limits: fob_app::picture::Limits) -> Option<gdk::Texture> {
+    if !fob_app::picture::picture_fits(bytes, limits) {
+        return None;
+    }
+    gdk::Texture::from_bytes(bytes).ok()
 }
 
 /// A texture's pixels as RGBA. GDK downloads them in Cairo's order.
@@ -197,17 +207,37 @@ pub fn copy(widget: &impl IsA<gtk::Widget>, text: &str) {
 
 /// Copies a secret, and takes it off the clipboard again after a minute if
 /// it's still there. Unlike a phone, nothing can stop other programs reading it meanwhile.
+///
+/// It's offered with `x-kde-passwordManagerHint: secret` beside the text, which
+/// clipboard managers that keep a history (Klipper, cliphist through
+/// wl-clipboard, CopyQ) take as "don't keep this". A manager that ignores the
+/// hint still records it, and nothing on a desktop can prevent that.
 pub fn copy_secret(widget: &impl IsA<gtk::Widget>, text: &str) {
     let clipboard = widget.clipboard();
-    clipboard.set_text(text);
-    let (clipboard, kept) = (clipboard.clone(), text.to_owned());
+    let bytes = gtk::glib::Bytes::from(text.as_bytes());
+    let provider = gdk::ContentProvider::new_union(&[
+        gdk::ContentProvider::for_bytes("text/plain;charset=utf-8", &bytes),
+        gdk::ContentProvider::for_bytes("text/plain", &bytes),
+        gdk::ContentProvider::for_bytes("UTF8_STRING", &bytes),
+        gdk::ContentProvider::for_bytes("x-kde-passwordManagerHint", &gtk::glib::Bytes::from_static(b"secret")),
+    ]);
+    if clipboard.set_content(Some(&provider)).is_err() {
+        return;
+    }
+    // Still ours a minute later: it goes. Compared by provider, so the secret
+    // isn't read back, or kept anywhere but on the clipboard meanwhile.
     gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(60), move || {
-        gtk::glib::spawn_future_local(async move {
-            if clipboard.read_text_future().await.ok().flatten().is_some_and(|now| now == kept) {
-                clipboard.set_text("");
-            }
-        });
+        if clipboard.content().is_some_and(|now| now == provider) {
+            let _ = clipboard.set_content(None::<&gdk::ContentProvider>);
+        }
     });
+}
+
+/// An entry's text, wrapped to be wiped once Fob is done with it. GTK's own
+/// buffer, and anything an input method kept, are out of Fob's reach: clearing
+/// the entry right after reading it is all that helps there.
+pub fn secret_text(text: gtk::glib::GString) -> fob_app::Zeroizing<String> {
+    fob_app::Zeroizing::new(text.as_str().to_owned())
 }
 
 /// A code drawn dark on white in both themes, so every reader reads it.
@@ -297,7 +327,9 @@ pub fn read_code_from_picture(parent: &gtk::Widget, then: impl Fn(Option<String>
         let Ok(file) = file else { return };
         let then = then.clone();
         gtk::glib::spawn_future_local(async move {
-            let text = file.load_bytes_future().await.ok().and_then(|(bytes, _)| gdk::Texture::from_bytes(&bytes).ok()).and_then(|texture| read_texture(&texture));
+            // Someone else's picture, in the process holding the keys: only a
+            // small one in a known format reaches GDK's decoders.
+            let text = file.load_bytes_future().await.ok().and_then(|(bytes, _)| texture(&bytes, fob_app::picture::CODE_PICTURE)).and_then(|texture| read_texture(&texture));
             then(text);
         });
     });
@@ -311,7 +343,7 @@ fn read_texture(texture: &gdk::Texture) -> Option<String> {
 
 /// Asks for the passphrase over `parent`, then answers: `Some` with what was
 /// typed, or `None` if it was left.
-pub fn ask_passphrase(parent: &gtk::Widget, heading: &str, body: &str, then: impl Fn(Option<String>) + 'static) {
+pub fn ask_passphrase(parent: &gtk::Widget, heading: &str, body: &str, then: impl Fn(Option<fob_app::Zeroizing<String>>) + 'static) {
     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).activates_default(true).build();
     entry.update_property(&[gtk::accessible::Property::Label("Passphrase")]);
     let dialog = adw::AlertDialog::builder().heading(heading).body(body).extra_child(&entry).build();
@@ -320,7 +352,7 @@ pub fn ask_passphrase(parent: &gtk::Widget, heading: &str, body: &str, then: imp
     dialog.set_close_response("cancel");
     dialog.set_response_appearance("go", adw::ResponseAppearance::Suggested);
     dialog.connect_response(None, move |_, response| {
-        let typed = entry.text().to_string();
+        let typed = secret_text(entry.text());
         entry.set_text("");
         then((response == "go").then_some(typed));
     });

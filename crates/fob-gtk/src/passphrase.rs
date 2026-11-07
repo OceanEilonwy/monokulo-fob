@@ -7,7 +7,7 @@ use relm4::{
     prelude::*,
 };
 
-use crate::root::Msg as RootMsg;
+use crate::{root::Msg as RootMsg, widgets};
 
 #[derive(Debug)]
 pub enum Input {
@@ -140,8 +140,8 @@ impl Passphrase {
         if self.busy {
             return;
         }
-        let typed = self.first.text().to_string();
-        if self.choosing && typed != self.second.text().as_str() {
+        let typed = widgets::secret_text(self.first.text());
+        if self.choosing && typed.as_str() != self.second.text().as_str() {
             self.error = Some(fob_app::words::errors::passphrases_differ());
             return;
         }
@@ -149,7 +149,7 @@ impl Passphrase {
         self.error = None;
         let (engine, choosing, sender) = (self.engine.clone(), self.choosing, sender.clone());
         relm4::spawn(async move {
-            let result = if choosing { engine.set_up(typed).await } else { engine.unlock(typed).await };
+            let result = if choosing { engine.set_up(String::clone(&typed)).await } else { engine.unlock(String::clone(&typed)).await };
             sender.input(match result {
                 Ok(()) => Input::Done,
                 Err(e) => Input::Failed(e.to_string()),

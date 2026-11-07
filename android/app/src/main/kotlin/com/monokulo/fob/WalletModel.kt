@@ -300,7 +300,7 @@ class WalletModel(private val app: Application) {
     }
 
     private suspend fun book(): WalletList = booking.withLock {
-        book ?: withContext(Dispatchers.IO) { WalletList.open(app.filesDir.absolutePath, vault.fileKey()) }.also { book = it }
+        book ?: withContext(Dispatchers.IO) { vault.withFileKey { WalletList.open(app.filesDir.absolutePath, it) } }.also { book = it }
     }
 
     private suspend fun listChanged(book: WalletList) {
@@ -320,7 +320,7 @@ class WalletModel(private val app: Application) {
                 val book = book()
                 listChanged(book)
                 val file = _current.value?.file ?: return@launch
-                withContext(Dispatchers.IO) { FobWallet.open(book.path(file), vault.fileKey()) }
+                withContext(Dispatchers.IO) { vault.withFileKey { FobWallet.open(book.path(file), it) } }
             }.onSuccess { if (_network.value == network) use(it) else it.close() }
                 .onFailure { _openError.value = it.message }
         }
@@ -786,7 +786,7 @@ class WalletModel(private val app: Application) {
         val wallet = withContext(Dispatchers.IO) {
             book.checkName(name)
             val file = book.newFile(network)
-            make(book.path(file), vault.fileKey(), network).also { book.add(file, name) }
+            vault.withFileKey { make(book.path(file), it, network) }.also { book.add(file, name) }
         }
         pendingName = ""
         listChanged(book)

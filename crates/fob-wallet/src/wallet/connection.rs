@@ -8,6 +8,22 @@ impl Wallet {
         node::Setting { url: state.node.clone(), self_signed: state.node_self_signed }
     }
 
+    /// The key a self-signed node in use is held to, as the hex of its pin,
+    /// for the Node screen to show so it can be compared with the node's own.
+    /// None until the node has first answered, or when it isn't self-signed.
+    pub async fn node_pin(&self) -> Option<String> {
+        let state = self.inner.state.lock().await;
+        state.node_pin.clone().filter(|_| state.node_self_signed)
+    }
+
+    /// Whether the node in use last answered with a key other than its pin:
+    /// someone else answering, or the node given a new certificate. Only the
+    /// user can tell which, so the Node screen asks before trusting it.
+    pub fn certificate_changed(&self) -> bool {
+        let link = self.inner.link.lock().expect("link lock");
+        link.as_ref().is_some_and(|(_, transport)| transport.certificate() == Some(Err(transport::CertProblem::Changed)))
+    }
+
     /// Settings' Node line: the last check of it ("Working · node.example:38081")
     /// when it's newer than syncing's last failure, else "Can't reach node
     /// · …" while syncing fails (as Home's chip), else what syncing says,
@@ -141,6 +157,7 @@ impl Wallet {
             }
             state.node = url;
             state.node_self_signed = self_signed;
+            state.node_pin = None;
             self.save_state(&state)?;
             dropped
         };
@@ -257,9 +274,13 @@ impl Wallet {
         // Not held while the node is asked: a slow or dead one would keep
         // anything else wanting a connection (changing node, say) waiting.
         let err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
-        let transport = Transport::new(&node.url, node.self_signed).map_err(err)?;
+        let pin = self.inner.state.lock().await.node_pin.as_deref().and_then(|p| hex::decode(p).ok()?.try_into().ok());
+        let transport = Transport::pinned(&node.url, node.self_signed, pin).map_err(err)?;
         *self.inner.link.lock().expect("link lock") = Some((node.clone(), transport.clone()));
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.map_err(err)?;
+        if pin.is_none() {
+            self.keep_pin(&node, &transport).await?;
+        }
         let decoys = Decoys::new(daemon.clone(), transport.clone(), self.decoys_path());
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
         let connection = (transport, daemon, decoys, adaptive);
@@ -275,6 +296,18 @@ impl Wallet {
             *rpc = Some((node, connection.clone()));
         }
         Ok(connection)
+    }
+
+    /// Keeps the key a self-signed node answered with first, to hold it to
+    /// from now on, while it's still the node in use.
+    pub(super) async fn keep_pin(&self, node: &node::Setting, transport: &Transport) -> Result<()> {
+        let Some(pin) = transport.pin().filter(|_| node.self_signed) else { return Ok(()) };
+        let mut state = self.inner.state.lock().await;
+        if state.node == node.url && state.node_self_signed && state.node_pin.is_none() {
+            state.node_pin = Some(hex::encode(pin));
+            self.save_state(&state)?;
+        }
+        Ok(())
     }
 
     /// The output distribution's file. It's public chain data, the same for

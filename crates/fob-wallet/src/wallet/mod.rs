@@ -16,11 +16,11 @@ mod tests;
 pub use crate::activity::{Activity, Direction};
 pub use crate::catch_up::{ScanProgress, SyncStatus};
 #[cfg(test)]
-use manual_sync::{SentLookup, sent_lookup};
+use manual_sync::{SentLookup, key_images_spent, sent_lookup};
 use state::{ChainSpend, Owned, Sent, State, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
-use sync::publish_failure;
+use sync::{Unpublished, publish_failure};
 #[cfg(test)]
-use sync::{ReorgReach, reorg_reach};
+use sync::{ReorgReach, pool_left, pool_spends, reorg_reach};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -91,9 +91,12 @@ const LOOKAHEAD: u32 = 200;
 const RESTORE_SKIP: u32 = 50;
 /// Ring size for transactions since the 2022 hard fork.
 const RING_LEN: u8 = 16;
-/// The most Fob pays per unit of weight, whatever a node asks: about 100× the
-/// usual normal fee.
-const MAX_FEE_PER_WEIGHT: u64 = 2_000_000;
+/// The most Fob pays per unit of weight, whatever a node asks. With the tail
+/// emission, Monero's base fee is at most about 20,000 (with the block weight
+/// median at its smallest; larger blocks make it less), and the normal fee
+/// four times that: this is five times the most an honest node asks, so a
+/// node can't have a payment pay a hundred times the fee.
+const MAX_FEE_PER_WEIGHT: u64 = 400_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
 /// A sent payment the node has never heard of for this long, in seconds, is marked not confirmed.
@@ -238,7 +241,8 @@ struct PreparedTx {
 struct Outgoing {
     to: String,
     amount: u64,
-    inputs: Vec<usize>,
+    /// The coins it spends, each as [`Owned::id`] names it.
+    inputs: Vec<(String, String)>,
     input_total: u64,
     receipt: Option<String>,
     note: Option<String>,

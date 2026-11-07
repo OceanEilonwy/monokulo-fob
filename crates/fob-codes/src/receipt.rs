@@ -1,5 +1,6 @@
 //! ORF receipts as Fob shows them: names, lines and money already formatted.
 
+use fob_monero::fiat;
 use orf_codec::Receipt;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,48 @@ pub struct ReceiptView {
     pub tax: Option<String>,
     pub total: String,
     pub currency: String,
+    /// The total as a number, to check against what the payment is worth.
+    #[serde(default)]
+    pub total_value: f64,
+}
+
+/// How far apart, in percent, the receipt's total and Fob's own valuation of
+/// the payment can be before Confirm warns: room for the shop's price being a
+/// few minutes older than Fob's, not for a different amount.
+const AGREE_PERCENT: u128 = 5;
+
+/// Whether the receipt's total disagrees with what `atomic` XMR is worth at
+/// Fob's `price` in `currency`: `None` when they can't be compared, the
+/// receipt being in another currency.
+///
+/// Both the receipt and the amount come from the same code, so a tampered
+/// code can pair a small total with a large amount; Fob's own price is the
+/// only thing here the code didn't say.
+pub fn disagrees(view: &ReceiptView, atomic: u64, price: u64, currency: &fiat::Currency) -> Option<bool> {
+    if !view.currency.eq_ignore_ascii_case(&currency.code) {
+        return None;
+    }
+    let worth = fiat::to_minor(atomic, price, currency) as u128;
+    let scaled = (view.total_value * 10f64.powi(currency.decimals as i32)).round();
+    // A negative, absurd or missing total can't agree with a real payment.
+    if !(scaled.is_finite() && scaled > 0.0 && scaled < u64::MAX as f64) {
+        return Some(worth > 0);
+    }
+    let said = scaled as u128;
+    Some(worth.abs_diff(said) * 100 > AGREE_PERCENT * worth.max(said))
+}
+
+/// Confirm's warning when the receipt's total and Fob's valuation disagree:
+/// "The receipt says $5.00, but 5 XMR is worth $812.40 now. …".
+pub fn mismatch_warning(view: &ReceiptView, atomic: u64, amount_text: &str, price: u64, currency: &fiat::Currency) -> Option<String> {
+    match disagrees(view, atomic, price, currency) {
+        Some(true) => Some(format!(
+            "The receipt says {}, but {amount_text} XMR is worth {} now. Pay only if the XMR amount is right.",
+            view.total,
+            fiat::value(atomic, price, currency)
+        )),
+        _ => None,
+    }
 }
 
 fn minor_digits(currency: &str) -> usize {
@@ -79,6 +122,7 @@ impl From<&Receipt> for ReceiptView {
             tax,
             total: money(r.total, &r.currency),
             currency: r.currency.clone(),
+            total_value: r.total,
         }
     }
 }
@@ -125,5 +169,40 @@ mod tests {
         assert_eq!(view.item_count, 3);
         assert_eq!(view.tax.as_deref(), Some("$1.23"));
         assert_eq!(view.total, "$13.50");
+        assert_eq!(view.total_value, 13.5);
+    }
+
+    fn view(total: f64, currency: &str) -> ReceiptView {
+        ReceiptView {
+            merchant: "Corner Café".into(),
+            issued: String::new(),
+            lines: vec![],
+            item_count: 1,
+            tax: None,
+            total: money(total, currency),
+            currency: currency.into(),
+            total_value: total,
+        }
+    }
+
+    #[test]
+    fn a_receipt_is_checked_against_fob_s_own_price() {
+        let usd = fiat::currency("USD");
+        // $160.00 per XMR.
+        let price = 160 * fiat::MICRO;
+        let xmr = fob_monero::amount::ATOMIC_PER_XMR;
+        // 0.05 XMR is $8.00: a receipt for $8.00, or a little off, agrees.
+        assert_eq!(disagrees(&view(8.0, "USD"), xmr / 20, price, &usd), Some(false));
+        assert_eq!(disagrees(&view(7.80, "USD"), xmr / 20, price, &usd), Some(false));
+        // A $5.00 receipt on a code asking 5 XMR ($800) is the attack.
+        assert_eq!(disagrees(&view(5.0, "USD"), 5 * xmr, price, &usd), Some(true));
+        let warning = mismatch_warning(&view(5.0, "USD"), 5 * xmr, "5", price, &usd).unwrap();
+        assert!(warning.starts_with("The receipt says $5.00, but 5 XMR is worth $800.00 now."), "{warning}");
+        // Not a total at all.
+        assert_eq!(disagrees(&view(-1.0, "USD"), xmr, price, &usd), Some(true));
+        assert_eq!(disagrees(&view(f64::NAN, "USD"), xmr, price, &usd), Some(true));
+        // Another currency can't be checked.
+        assert_eq!(disagrees(&view(5.0, "EUR"), 5 * xmr, price, &usd), None);
+        assert_eq!(mismatch_warning(&view(5.0, "EUR"), 5 * xmr, "5", price, &usd), None);
     }
 }

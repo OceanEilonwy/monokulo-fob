@@ -321,7 +321,7 @@ impl SimpleComponent for Settings {
                     let Some(typed) = typed else { return };
                     let (engine, then) = (engine.clone(), then.clone());
                     relm4::spawn(async move {
-                        match engine.confirm(typed).await {
+                        match engine.confirm(String::clone(&typed)).await {
                             Ok(()) => then.input(Input::Show(item)),
                             Err(e) => then.input(Input::Say(e.to_string())),
                         }
@@ -413,7 +413,7 @@ impl Settings {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     if let Some(code) = engine.read(|wallet, _| async move { wallet.wallet_code().await }).await {
-                        sender.input(Input::WalletCode(code));
+                        sender.input(Input::WalletCode(String::from_utf8_lossy(&code).into_owned()));
                     }
                 });
             }
@@ -430,12 +430,14 @@ impl Settings {
 
     fn show_seed(&self, seed: &SeedPhrase, sender: &ComponentSender<Self>) {
         let grid = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).min_children_per_line(3).max_children_per_line(4).homogeneous(true).build();
-        for (i, word) in seed.words.iter().enumerate() {
+        let phrase = String::from_utf8_lossy(&seed.phrase);
+        let words: Vec<&str> = phrase.split(' ').collect();
+        for (i, word) in words.iter().enumerate() {
             let label = gtk::Label::builder().label(format!("{}. {word}", i + 1)).xalign(0.0).build();
             label.add_css_class("seed-word");
             grid.insert(&label, -1);
         }
-        let dialog = adw::AlertDialog::builder().heading(&seed.kind).body(fob_app::words::errors::seed_warning(seed.words.len())).extra_child(&grid).prefer_wide_layout(true).build();
+        let dialog = adw::AlertDialog::builder().heading(&seed.kind).body(fob_app::words::errors::seed_warning(words.len())).extra_child(&grid).prefer_wide_layout(true).build();
         dialog.add_responses(&[("close", "_Close"), ("done", "I've _written them down")]);
         dialog.set_close_response("close");
         dialog.set_response_appearance("done", adw::ResponseAppearance::Suggested);
@@ -449,11 +451,13 @@ impl Settings {
         for group in groups {
             let list = adw::PreferencesGroup::builder().title(gtk::glib::markup_escape_text(&group.title).as_str()).build();
             for key in &group.keys {
-                let row = widgets::row(&key.title, &key.value);
-                row.set_subtitle_selectable(true);
+                let row = widgets::row(&key.title, &String::from_utf8_lossy(&key.value));
+                // Not selectable: Ctrl+C on selected text would put the key on
+                // the clipboard with no secret hint and no clearing. Copy does both.
+                row.set_subtitle_selectable(false);
                 row.add_css_class("property");
                 let copy = gtk::Button::builder().icon_name("edit-copy-symbolic").valign(gtk::Align::Center).css_classes(["flat"]).tooltip_text(&key.copy).build();
-                let clip = key.clip.clone();
+                let clip = String::from_utf8_lossy(&key.clip).into_owned();
                 copy.connect_clicked(move |button| widgets::copy_secret(button, &clip));
                 row.add_suffix(&copy);
                 list.add(&row);
@@ -481,16 +485,23 @@ impl Settings {
         dialog.add_responses(&[("cancel", "_Cancel"), ("remove", "_Remove")]);
         dialog.set_close_response("cancel");
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
-        let (engine, sender) = (self.engine.clone(), sender.clone());
+        // Removing is guarded like showing keys: a wallet never backed up is
+        // gone with its file, and a desktop is often left unlocked. The engine
+        // checks the passphrase itself, so this dialog is only where it's typed.
+        let (engine, sender, parent) = (self.engine.clone(), sender.clone(), self.backup_group.clone());
         dialog.connect_response(Some("remove"), move |_, _| {
             let (engine, sender) = (engine.clone(), sender.clone());
-            relm4::spawn(async move {
-                match engine.forget_wallet().await {
-                    Ok(()) => {
-                        let _ = sender.output(RootMsg::Go(Go::Back));
+            widgets::ask_passphrase(parent.upcast_ref(), "Remove this wallet?", "Type your passphrase to remove it from this computer.", move |typed| {
+                let Some(typed) = typed else { return };
+                let (engine, sender) = (engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    match engine.forget_wallet(String::clone(&typed)).await {
+                        Ok(()) => {
+                            let _ = sender.output(RootMsg::Go(Go::Back));
+                        }
+                        Err(e) => sender.input(Input::Say(e.to_string())),
                     }
-                    Err(e) => sender.input(Input::Say(e.to_string())),
-                }
+                });
             });
         });
         dialog.present(Some(&self.backup_group));
@@ -541,9 +552,12 @@ impl Settings {
                 sender.input(Input::Say(fob_app::words::errors::passphrases_differ()));
                 return;
             }
-            let (engine, sender, old, new) = (engine.clone(), sender.clone(), old.text().to_string(), new.text().to_string());
+            let (engine, sender, typed_old, typed_new) = (engine.clone(), sender.clone(), widgets::secret_text(old.text()), widgets::secret_text(new.text()));
+            for entry in [&old, &new, &again] {
+                entry.set_text("");
+            }
             relm4::spawn(async move {
-                match engine.change_passphrase(old, new).await {
+                match engine.change_passphrase(String::clone(&typed_old), String::clone(&typed_new)).await {
                     Ok(()) => sender.input(Input::Say(fob_app::words::errors::passphrase_changed())),
                     Err(e) => sender.input(Input::Say(e.to_string())),
                 }

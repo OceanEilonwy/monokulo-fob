@@ -43,8 +43,8 @@ impl<T> fmt::Debug for View<T> {
 }
 
 /// A passphrase on its way through a message: Relm4's inputs must be `Debug`,
-/// and this one never says what it holds.
-pub struct Secret(pub String);
+/// and this one never says what it holds, and wipes it when dropped.
+pub struct Secret(pub fob_app::Zeroizing<String>);
 
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -188,3 +188,27 @@ fn a_failure_of_this_device_is_told_apart_from_the_node_s() {
     let offline = FobError::Node("InterfaceError(\"dns error: failed to lookup address information\")".into());
     assert_eq!(sync_failure(&offline, None, false), ("Address not found".into(), false));
 }
+
+/// A pool transaction spending this wallet's coins holds them, however it
+/// got there (audit #24), and lets them go if it leaves the pool unmined.
+#[tokio::test]
+async fn coins_a_pool_transaction_spends_are_held_while_it_is_there() {
+    let wallet = Wallet::create(&dir("pool-spends"), [1; 32], Network::Stagenet).unwrap();
+    let image = |b: u8| [b; 32];
+    let mut state = wallet.inner.state.lock().await;
+    state.outputs.push(Owned { key_image: Some(hex::encode(image(1))), ..received("a", 1, XMR) });
+    state.outputs.push(Owned { key_image: Some(hex::encode(image(2))), ..received("b", 1, XMR) });
+    // Spent on the chain already: left as it is.
+    state.outputs.push(Owned { key_image: Some(hex::encode(image(3))), spent_in: Some("mined".into()), ..received("c", 1, XMR) });
+    state.spends.push(ChainSpend { tx: "mined".into(), height: 9, time: 1, fee: 1 });
+    let spending = vec![("pooled".to_owned(), vec![image(9), image(1), image(3)])];
+    assert!(pool_spends(&mut state, &spending));
+    let spent = |state: &State| state.outputs.iter().map(|o| o.spent_in.clone()).collect::<Vec<_>>();
+    assert_eq!(spent(&state), [Some("pooled".into()), None, Some("mined".into())]);
+    assert!(!pool_spends(&mut state, &spending), "once");
+    // Still there: held.
+    assert!(!pool_left(&mut state, &HashSet::from(["pooled".to_owned()])));
+    // Gone unmined: free again. The chain's spend stays.
+    assert!(pool_left(&mut state, &HashSet::new()));
+    assert_eq!(spent(&state), [None, None, Some("mined".into())]);
+}

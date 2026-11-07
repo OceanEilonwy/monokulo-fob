@@ -543,6 +543,10 @@ fun ConfirmScreen(
     val title = split?.title ?: receipt?.merchant?.let { "Pay $it" } ?: "Send"
     var failed by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
+    // A receipt whose total Fob's own price disagrees with must be looked at
+    // before the swipe works: the code chose both the total and the amount.
+    val mismatch = receipt?.mismatch
+    var checked by remember { mutableStateOf(false) }
     val sending by rememberUpdatedState(busy)
     DisposableEffect(prepared?.id) {
         onDispose { if (prepared != null && !sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
@@ -586,17 +590,21 @@ fun ConfirmScreen(
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
             else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
         }
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
+        if (mismatch != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (mismatch == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
     }) {
         TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            // What is sent, and what Fob's own price says it's worth, come
+            // first; the receipt's total is only what the code claims.
             Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(receipt?.total ?: "$amountText XMR", style = display(52))
-                if (receipt != null) Text("$amountText XMR", color = Fob.muted, fontSize = 18.sp)
+                Text("$amountText XMR", style = display(52))
                 // Worth now, at the current price.
-                else (prepared?.amountFiat ?: preview?.amountFiat)?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
+                (prepared?.amountFiat ?: preview?.amountFiat)?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
+                receipt?.let { Text("Receipt says ${it.total}", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
                 note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
+            mismatch?.let { Warning(it, title = "The receipt doesn't match the amount") }
             Card {
                 if (split != null) InfoRow("To", split.to) else InfoRow("To", short(to, 2), mono = true)
                 Divider()
@@ -641,7 +649,7 @@ fun PaidScreen(model: WalletModel, nav: Nav, prepared: Prepared, tx: String) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val split = prepared.split
                 Text(split?.title ?: "Paid", style = display(34))
-                Text(split?.done ?: prepared.receipt?.let { "${it.total} to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)
+                Text(split?.done ?: prepared.receipt?.let { "${prepared.amountText} XMR to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)
                 Text("Sent · confirming on the network", color = Fob.muted, fontSize = 14.sp)
                 offer?.named?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center) }
             }

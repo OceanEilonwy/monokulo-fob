@@ -313,6 +313,7 @@ mod tests {
             tax: None,
             total: "$13.50".into(),
             currency: "USD".into(),
+            total_value: 13.5,
         }
     }
 

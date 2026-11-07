@@ -25,8 +25,26 @@ use crate::transport::Transport;
 
 /// Retries of one request before a sync step gives up.
 const RETRIES: u32 = 5;
-/// The most a node may send in one response.
-const MAX_RESPONSE: usize = 100 * 1024 * 1024;
+/// The most a node may send in one response, however many blocks it's asked
+/// for. Up to [`Tuning::max_parallel`] are in flight, each held whole as it
+/// arrives, so this times that is what a node can make the phone hold at
+/// once: kept well inside what a phone gives an app. The chunks asked for
+/// aim at a few megabytes.
+const MAX_RESPONSE: usize = 32 * 1024 * 1024;
+/// The most one block may take in a response, transactions and all: far
+/// past any block yet, so a small request can't be answered with a huge
+/// response either.
+const MAX_BLOCK_BYTES: usize = 2 * 1024 * 1024;
+
+/// The most a response for `count` blocks may be.
+fn response_limit(count: u64) -> usize {
+    (count as usize).saturating_mul(MAX_BLOCK_BYTES).saturating_add(64 * 1024).min(MAX_RESPONSE)
+}
+
+/// Whether `error` is a response refused for its size.
+fn too_large(error: &InterfaceError) -> bool {
+    matches!(error, InterfaceError::InvalidInterface(e) if e.contains("too large"))
+}
 
 fn invalid(what: impl Into<String>) -> InterfaceError {
     InterfaceError::InvalidInterface(what.into())
@@ -294,10 +312,10 @@ async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u6
     let mut bytes = 0;
     while (blocks.len() as u64) < count {
         let from = start + blocks.len() as u64;
-        let left = count - blocks.len() as u64;
+        let mut left = count - blocks.len() as u64;
         let mut attempt = 0;
         let got = loop {
-            let result = match transport.post("get_blocks.bin", request(from, left), Some(MAX_RESPONSE)).await {
+            let result = match transport.post("get_blocks.bin", request(from, left), Some(response_limit(left))).await {
                 Ok(response) => {
                     bytes += response.len();
                     transport.count_received(response.len());
@@ -317,6 +335,8 @@ async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u6
                     adaptive.record_refused();
                     tokio::time::sleep(std::time::Duration::from_millis(250 << attempt)).await;
                 }
+                // Blocks bigger than asking for so many allows: fewer at a time.
+                Err(e) if too_large(&e) && left > 1 => left /= 2,
                 other => break other?,
             }
         };
@@ -490,5 +510,17 @@ mod tests {
     #[test]
     fn a_response_that_isnt_epee_is_refused() {
         assert!(parse(b"hello").is_err());
+    }
+
+    /// What a node may send is sized from what it was asked for, and all
+    /// that can be in flight at once stays bounded (audit #15).
+    #[test]
+    fn a_response_may_be_only_as_big_as_its_request_allows() {
+        assert_eq!(response_limit(1), MAX_BLOCK_BYTES + 64 * 1024);
+        assert_eq!(response_limit(Tuning::DEFAULT.max_chunk), MAX_RESPONSE);
+        assert_eq!(response_limit(u64::MAX), MAX_RESPONSE);
+        assert!(MAX_RESPONSE * Tuning::DEFAULT.max_parallel <= 128 * 1024 * 1024);
+        assert!(too_large(&InterfaceError::InvalidInterface("node's response was too large".into())));
+        assert!(!too_large(&InterfaceError::InterfaceError("timed out".into())));
     }
 }

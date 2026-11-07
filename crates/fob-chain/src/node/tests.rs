@@ -466,7 +466,7 @@ fn only_a_nodes_own_certificate_problems_can_be_accepted() {
     }
     assert_eq!(CertProblem::of(&webpki("EndEntityUsedAsCa")), CertProblem::Invalid);
     assert_eq!(CertProblem::of(&rustls::Error::General("x".into())), CertProblem::Invalid);
-    for (problem, acceptable) in [(CertProblem::SelfSigned, true), (CertProblem::Expired, true), (CertProblem::OtherName, true), (CertProblem::BadSignature, false), (CertProblem::Invalid, false)] {
+    for (problem, acceptable) in [(CertProblem::SelfSigned, true), (CertProblem::Expired, true), (CertProblem::OtherName, false), (CertProblem::Changed, false), (CertProblem::BadSignature, false), (CertProblem::Invalid, false)] {
         assert_eq!(problem.acceptable(), acceptable, "{problem:?}");
         let refused = Failure::refused(Some(Err(problem)), true);
         assert_eq!(refused, (!acceptable).then_some(Failure::Certificate(problem)), "marked: {problem:?}");
@@ -520,4 +520,54 @@ async fn checks_tell_fast_from_wrong_over_http() {
     assert_eq!(stagenet.verdict(), Verdict::Working);
     let mainnet_node = check(Network::Stagenet, &node(Network::Mainnet.default_nodes()[0]), 0, now(), &|_| {}).await;
     assert_eq!(mainnet_node.verdict(), Verdict::Failed(Step::Network));
+}
+
+/// A node's Content-Length is only its word (audit #12): a huge one is
+/// refused past the limit, and without one never has the phone set aside
+/// what it says, which would abort the app.
+#[tokio::test]
+async fn a_huge_content_length_is_refused_not_allocated() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            tokio::spawn(async move {
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1099511627776\r\nConnection: close\r\n\r\n{}").await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    let transport = Transport::new(&format!("http://127.0.0.1:{port}"), false).unwrap();
+    let limited = transport.post("get_info", vec![], Some(1024)).await;
+    assert!(matches!(limited, Err(InterfaceError::InvalidInterface(_))), "{limited:?}");
+    // No limit: the body ends short, and that's all.
+    assert!(transport.post("get_info", vec![], None).await.is_err());
+}
+
+/// A self-signed node is trusted on first use (audit #13): the key it
+/// answered with first is pinned, and a later handshake with another key
+/// is refused as changed, the node marked or not.
+#[tokio::test]
+async fn a_self_signed_node_is_held_to_the_key_it_first_answered_with() {
+    let first = canned(Canned::Tls { monerod: false, tls12: false }).await;
+    let other = canned(Canned::Tls { monerod: true, tls12: false }).await;
+    let url = |port: u16| format!("https://127.0.0.1:{port}");
+    let fresh = Transport::pinned(&url(first), true, None).unwrap();
+    assert_eq!(fresh.pin(), None, "nothing until a handshake");
+    fresh.post("get_info", vec![], Some(1024)).await.unwrap();
+    let pin = fresh.pin().expect("pinned on first use");
+    // The same key again, on a new connection: accepted.
+    let again = Transport::pinned(&url(first), true, Some(pin)).unwrap();
+    again.post("get_info", vec![], Some(1024)).await.unwrap();
+    assert_eq!(again.certificate(), Some(Err(CertProblem::SelfSigned)));
+    // Another key where that one was: refused, and said so.
+    let changed = Transport::pinned(&url(other), true, Some(pin)).unwrap();
+    assert!(changed.post("get_info", vec![], Some(1024)).await.is_err());
+    assert_eq!(changed.certificate(), Some(Err(CertProblem::Changed)));
+    assert_eq!(Failure::refused(changed.certificate(), true), Some(Failure::Certificate(CertProblem::Changed)));
+    assert_eq!(changed.pin(), Some(pin), "still held to the first");
 }

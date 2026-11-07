@@ -8,6 +8,16 @@ fn the_node_says_what_it_knows_of_each_payment() {
     assert_eq!(sent_lookup(r#"{"status":"Failed"}"#), SentLookup::default());
 }
 
+/// Before a payment is called not confirmed, the node is asked whether its
+/// coins are spent (audit #28); only a clear "unspent" for each lets it be.
+#[test]
+fn a_key_image_answer_is_read_only_when_it_is_whole() {
+    assert_eq!(key_images_spent(r#"{"spent_status":[0,1,2],"status":"OK"}"#, 3), Some(vec![false, true, true]));
+    assert_eq!(key_images_spent(r#"{"spent_status":[0],"status":"OK"}"#, 2), None, "not for as many");
+    assert_eq!(key_images_spent(r#"{"spent_status":[0],"status":"BUSY"}"#, 1), None);
+    assert_eq!(key_images_spent("not JSON", 1), None);
+}
+
 #[tokio::test]
 async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_released() {
     let wallet = a_used_wallet(&dir("dropped")).await;
@@ -60,9 +70,29 @@ async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_rel
 #[test]
 fn a_refusal_is_told_apart_only_with_manual_sync_on() {
     use monero_wallet::interface::PublishTransactionError as E;
-    assert_eq!(publish_failure(E::TransactionRejected("double spend".into()), true).to_string(), "your node refused this payment: double spend");
-    assert_eq!(publish_failure(E::TransactionRejected(" ".into()), true).to_string(), "your node refused this payment", "no reason, no colon");
-    assert!(matches!(publish_failure(E::TransactionRejected("double spend".into()), false), FobError::Node(_)));
+    let refused = |e, manual| match publish_failure(e, manual) {
+        Unpublished::Refused(e) => e,
+        Unpublished::Unsure => panic!("a refusal is an answer"),
+    };
+    assert_eq!(refused(E::TransactionRejected("double spend".into()), true).to_string(), "your node refused this payment: double spend");
+    assert_eq!(refused(E::TransactionRejected(" ".into()), true).to_string(), "your node refused this payment", "no reason, no colon");
+    assert!(matches!(refused(E::TransactionRejected("double spend".into()), false), FobError::Node(_)));
+}
+
+/// Only the node's own refusal, or a request that never reached it, says a
+/// payment didn't go: a timeout or a dropped line may come after the node
+/// took it (audit #24).
+#[test]
+fn a_publish_with_no_answer_is_not_taken_as_refused() {
+    use monero_wallet::interface::{InterfaceError as I, PublishTransactionError as E};
+    let never = E::InterfaceError(I::InterfaceError("not connected: error sending request: tcp connect error: Connection refused".into()));
+    assert!(matches!(publish_failure(never, false), Unpublished::Refused(FobError::Node(_))));
+    let unauthorised = E::InterfaceError(I::InterfaceError("node answered 401 Unauthorized".into()));
+    assert!(matches!(publish_failure(unauthorised, true), Unpublished::Refused(_)));
+    for unsure in ["error decoding response body: operation timed out", "connection closed before message completed", "node answered 502 Bad Gateway"] {
+        assert!(matches!(publish_failure(E::InterfaceError(I::InterfaceError(unsure.into())), false), Unpublished::Unsure), "{unsure}");
+    }
+    assert!(matches!(publish_failure(E::InterfaceError(I::InvalidInterface("not JSON".into())), false), Unpublished::Unsure));
 }
 
 #[tokio::test]

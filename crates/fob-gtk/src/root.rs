@@ -223,11 +223,16 @@ impl SimpleComponent for Root {
 
         let nav = adw::NavigationView::new();
         nav.add(&page("home", "Fob", home.widget()));
-        let left = confirm.sender().clone();
-        nav.connect_popped(move |_, page| {
-            if page.tag().as_deref() == Some("confirm") {
+        let (left, left_adding) = (confirm.sender().clone(), add_wallet.sender().clone());
+        nav.connect_popped(move |_, page| match page.tag().as_deref() {
+            Some("confirm") => {
                 let _ = left.send(confirm::Input::Left);
             }
+            // Seed words typed and left behind don't wait in the form.
+            Some("add-wallet") => {
+                let _ = left_adding.send(start::Input::Left);
+            }
+            _ => {}
         });
         links_go_to(sender.input_sender().clone());
         let toasts = adw::ToastOverlay::new();
@@ -316,6 +321,8 @@ impl Root {
                 }
                 self.passphrase.emit(passphrase::Input::Phase(phase.clone()));
                 self.start.emit(start::Input::Phase(phase.clone()));
+                // Add a wallet too: locking pops it, and what was typed must go.
+                self.add_wallet.emit(start::Input::Phase(phase.clone()));
                 self.phase = phase;
                 if self.phase == Phase::Open
                     && let Some(code) = self.pending.take()
@@ -439,7 +446,7 @@ impl Root {
             }
             Go::ConfirmReady(prepared) => {
                 self.nav.pop();
-                self.confirm.emit(confirm::Input::Ready(prepared));
+                self.confirm.emit(confirm::Input::Adopt(prepared));
                 self.push("confirm", "Confirm", self.confirm.widget());
             }
             Go::Profile => {

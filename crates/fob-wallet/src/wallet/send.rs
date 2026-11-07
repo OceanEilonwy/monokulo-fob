@@ -117,17 +117,16 @@ impl Wallet {
 
         let (mut candidates, available) = {
             let state = self.inner.state.lock().await;
-            let mut candidates: Vec<(usize, u64, WalletOutput)> = state
+            let mut candidates: Vec<((String, String), u64, WalletOutput)> = state
                 .outputs
                 .iter()
-                .enumerate()
-                .filter(|(_, o)| {
+                .filter(|o| {
                     o.spent_in.is_none()
                         && confirmations(&state, o.height) >= state.needed(o)
                 })
-                .filter_map(|(i, o)| {
+                .filter_map(|o| {
                     let bytes = hex::decode(&o.output).ok()?;
-                    Some((i, o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
+                    Some((o.id(), o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
                 })
                 .collect();
             candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
@@ -198,7 +197,7 @@ impl Wallet {
                 out: Outgoing {
                     to: to.to_owned(),
                     amount,
-                    inputs: chosen.iter().map(|c| c.0).collect(),
+                    inputs: chosen.iter().map(|c| c.0.clone()).collect(),
                     input_total: total,
                     receipt: receipt.is_some().then_some(receipt_json).flatten(),
                     note: requests::clean_note(note.as_deref()),
@@ -313,43 +312,63 @@ impl Wallet {
         let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
         let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
-        let tx = prepared.signable.sign(&mut OsRng, spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
+        let tx = prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
         let hash = hex::encode(tx.hash());
+        let signed = hex::encode(tx.serialize());
         let wallet = self.clone();
         let manual_sync = self.inner.state.lock().await.manual_sync;
         let publish = async move {
-            let rpc = wallet.rpc().await?;
+            let rpc = wallet.rpc().await.map_err(Unpublished::Refused)?;
             rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
         };
-        self.publish_and_record(hash, fee, prepared.out, publish).await
+        self.publish_and_record(hash, fee, prepared.out, signed, publish).await
     }
 
     /// Publishes a signed payment with `publish`, then records it (its
     /// inputs spent, the payment kept), as one step that runs to the end on
     /// its own once begun: dropping this call (the app leaving Confirm while
     /// "Sending…") never leaves a payment the node may have unrecorded.
-    pub(super) async fn publish_and_record(&self, hash: String, fee: u64, out: Outgoing, publish: impl Future<Output = Result<()>> + Send + 'static) -> Result<String> {
+    ///
+    /// A node that gave no answer may have taken the payment and passed it
+    /// on all the same, so it's recorded as sent, with `signed` (the signed
+    /// transaction, in hex) kept to offer again with each sync. Recording
+    /// nothing would leave its coins free, and paying again from other coins
+    /// would pay twice. If it never got through, the day-old check marks it
+    /// not confirmed, and its coins can be released.
+    pub(super) async fn publish_and_record(
+        &self,
+        hash: String,
+        fee: u64,
+        out: Outgoing,
+        signed: String,
+        publish: impl Future<Output = std::result::Result<(), Unpublished>> + Send + 'static,
+    ) -> Result<String> {
         let wallet = self.clone();
         let step = tokio::spawn(async move {
             {
-                // Spent already by a payment sent in the meantime?
+                // Spent already by a payment sent in the meantime, or gone
+                // with a rescan since it was prepared?
                 let state = wallet.inner.state.lock().await;
-                if out.inputs.iter().any(|&i| state.outputs.get(i).is_none_or(|o| o.spent_in.is_some())) {
+                if out.inputs.iter().any(|id| !state.outputs.iter().any(|o| o.is(id) && o.spent_in.is_none())) {
                     return Err(FobError::Screen(ScreenError::NoSuchPayment));
                 }
             }
-            publish.await?;
-            wallet.record_sent(hash, fee, out).await
+            let unanswered = match publish.await {
+                Ok(()) => None,
+                Err(Unpublished::Refused(e)) => return Err(e),
+                Err(Unpublished::Unsure) => Some(signed),
+            };
+            wallet.record_sent(hash, fee, out, unanswered).await
         });
         step.await.map_err(|e| FobError::Send(format!("{e}")))?
     }
 
     /// Keeps a payment just published: its inputs spent, and what only the
-    /// sender knows.
-    pub(super) async fn record_sent(&self, hash: String, fee: u64, out: Outgoing) -> Result<String> {
+    /// sender knows. `signed`, for a payment the node didn't answer for.
+    pub(super) async fn record_sent(&self, hash: String, fee: u64, out: Outgoing, signed: Option<String>) -> Result<String> {
         let mut state = self.inner.state.lock().await;
-        for &i in &out.inputs {
-            if let Some(output) = state.outputs.get_mut(i) {
+        for output in &mut state.outputs {
+            if out.inputs.iter().any(|id| output.is(id)) {
                 output.spent_in = Some(hash.clone());
             }
         }
@@ -372,10 +391,47 @@ impl Wallet {
             pieces: out.pieces,
             back: outputs,
             recipient_name: out.recipient_name,
+            signed,
         });
         self.record_prices(&mut state);
         self.save_state(&state)?;
         Ok(hash)
+    }
+
+    /// Offers the node again each payment it gave no answer for, until it
+    /// takes it or turns it down. Not once it's mined, released, or marked
+    /// not confirmed: someone told it probably didn't go through may pay
+    /// again by hand, and this one arriving late would pay twice.
+    pub(super) async fn publish_unanswered(&self, rpc: &Daemon) {
+        let waiting: Vec<(String, String)> = {
+            let state = self.inner.state.lock().await;
+            state.sent.iter().filter(|s| s.height.is_none() && !s.released && !s.not_confirmed).filter_map(|s| Some((s.tx.clone(), s.signed.clone()?))).collect()
+        };
+        let mut answered = vec![];
+        for (tx, signed) in waiting {
+            let read = hex::decode(&signed).ok().and_then(|bytes| monero_wallet::transaction::Transaction::read(&mut bytes.as_slice()).ok());
+            let Some(transaction) = read else {
+                answered.push(tx);
+                continue;
+            };
+            match rpc.publish_transaction(&transaction).await {
+                // Taken, or in its pool already.
+                Ok(()) => answered.push(tx),
+                // Turned down: mined already, its coins spent on the chain, or
+                // never valid. Scanning, or the day-old check, says which.
+                Err(monero_wallet::interface::PublishTransactionError::TransactionRejected(_)) => answered.push(tx),
+                // Still no answer: next time.
+                Err(_) => {}
+            }
+        }
+        if answered.is_empty() {
+            return;
+        }
+        let mut state = self.inner.state.lock().await;
+        for sent in state.sent.iter_mut().filter(|s| answered.contains(&s.tx)) {
+            sent.signed = None;
+        }
+        let _ = self.save_state(&state);
     }
 
     /// Forgets a prepared payment that won't be sent.

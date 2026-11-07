@@ -25,7 +25,7 @@ pub use fob_monero::{address, amount, fiat, network, pattern};
 pub use fob_price as price;
 pub use fob_scanner as scanning;
 pub use fob_screens::{activity, catch_up, clock, contacts, manual, not_ready, profile, requests, split};
-pub use fob_vault::{keys, passphrase, wallets};
+pub use fob_vault::{files, keys, passphrase, process, wallets};
 pub use fob_words as words;
 pub use fob_words::backup;
 

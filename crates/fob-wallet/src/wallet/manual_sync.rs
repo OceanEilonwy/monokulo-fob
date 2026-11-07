@@ -257,10 +257,13 @@ impl Wallet {
             None => false,
         };
 
+        // Before looking them up: one the node never had may have it now.
+        self.publish_unanswered(&rpc).await;
         let mut to_scan = vec![];
         if !unsettled.is_empty() {
             let hashes: Vec<&str> = unsettled.iter().map(|(tx, _)| tx.as_str()).collect();
             let lookup = self.look_up_sent(&rpc, &hashes).await?;
+            let lookup = self.check_missing(&rpc, lookup).await;
             for (tx, height) in &lookup.mined {
                 let known = unsettled.iter().find(|(hash, _)| hash == tx).and_then(|(_, h)| *h);
                 if known != Some(*height) {
@@ -309,6 +312,41 @@ impl Wallet {
         Ok(sent_lookup(&response))
     }
 
+    /// `lookup`, less the payments it says the node has never heard of whose
+    /// coins the node says are spent, on the chain or in its pool, or that it
+    /// can't say about. Not confirmed tells someone the payment may not have
+    /// gone through: a node that merely lost track of it, or lies, has to say
+    /// two things that don't fit for that.
+    pub(super) async fn check_missing(&self, rpc: &Daemon, mut lookup: SentLookup) -> SentLookup {
+        let asking: Vec<(String, Vec<String>)> = {
+            let state = self.inner.state.lock().await;
+            let old = now().saturating_sub(NOT_CONFIRMED_AFTER);
+            state
+                .sent
+                .iter()
+                .filter(|s| s.height.is_none() && !s.released && !s.not_confirmed && s.time <= old && lookup.missing.contains(&s.tx))
+                .map(|s| (s.tx.clone(), state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&s.tx)).filter_map(|o| o.key_image.clone()).collect()))
+                .collect()
+        };
+        let images: Vec<&str> = asking.iter().flat_map(|(_, images)| images.iter().map(String::as_str)).collect();
+        if images.is_empty() {
+            return lookup;
+        }
+        let body = serde_json::json!({ "key_images": images }).to_string();
+        let said = rpc.rpc_call("is_key_image_spent", Some(body), 1024 * 1024).await.ok().and_then(|r| key_images_spent(&r, images.len()));
+        let mut said = said.map(Vec::into_iter);
+        for (tx, images) in &asking {
+            let spent = match said.as_mut() {
+                Some(said) => said.by_ref().take(images.len()).fold(false, |spent, this| spent | this),
+                None => true,
+            };
+            if spent {
+                lookup.missing.retain(|missing| missing != tx);
+            }
+        }
+        lookup
+    }
+
     /// Marks what the node has never heard of, a day after it was sent, as not
     /// confirmed, and puts back what it has heard of again. Only says so: the
     /// coins stay spent until someone releases them.
@@ -337,6 +375,7 @@ impl Wallet {
         }
         let hashes: Vec<&str> = quiet.iter().map(String::as_str).collect();
         if let Ok(lookup) = self.look_up_sent(rpc, &hashes).await {
+            let lookup = self.check_missing(rpc, lookup).await;
             let _ = self.note_missing(&lookup).await;
         }
     }
@@ -351,6 +390,7 @@ impl Wallet {
         };
         state.sent[i].not_confirmed = false;
         state.sent[i].released = true;
+        state.sent[i].signed = None;
         for output in &mut state.outputs {
             if output.spent_in.as_deref() == Some(tx) {
                 output.spent_in = None;
@@ -443,6 +483,18 @@ pub(super) fn sent_lookup(response: &str) -> SentLookup {
     }
     lookup.missing = value.get("missed_tx").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
     lookup
+}
+
+/// Reads an `is_key_image_spent` answer for `asked` key images: whether each
+/// is spent, on the chain or in the pool. `None` for an answer that isn't
+/// one, or not for as many.
+pub(super) fn key_images_spent(response: &str, asked: usize) -> Option<Vec<bool>> {
+    let value = serde_json::from_str::<serde_json::Value>(response).ok()?;
+    if value.get("status").and_then(|s| s.as_str()) != Some("OK") {
+        return None;
+    }
+    let statuses: Vec<u64> = serde_json::from_value(value.get("spent_status")?.clone()).ok()?;
+    (statuses.len() == asked).then(|| statuses.into_iter().map(|s| s != 0).collect())
 }
 
 /// Applies `lookup` to the payments sent. Whether anything changed.

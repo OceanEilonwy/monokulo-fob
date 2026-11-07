@@ -81,31 +81,56 @@ pub fn clean(text: &str) -> String {
 
 /// The Latin letter a letter of another script is drawn like (lower case),
 /// or a digit like a letter: the confusables a name could hide behind.
+///
+/// Cherokee capitals are drawn like Latin ones (Ꭺ, Ꮪ), but lower case first
+/// turns them into Cherokee small letters (U+AB70 on), which look nothing like
+/// Latin, so it's those that are matched here, each beside its capital. The
+/// pairs come from Unicode's confusables list.
 fn latin(c: char) -> char {
     match c {
-        'а' => 'a',
+        'а' | 'α' | 'ɑ' => 'a',
         'в' | 'β' => 'b',
         'с' | 'ϲ' => 'c',
         'ԁ' => 'd',
         'е' | 'ё' | 'ε' => 'e',
-        'ɡ' => 'g',
-        'н' | 'һ' | 'η' => 'h',
+        'ɡ' | 'ց' => 'g',
+        'н' | 'һ' | 'η' | 'հ' => 'h',
         'і' | 'ї' | 'ι' | 'ı' => 'i',
         'ј' | 'ϳ' => 'j',
         'к' | 'κ' => 'k',
         'ӏ' | '1' | '|' => 'l',
         'м' | 'μ' => 'm',
-        'о' | 'ο' | '0' => 'o',
+        'ո' => 'n',
+        'о' | 'ο' | '0' | 'օ' => 'o',
         'р' | 'ρ' => 'p',
         'ԛ' => 'q',
         'ѕ' => 's',
         'т' | 'τ' => 't',
-        'υ' => 'u',
+        'υ' | 'ս' => 'u',
         'ѵ' | 'ν' => 'v',
         'ԝ' => 'w',
         'х' | 'χ' => 'x',
         'у' | 'ү' => 'y',
         'ζ' => 'z',
+        // Cherokee, small and capital: Ꭺ Ᏼ Ꮯ Ꭰ Ꭼ Ꮐ Ꮋ Ꭻ Ꮶ Ꮮ Ꮇ Ꮲ Ꭱ Ꮪ Ꭲ Ꮩ Ꮃ Ꮓ.
+        '\u{ab7a}' | '\u{13aa}' => 'a',
+        '\u{13fc}' | '\u{13f4}' => 'b',
+        '\u{abaf}' | '\u{13df}' => 'c',
+        '\u{ab70}' | '\u{13a0}' => 'd',
+        '\u{ab7c}' | '\u{13ac}' => 'e',
+        '\u{ab90}' | '\u{13c0}' => 'g',
+        '\u{ab8b}' | '\u{13bb}' => 'h',
+        '\u{ab7b}' | '\u{13ab}' => 'j',
+        '\u{abb6}' | '\u{13e6}' => 'k',
+        '\u{abae}' | '\u{13de}' => 'l',
+        '\u{ab87}' | '\u{13b7}' => 'm',
+        '\u{abb2}' | '\u{13e2}' => 'p',
+        '\u{ab71}' | '\u{13a1}' => 'r',
+        '\u{abaa}' | '\u{13da}' => 's',
+        '\u{ab72}' | '\u{13a2}' => 't',
+        '\u{aba9}' | '\u{13d9}' => 'v',
+        '\u{ab83}' | '\u{13b3}' => 'w',
+        '\u{ab93}' | '\u{13c3}' => 'z',
         c => c,
     }
 }
@@ -290,6 +315,23 @@ fn without_profile(bytes: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Greek, IPA, Armenian and Cherokee letters drawn like Latin ones don't
+    /// make a second "Sam" that looks like the first.
+    #[test]
+    fn lookalikes_from_other_scripts_have_the_latin_skeleton() {
+        assert_eq!(skeleton("Sam"), "sam");
+        assert_eq!(skeleton("Sαm"), "sam", "Greek alpha");
+        assert_eq!(skeleton("Sɑm"), "sam", "Latin alpha");
+        assert_eq!(skeleton("Ꮪam"), "sam", "Cherokee DU, which lower case makes U+ABAA");
+        assert_eq!(skeleton("ᏚᎪᎷ"), "sam", "all Cherokee capitals");
+        assert_eq!(skeleton("Ꭺnna"), "anna");
+        assert_eq!(skeleton("Ᏼob"), "bob", "Cherokee YV, small U+13FC");
+        assert_eq!(skeleton("Jօhո"), "john", "Armenian oh and vo");
+        assert_eq!(skeleton("\u{13b3}\u{13ac}\u{13de}"), "wel", "Cherokee LA, GV, TLE");
+        assert_eq!(skeleton("Gսs"), skeleton("Gus"), "Armenian seh");
+        assert_ne!(skeleton("Sam"), skeleton("Sum"), "a real difference stays one");
+    }
 
     /// `real` (a plain one) as Android 16 encodes it: an extended
     /// header with the profile flag (and `flags` besides), an sRGB profile,

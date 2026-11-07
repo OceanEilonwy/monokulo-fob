@@ -399,6 +399,7 @@ mod tests {
             tax: None,
             total: "$33.21".into(),
             currency: "USD".into(),
+            total_value: 33.21,
         });
         let split = Activity { split: Some(3), ..paid(&address(5), 1, NOW) };
         let rows = [paid(&sam, 1, NOW), paid(&code, 1, NOW), paid(&stranger, 1_000_000_000, NOW - DAY), bought, paid(&stranger, 1, NOW - 9 * DAY), split];

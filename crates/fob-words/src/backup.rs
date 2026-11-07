@@ -38,7 +38,7 @@ impl KeyBadge {
 }
 
 /// One key on Keys' page, ready to draw.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct KeyRow {
     /// "Secret spend key", "Main address"
     pub title: String,
@@ -54,6 +54,20 @@ pub struct KeyRow {
     pub clip: Zeroizing<String>,
     /// The Copy button's label: "Copy the secret spend key".
     pub copy: String,
+}
+
+// Zeroizing's Debug prints what it holds, and value and clip are secret keys
+// on the secret card, so printing a row must not show them.
+impl std::fmt::Debug for KeyRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyRow")
+            .field("title", &self.title)
+            .field("badge", &self.badge)
+            .field("badge_text", &self.badge_text)
+            .field("line", &self.line)
+            .field("copy", &self.copy)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A card of keys under its heading: "Secret: keep to yourself", "Public".

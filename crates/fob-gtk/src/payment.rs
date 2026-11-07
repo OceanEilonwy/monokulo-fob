@@ -152,7 +152,7 @@ impl Payment {
             self.body.append(&widgets::receipt(receipt));
         }
         if detail.can_release {
-            let group = adw::PreferencesGroup::builder().title("Not confirmed").description("Your node has no record of this payment a day after it was sent, so it probably didn't go through. Its coins stay held until you release them.").build();
+            let group = adw::PreferencesGroup::builder().title("Not confirmed").description("Your node has no record of this payment a day after it was sent, and its coins aren't spent on the chain as far as it says. It may not have gone through, but a node can be wrong: ask whoever you paid before paying again. Its coins stay held until you release them.").build();
             let release = gtk::Button::builder().label("Release coins").halign(gtk::Align::Center).css_classes(["pill"]).margin_top(12).build();
             let then = sender.clone();
             release.connect_clicked(move |_| then.input(Input::AskRelease));
