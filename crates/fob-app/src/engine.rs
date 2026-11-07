@@ -1014,7 +1014,6 @@ mod tests {
             fiat_age: None,
             receipt: None,
             split: None,
-            to_self: false,
         });
         // A minute after the passphrase, it no longer counts.
         let generation = engine.inner.generation.load(Ordering::SeqCst);
