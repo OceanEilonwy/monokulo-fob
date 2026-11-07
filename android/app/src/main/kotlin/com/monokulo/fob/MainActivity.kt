@@ -87,6 +87,7 @@ import com.monokulo.fob.ui.screens.WalletCodeScreen
 import com.monokulo.fob.ui.screens.WalletsScreen
 import com.monokulo.fob.ui.screens.WelcomeScreen
 import com.monokulo.fob.ui.screens.ZmqScreen
+import com.monokulo.fob.ui.screens.LightServerScreen
 import kotlinx.coroutines.CompletableDeferred
 import com.monokulo.fob.ui.screens.PendingSend
 import com.monokulo.fob.ui.screens.SendDraft
@@ -183,6 +184,7 @@ sealed interface Screen {
     data object ShowWalletCode : Screen
     data object Node : Screen
     data object Zmq : Screen
+    data object LightServer : Screen
     data object ManualSync : Screen
 }
 
@@ -483,6 +485,7 @@ class MainActivity : FragmentActivity() {
             Screen.ShowWalletCode -> WalletCodeScreen(model, nav)
             Screen.Node -> NodeScreen(model, nav)
             Screen.Zmq -> ZmqScreen(model, nav)
+            Screen.LightServer -> LightServerScreen(model, nav)
             Screen.ManualSync -> ManualSyncScreen(model, nav)
         }
     }

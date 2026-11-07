@@ -87,6 +87,10 @@ impl Wallet {
     /// opens. It changes nothing, fails quietly, and is cheap to call again:
     /// what it fetched is kept for twenty seconds.
     pub async fn warm_up_send(&self) {
+        // Nothing to warm up through a server, and no node to ask.
+        if self.light_mode().await {
+            return;
+        }
         if let Ok((_, rpc, decoys, _)) = self.connection().await {
             let _ = self.send_ready(&rpc, &decoys).await;
         }
@@ -95,6 +99,9 @@ impl Wallet {
     /// Asks the node its fee rate now, so Split up's fee estimate is the
     /// node's, not Monero's usual. Quietly keeps the last one on failure.
     pub async fn refresh_fee_rate(&self) {
+        if self.light_mode().await {
+            return;
+        }
         if let Ok((_, rpc, _, _)) = self.connection().await {
             let _ = self.fee_rate(&rpc).await;
         }
@@ -111,6 +118,10 @@ impl Wallet {
         recipient_name: Option<String>,
         pieces: Option<u32>,
     ) -> Result<Prepared> {
+        // Read-only for now: phase 3 of the Light Wallet proposal sends through the server.
+        if self.light_mode().await {
+            return Err(FobError::SendingThroughServerLater);
+        }
         let amount: u64 = payments.iter().map(|p| p.1).sum();
         let device = self.inner.keys.device();
         let (mut candidates, available, unsynced) = {
@@ -354,6 +365,9 @@ impl Wallet {
     /// A wallet whose keys are on a device signs with
     /// [`send_with_trezor`](Wallet::send_with_trezor) instead.
     pub async fn send(&self, id: u64) -> Result<String> {
+        if self.light_mode().await {
+            return Err(FobError::SendingThroughServerLater);
+        }
         if self.inner.keys.device().is_some() {
             return Err(FobError::TrezorNeeded);
         }

@@ -111,6 +111,14 @@ impl Wallet {
     /// screens never wait on it; what it found is applied under the lock, in
     /// block order.
     pub async fn sync_step(&self) -> Result<bool> {
+        match self.backend().await {
+            crate::light::Backend::Node => self.node_step().await,
+            crate::light::Backend::Light { .. } => self.light_step().await,
+        }
+    }
+
+    /// [`sync_step`](Wallet::sync_step) from the node: fetch blocks, scan them.
+    async fn node_step(&self) -> Result<bool> {
         let (transport, rpc, decoys, adaptive) = self.connection().await?;
         let node_err = |e: InterfaceError| FobError::Node(format!("{e:?}"));
 
@@ -366,6 +374,26 @@ impl Wallet {
     /// Brings [`status`](Wallet::status) up to date with the wallet's state.
     pub(super) async fn refresh_status(&self) {
         let state = self.inner.state.lock().await;
+        if state.sync_mode == state::SyncMode::Light {
+            // The server's scanning is what's said: its scanned height and the chain's.
+            let host = node::address(state.light_url.as_deref().unwrap_or(""));
+            let (scanned, tip, start) = (state.light_scanned_height + 1, state.tip, state.restore_height.unwrap_or(0));
+            let network = self.network();
+            drop(state);
+            self.set_status(|s| {
+                s.scanned = scanned;
+                s.tip = tip;
+                s.start = start;
+                s.manual_sync = false;
+                s.scan = None;
+                s.synced = tip > 0 && scanned >= tip;
+                s.progress = if tip <= start { 1.0 } else { (scanned.saturating_sub(start)) as f32 / (tip - start) as f32 };
+                let light = s.light.get_or_insert_with(catch_up::Light::default);
+                light.host = host;
+                light.scanning_from = (tip.saturating_sub(scanned) >= catch_up::SERVER_FAR_BEHIND).then(|| network.timestamp_for(scanned));
+            });
+            return;
+        }
         let manual_sync = state.manual_sync;
         let (next, tip, start, up_to) = (state.next_block, state.tip, state.restore_height.unwrap_or(state.next_block), state.last_block_time);
         drop(state);
@@ -381,6 +409,7 @@ impl Wallet {
             s.synced = (manual_sync && !scanning) || (tip > 0 && next >= tip);
             s.progress = if tip <= start { 1.0 } else { (next.saturating_sub(start)) as f32 / (tip - start) as f32 };
             s.up_to = up_to;
+            s.light = None;
         });
     }
 
@@ -498,7 +527,7 @@ impl Wallet {
                             fob_scanner::rest();
                             wallet.scan_finished().await;
                             wallet.inner.rounds.send_modify(|n| *n += 1);
-                            if wallet.inner.state.lock().await.manual_sync {
+                            if wallet.inner.state.lock().await.manual_scanning() {
                                 continue;
                             }
                             let poll = if wallet.status().zmq == ZmqStatus::Listening { POLL_LISTENING } else { POLL };

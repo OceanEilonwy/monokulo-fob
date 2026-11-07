@@ -545,6 +545,7 @@ name = "fob-chain"
 version = "0.1.11"
 dependencies = [
  "fob-monero",
+ "hex",
  "monero-daemon-rpc",
  "monero-epee",
  "monero-wallet",

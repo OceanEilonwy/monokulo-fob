@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 7;
+const VERSION: i32 = 8;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -88,6 +88,14 @@ const WALLET: Table = Table {
         ("pull_mark_hash", Text),
         // Since version 6.
         ("node_pin", Text),
+        // Since version 8.
+        ("sync_mode", Text),
+        ("light_url", Text),
+        ("light_self_signed", Bool),
+        ("light_pin", Text),
+        ("light_registered", Bool),
+        ("light_subaddrs_sent", Int),
+        ("light_scanned_height", Int),
     ],
 };
 const RECENT: Table = Table { name: "recent_blocks", columns: &[("height", Int), ("hash", Text)] };
@@ -490,6 +498,13 @@ impl Db {
             let upgrade = "BEGIN;\nALTER TABLE keys ADD COLUMN device TEXT;\nALTER TABLE outputs ADD COLUMN tx_key TEXT;\nALTER TABLE outputs ADD COLUMN extra_key TEXT;\nPRAGMA user_version = 7;\nCOMMIT;";
             connection.execute_batch(upgrade).map_err(failed)?;
             version = 7;
+        }
+        if version == 7 {
+            // Light wallet mode: where the wallet syncs from, and what the
+            // server has been told. A file from before is a node wallet.
+            let upgrade = "BEGIN;\nALTER TABLE wallet ADD COLUMN sync_mode TEXT DEFAULT 'node';\nALTER TABLE wallet ADD COLUMN light_url TEXT;\nALTER TABLE wallet ADD COLUMN light_self_signed INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN light_pin TEXT;\nALTER TABLE wallet ADD COLUMN light_registered INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN light_subaddrs_sent INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN light_scanned_height INTEGER DEFAULT 0;\nPRAGMA user_version = 8;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 8;
         }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));

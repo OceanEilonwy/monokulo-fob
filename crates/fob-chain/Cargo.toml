@@ -12,6 +12,7 @@ test-support = ["dep:tokio-rustls"]
 
 [dependencies]
 fob-monero = { path = "../fob-monero" }
+hex = "0.4"
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 monero-wallet = "0.2"

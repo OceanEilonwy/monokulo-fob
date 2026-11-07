@@ -51,6 +51,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import uniffi.fob.scanEngine
+import uniffi.fob.lightWords
+import uniffi.fob.LightReport
+import com.monokulo.fob.ui.Segmented
 import com.monokulo.fob.Screen
 import com.monokulo.fob.Nfc
 import com.monokulo.fob.WalletModel
@@ -219,14 +222,48 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             Column {
                 SectionLabel("Syncing")
                 Card {
-                    SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
+                    val light by model.lightMode.collectAsState()
+                    val lightLine by model.lightLine.collectAsState()
+                    val words = remember { lightWords() }
+                    // Turning light mode on says what the server sees first; turning it off, where scanning picks up.
+                    var confirming by remember { mutableStateOf<Boolean?>(null) }
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(words.syncThrough, fontSize = 16.sp)
+                        Segmented(listOf(words.throughNode, words.throughServer), if (light) 1 else 0) { chosen ->
+                            val on = chosen == 1
+                            if (on != light) {
+                                if (on && lightLine == null) nav.go(Screen.LightServer) else confirming = on
+                            }
+                        }
+                    }
+                    Divider()
+                    // Kept for switching back, unused meanwhile.
+                    if (light) SettingRow("Node", words.nodeUnused, titleColor = Fob.muted)
+                    else SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
+                    SettingRow(words.serverTitle, lightLine ?: words.noneChosen, onClick = { nav.go(Screen.LightServer) })
+                    confirming?.let { on ->
+                        AlertDialog(
+                            onDismissRequest = { confirming = null },
+                            title = { Text(if (on) words.serverTitle else words.throughNode) },
+                            text = { Text(if (on) words.privacy else words.turningOff) },
+                            confirmButton = {
+                                TextButton(if (on) words.useServer else words.throughNode, {
+                                    confirming = null
+                                    scope.launch { runCatching { model.useLightWallet(on) }.onFailure { model.say(it.reason()) } }
+                                })
+                            },
+                            dismissButton = { TextButton("Cancel", { confirming = null }, color = Fob.ink) },
+                        )
+                    }
                     // Read as the screen opens: the GPU may start, or fail its checks, at any time before then.
                     // Nothing to choose, so the row isn't clickable.
                     val walletRefused by produceState(false) { value = model.wallet.value?.scanGpuCheckFailed() ?: false }
                     SettingRow("Scanning", remember(walletRefused) { scanEngine(walletRefused).line })
                     val manual by model.manual.collectAsState()
+                    // The server watches the chain: nothing to listen for here.
+                    if (light) SettingRow("Instant updates (ZMQ)", words.zmqUnused, titleColor = Fob.muted)
                     // Manual Sync listens for nothing.
-                    if (manual?.on != true) {
+                    else if (manual?.on != true) {
                         val zmqOn = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
                         SettingRow(
                             "Instant updates (ZMQ)", status?.zmqText ?: "Off", onClick = { nav.go(Screen.Zmq) },
@@ -234,8 +271,11 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                             checked = zmqOn, onChecked = { on -> scope.launch { runCatching { model.setZmq(on) }.onFailure { nav.go(Screen.Zmq) } } },
                         )
                     }
-                    SettingRow("Rescan", "Look through past blocks again", onClick = model::openScan)
-                    ValueRow("Manual Sync", if (manual?.on == true) "On" else "Off") { nav.go(Screen.ManualSync) }
+                    // Through a server there's nothing here to scan, again or by hand.
+                    if (!light) {
+                        SettingRow("Rescan", "Look through past blocks again", onClick = model::openScan)
+                        ValueRow("Manual Sync", if (manual?.on == true) "On" else "Off") { nav.go(Screen.ManualSync) }
+                    }
                 }
             }
             Column {
@@ -686,6 +726,70 @@ fun ZmqScreen(model: WalletModel, nav: Nav) {
                 }
             }
             Field(endpoint, { endpoint = it }, "ZMQ address", hint = "Your node's --zmq-pub, on the node's own host: tcp://host:port")
+        }
+    }
+}
+
+/**
+ * The Light server screen: the server's address, its own certificate, Test with what it found, what the server sees,
+ * and "Sync through this server", which Rust refuses with words when the server doesn't answer, is on another network
+ * or has subaddresses off. Every word is Rust's.
+ */
+@Composable
+fun LightServerScreen(model: WalletModel, nav: Nav) {
+    val wallet by model.wallet.collectAsState()
+    val scope = rememberCoroutineScope()
+    val words = remember { lightWords() }
+    var url by remember { mutableStateOf("") }
+    var selfSigned by remember { mutableStateOf(false) }
+    var report by remember { mutableStateOf<LightReport?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(wallet) {
+        model.lightServer()?.let { url = it.url; selfSigned = it.selfSigned }
+    }
+    // What's typed has changed since the Test: its report isn't this server's.
+    fun edited() { report = null; error = null }
+    Page(bottom = {
+        ErrorText(error ?: report?.takeIf { !it.usable }?.verdict)
+        PrimaryButton(if (busy) words.test + "…" else words.useServer, enabled = !busy && url.isNotBlank(), onClick = {
+            busy = true
+            scope.launch {
+                runCatching { model.syncThroughServer(url.trim(), selfSigned) }
+                    .onSuccess { nav.back() }
+                    .onFailure { error = it.reason() }
+                busy = false
+            }
+        })
+    }) {
+        TopBar(words.serverTitle, onBack = { nav.back() })
+        Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Field(url, { url = it; edited() }, words.urlLabel, placeholder = words.urlHint)
+            Card { SettingRow(words.selfSigned, checked = selfSigned, onChecked = { selfSigned = it; edited() }) }
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                TextButton(if (testing) words.test + "…" else words.test, {
+                    if (testing || url.isBlank()) return@TextButton
+                    testing = true
+                    scope.launch {
+                        report = model.checkLightServer(url.trim(), selfSigned)
+                        testing = false
+                    }
+                })
+            }
+            report?.let { r ->
+                Card {
+                    InfoRow(r.address, r.verdict, bold = true)
+                    r.rows.forEach { row ->
+                        Divider()
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(row.label, color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                            Text(row.value, color = if (row.bad) Fob.red else Fob.ink, fontSize = 15.sp, textAlign = TextAlign.End)
+                        }
+                    }
+                }
+            }
+            Text(words.privacy, color = Fob.muted, fontSize = 14.sp)
         }
     }
 }
