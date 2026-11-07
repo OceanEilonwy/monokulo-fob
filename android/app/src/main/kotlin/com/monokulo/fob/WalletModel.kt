@@ -26,8 +26,7 @@ import uniffi.fob.PullMode
 import uniffi.fob.PullOutcome
 import uniffi.fob.ScanDrawer
 import uniffi.fob.ScanRequest
-import uniffi.fob.ScanMode
-import uniffi.fob.setScanMode
+import uniffi.fob.startScanning
 import uniffi.fob.AmountEntry
 import uniffi.fob.Balance
 import uniffi.fob.BackupReminder
@@ -179,18 +178,12 @@ class WalletModel(private val app: Application) {
     }
 
     /**
-     * Scanning (Settings): what does the arithmetic of a catch-up, Auto unless chosen otherwise. It's the phone's, so
-     * it's kept here rather than with a wallet; Rust falls back to the CPU in any mode when the GPU can't do the work.
+     * Scanning: the GPU starts once per process and scans whenever it can, the CPU otherwise. There's nothing to
+     * choose (Settings shows which, read-only), so the choice older versions kept is dropped.
      */
-    private val _scanning = MutableStateFlow(
-        ScanChoice.entries.firstOrNull { it.name == prefs.getString("scan_mode", null) } ?: ScanChoice.AUTO,
-    ).also { setScanMode(it.value.mode, app.cacheDir.absolutePath) }
-    val scanning: StateFlow<ScanChoice> = _scanning
-
-    fun setScanning(choice: ScanChoice) {
-        prefs.edit().putString("scan_mode", choice.name).apply()
-        _scanning.value = choice
-        setScanMode(choice.mode, app.cacheDir.absolutePath)
+    init {
+        prefs.edit().remove("scan_mode").apply()
+        startScanning(app.cacheDir.absolutePath)
     }
 
     private val _status = MutableStateFlow<SyncStatus?>(null)
@@ -1055,11 +1048,4 @@ data class SendPeople(val contacts: List<ContactRow>, val anyContact: Boolean, v
     companion object {
         val NONE = SendPeople(emptyList(), false, emptyList())
     }
-}
-
-/** The choices for what scans, with what Settings says of each. */
-enum class ScanChoice(val label: String, val description: String, val mode: ScanMode) {
-    AUTO("Auto", "Auto (Default)", ScanMode.AUTO),
-    GPU("GPU", "GPU: the graphics chip, using less power", ScanMode.GPU),
-    CPU("CPU", "CPU: only the main cores", ScanMode.CPU),
 }

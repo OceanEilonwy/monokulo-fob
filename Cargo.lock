@@ -702,6 +702,7 @@ dependencies = [
  "fob-codes",
  "fob-monero",
  "fob-price",
+ "fob-scanner",
  "fob-screens",
  "fob-vault",
  "serde_json",
@@ -1938,13 +1939,13 @@ dependencies = [
 [[package]]
 name = "monokulo-8ar"
 version = "0.1.0"
-source = "git+https://github.com/OceanEilonwy/monokulo-8ar?rev=27bfb4d#27bfb4d3b423ee17ebdbdb42fea42ba3bfbfb9c9"
+source = "git+https://github.com/OceanEilonwy/monokulo-8ar?rev=d98d677#d98d67785cedc5ddc2f0964899a2083669b3cea6"
 dependencies = [
  "ash",
+ "crypto-bigint",
  "curve25519-dalek",
  "monero-wallet",
  "sha3",
- "subtle",
  "zeroize",
 ]
 

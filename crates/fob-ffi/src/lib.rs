@@ -1345,32 +1345,32 @@ impl From<&fob_wallet::wallets::Entry> for WalletEntry {
     }
 }
 
-/// What does the arithmetic of a scan.
-#[derive(uniffi::Enum)]
-pub enum ScanMode {
-    Gpu,
-    Auto,
-    Cpu,
+/// Starts the GPU for scanning, in the background, for every wallet in this
+/// process: it's used once it passes its checks, and the CPU scans until then
+/// or if it can't be used. `cache_dir` keeps the compiled shader, which is the
+/// slow part of a GPU's first use. An app calls this once, as it starts.
+#[uniffi::export]
+pub fn start_scanning(cache_dir: String) {
+    fob_wallet::scanning::set_cache_dir(cache_dir.into());
+    fob_wallet::scanning::warm_up();
 }
 
-/// Sets what scans, for every wallet in this process. `cache_dir` keeps the
-/// compiled shader, which is the slow part of a GPU's first use.
-#[uniffi::export]
-pub fn set_scan_mode(mode: ScanMode, cache_dir: String) {
-    use fob_wallet::scanning::{Mode, set_cache_dir, set_mode};
-    set_cache_dir(cache_dir.into());
-    set_mode(match mode {
-        ScanMode::Auto => Mode::Auto,
-        ScanMode::Gpu => Mode::Gpu,
-        ScanMode::Cpu => Mode::Cpu,
-    });
+/// What's scanning, for Settings to show: there's nothing to choose.
+#[derive(uniffi::Record)]
+pub struct ScanEngine {
+    /// Whether the GPU is doing the work.
+    pub gpu: bool,
+    /// "GPU · Mali-G715", or "CPU · " and why.
+    pub line: String,
 }
 
-/// Whether the GPU can't be used on this phone, so the CPU scans whatever the
-/// setting says.
+/// What's scanning. `wallet_refused` is the open wallet's
+/// `scan_gpu_check_failed`: a GPU that failed it doesn't scan that wallet.
 #[uniffi::export]
-pub fn scan_gpu_failed() -> bool {
-    fob_wallet::scanning::gpu_failed()
+pub fn scan_engine(wallet_refused: bool) -> ScanEngine {
+    let engine = fob_wallet::scanning::engine();
+    let gpu = matches!(engine, fob_wallet::scanning::Engine::Gpu { .. }) && !wallet_refused;
+    ScanEngine { gpu, line: fob_wallet::words::scanning::engine_line(&engine, wallet_refused) }
 }
 
 /// Whether the folder `dir` holds a wallet on `network`; asks nothing of the

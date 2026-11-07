@@ -1,11 +1,10 @@
-//! Fob's scanning policy. `monokulo-8ar` does what each mode says, given a GPU
-//! that's ready, and leaves one choice to its caller: from how many keys Auto
-//! hands a batch to the GPU. Without a GPU the CPU does the work, whatever the
-//! mode.
+//! Fob's scanning policy: the one choice `monokulo-8ar` leaves its caller.
 
-/// From this many keys, Auto has the GPU take over from the CPU, as it costs
-/// less energy from there. A block has about 57 keys. On a Mali-G715 the CPU
-/// took less energy for one block, they were level for ten, and the GPU took
-/// half for a hundred, so the GPU takes over at about nine. monokulo-8ar's
-/// `examples/scan_speed.rs --tip` measures this.
-pub(crate) const AUTO_GPU_FROM: usize = 512;
+/// Below this many transaction keys, about nine blocks, a batch doesn't go to
+/// the GPU and the `Scanner` reads every block instead: a GPU batch has a fixed
+/// cost however small (46 mJ on a Mali-G715, 3.7 ms on an RX 6800 XT). The
+/// number is decision 332's, measured against the CPU prefilter that's since
+/// gone (decision 360); the `Scanner` alone costs more per block than that did,
+/// so the true crossover is likely lower. monokulo-8ar's
+/// `examples/scan_speed.rs --tip` measures the GPU's side.
+pub(crate) const GPU_FROM_KEYS: usize = 512;

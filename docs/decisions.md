@@ -2713,6 +2713,9 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      memory as push constants. Compiled shaders are cached, as compiling takes 20 to
      30 s, during which the CPU scans. A Vulkan failure retires the GPU until the app
      restarts and its work goes to the cores. Software renderers aren't used.
+     (Since 360 there's no CPU prefilter and no mode to choose: without the GPU, or
+     below 512 keys, the `Scanner` reads every block, and the GPU compresses its own
+     points.)
 333. **A GPU passes test vectors on each cold start** (`vectors.rs`), or isn't
      used: field arithmetic on values around 0, p, 2^255 and 2^256, and 8aR against
      curve25519-dalek on awkward view keys, torsioned, small-order and off-curve keys,
@@ -2918,3 +2921,23 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      `github.com/OceanEilonwy/monokulo-8ar` pinned by rev, as `orf-codec` is; the
      repository is private, which cargo fetches through the same git credentials
      as a push.
+360. **The prefilter is GPU-only; monero-oxide is the fallback.** The CPU prefilter
+     and its curve code (`fe.rs`, our own radix-2^51 field arithmetic) are gone from
+     monokulo-8ar. It was the riskiest code to keep right, and what it saved was never
+     what limited a sync: fetching is (350). Without a GPU that passed its checks, or
+     for a batch under 512 transaction keys, `Prefilter::flag` says it didn't filter
+     and `scan.rs` has the `Scanner` read every block, with the same fan-out over the
+     cores. A wallet whose own GPU check failed is scanned the same way. The 512 is
+     332's, measured against the CPU prefilter; the `Scanner` alone costs more per
+     block, so the true crossover is likely lower, but it stays until it's measured.
+     The GPU now inverts Z and compresses each point itself (nine words a key, from
+     the scan-vulkan prototype), so the CPU only does view tags and the spend check,
+     on curve25519-dalek. The startup vectors keep their field values, now checked
+     against plain big integers. There is no Auto, GPU or CPU setting: the GPU starts
+     as the app does and is used whenever it can be. Settings shows a read-only
+     Scanning row, "GPU · <name>" or "CPU · " and why (the GPU is starting, no Vulkan,
+     no GPU that can do it, it failed its check or this wallet's, it stopped working);
+     the phone's old `scan_mode` preference and the desktop's `scan_mode` setting are
+     dropped. Apple's GPUs are meant to come through MoltenVK later. On an RX 6800 XT
+     the 2,000-block fixture still gives digest e0c4c620, at about 44,000 blocks/s
+     warm against 45,000 before, and 29,000 on a first run as before.

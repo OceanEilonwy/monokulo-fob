@@ -104,8 +104,9 @@ fn block_with(outputs: Vec<Output>, extra: Vec<u8>, fork: u8, version: u8) -> Sc
     ScannableBlock { block: Block::new(header, miner, vec![]).unwrap(), transactions: vec![], output_index_for_first_ringct_output: Some(0) }
 }
 
-/// On one thread and on several: each block's answer is its own, and only a block
-/// that pays has its money looked for.
+/// On one thread and on several: each block's answer is its own. Without the GPU
+/// (not allowed here, as for a wallet whose check hasn't passed) nothing is
+/// filtered, so every block has its money looked for.
 #[test]
 fn a_scan_finds_money_in_the_block_that_holds_it() {
     let (w, filter, scanner) = wallet();
@@ -128,7 +129,7 @@ fn a_scan_finds_money_in_the_block_that_holds_it() {
             let scanned = result.unwrap();
             assert_eq!(scanned.hash, hex::encode(hashes[i]), "block {i} of {count}");
             assert_eq!(!scanned.found.is_empty(), pays(i), "block {i} of {count}");
-            assert_eq!(scanned.miner_tx, if pays(i) { miners[i].clone() } else { String::new() }, "block {i} of {count}");
+            assert_eq!(scanned.miner_tx, miners[i], "block {i} of {count}: read");
         }
     }
 }

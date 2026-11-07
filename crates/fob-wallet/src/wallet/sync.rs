@@ -46,9 +46,6 @@ impl Wallet {
     /// Whether this wallet may scan on the GPU now, running its check first if
     /// that's due. False until the GPU has passed this cold start's check.
     pub(super) async fn gpu_allowed(&self) -> bool {
-        if fob_scanner::mode() == fob_scanner::Mode::Cpu {
-            return false;
-        }
         let Some(device) = fob_scanner::gpu_identity() else { return false };
         {
             let state = self.inner.state.lock().await;
