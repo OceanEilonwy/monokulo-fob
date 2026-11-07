@@ -601,8 +601,9 @@ impl Wallet {
         for output in scanned.found {
             // Locked to a block (a mined reward, rarely anything else) or to
             // a time: kept, and not spent before then. A time is kept as
-            // Monero writes it, past the highest block number; it's judged
-            // by the chain's own clock, the blocks' times, not the phone's.
+            // Monero writes it, past the highest block number; Fob judges it
+            // by the chain's own clock, the blocks' times, not the phone's,
+            // which is never earlier than monerod's clock-plus-two-hours rule.
             let unlock_block = match output.additional_timelock() {
                 Timelock::None => 0,
                 Timelock::Block(block) => block as u64,

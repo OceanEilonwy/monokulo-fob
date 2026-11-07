@@ -2864,12 +2864,15 @@ against Fob's after a mainnet trial felt slower than it. Measured with
 353. **A publish the node didn't clearly refuse counts as sent.** A timeout, a dropped
      line or a 5xx used to drop the signed transaction as "not sent", leaving its coins
      unspent while the node may well have relayed it; a retry with other coins would pay
-     twice. Now only a node's own rejection (or a request that never connected) is a
-     refusal. Anything else records the payment, marks its coins spent and keeps the
-     signed transaction (`sent.signed`, schema version 6), which is re-broadcast on each
-     sync until the node takes or rejects it. An empty or "busy" reason isn't a rejection
-     either: monerod says BUSY while syncing. The pool is also read for our own key
-     images, so a transaction that reached it by any route locks its coins.
+     twice. Now only a node's own answer (any rejection, BUSY included, since monerod
+     answers that before it has looked at the transaction), a request that never
+     connected, or a 4xx is a refusal. Anything else records the payment, marks its
+     coins spent and keeps the signed transaction (`sent.signed`, schema version 6),
+     which is re-broadcast on each sync until the node takes or rejects it. On that
+     re-broadcast an empty or "busy" reason isn't taken as a rejection: the transaction
+     may already be in the pool, and a syncing node says BUSY to everything. The pool is
+     also read for our own key images, so a transaction that reached it by any route
+     locks its coins.
 354. **A quiet payment's coins are asked about before it's marked not confirmed.** The
      node's `missed_tx` alone used to decide (338). Now `is_key_image_spent` is asked
      first: all spent or none spent is a clear answer, taken after the usual day; an

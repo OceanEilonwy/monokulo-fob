@@ -5,6 +5,7 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.KeyPermanentlyInvalidatedException
+import android.security.keystore.UserNotAuthenticatedException
 import android.util.Base64
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -101,7 +102,17 @@ class Vault(context: Context) {
         throw KeyLost(e)
     } catch (e: UnrecoverableKeyException) {
         throw KeyLost(e)
+    } catch (e: UserNotAuthenticatedException) {
+        // A key that needs the device unlocked, asked for while it's locked
+        // (Android 15+): not lost, just not now.
+        throw DeviceLocked(e)
     }
+
+    /** The key only opens while the phone is unlocked; this was asked for while it wasn't. */
+    class DeviceLocked(cause: Throwable) : GeneralSecurityException(
+        "Unlock your phone, then try again.",
+        cause,
+    )
 
     /** The phone's Keystore can no longer open the key Fob's local files are sealed with. */
     class KeyLost(cause: Throwable) : GeneralSecurityException(

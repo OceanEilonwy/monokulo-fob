@@ -245,8 +245,9 @@ impl State {
     /// How long `output` waits before it can be spent. One locked to a time
     /// waits until the last block scanned is that late, the chain's clock and
     /// not the phone's, counted as the blocks that time is from it (so it
-    /// shows as not ready yet, with about how long): monerod judges it by
-    /// the blocks' times too.
+    /// shows as not ready yet, with about how long). monerod judges it by
+    /// its own clock plus two hours; a block's time can be at most two hours
+    /// ahead of that, so this is never early.
     pub(super) fn needed(&self, output: &Owned) -> u64 {
         let rules = match output.unlock_time() {
             Some(time) => {

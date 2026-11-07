@@ -94,10 +94,10 @@ const RESTORE_SKIP: u32 = 50;
 /// Ring size for transactions since the 2022 hard fork.
 const RING_LEN: u8 = 16;
 /// The most Fob pays per unit of weight, whatever a node asks. With the tail
-/// emission, Monero's base fee is at most about 20,000 (with the block weight
-/// median at its smallest; larger blocks make it less), and the normal fee
-/// four times that: this is five times the most an honest node asks, so a
-/// node can't have a payment pay a hundred times the fee.
+/// emission an honest mainnet node's normal fee is about 20,000 per byte
+/// (less with larger blocks), so this leaves it room to rise about twenty
+/// times before Fob refuses, where a node used to be able to ask for a
+/// hundred times that.
 const MAX_FEE_PER_WEIGHT: u64 = 400_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
