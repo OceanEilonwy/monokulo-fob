@@ -432,22 +432,23 @@ impl Scan {
 
     fn draw_options(&self, drawer: &ScanDrawer, sender: &ComponentSender<Self>) {
         widgets::clear(&self.options);
-        let mut first: Option<gtk::CheckButton> = None;
+        // One chosen, marked with a tick at the row's end as the wallets are: a radio
+        // button's round border drew stray marks at some window sizes.
+        let ticks: std::rc::Rc<Vec<gtk::Image>> = std::rc::Rc::new(
+            (0..drawer.options.len()).map(|index| gtk::Image::builder().icon_name("object-select-symbolic").visible(index == self.picked).build()).collect(),
+        );
         for (index, option) in drawer.options.iter().enumerate() {
             let row = widgets::row(&option.label, &option.note);
-            let radio = gtk::CheckButton::new();
-            radio.set_group(first.as_ref());
-            radio.set_active(index == self.picked);
-            let then = sender.clone();
-            radio.connect_toggled(move |radio| {
-                if radio.is_active() {
-                    then.input(Input::Quick(index));
+            row.add_suffix(&ticks[index]);
+            row.set_activatable(true);
+            let (then, ticks) = (sender.clone(), ticks.clone());
+            row.connect_activated(move |_| {
+                for (i, tick) in ticks.iter().enumerate() {
+                    tick.set_visible(i == index);
                 }
+                then.input(Input::Quick(index));
             });
-            row.add_prefix(&radio);
-            row.set_activatable_widget(Some(&radio));
             self.options.append(&row);
-            first.get_or_insert(radio);
         }
     }
 }

@@ -317,6 +317,9 @@ impl SimpleComponent for Home {
                             set_title: &model.trezor_waiting().unwrap_or_default(),
                             #[watch]
                             set_revealed: model.trezor_waiting().is_some(),
+                            // Not there at all while hidden: a banner with no height still takes the box's gap.
+                            #[watch]
+                            set_visible: model.trezor_waiting().is_some(),
                             connect_button_clicked => Input::TrezorSync,
                         },
                         adw::Banner {
@@ -325,6 +328,8 @@ impl SimpleComponent for Home {
                             set_title: &model.trezor_frozen().unwrap_or_default(),
                             #[watch]
                             set_revealed: model.trezor_frozen().is_some(),
+                            #[watch]
+                            set_visible: model.trezor_frozen().is_some(),
                             connect_button_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Scan)); },
                         },
                         #[local_ref]

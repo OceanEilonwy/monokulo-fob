@@ -618,6 +618,7 @@ mod tests {
             pieces: vec![],
             note: None,
             split: None,
+            to_self: false,
             contact: None,
             contact_id: None,
             shared: None,

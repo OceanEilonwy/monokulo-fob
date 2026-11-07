@@ -33,6 +33,8 @@ pub enum RowTitle {
     /// Paid to a request made for this contact.
     From(String),
     Split,
+    /// Sent to one of this wallet's own addresses.
+    ToSelf,
     /// Paid to a share of your profile.
     ViaProfile,
     Sent,
@@ -220,7 +222,7 @@ pub fn detail(activity: &Activity, now: Option<(&fiat::Currency, u64)>, priced: 
         }
         _ => None,
     };
-    let party = if activity.split.is_some() {
+    let party = if activity.split.is_some() || activity.to_self {
         Some(Party::ThisWallet)
     } else if out {
         activity.contact.clone().or_else(|| activity.to.as_deref().map(short_title)).map(Party::Named)
@@ -259,6 +261,7 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
     let out = activity.direction == Direction::Out;
     let title = match (&activity.receipt, &activity.to) {
         _ if activity.split.is_some() => RowTitle::Split,
+        _ if activity.to_self => RowTitle::ToSelf,
         // The name this wallet gave whoever was paid comes first.
         _ if out && activity.contact.is_some() => RowTitle::Name(activity.contact.clone().unwrap_or_default()),
         // Paid to a request made for a contact.
@@ -274,7 +277,7 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         Some(waiting) => Some(LineStatus::Waiting(waiting)),
         // A receipt says it was a payment, and a split's pieces what it
         // was; "Sent" would only repeat it.
-        None if out && activity.receipt.is_none() && activity.split.is_none() => Some(LineStatus::Sent),
+        None if out && activity.receipt.is_none() && activity.split.is_none() && !activity.to_self => Some(LineStatus::Sent),
         None => None,
     };
     // What a payment in was for: its request's note, or the note put in
@@ -375,7 +378,7 @@ pub(crate) fn last_line(payment: &Activity, clock: Clock) -> PaidLine {
 /// most [`PAID_BEFORE`]. Splits pay this wallet, so they're left out.
 pub fn paid_before(rows: &[Activity], clock: Clock) -> Vec<PaidBefore> {
     let mut sent: Vec<(&Activity, &str)> =
-        rows.iter().filter(|a| a.direction == Direction::Out && a.split.is_none()).filter_map(|a| Some((a, a.to.as_deref()?))).collect();
+        rows.iter().filter(|a| a.direction == Direction::Out && a.split.is_none() && !a.to_self).filter_map(|a| Some((a, a.to.as_deref()?))).collect();
     sent.sort_by_key(|(a, _)| std::cmp::Reverse(a.time));
     let mut seen: Vec<&str> = vec![];
     let mut people = vec![];
@@ -432,6 +435,9 @@ pub struct Activity {
     /// A split, with its number of pieces: money paid back to this wallet,
     /// so `amount` is only the fee, what left.
     pub split: Option<u32>,
+    /// Sent to one of this wallet's own addresses: what came back is still
+    /// this wallet's, so `amount` is only the fee, what left.
+    pub to_self: bool,
     /// The contact paid, by name, when this wallet sent it to one of a
     /// contact's addresses; for a payment in, the contact whose request it
     /// paid (unless the request was deleted before it came).
@@ -498,6 +504,7 @@ mod tests {
             pieces: vec![],
             note: None,
             split: None,
+            to_self: false,
             contact: None,
             contact_id: None,
             shared: None,
