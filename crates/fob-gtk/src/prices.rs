@@ -201,36 +201,59 @@ impl Prices {
         holder.add_css_class("boxed-list");
         holder.set_selection_mode(gtk::SelectionMode::None);
         let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).min_content_height(380).child(&holder).build();
-        let dialog = adw::AlertDialog::builder().heading("Default currency").extra_child(&scroll).build();
+        let search = gtk::SearchEntry::builder().placeholder_text("Search currencies").build();
+        let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).build();
+        content.append(&search);
+        content.append(&scroll);
+        let dialog = adw::AlertDialog::builder().heading("Default currency").extra_child(&content).build();
         dialog.add_response("close", "_Close");
         dialog.present(Some(&self.sources));
-        let (engine, sender, dialog_ref) = (self.engine.clone(), sender.clone(), dialog.clone());
-        gtk::glib::spawn_future_local(async move {
-            let lookup = engine.clone();
-            let list = relm4::spawn(async move { lookup.read(|wallet, _| async move { wallet.currency_list(None, String::new()).await }).await }).await.ok().flatten();
-            let Some(list) = list else { return };
-            for group in &list.groups {
-                for currency in &group.rows {
-                    let row = widgets::row(&currency.name, &currency.line);
-                    row.set_activatable(true);
-                    if currency.chosen {
-                        row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
+        // Each look asks for what the box says now; an answer for words since
+        // changed is dropped, so a slow one can't overwrite a newer.
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let fill = {
+            let (engine, sender, dialog, holder, asked) = (self.engine.clone(), sender.clone(), dialog.clone(), holder.clone(), asked.clone());
+            move |query: String| {
+                let id = asked.get().wrapping_add(1);
+                asked.set(id);
+                let (engine, sender, dialog, holder, asked) = (engine.clone(), sender.clone(), dialog.clone(), holder.clone(), asked.clone());
+                gtk::glib::spawn_future_local(async move {
+                    let lookup = engine.clone();
+                    let list = relm4::spawn(async move { lookup.read(|wallet, _| async move { wallet.currency_list(None, query).await }).await }).await.ok().flatten();
+                    let Some(list) = list else { return };
+                    if asked.get() != id {
+                        return;
                     }
-                    let (code, engine, sender, dialog) = (currency.code.clone(), engine.clone(), sender.clone(), dialog_ref.clone());
-                    row.connect_activated(move |_| {
-                        let (code, engine, sender) = (code.clone(), engine.clone(), sender.clone());
-                        relm4::spawn(async move {
-                            match engine.change(move |wallet| async move { wallet.set_currency(code).await }).await {
-                                Ok(Some(said)) => sender.input(Input::Say(said)),
-                                Ok(None) => sender.input(Input::Opened),
-                                Err(e) => sender.input(Input::Say(e.to_string())),
+                    holder.remove_all();
+                    for group in &list.groups {
+                        for currency in &group.rows {
+                            let row = widgets::row(&currency.name, &currency.line);
+                            row.set_activatable(true);
+                            if currency.chosen {
+                                row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
                             }
-                        });
-                        dialog.close();
-                    });
-                    holder.append(&row);
-                }
+                            let (code, engine, sender, dialog) = (currency.code.clone(), engine.clone(), sender.clone(), dialog.clone());
+                            row.connect_activated(move |_| {
+                                let (code, engine, sender) = (code.clone(), engine.clone(), sender.clone());
+                                relm4::spawn(async move {
+                                    match engine.change(move |wallet| async move { wallet.set_currency(code).await }).await {
+                                        Ok(Some(said)) => sender.input(Input::Say(said)),
+                                        Ok(None) => sender.input(Input::Opened),
+                                        Err(e) => sender.input(Input::Say(e.to_string())),
+                                    }
+                                });
+                                dialog.close();
+                            });
+                            holder.append(&row);
+                        }
+                    }
+                });
             }
-        });
+        };
+        let fill = std::rc::Rc::new(fill);
+        fill(String::new());
+        let again = fill.clone();
+        search.connect_search_changed(move |entry| again(entry.text().to_string()));
+        search.grab_focus();
     }
 }

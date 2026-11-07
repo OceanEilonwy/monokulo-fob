@@ -5,6 +5,28 @@
 	--accent-color: #b34700;
 }
 
+/* A notice that needs doing: a rounded card in the desktop's warning colour. */
+.warning-card {
+	background: alpha(@warning_bg_color, 0.18);
+	border: 1px solid alpha(@warning_bg_color, 0.6);
+	border-radius: 12px;
+	padding: 12px 16px;
+	margin: 6px 12px;
+}
+
+/* A group pointed at: tinted for a moment, then back. */
+preferencesgroup list.boxed-list {
+	transition: box-shadow 400ms;
+}
+
+preferencesgroup.marked list.boxed-list {
+	box-shadow: 0 0 0 3px alpha(@warning_bg_color, 0.85);
+}
+
+.warning-card.activatable:hover {
+	background: alpha(@warning_bg_color, 0.26);
+}
+
 .balance {
 	font-size: 40px;
 	font-weight: 700;

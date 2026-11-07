@@ -32,6 +32,8 @@ pub enum Input {
     Status(View<SyncStatus>),
     Wallets(View<Wallets>),
     Opened,
+    /// Scroll to Backup and keys and mark it for a moment.
+    Highlight,
     Hub(View<BackupHub>),
     Switch(String),
     Network(u32),
@@ -272,6 +274,33 @@ impl SimpleComponent for Settings {
                         sender.input(Input::GpuFailed(failed));
                     }
                 });
+            }
+            Input::Highlight => {
+                // The scrolled window brings its focused child into view, with
+                // the layout as it really is, so focus the first row once the
+                // page is showing and mark the group for a moment.
+                let group = self.backup_group.clone();
+                let first = self.backup_rows.first().cloned();
+                let mark = move || {
+                    if let Some(row) = &first {
+                        row.grab_focus();
+                    }
+                    group.add_css_class("marked");
+                    let group = group.clone();
+                    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(2500), move || group.remove_css_class("marked"));
+                };
+                // Already on screen (this runs after the page was pushed), or
+                // not yet: then when it is.
+                if self.backup_group.is_mapped() {
+                    mark();
+                } else {
+                    let mark = std::cell::RefCell::new(Some(mark));
+                    self.backup_group.connect_map(move |_| {
+                        if let Some(mark) = mark.take() {
+                            mark();
+                        }
+                    });
+                }
             }
             Input::Hub(View(hub)) => self.draw_hub(&hub, &sender),
             Input::Switch(file) => {

@@ -225,13 +225,38 @@ impl SimpleComponent for Home {
                                 connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Send)); },
                             },
                         },
-                        adw::Banner {
-                            set_button_label: Some("Back up"),
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 12,
+                            add_css_class: "warning-card",
+                            add_css_class: "activatable",
+                            set_cursor_from_name: Some("pointer"),
                             #[watch]
-                            set_title: &model.reminder().map_or(String::new(), |(title, line)| format!("{title}: {line}")),
-                            #[watch]
-                            set_revealed: model.reminder().is_some(),
-                            connect_button_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Settings)); },
+                            set_visible: model.reminder().is_some(),
+                            add_controller = gtk::GestureClick {
+                                connect_released[sender] => move |_, _, _, _| { let _ = sender.output(RootMsg::Go(Go::SettingsBackup)); },
+                            },
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 4,
+                                set_hexpand: true,
+                                gtk::Label {
+                                    set_xalign: 0.0,
+                                    add_css_class: "heading",
+                                    #[watch]
+                                    set_label: &model.reminder().map_or(String::new(), |(title, _)| title),
+                                },
+                                gtk::Label {
+                                    set_xalign: 0.0,
+                                    set_wrap: true,
+                                    #[watch]
+                                    set_label: &model.reminder().map_or(String::new(), |(_, line)| line),
+                                },
+                            },
+                            gtk::Image {
+                                set_icon_name: Some("go-next-symbolic"),
+                                set_valign: gtk::Align::Center,
+                            },
                         },
                         adw::Banner {
                             set_button_label: Some("Sync"),

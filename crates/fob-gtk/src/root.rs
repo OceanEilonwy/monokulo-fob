@@ -77,6 +77,8 @@ pub enum Go {
     Contacts,
     Coins,
     Settings,
+    /// Settings, scrolled to Backup and keys and with it marked.
+    SettingsBackup,
     /// Adding a wallet while one is open.
     AddWallet,
     Request(u64),
@@ -439,6 +441,11 @@ impl Root {
             Go::Settings => {
                 self.settings.emit(settings::Input::Opened);
                 self.push("settings", "Settings", self.settings.widget());
+            }
+            Go::SettingsBackup => {
+                self.settings.emit(settings::Input::Opened);
+                self.push("settings", "Settings", self.settings.widget());
+                self.settings.emit(settings::Input::Highlight);
             }
             Go::AddWallet => {
                 self.add_wallet.emit(start::Input::Adding);
