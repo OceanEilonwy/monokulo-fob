@@ -345,6 +345,9 @@ impl Wallet {
     ) -> Result<String> {
         let wallet = self.clone();
         let step = tokio::spawn(async move {
+            // From the check to the record: another payment with one of these
+            // coins, sent meanwhile, would pass the check too and both be sent.
+            let _sending = wallet.inner.sending.lock().await;
             {
                 // Spent already by a payment sent in the meantime, or gone
                 // with a rescan since it was prepared?
@@ -419,8 +422,8 @@ impl Wallet {
                 Ok(()) => answered.push(tx),
                 // Turned down: mined already, its coins spent on the chain, or
                 // never valid. Scanning, or the day-old check, says which.
-                Err(monero_wallet::interface::PublishTransactionError::TransactionRejected(_)) => answered.push(tx),
-                // Still no answer: next time.
+                Err(monero_wallet::interface::PublishTransactionError::TransactionRejected(reason)) if turned_down(&reason) => answered.push(tx),
+                // Still no answer, or a node too busy to look: next time.
                 Err(_) => {}
             }
         }
@@ -476,4 +479,15 @@ impl Wallet {
         }
         recorded
     }
+}
+
+/// Whether a node that didn't take a payment offered again, giving `reason`,
+/// looked at it and turned it down. monero-daemon-rpc gives only the reason
+/// for any status but OK, so a node still syncing, which answers BUSY without
+/// looking, reads as a rejection with no reason. A real rejection names why
+/// (double spend, fee too low, …); one that doesn't, or says the node is
+/// busy, is offered again next time like no answer at all.
+pub(super) fn turned_down(reason: &str) -> bool {
+    let reason = reason.trim();
+    !reason.is_empty() && !reason.to_ascii_lowercase().contains("busy")
 }

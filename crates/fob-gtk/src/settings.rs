@@ -1,8 +1,10 @@
 //! Settings: wallets and networks, the node, prices, scanning, backup and the
 //! passphrase. Seeing keys or the wallet code asks for the passphrase first.
 
+use std::sync::Arc;
+
 use fob_app::{
-    Engine,
+    Confirmed, Engine, FobError,
     views::{BackupHub, HubItem, KeyGroup, Network, ScanMode, Screens, SeedPhrase, SyncStatus, WalletEntry, ZmqStatus},
 };
 use relm4::{
@@ -45,7 +47,7 @@ pub enum Input {
     ChangePassphrase,
     /// Asks for the passphrase, then shows `HubItem`.
     Reveal(HubItem),
-    Show(HubItem),
+    Seed(View<SeedPhrase>),
     Keys(View<Vec<KeyGroup>>),
     WalletCode(String),
     BackedUp,
@@ -321,14 +323,15 @@ impl SimpleComponent for Settings {
                     let Some(typed) = typed else { return };
                     let (engine, then) = (engine.clone(), then.clone());
                     relm4::spawn(async move {
-                        match engine.confirm(String::clone(&typed)).await {
-                            Ok(()) => then.input(Input::Show(item)),
+                        match reveal(&engine, item, engine.confirm(String::clone(&typed)).await).await {
+                            Ok(Some(shown)) => then.input(shown),
+                            Ok(None) => {}
                             Err(e) => then.input(Input::Say(e.to_string())),
                         }
                     });
                 });
             }
-            Input::Show(item) => self.show(item, &sender),
+            Input::Seed(View(seed)) => self.show_seed(&seed, &sender),
             Input::Keys(View(groups)) => self.show_keys(&groups),
             Input::WalletCode(code) => self.show_wallet_code(&code),
             Input::BackedUp => {
@@ -402,32 +405,6 @@ impl Settings {
         }
     }
 
-    fn show(&self, item: HubItem, sender: &ComponentSender<Self>) {
-        match item {
-            HubItem::SeedPhrase => {
-                if let Some(seed) = self.engine.wallet().and_then(|wallet| wallet.seed_phrase()) {
-                    self.show_seed(&seed, sender);
-                }
-            }
-            HubItem::WalletCode => {
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    if let Some(code) = engine.read(|wallet, _| async move { wallet.wallet_code().await }).await {
-                        sender.input(Input::WalletCode(String::from_utf8_lossy(&code).into_owned()));
-                    }
-                });
-            }
-            HubItem::Keys => {
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    if let Some(keys) = engine.read(|wallet, _| async move { wallet.keys_page().await }).await {
-                        sender.input(Input::Keys(View(keys.into())));
-                    }
-                });
-            }
-        }
-    }
-
     fn show_seed(&self, seed: &SeedPhrase, sender: &ComponentSender<Self>) {
         let grid = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).min_children_per_line(3).max_children_per_line(4).homogeneous(true).build();
         let phrase = String::from_utf8_lossy(&seed.phrase);
@@ -495,7 +472,11 @@ impl Settings {
                 let Some(typed) = typed else { return };
                 let (engine, sender) = (engine.clone(), sender.clone());
                 relm4::spawn(async move {
-                    match engine.forget_wallet(String::clone(&typed)).await {
+                    let forgot = match engine.confirm(String::clone(&typed)).await {
+                        Ok(confirmed) => engine.forget_wallet(confirmed).await,
+                        Err(e) => Err(e),
+                    };
+                    match forgot {
                         Ok(()) => {
                             let _ = sender.output(RootMsg::Go(Go::Back));
                         }
@@ -565,4 +546,16 @@ impl Settings {
         });
         dialog.present(Some(&self.backup_group));
     }
+}
+
+/// Reads `item` with the passphrase just typed, and returns what shows it.
+/// The engine's proof goes straight into the read it was asked for, so it
+/// never sits in a message where something else could use it.
+async fn reveal(engine: &Engine, item: HubItem, confirmed: Result<Confirmed, FobError>) -> Result<Option<Input>, FobError> {
+    let confirmed = confirmed?;
+    Ok(match item {
+        HubItem::SeedPhrase => engine.seed_phrase(confirmed)?.map(|seed| Input::Seed(View(Arc::new(seed)))),
+        HubItem::WalletCode => Some(Input::WalletCode(String::from_utf8_lossy(&engine.wallet_code(confirmed).await?).into_owned())),
+        HubItem::Keys => Some(Input::Keys(View(engine.keys_page(confirmed).await?.into()))),
+    })
 }

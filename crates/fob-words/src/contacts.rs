@@ -212,12 +212,15 @@ pub fn found(f: contacts::Found, name: Option<&str>) -> Found {
 pub struct Offer {
     /// The address paid.
     pub address: String,
-    /// The contact the code's name matches (any case): the button keeps
-    /// the address with them.
+    /// The contact a one-tap Add to would keep the address with. Always
+    /// none now: a code's name proves nothing, so an address isn't filed
+    /// with a contact on its word (the footnote names the contact it looks
+    /// like instead). Kept so the apps' Add to stays for an offer that can
+    /// one day prove the address is theirs.
     pub add_to: Option<Contact>,
-    /// "Add to Sam", "Save as a contact"
+    /// "Save as a contact"
     pub button: String,
-    /// "A different Sam? New contact", with Add to.
+    /// A second button's words, with Add to; none while there's no Add to.
     pub other: Option<String>,
     /// "to a code named “Sam”", for a code with a name.
     pub named: Option<String>,
@@ -232,13 +235,23 @@ const NAMED_FOOTNOTE: &str =
     "The name comes from their code, not checked by Fob. The address is kept with the contact as one they were paid at, not as their send address.";
 
 pub fn offer(o: contacts::Offer) -> Offer {
+    // A code named like a contact whose addresses don't include this one:
+    // say so, with the address, rather than offering to file it with them.
+    let namesake = o.namesake.as_ref().map(|c| {
+        format!(
+            "This code said it was {}, but Fob can't check that, and {} hasn't been paid at {} before. It's saved as a new contact. If it really is theirs, set it on their card.",
+            c.name,
+            c.name,
+            contacts::three_part(&o.address)
+        )
+    });
     Offer {
-        address: o.address,
-        button: o.add_to.as_ref().map_or("Save as a contact".to_owned(), |c| format!("Add to {}", c.name)),
-        other: o.add_to.as_ref().zip(o.name.as_ref()).map(|(_, n)| format!("A different {n}? New contact")),
+        button: "Save as a contact".to_owned(),
+        other: None,
         named: o.name.as_ref().map(|n| format!("to a code named “{n}”")),
-        footnote: o.name.as_ref().map(|_| NAMED_FOOTNOTE.to_owned()),
-        add_to: o.add_to,
+        footnote: namesake.or_else(|| o.name.as_ref().map(|_| NAMED_FOOTNOTE.to_owned())),
+        add_to: None,
+        address: o.address,
         draft: o.draft,
     }
 }
@@ -488,18 +501,29 @@ mod tests {
         let mut book = Book::default();
         let (sam_send, code, henry, plain) = (address(1), address(2), address(3), address(4));
         let sam = book.add(Network::Stagenet, Draft { send_address: Some(sam_send.clone()), ..draft("Sam") }, NOW).unwrap();
-        // The name matches Sam, any case: Add to Sam, or a new contact named Sam paid at that address.
+        // The name looks like Sam's, but the code's name proves nothing: no
+        // one-tap Add to Sam (which filed anyone's address under Sam and made
+        // later payments to it read as Sam's), only a new contact, and the
+        // footnote says whose name it borrowed and shows the address.
         let o = offer(&book, &code, Some(" sAm "), Some("Pizza")).unwrap();
-        assert_eq!(o.add_to.as_ref().map(|c| c.id), Some(sam.id));
+        assert_eq!(o.add_to, None);
+        assert_eq!((o.button.as_str(), o.other.as_deref(), o.named.as_deref()), ("Save as a contact", None, Some("to a code named “sAm”")));
         assert_eq!(
-            (o.button.as_str(), o.other.as_deref(), o.named.as_deref()),
-            ("Add to Sam", Some("A different sAm? New contact"), Some("to a code named “sAm”"))
+            o.footnote.as_deref(),
+            Some(&*format!(
+                "This code said it was Sam, but Fob can't check that, and Sam hasn't been paid at {} before. It's saved as a new contact. If it really is theirs, set it on their card.",
+                three_part(&code)
+            ))
         );
-        assert_eq!(o.footnote.as_deref(), Some(NAMED_FOOTNOTE));
+        // A lookalike name is the same namesake.
+        let lookalike = offer(&book, &code, Some("\u{405}am\u{2800}"), None).unwrap();
+        assert!(lookalike.footnote.unwrap().starts_with("This code said it was Sam,"));
+        assert_eq!(lookalike.add_to, None);
         assert_eq!(o.draft, Draft { name: "sAm".into(), note: Some("Pizza".into()), photo: None, send_address: None, also_paid_at: vec![code.clone()] });
         // A name that's nobody's: Save as a contact, the address one they were paid at, never their send address.
         let o = offer(&book, &henry, Some("Henry"), None).unwrap();
         assert_eq!((o.add_to, o.button.as_str(), o.other), (None, "Save as a contact", None));
+        assert_eq!(o.footnote.as_deref(), Some(NAMED_FOOTNOTE));
         assert_eq!((o.draft.name.as_str(), o.draft.send_address, o.draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
         // No name: the address is their send address, the payment's note theirs.
         let o = offer(&book, &plain, None, Some(" Lunch ")).unwrap();

@@ -48,6 +48,25 @@ impl Distribution {
         (self.start + self.counts.len()).checked_sub(1)
     }
 
+    /// Whether the counts never go down, as a running total can't, and as
+    /// monero-interface refuses to choose decoys from otherwise.
+    fn increasing(&self) -> bool {
+        self.counts.windows(2).all(|w| w[0] <= w[1])
+    }
+
+    /// Whether counts from block `start`, built on `base` outputs before it,
+    /// follow on from these: they start within them, and the count kept for
+    /// the block before is `base`. A node that counts otherwise (another
+    /// node's lie, kept or new, or a reorganisation deeper than the blocks
+    /// fetched again) fits nothing kept, which is then fetched whole.
+    fn followed_by(&self, start: usize, base: u64) -> bool {
+        match start.checked_sub(self.start) {
+            Some(0) => true,
+            Some(at) => self.counts.get(at - 1) == Some(&base),
+            None => false,
+        }
+    }
+
     fn read(path: &PathBuf) -> Option<Distribution> {
         let bytes = std::fs::read(path).ok()?;
         if bytes.len() < 8 || bytes.len() % 8 != 0 {
@@ -55,7 +74,7 @@ impl Distribution {
         }
         let mut words = bytes.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c));
         let start = usize::try_from(words.next()?).ok()?;
-        Some(Distribution { start, counts: words.collect() })
+        Some(Distribution { start, counts: words.collect() }).filter(Distribution::increasing)
     }
 
     fn write(&self, path: &PathBuf) {
@@ -96,27 +115,44 @@ impl Decoys {
     }
 
     /// Brings the distribution up to block `to`, fetching only what's new.
+    /// What's new has to follow on from what's kept; if it doesn't, what's
+    /// kept is forgotten, file and all, and the whole of it fetched again,
+    /// rather than every payment failing on a distribution that goes down.
     pub async fn update(&self, to: usize) -> Result<(), InterfaceError> {
         let mut cache = self.cache.lock().await;
-        let from = match cache.as_ref().and_then(Distribution::end) {
+        let mut from = match cache.as_ref().and_then(Distribution::end) {
             Some(end) if end >= to => return Ok(()),
             Some(end) => (end + 1).saturating_sub(REFETCH).max(cache.as_ref().map_or(0, |d| d.start)),
             None => 0,
         };
-        let fresh = compressed_distribution(&self.transport, from, to).await?;
-        // The node starts the distribution where RingCT began, if that's after `from`.
-        let fresh_start = (to + 1).checked_sub(fresh.len()).ok_or_else(|| InterfaceError::InvalidInterface("too long a distribution".into()))?;
-        match cache.as_mut() {
-            Some(d) if fresh_start >= d.start && fresh_start <= d.start + d.counts.len() => {
-                d.counts.truncate(fresh_start - d.start);
-                d.counts.extend(fresh);
+        loop {
+            let (base, fresh) = compressed_distribution(&self.transport, from, to).await?;
+            // The node starts the distribution where RingCT began, if that's after `from`.
+            let fresh_start = (to + 1).checked_sub(fresh.len()).ok_or_else(|| InterfaceError::InvalidInterface("too long a distribution".into()))?;
+            let next = match cache.take() {
+                Some(mut kept) if from > 0 && kept.followed_by(fresh_start, base) => {
+                    kept.counts.truncate(fresh_start - kept.start);
+                    kept.counts.extend(fresh);
+                    Some(kept)
+                }
+                // Only the newest blocks, and they don't fit: nothing to keep.
+                _ if from > 0 => None,
+                _ => Some(Distribution { start: fresh_start, counts: fresh }),
+            };
+            match next {
+                Some(next) if next.increasing() => {
+                    next.write(&self.file);
+                    *cache = Some(next);
+                    return Ok(());
+                }
+                // Fetched whole and still wrong: the node's own doing.
+                _ if from == 0 => return Err(InterfaceError::InvalidInterface("get_output_distribution.bin: a distribution that goes down".into())),
+                _ => {
+                    let _ = std::fs::remove_file(self.file.as_ref());
+                    from = 0;
+                }
             }
-            _ => *cache = Some(Distribution { start: fresh_start, counts: fresh }),
         }
-        if let Some(d) = cache.as_ref() {
-            d.write(&self.file);
-        }
-        Ok(())
     }
 }
 
@@ -149,8 +185,9 @@ fn key(request: &mut Vec<u8>, name: &str, kind: u8) {
 }
 
 /// The cumulative RingCT output count at each block `from..=to`, fetched
-/// compressed. The node starts at RingCT's first block if `from` is earlier.
-async fn compressed_distribution(transport: &Transport, from: usize, to: usize) -> Result<Vec<u64>, InterfaceError> {
+/// compressed, with the count before them it builds on. The node starts at
+/// RingCT's first block if `from` is earlier.
+async fn compressed_distribution(transport: &Transport, from: usize, to: usize) -> Result<(u64, Vec<u64>), InterfaceError> {
     let invalid = |what: &str| InterfaceError::InvalidInterface(format!("get_output_distribution.bin: {what}"));
     let mut request = Vec::with_capacity(128);
     request.extend(HEADER);
@@ -224,7 +261,7 @@ async fn compressed_distribution(transport: &Transport, from: usize, to: usize) 
         total = total.checked_add(*c).ok_or_else(|| invalid("counts overflow"))?;
         *c = total;
     }
-    Ok(counts)
+    Ok((base, counts))
 }
 
 impl ProvidesBlockchainMeta for Decoys {
@@ -294,13 +331,13 @@ mod tests {
         let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.unwrap();
         let tip = daemon.latest_block_number().await.unwrap();
         for (from, to) in [(tip - 500, tip), (1_000_000, 1_000_000), (1_200_000, 1_250_000)] {
-            let ours = compressed_distribution(&transport, from, to).await.unwrap();
+            let (_, ours) = compressed_distribution(&transport, from, to).await.unwrap();
             let theirs = ProvidesUnvalidatedDecoys::ringct_output_distribution(&daemon, from..=to).await.unwrap();
             assert_eq!(ours, theirs, "{from}..={to}");
         }
         let started = std::time::Instant::now();
         let before = transport.requests();
-        let ours = compressed_distribution(&transport, 0, tip).await.unwrap();
+        let (_, ours) = compressed_distribution(&transport, 0, tip).await.unwrap();
         let compressed = started.elapsed();
         let started = std::time::Instant::now();
         let theirs = ProvidesUnvalidatedDecoys::ringct_output_distribution(&daemon, 0..=tip).await.unwrap();
@@ -314,6 +351,133 @@ mod tests {
         assert_eq!(varints(&[0xac, 0x02]), Some(vec![300]));
         assert_eq!(varints(&[0xff, 0xff, 0xff, 0xff, 0x0f]), Some(vec![u64::from(u32::MAX)]));
         assert_eq!(varints(&[0x80]), None, "cut off mid-number");
+    }
+
+    /// epee's varint, for lengths and counts: the size in its low two bits.
+    fn epee_varint(out: &mut Vec<u8>, n: usize) {
+        match n {
+            0..64 => out.push((n << 2) as u8),
+            64..16384 => out.extend(((n << 2) as u16 | 1).to_le_bytes()),
+            _ => out.extend(((n << 2) as u32 | 2).to_le_bytes()),
+        }
+    }
+
+    /// A `get_output_distribution.bin` answer: from `start`, on `base`, each
+    /// block's own count, compressed as monerod sends it.
+    fn distribution_answer(start: u64, base: u64, per_block: &[u64]) -> Vec<u8> {
+        let mut data = vec![];
+        for &n in per_block {
+            let mut n = n;
+            while n >= 0x80 {
+                data.push(n as u8 | 0x80);
+                n >>= 7;
+            }
+            data.push(n as u8);
+        }
+        let mut out = HEADER.to_vec();
+        out.push(VERSION);
+        epee_varint(&mut out, 2);
+        key(&mut out, "status", Type::String as u8);
+        epee_varint(&mut out, 2);
+        out.extend(b"OK");
+        key(&mut out, "distributions", Type::Object as u8 | 0x80);
+        epee_varint(&mut out, 1);
+        epee_varint(&mut out, 3);
+        key(&mut out, "start_height", Type::Uint64 as u8);
+        out.extend(start.to_le_bytes());
+        key(&mut out, "base", Type::Uint64 as u8);
+        out.extend(base.to_le_bytes());
+        key(&mut out, "compressed_data", Type::String as u8);
+        epee_varint(&mut out, data.len());
+        out.extend(data);
+        out
+    }
+
+    /// A node whose chain has RingCT from block 100, each block with `per`
+    /// outputs on top of `base`'s at the block before 100 (honestly 0). Any
+    /// json_rpc call gets an empty answer.
+    async fn distribution_node(base: u64, per: u64) -> Transport {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut request = vec![];
+                    let mut buf = [0; 4096];
+                    loop {
+                        let Ok(n) = stream.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buf[..n]);
+                        let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+                        if request.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                    let number = |name: &[u8]| {
+                        let at = request.windows(name.len()).position(|w| w == name).unwrap() + name.len() + 1;
+                        u64::from_le_bytes(request[at..at + 8].try_into().unwrap())
+                    };
+                    let body = if request.windows(9).any(|w| w == b"get_outpu") {
+                        let (from, to) = (number(b"from_height").max(100), number(b"to_height"));
+                        let per_block = vec![per; (to + 1 - from) as usize];
+                        distribution_answer(from, base + (from - 100) * per, &per_block)
+                    } else {
+                        br#"{"jsonrpc":"2.0","id":0,"result":{}}"#.to_vec()
+                    };
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        Transport::new(&format!("http://127.0.0.1:{port}"), false).unwrap()
+    }
+
+    async fn decoys(transport: Transport, file: &std::path::Path) -> Decoys {
+        let daemon = monero_daemon_rpc::MoneroDaemon::new(transport.clone()).await.unwrap();
+        Decoys::new(daemon, transport, file.to_owned())
+    }
+
+    /// What's kept is fetched only past its end, the last blocks again; a
+    /// node whose counts don't follow on from it has it fetched whole, not
+    /// spliced into a distribution that goes down and fails every payment
+    /// until the file is deleted by hand (audit #64).
+    #[tokio::test]
+    async fn a_distribution_that_doesnt_follow_on_is_fetched_whole() {
+        let file = std::env::temp_dir().join(format!("fob-decoys-splice-{}", std::process::id()));
+        // Kept from an honest node: ten outputs a block from block 100 to 199.
+        Distribution { start: 100, counts: (1..=100).map(|i| i * 10).collect() }.write(&file);
+        let honest = distribution_node(0, 10).await;
+        let kept = decoys(honest.clone(), &file).await;
+        kept.update(209).await.unwrap();
+        assert_eq!(honest.requests(), 2, "connecting, then only the newest blocks");
+        let d = Distribution::read(&file).unwrap();
+        assert_eq!((d.start, d.counts.len(), d.counts.last()), (100, 110, Some(&1100)));
+
+        // A node counting otherwise, as after one that lied: what's new doesn't
+        // follow on, so all of it comes from this node.
+        Distribution { start: 100, counts: (1..=100).map(|i| i * 1_000).collect() }.write(&file);
+        let other = distribution_node(0, 10).await;
+        let lied_to = decoys(other.clone(), &file).await;
+        lied_to.update(209).await.unwrap();
+        assert_eq!(other.requests(), 3, "connecting, the newest, then the whole");
+        let d = Distribution::read(&file).unwrap();
+        assert_eq!((d.start, d.counts.len(), d.counts.last()), (100, 110, Some(&1100)));
+        assert!(d.increasing());
+        let picked = ProvidesUnvalidatedDecoys::ringct_output_distribution(&lied_to, 0..=209).await.unwrap();
+        assert_eq!(picked.len(), 110);
+
+        // A file that goes down is never read.
+        Distribution { start: 100, counts: vec![5, 4] }.write(&file);
+        assert!(Distribution::read(&file).is_none());
+        std::fs::remove_file(file).unwrap();
     }
 
     #[test]

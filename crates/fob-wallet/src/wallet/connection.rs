@@ -45,8 +45,12 @@ impl Wallet {
 
     /// Checks `setting`'s node, telling `progress` as each check finishes.
     pub async fn check_node(&self, setting: &node::Setting, progress: &(dyn Fn(&node::Report) + Sync)) -> node::Report {
-        let tip = self.inner.state.lock().await.tip;
-        let report = node::check(self.network(), setting, tip, now(), progress).await;
+        let (tip, pinned) = {
+            let state = self.inner.state.lock().await;
+            (state.tip, Self::pinned_node(&state))
+        };
+        let pin = pinned.filter(|(node, _)| node.url == node::normalize(&setting.url) && node.self_signed == setting.self_signed).map(|(_, pin)| pin);
+        let report = node::check(self.network(), setting, pin, tip, now(), progress).await;
         let current = self.node().await;
         if node::normalize(&setting.url) == current.url && setting.self_signed == current.self_signed {
             *self.inner.node_verdict.lock().expect("node lock") = Some((current, report.verdict()));
@@ -123,8 +127,19 @@ impl Wallet {
 
     /// Checks the other nodes at once, each with its line for the list.
     pub async fn check_nodes(&self, nodes: &[node::Setting]) -> Vec<(node::Report, node::Line)> {
-        let tip = self.inner.state.lock().await.tip;
-        node::check_all(self.network(), nodes, tip, now()).await
+        let (tip, pinned) = {
+            let state = self.inner.state.lock().await;
+            (state.tip, Self::pinned_node(&state))
+        };
+        node::check_all(self.network(), nodes, pinned.as_ref(), tip, now()).await
+    }
+
+    /// The node in use with the key it's held to, once it has one: checks of
+    /// it are held to the same key as syncing and sending, so a screen never
+    /// calls working a node whose key changed. Other nodes have no pin.
+    fn pinned_node(state: &State) -> Option<(node::Setting, [u8; 32])> {
+        let pin = state.node_pin.as_deref().and_then(|p| hex::decode(p).ok()?.try_into().ok())?;
+        Some((node::Setting { url: state.node.clone(), self_signed: state.node_self_signed }, pin))
     }
 
     /// Talks to another node from now on; `self_signed` accepts its
@@ -137,14 +152,15 @@ impl Wallet {
         crate::node::reachable(&url).map_err(FobError::Endpoint)?;
         // A node on the other network would never find this wallet's money.
         let setting = node::Setting { url: url.clone(), self_signed };
-        {
+        let leaving = {
             let mut state = self.inner.state.lock().await;
             let leaving = node::Setting { url: state.node.clone(), self_signed: state.node_self_signed };
-            let left = self.keep_node(&mut state, leaving);
+            let left = self.keep_node(&mut state, leaving.clone());
             if self.keep_node(&mut state, setting.clone()) | left {
                 self.save_state(&state)?;
             }
-        }
+            leaving
+        };
         crate::node::on_network(self.network(), &setting).await.map_err(|refused| FobError::Node(fob_words::node::switch_refused(&refused)))?;
         let zmq_dropped = {
             let mut state = self.inner.state.lock().await;
@@ -173,6 +189,12 @@ impl Wallet {
         *self.inner.rpc.lock().await = None;
         *self.inner.link.lock().expect("link lock") = None;
         *self.inner.pipeline.lock().await = None;
+        // The pin was forgotten above, so neither node's distribution is
+        // trusted any more: the one left may have lied, and the one chosen
+        // (again, after its key changed, say) may have been someone else.
+        for node in [&leaving.url, &setting.url] {
+            let _ = std::fs::remove_file(self.decoys_path(node));
+        }
         *self.inner.node_verdict.lock().expect("node lock") = None;
         // The old node's failure, and its Synced, aren't this one's: the chip
         // and Node line stop saying them now.
@@ -281,7 +303,9 @@ impl Wallet {
         if pin.is_none() {
             self.keep_pin(&node, &transport).await?;
         }
-        let decoys = Decoys::new(daemon.clone(), transport.clone(), self.decoys_path());
+        // Nothing says which node the old shared file came from: it goes.
+        let _ = std::fs::remove_file(self.shared_decoys_path());
+        let decoys = Decoys::new(daemon.clone(), transport.clone(), self.decoys_path(&node.url));
         let adaptive = Arc::new(Adaptive::new(Tuning::DEFAULT));
         let connection = (transport, daemon, decoys, adaptive);
         let current = self.node().await;
@@ -310,9 +334,19 @@ impl Wallet {
         Ok(())
     }
 
-    /// The output distribution's file. It's public chain data, the same for
-    /// every wallet on the network, and tens of megabytes: they share it.
-    pub(super) fn decoys_path(&self) -> PathBuf {
+    /// The output distribution's file as `node` gave it. It's public chain
+    /// data, and tens of megabytes, so wallets using the same node share it.
+    /// It's kept per node, and forgotten on changing node, because a node can
+    /// lie in it: decoys chosen from a false one can single out the coin
+    /// really spent, and that mustn't outlast leaving the node.
+    pub(super) fn decoys_path(&self, node: &str) -> PathBuf {
+        use sha3::{Digest, Sha3_256};
+        let key = hex::encode(&Sha3_256::digest(node::normalize(node).as_bytes())[..8]);
+        self.inner.path.with_file_name(format!("wallet-{}-{key}.decoys", self.network().name()))
+    }
+
+    /// The file every node's distribution once shared, whichever node gave it.
+    fn shared_decoys_path(&self) -> PathBuf {
         self.inner.path.with_file_name(format!("wallet-{}.decoys", self.network().name()))
     }
 }

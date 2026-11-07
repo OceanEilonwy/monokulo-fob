@@ -183,15 +183,45 @@ struct NodeCalls {
 /// first, counting each, with the tip taking `delay` to arrive so that
 /// callers overlap. Gives its address and the counts.
 async fn counting_node(delay: Duration) -> (String, Arc<NodeCalls>) {
+    let counts = Arc::new(NodeCalls::default());
+    let seen = counts.clone();
+    let url = scripted_node(move |text| {
+        let seen = seen.clone();
+        async move {
+            if text.contains("get_height") {
+                seen.height.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(delay).await;
+                r#"{"height":3000000,"status":"OK"}"#.to_owned()
+            } else if text.contains("on_get_block_hash") {
+                r#"{"jsonrpc":"2.0","id":0,"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_owned()
+            } else if text.contains("get_fee_estimate") {
+                seen.fee.fetch_add(1, Ordering::Relaxed);
+                r#"{"jsonrpc":"2.0","id":0,"result":{"fee":20000,"quantization_mask":10000,"status":"OK"}}"#.to_owned()
+            } else {
+                // Connecting asks something of json_rpc; any answer will do.
+                r#"{"jsonrpc":"2.0","id":0,"result":{}}"#.to_owned()
+            }
+        }
+    })
+    .await;
+    (url, counts)
+}
+
+/// A node on 127.0.0.1 that answers each request (its whole text, head and
+/// body) with what `answer` gives for it. Gives its address.
+async fn scripted_node<F, A>(answer: F) -> String
+where
+    F: Fn(String) -> A + Send + Sync + 'static,
+    A: Future<Output = String> + Send + 'static,
+{
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let counts = Arc::new(NodeCalls::default());
-    let seen = counts.clone();
+    let answer = Arc::new(answer);
     tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else { return };
-            let seen = seen.clone();
+            let answer = answer.clone();
             tokio::spawn(async move {
                 let mut request = vec![];
                 let mut buf = [0; 4096];
@@ -208,38 +238,24 @@ async fn counting_node(delay: Duration) -> (String, Arc<NodeCalls>) {
                         break;
                     }
                 }
-                let text = String::from_utf8_lossy(&request).into_owned();
-                let body = if text.contains("get_height") {
-                    seen.height.fetch_add(1, Ordering::Relaxed);
-                    tokio::time::sleep(delay).await;
-                    r#"{"height":3000000,"status":"OK"}"#
-                } else if text.contains("on_get_block_hash") {
-                    r#"{"jsonrpc":"2.0","id":0,"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
-                } else if text.contains("get_fee_estimate") {
-                    seen.fee.fetch_add(1, Ordering::Relaxed);
-                    r#"{"jsonrpc":"2.0","id":0,"result":{"fee":20000,"quantization_mask":10000,"status":"OK"}}"#
-                } else {
-                    // Connecting asks something of json_rpc; any answer will do.
-                    r#"{"jsonrpc":"2.0","id":0,"result":{}}"#
-                };
+                let body = answer(String::from_utf8_lossy(&request).into_owned()).await;
                 let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.shutdown().await;
             });
         }
     });
-    (url, counts)
+    url
 }
 
 /// A wallet using `node`, with an output distribution already kept up to
 /// past the tip, so that only the tip and the fee are asked.
 async fn wallet_for_sending(name: &str, node: &str) -> Wallet {
-    let path = dir(name);
+    let wallet = Wallet::create(&dir(name), [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.node = node.into();
     let mut kept = 2_999_000u64.to_le_bytes().to_vec();
     kept.extend((0..2_000u64).flat_map(|i| (i * 10).to_le_bytes()));
-    std::fs::write(path.with_file_name("wallet-stagenet.decoys"), kept).unwrap();
-    let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
-    wallet.inner.state.lock().await.node = node.into();
+    std::fs::write(wallet.decoys_path(node), kept).unwrap();
     wallet
 }
 

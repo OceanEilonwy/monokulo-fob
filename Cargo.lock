@@ -532,7 +532,6 @@ version = "0.1.10"
 dependencies = [
  "fob-ffi",
  "fob-wallet",
- "image-webp",
  "rqrr",
  "serde",
  "serde_json",
@@ -586,6 +585,7 @@ version = "0.1.10"
 dependencies = [
  "curve25519-dalek",
  "fob-wallet",
+ "image-webp",
  "serde_json",
  "thiserror 2.0.21",
  "uniffi",

@@ -24,6 +24,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -48,6 +50,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,6 +73,7 @@ import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.SectionLabel
 import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.StrokeIcon
+import com.monokulo.fob.ui.TextButton
 import com.monokulo.fob.ui.TopBar
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.reason
@@ -102,12 +106,25 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
     val changing by model.nodeChanging.collectAsState()
     val failed by model.nodeError.collectAsState()
     val error = failed?.reason()
+    // The node in use, the key its self-signed certificate is held to, and
+    // whether it last answered with another: read with each round of checks,
+    // as the first answer to a node just chosen is what sets its key.
+    var inUse by remember { mutableStateOf<NodeSetting?>(null) }
+    var pin by remember { mutableStateOf<String?>(null) }
+    var certificateChanged by remember { mutableStateOf(false) }
+    var askingTrust by remember { mutableStateOf(false) }
     // Rust's async calls run on the thread that calls them: these do a lot, and nothing here is on the main thread for them.
     LaunchedEffect(wallet, round) {
         val w = wallet ?: return@LaunchedEffect
         val mine = round
         withContext(Dispatchers.Default) {
             val node = w.node()
+            suspend fun readPin() {
+                val key = w.nodePin()
+                val changed = w.certificateChanged()
+                if (round == mine) { inUse = node; pin = key; certificateChanged = changed }
+            }
+            readPin()
             launch {
                 // Each check as it finishes; a round started since is left alone.
                 val observer = object : NodeCheckObserver {
@@ -115,6 +132,7 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
                 }
                 val done = w.checkNode(node, observer)
                 if (round == mine) current = done
+                readPin()
             }
             launch {
                 val others = w.otherNodes()
@@ -153,6 +171,8 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 val to = changing
                 if (to != null) ChangingCard(to) else current?.let { WorkingCard(it) }
+                val node = inUse
+                if (to == null && node != null && node.selfSigned) PinCard(pin, certificateChanged, onTrust = { askingTrust = true })
                 ErrorText(error)
                 Column {
                     SectionLabel("Change node")
@@ -185,8 +205,58 @@ fun NodeScreen(model: WalletModel, nav: Nav) {
                 },
             )
         }
+        val trusting = inUse
+        if (askingTrust && trusting != null) {
+            AlertDialog(
+                onDismissRequest = { askingTrust = false },
+                title = { Text("Trust the new certificate?") },
+                text = { Text("Only if you gave your node a new certificate yourself. If you didn't, someone else may be answering in its place, and could tell Fob things that aren't true.") },
+                confirmButton = {
+                    // Choosing the node again forgets its key, and the key it
+                    // answers with next is the one it's held to from then on.
+                    TextButton("Trust it", {
+                        askingTrust = false
+                        model.useNode(trusting.url, true)
+                    }, color = Fob.red)
+                },
+                dismissButton = { TextButton("Cancel", { askingTrust = false }, color = Fob.ink) },
+            )
+        }
     }
 }
+
+/**
+ * A self-signed node's key, as desktop's Node page shows it: the SHA3-256 of
+ * the key Fob accepted on first answer, which every later answer must match.
+ * When the node answered with another key, Fob has stopped talking to it, and
+ * this says so, with Trust the new certificate, asked first, as the only way
+ * on; adding the node again isn't needed and doesn't skip the question.
+ */
+@Composable
+private fun PinCard(pin: String?, changed: Boolean, onTrust: () -> Unit) {
+    if (pin == null && !changed) return
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (changed) {
+            Text(
+                "This node answered with a different certificate from the one Fob accepted, so Fob stopped talking to it. If you gave it a new certificate, trust the new one. If not, someone may be pretending to be your node.",
+                color = Fob.red, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(horizontal = 4.dp).semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            OutlineButton("Trust the new certificate", onTrust, Modifier.fillMaxWidth())
+        }
+        pin?.let { key ->
+            Card(padding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)) {
+                Text("Accepted certificate key", color = Fob.muted, fontSize = 13.sp)
+                SelectionContainer {
+                    Text(grouped(key), fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+            Text("The SHA3-256 of the node's public key. Fob talks to this node only while it answers with this key.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
+        }
+    }
+}
+
+/** Hex in groups of four, eight groups a line, so two keys can be compared by eye. */
+private fun grouped(hex: String): String = hex.chunked(4).chunked(8).joinToString("\n") { it.joinToString(" ") }
 
 /** Changing to another node, until it's answered and the checks can start. */
 @Composable

@@ -545,7 +545,10 @@ fun ConfirmScreen(
     var refused by remember { mutableStateOf(false) }
     // A receipt whose total Fob's own price disagrees with must be looked at
     // before the swipe works: the code chose both the total and the amount.
+    // One Fob has no price to check with is acknowledged the same way, since
+    // a code could pick its currency just to dodge the check.
     val mismatch = receipt?.mismatch
+    val notice = mismatch ?: receipt?.unchecked
     var checked by remember { mutableStateOf(false) }
     val sending by rememberUpdatedState(busy)
     DisposableEffect(prepared?.id) {
@@ -562,6 +565,14 @@ fun ConfirmScreen(
             .onFailure { error = it.reason() }
     }
 
+    fun sent(ready: Prepared, result: Result<String>) {
+        result
+            // Sent: neither this nor the filled form under it is a step back from Paid.
+            .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(ready, tx)) }
+            // Trying used up the prepared payment: back to the form to make another.
+            .onFailure { error = it.reason(); failed = true; refused = it is uniffi.fob.FobException.SpendRejected }
+    }
+
     fun swiped() {
         val ready = prepared ?: return
         busy = true
@@ -570,14 +581,20 @@ fun ConfirmScreen(
             if (!confirmIdentity(title)) {
                 error = "Not sent."
             } else {
-                runCatching { model.send(ready) }
-                    // Sent: neither this nor the filled form under it is a step back from Paid.
-                    .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(ready, tx)) }
-                    // Trying used up the prepared payment: back to the form to make another.
-                    .onFailure { error = it.reason(); failed = true; refused = it is uniffi.fob.FobException.SpendRejected }
+                sent(ready, runCatching { model.send(ready) })
             }
             busy = false
         }
+    }
+    // Sent already, or still sending (the screen made again mid-send): the
+    // model kept that send, so its result lands here, and the swipe never
+    // comes back for a payment Rust has used up.
+    LaunchedEffect(prepared?.id) {
+        val ready = prepared ?: return@LaunchedEffect
+        val begun = model.sendBegun(ready) ?: return@LaunchedEffect
+        busy = true
+        sent(ready, runCatching { begun.await() })
+        busy = false
     }
     // Made again while the phone's lock was asked for: its answer comes here.
     LaunchedEffect(Unit) { if (identityPending()) swiped() }
@@ -590,8 +607,8 @@ fun ConfirmScreen(
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
             else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
         }
-        if (mismatch != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (mismatch == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
+        if (notice != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (notice == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
     }) {
         TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -604,7 +621,7 @@ fun ConfirmScreen(
                 receipt?.let { Text("Receipt says ${it.total}", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
                 note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
-            mismatch?.let { Warning(it, title = "The receipt doesn't match the amount") }
+            notice?.let { Warning(it, title = if (mismatch != null) "The receipt doesn't match the amount" else "Check the amount yourself") }
             Card {
                 if (split != null) InfoRow("To", split.to) else InfoRow("To", short(to, 2), mono = true)
                 Divider()
@@ -643,6 +660,9 @@ fun PaidScreen(model: WalletModel, nav: Nav, prepared: Prepared, tx: String) {
     val scope = rememberCoroutineScope()
     var offer by remember { mutableStateOf<SaveOffer?>(null) }
     LaunchedEffect(wallet, activity) { offer = model.saveOffer(tx) }
+    // Whether the node answered when it was sent: read again as Activity
+    // changes, so the line goes once a sync gets an answer.
+    val detail = rememberPayment(model, tx)
     Page(bottom = { PrimaryButton("Done", { nav.reset(Screen.Home) }) }) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 72.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Box(Modifier.size(96.dp).clip(CircleShape).background(Fob.greenFill), contentAlignment = Alignment.Center) { StrokeIcon(Icons.check, tint = Fob.onGreen, size = 52.dp, width = 2f) }
@@ -651,6 +671,9 @@ fun PaidScreen(model: WalletModel, nav: Nav, prepared: Prepared, tx: String) {
                 Text(split?.title ?: "Paid", style = display(34))
                 Text(split?.done ?: prepared.receipt?.let { "${prepared.amountText} XMR to ${it.merchant}" } ?: "${prepared.amountText} XMR to ${short(prepared.to, 1)}", fontSize = 18.sp, textAlign = TextAlign.Center)
                 Text("Sent · confirming on the network", color = Fob.muted, fontSize = 14.sp)
+                // The node gave no answer: someone told only "Sent" whose payee
+                // sees nothing yet might pay again by hand, and both could arrive.
+                detail?.unanswered?.let { Text(it, color = Fob.orangeText, fontSize = 14.sp, textAlign = TextAlign.Center) }
                 offer?.named?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center) }
             }
             offer?.let { o -> SaveOfferButtons(o, onAdd = { c ->

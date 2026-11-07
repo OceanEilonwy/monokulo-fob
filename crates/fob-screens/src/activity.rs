@@ -85,7 +85,8 @@ pub enum RowLine {
 /// What's under a row's amount.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowFiat {
-    /// A receipt's total, or what it was worth when it moved: "$83.03".
+    /// What it was worth when it moved, at Fob's price (never a receipt's
+    /// total): "$83.03".
     Worth(String),
     /// Under a request's amount.
     Asked,
@@ -288,12 +289,12 @@ pub(crate) fn payment_row(activity: Activity, clock: Clock) -> Row {
         title,
         line,
         amount: format!("{}{}", if out { "−" } else { "+" }, amount::format_short(activity.amount)),
-        // A receipt's own total; otherwise what it was worth when it moved.
-        fiat: match (&activity.receipt, &activity.price) {
-            (Some(r), _) => Some(RowFiat::Worth(r.total.clone())),
-            (None, Some(p)) => Some(RowFiat::Worth(fiat::value(activity.amount, p.price, &fiat::currency(&p.currency)))),
-            (None, None) => None,
-        },
+        // What it was worth when it moved, at Fob's own price, as Confirm
+        // values it. Never a receipt's total: that's what the payee wrote,
+        // so a code charging 5 XMR with a receipt saying "$5.00" would keep
+        // the overcharge out of sight on every later look at history. The
+        // total stays in the receipt itself.
+        fiat: activity.price.as_ref().map(|p| RowFiat::Worth(fiat::value(activity.amount, p.price, &fiat::currency(&p.currency)))),
         activity: Some(activity),
     }
 }
@@ -546,6 +547,28 @@ mod tests {
         let row = payment_row(split, clock(0));
         assert_eq!(row.title, RowTitle::Split);
         assert!(matches!(row.line, RowLine::Payment { status: None, coins: Some(12), .. }));
+    }
+
+    #[test]
+    fn a_row_is_worth_what_fob_valued_it_at_never_the_receipt_s_total() {
+        let receipt = ReceiptView {
+            merchant: "Corner Café".into(),
+            issued: String::new(),
+            lines: vec![],
+            item_count: 1,
+            tax: None,
+            total: "$5.00".into(),
+            currency: "USD".into(),
+            total_value: 5.0,
+        };
+        // 5 XMR at $160 is $800, whatever the payee's receipt said.
+        let price = fiat::Record { currency: "USD".into(), price: 160 * fiat::MICRO, provider: "Kraken".into(), at: NOW, daily: false };
+        let paid = Activity { receipt: Some(receipt), price: Some(price), ..activity(Direction::Out, 5 * amount::ATOMIC_PER_XMR, NOW, 20) };
+        let row = payment_row(paid.clone(), clock(0));
+        assert_eq!(row.fiat, Some(RowFiat::Worth("$800.00".into())));
+        assert_eq!(paid_amount(&paid), "$800.00");
+        // Without a price of Fob's own, nothing is shown, not the receipt's total.
+        assert_eq!(payment_row(Activity { price: None, ..paid }, clock(0)).fiat, None);
     }
 
     #[test]

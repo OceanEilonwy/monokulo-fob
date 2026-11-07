@@ -142,6 +142,10 @@ fun PaymentDetails(d: PaymentDetail) {
     Card {
         InfoRow("Status", d.status)
         d.progress?.let { Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) { ProgressBar(it, height = 4.dp, fill = Fob.green) } }
+        // The node gave no answer when it was sent: said under its status, so
+        // someone told nothing came knows Fob is still offering it, and that
+        // paying again by hand meanwhile could pay twice.
+        d.unanswered?.let { Text(it, color = Fob.orangeText, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) }
         Divider()
         InfoRow("Amount", d.amountExact)
         d.party?.let { Divider(); InfoRow(d.partyLabel, it) }

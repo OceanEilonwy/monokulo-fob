@@ -18,6 +18,7 @@ pub mod wiping;
 static ALLOCATOR: wiping::Wiping = wiping::Wiping;
 
 pub mod form;
+pub mod photo;
 
 /// What went wrong, for the app to show. (The field is `reason`, not
 /// `message`, which Kotlin's `Throwable` already has.)
@@ -156,16 +157,24 @@ pub struct Receipt {
     /// price are far apart: the warning to show, and to have acknowledged
     /// before paying.
     pub mismatch: Option<String>,
+    /// On Confirm, when Fob has no price in the receipt's currency to check
+    /// the total with: the softer notice to show, still to have acknowledged
+    /// before paying, since a code can name any currency to dodge the check.
+    pub unchecked: Option<String>,
 }
 
 impl Receipt {
     /// The receipt for paying `atomic`, checked against Fob's price.
     async fn checked(wallet: &fob_wallet::Wallet, r: receipt::ReceiptView, atomic: u64) -> Receipt {
-        let mismatch = match wallet.price_now().await {
-            Some((currency, price)) => receipt::mismatch_warning(&r, atomic, &exact(atomic), price, &currency),
-            None => None,
+        // The wallet keeps a current price only in the user's own currency,
+        // so that is the one rate a receipt can be checked against.
+        let prices: Vec<_> = wallet.price_now().await.into_iter().collect();
+        let (mismatch, unchecked) = match receipt::check(&r, atomic, &exact(atomic), &prices) {
+            receipt::Check::Matches => (None, None),
+            receipt::Check::Mismatch(warning) => (Some(warning), None),
+            receipt::Check::Unchecked(notice) => (None, Some(notice)),
         };
-        Receipt { mismatch, ..Receipt::from(r) }
+        Receipt { mismatch, unchecked, ..Receipt::from(r) }
     }
 }
 
@@ -180,6 +189,7 @@ impl From<receipt::ReceiptView> for Receipt {
             total: r.total,
             currency: r.currency,
             mismatch: None,
+            unchecked: None,
         }
     }
 }
@@ -2076,6 +2086,7 @@ impl FobWallet {
     /// The payment `tx` for its own screen; the clock as for `activity_days`.
     pub async fn payment(&self, tx: String, now: u64, utc_offset: i32, hours_24: bool) -> Option<PaymentDetail> {
         let d = fob_wallet::words::activity::detail(self.inner.payment(&tx, clock::Clock { now, utc_offset, hours_24 }).await?);
+        let unanswered = self.inner.unanswered(&tx).await.then(|| fob_wallet::words::activity::UNANSWERED.to_owned());
         Some(PaymentDetail {
             amount_text: d.amount,
             amount_exact: d.exact,
@@ -2099,6 +2110,7 @@ impl FobWallet {
             tx,
             footer: d.footer,
             can_release: d.can_release,
+            unanswered,
         })
     }
 
@@ -3156,6 +3168,10 @@ pub struct PaymentDetail {
     pub footer: Option<String>,
     /// Sent, not confirmed: its coins can be released.
     pub can_release: bool,
+    /// "The node didn't answer, so Fob keeps sending it until it does.": the
+    /// node gave no answer when it was sent and Fob still offers it with each
+    /// sync; none once it answered, or for a payment in.
+    pub unanswered: Option<String>,
 }
 
 /// Receive's note as typed, cut to what a payment code holds.

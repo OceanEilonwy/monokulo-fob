@@ -35,7 +35,8 @@ pub enum Input {
     Adopt(View<Prepared>),
     NotPrepared(u64, String),
     Failed(String),
-    /// The receipt disagrees with Fob's price, and its warning was read.
+    /// The receipt disagrees with Fob's price, or couldn't be checked, and
+    /// its notice was read.
     Acknowledged,
     Send,
     Typed(Secret),
@@ -55,7 +56,8 @@ pub struct Confirm {
     /// another round is cancelled, never shown, so Send only pays what's on screen.
     round: u64,
     prepared: Option<Arc<Prepared>>,
-    /// The receipt's mismatch warning was acknowledged for what's prepared now.
+    /// The receipt's mismatch or unchecked notice was acknowledged for what's
+    /// prepared now.
     acknowledged: bool,
     busy: bool,
     sent: Option<String>,
@@ -198,7 +200,11 @@ impl SimpleComponent for Confirm {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     // The engine wraps its copy at once; this one is wiped as it drops.
-                    sender.input(match engine.send(prepared, String::clone(&typed)).await {
+                    let sent = match engine.confirm(String::clone(&typed)).await {
+                        Ok(confirmed) => engine.send(prepared, confirmed).await,
+                        Err(e) => Err(e),
+                    };
+                    sender.input(match sent {
                         Ok(tx) => Input::Sent(tx),
                         Err(fob_app::FobError::SpendRejected { .. }) => Input::Refused,
                         Err(e) => Input::Failed(e.to_string()),
@@ -288,7 +294,7 @@ fn copy_draft(draft: &fob_app::views::ContactDraft) -> fob_app::views::ContactDr
 impl Confirm {
     /// Whether Send waits for the receipt's warning to be acknowledged.
     fn awaits_acknowledgement(&self) -> bool {
-        !self.acknowledged && self.prepared.as_ref().and_then(|p| p.receipt.as_ref()).is_some_and(|r| r.mismatch.is_some())
+        !self.acknowledged && self.prepared.as_ref().and_then(|p| p.receipt.as_ref()).is_some_and(|r| r.mismatch.is_some() || r.unchecked.is_some())
     }
 
     fn draw_waiting(&self, filled: &Filled) {
@@ -314,16 +320,24 @@ impl Confirm {
         // The receipt's total is only the code's claim: a hostile code can put
         // a calm "$5.00" over 5 XMR. When Fob's price says the amount is worth
         // something else, that comes first, and Send waits until it's been read.
-        let mismatch = prepared.receipt.as_ref().and_then(|r| r.mismatch.as_deref());
-        if let Some(mismatch) = mismatch {
+        // When Fob has no price to check it with, a softer notice still waits
+        // for the same acknowledgement: an unchecked total proves nothing.
+        let notice = prepared.receipt.as_ref().and_then(|r| match (&r.mismatch, &r.unchecked) {
+            (Some(mismatch), _) => Some((true, mismatch.as_str())),
+            (None, Some(unchecked)) => Some((false, unchecked.as_str())),
+            (None, None) => None,
+        });
+        if let Some((mismatch, text)) = notice {
             let banner = gtk::Box::new(gtk::Orientation::Vertical, 8);
             banner.add_css_class("card");
-            let title = widgets::heading("The receipt doesn't match the amount");
-            title.add_css_class("error");
+            let title = widgets::heading(if mismatch { "The receipt doesn't match the amount" } else { "Check the amount yourself" });
+            title.add_css_class(if mismatch { "error" } else { "warning" });
             title.set_margin_top(12);
             banner.append(&title);
-            let warning = widgets::words(mismatch);
-            warning.add_css_class("error");
+            let warning = widgets::words(text);
+            if mismatch {
+                warning.add_css_class("error");
+            }
             warning.set_margin_start(12);
             warning.set_margin_end(12);
             banner.append(&warning);

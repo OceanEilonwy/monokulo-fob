@@ -163,17 +163,8 @@ fn shrink(rgba: &[u8], width: u32, left: u32, top: u32, side: u32, to: u32) -> V
 
 /// A kept photo's pixels: (width, height, RGBA). Photos come from other
 /// people's codes, so this is memory-safe Rust and only reads what Rust kept.
-pub fn photo_pixels(photo: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let kept = fob_ffi::contact_photo_kept(photo.to_vec())?;
-    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(kept)).ok()?;
-    let (width, height) = decoder.dimensions();
-    let mut pixels = vec![0u8; decoder.output_buffer_size()?];
-    decoder.read_image(&mut pixels).ok()?;
-    if decoder.has_alpha() {
-        return Some((width, height, pixels));
-    }
-    Some((width, height, pixels.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect()))
-}
+/// The decoder is fob-ffi's, which Android draws contact photos with too.
+pub use fob_ffi::photo::photo_pixels;
 
 #[cfg(test)]
 mod tests {

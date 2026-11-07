@@ -1198,7 +1198,9 @@ mod tests {
         assert_eq!(value(XMR, p, &kwd), "56.123 KWD");
         assert_eq!(plain(1_050, &kwd), "1.050");
         assert_eq!(parse("1.05", &kwd).unwrap(), 1_050);
-        assert_eq!(parse("1,005 KWD", &kwd).unwrap(), 1_005);
+        // A comma before exactly three digits could mean thousands, so it is refused (audit #69).
+        assert!(parse("1,005 KWD", &kwd).is_err());
+        assert_eq!(parse("1,05 KWD", &kwd).unwrap(), 1_050);
         assert!(parse("1.0005", &kwd).is_err());
         for minor in [1, 999, 1_005, 56_123] {
             let atomic = to_atomic(minor, p, &kwd).unwrap();

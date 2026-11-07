@@ -156,3 +156,23 @@ async fn money_locked_to_a_time_is_ready_once_the_chain_is_that_late() {
     wallet.inner.state.lock().await.outputs[0].unlock_block = 200;
     assert_eq!(wallet.balance().await.unlocked, 0);
 }
+
+/// Paid and the payment's screen say when the node gave no answer (audit
+/// #81): only while Fob still offers the payment again, not once it's mined.
+#[tokio::test]
+async fn a_payment_the_node_gave_no_answer_for_says_so_until_it_is_mined() {
+    let wallet = Wallet::create(&dir("funds-unanswered"), [1; 32], Network::Stagenet).unwrap();
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.push(received("coin", 1, XMR));
+        state.outputs.push(received("coin-2", 1, XMR));
+    }
+    let to = wallet.inner.keys.address(9);
+    wallet.publish_and_record("unsure".into(), 30, outgoing(&to, &["coin"]), "0200".into(), async { Err(Unpublished::Unsure) }).await.unwrap();
+    wallet.publish_and_record("taken".into(), 30, outgoing(&to, &["coin-2"]), "0300".into(), async { Ok(()) }).await.unwrap();
+    assert!(wallet.unanswered("unsure").await);
+    assert!(!wallet.unanswered("taken").await, "the node answered");
+    assert!(!wallet.unanswered("no such payment").await);
+    wallet.inner.state.lock().await.sent.iter_mut().find(|s| s.tx == "unsure").unwrap().height = Some(10);
+    assert!(!wallet.unanswered("unsure").await, "mined: nothing left to offer");
+}

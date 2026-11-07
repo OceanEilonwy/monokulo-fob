@@ -63,8 +63,9 @@ Calls made while building the first version, with why. Newest last.
 
 12. Inputs are chosen largest first, with decoys from the node (ring 16,
     CLSAG + Bulletproofs+), change to the primary address, and the node's
-    Normal fee, capped at 2,000,000 piconero per weight unit so a hostile
-    node can't take a large fee.
+    Normal fee, capped at 400,000 piconero per weight unit (about five
+    times what an honest node asks) so a hostile node can't take a large
+    fee.
 13. **Swipe to send, then fingerprint (or screen lock).** On a phone with
     neither set up the swipe alone sends.
 14. A sent payment's inputs are marked spent at once and its change counted
@@ -2857,3 +2858,41 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      go unnoticed. That's kept rather than started again from there: blocks from the old
      chain may already be in the wallet, and scanning again is what's safe. The speed
      hasn't been measured.
+
+## Security audit (November 2026)
+
+353. **A publish the node didn't clearly refuse counts as sent.** A timeout, a dropped
+     line or a 5xx used to drop the signed transaction as "not sent", leaving its coins
+     unspent while the node may well have relayed it; a retry with other coins would pay
+     twice. Now only a node's own rejection (or a request that never connected) is a
+     refusal. Anything else records the payment, marks its coins spent and keeps the
+     signed transaction (`sent.signed`, schema version 6), which is re-broadcast on each
+     sync until the node takes or rejects it. An empty or "busy" reason isn't a rejection
+     either: monerod says BUSY while syncing. The pool is also read for our own key
+     images, so a transaction that reached it by any route locks its coins.
+354. **A quiet payment's coins are asked about before it's marked not confirmed.** The
+     node's `missed_tx` alone used to decide (338). Now `is_key_image_spent` is asked
+     first: all spent or none spent is a clear answer, taken after the usual day; an
+     unreadable answer, a mix, or no local key images to ask about is "can't say", asked
+     again next time and taken after two days. Coins are never released by the wallet
+     itself.
+355. **A self-signed node is pinned to its public key on first use**, and the pin is
+     held to on every handshake after that, whoever signed the certificate. A changed
+     key is refused until the user trusts the node again, which is choosing it again.
+     The output-distribution cache for decoys is kept per node and dropped on changing
+     node, and a cache that doesn't follow on from what the node now says is fetched
+     whole again.
+356. **The spend key stays sealed in memory, not behind a prompt.** Sync needs it for
+     key images, so an auth-bound key would break spend detection in the background
+     (Cake keeps it resident for the same reason). It and the seed are sealed under a
+     per-process session key held on locked, non-dumpable pages, and unsealed per use.
+     That's obfuscation, not a gate; `fob-ffi` also zeroes every freed allocation.
+357. **Confirm headlines the XMR amount and Fob's own valuation.** A receipt's own total
+     is secondary, and when it disagrees with Fob's price by more than 5%, or can't be
+     checked at all (no price, or a currency Fob has no price for), sending needs an
+     explicit acknowledgement.
+358. **On the desktop, the passphrase proves itself with a token.** `confirm` returns a
+     `Confirmed` good for a minute and for the current unlock, and showing keys,
+     spending and removing a wallet take it; `fob-gtk` is kept from calling those on
+     the wallet directly by clippy. The process is made non-dumpable, the data folder
+     0700 and its files 0600.

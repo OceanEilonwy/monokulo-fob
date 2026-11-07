@@ -10,10 +10,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use fob_ffi::{
-    Contact, FobError, FobWallet, Network, PriceRetry, PriceToast, Prepared, PullOutcome, ScanMode, ScannedProfile, Screens, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode, wallets_on,
+    Contact, FobError, FobWallet, KeyGroup, Network, PriceRetry, PriceToast, Prepared, PullOutcome, ScanMode, ScannedProfile, Screens, SeedPhrase, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode,
+    wallets_on,
 };
 use fob_wallet::{files, passphrase};
 use serde::{Deserialize, Serialize};
@@ -47,7 +49,9 @@ pub enum Update {
     Toast(Option<Arc<PriceToast>>),
 }
 
-/// Where what's published goes. Comes from any thread.
+/// Where what's published goes. Comes from any thread, and mustn't call back
+/// into the engine: a phase is published with the engine's lock on it held, so
+/// that a lock and an open finishing at once can't arrive in the wrong order.
 pub trait Listener: Send + Sync {
     fn on_update(&self, update: Update);
 }
@@ -108,6 +112,20 @@ fn scan_named(name: Option<&str>) -> ScanMode {
     }
 }
 
+/// How long a [`Confirmed`] holds: long enough to read what was asked for,
+/// short enough that one left behind by a bug is soon worthless.
+const CONFIRMED_FOR: Duration = Duration::from_secs(60);
+
+/// Proof that the passphrase was just typed again, from [`Engine::confirm`],
+/// which the calls that show secrets or spend take. It isn't `Clone` and each
+/// of them takes it by value, so one passphrase does one thing. It holds for
+/// [`CONFIRMED_FOR`], and only while the wallet open when it was given stays
+/// open: a lock, an unlock or another wallet opening makes it worthless.
+pub struct Confirmed {
+    generation: u64,
+    at: Instant,
+}
+
 struct Open {
     book: Arc<WalletList>,
     key: Zeroizing<[u8; 32]>,
@@ -120,6 +138,11 @@ struct Inner {
     listener: Arc<dyn Listener>,
     clock: Box<dyn Fn() -> Clock + Send + Sync>,
     open: Mutex<Option<Open>>,
+    /// Moves on at every lock, unlock and wallet open, always with `open`
+    /// held. An open that finishes after it moved on was overtaken, by a lock
+    /// or by another wallet, and closes what it opened instead of keeping it;
+    /// a [`Confirmed`] from before it moved on is refused.
+    generation: AtomicU64,
     settings: Mutex<Settings>,
     phase: Mutex<Phase>,
     /// One read of the screens at a time; whoever asks during one shares the next.
@@ -167,6 +190,7 @@ impl Engine {
                 listener,
                 clock: Box::new(clock),
                 open: Mutex::new(None),
+                generation: AtomicU64::new(0),
                 settings: Mutex::new(settings),
                 phase: Mutex::new(phase),
                 reading: tokio::sync::Mutex::new(()),
@@ -186,10 +210,18 @@ impl Engine {
         if self.inner.settings.lock().expect("settings lock").mainnet { Network::Mainnet } else { Network::Stagenet }
     }
 
-    /// The wallet open, to read what its screens show. Spending goes through
-    /// [`Engine::send`], which asks for the passphrase.
+    /// The wallet open, for what its screens show and change. What shows
+    /// secrets or spends goes through the engine, which asks for a
+    /// [`Confirmed`]: [`Engine::seed_phrase`], [`Engine::wallet_code`],
+    /// [`Engine::keys_page`], [`Engine::send`] and [`Engine::forget_wallet`].
+    /// `FobWallet` still has those methods, as Android calls them itself, so
+    /// the desktop client's clippy.toml refuses them there.
     pub fn wallet(&self) -> Option<Arc<FobWallet>> {
         self.inner.open.lock().expect("open lock").as_ref().and_then(|o| o.wallet.clone())
+    }
+
+    fn open_wallet(&self) -> Result<Arc<FobWallet>, FobError> {
+        self.wallet().ok_or_else(|| FobError::Other { reason: "no wallet open".into() })
     }
 
     pub fn clock(&self) -> Clock {
@@ -204,9 +236,37 @@ impl Engine {
         self.dir().to_string_lossy().into_owned()
     }
 
+    /// Publishes with the phase's lock held, so phases arrive in the order they're set.
     fn set_phase(&self, phase: Phase) {
-        *self.inner.phase.lock().expect("phase lock") = phase.clone();
+        let mut now = self.inner.phase.lock().expect("phase lock");
+        *now = phase.clone();
         self.inner.listener.on_update(Update::Phase(phase));
+    }
+
+    /// Publishes `phase` for the open of `generation`, unless a lock or
+    /// another open has moved on since, which publishes its own. It's checked
+    /// under the phase's lock, so a lock that moves on just after the check
+    /// publishes after this, and its phase is the one left.
+    fn set_phase_for(&self, generation: u64, phase: Phase) -> bool {
+        let mut now = self.inner.phase.lock().expect("phase lock");
+        if !self.current(generation) {
+            return false;
+        }
+        *now = phase.clone();
+        self.inner.listener.on_update(Update::Phase(phase));
+        true
+    }
+
+    fn current(&self, generation: u64) -> bool {
+        self.inner.generation.load(Ordering::SeqCst) == generation
+    }
+
+    /// Moves the generation on for an open about to start, and returns it;
+    /// `None` when locked, with nothing to open.
+    fn next_generation(&self) -> Option<u64> {
+        let open = self.inner.open.lock().expect("open lock");
+        open.as_ref()?;
+        Some(self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
     fn save_settings(&self) -> Result<(), FobError> {
@@ -249,11 +309,25 @@ impl Engine {
         .await
     }
 
-    /// Checks the passphrase again, before showing keys or spending.
-    pub async fn confirm(&self, typed: String) -> Result<(), FobError> {
+    /// Checks the passphrase again, before showing keys or spending: what it
+    /// gives is what those calls take.
+    pub async fn confirm(&self, typed: String) -> Result<Confirmed, FobError> {
         let typed = Zeroizing::new(typed);
         let dir = self.inner.options.dir.clone();
-        Self::run(async move { tokio::task::spawn_blocking(move || passphrase::unlock(&dir, &typed)).await.expect("derive").map(|_| ()).map_err(key_error) }).await
+        // Taken before the check, so a lock while the key is derived (a second
+        // or so) already makes the proof worthless.
+        let generation = self.inner.generation.load(Ordering::SeqCst);
+        Self::run(async move { tokio::task::spawn_blocking(move || passphrase::unlock(&dir, &typed)).await.expect("derive").map(|_| ()).map_err(key_error) }).await?;
+        Ok(Confirmed { generation, at: Instant::now() })
+    }
+
+    /// Spends `confirmed`, refusing it once it's too old or from before a
+    /// lock, an unlock or another wallet opening.
+    fn check(&self, confirmed: Confirmed) -> Result<(), FobError> {
+        if !self.current(confirmed.generation) || confirmed.at.elapsed() >= CONFIRMED_FOR {
+            return Err(FobError::Invalid { reason: "Type your passphrase again".into() });
+        }
+        Ok(())
     }
 
     pub async fn change_passphrase(&self, old: String, new: String) -> Result<(), FobError> {
@@ -263,8 +337,15 @@ impl Engine {
     }
 
     /// Closes the wallet and forgets the key: the passphrase opens it again.
+    /// An open still under way when it locks finds the generation moved on and
+    /// closes what it opened itself.
     pub fn lock(&self) {
-        if let Some(wallet) = self.inner.open.lock().expect("open lock").take().and_then(|open| open.wallet) {
+        let taken = {
+            let mut open = self.inner.open.lock().expect("open lock");
+            self.inner.generation.fetch_add(1, Ordering::SeqCst);
+            open.take()
+        };
+        if let Some(wallet) = taken.and_then(|open| open.wallet) {
             Self::close(&wallet);
         }
         self.set_phase(if passphrase::exists(self.dir()) { Phase::Locked } else { Phase::NoPassphrase });
@@ -311,7 +392,16 @@ impl Engine {
     async fn unlocked(&self, key: Zeroizing<[u8; 32]>) -> Result<(), FobError> {
         files::private_dir(self.dir()).map_err(|e| FobError::Other { reason: e.to_string() })?;
         let book = WalletList::open(self.dir_text(), Self::key_for_ffi(&key))?;
-        *self.inner.open.lock().expect("open lock") = Some(Open { book, key, wallet: None, current: None });
+        let replaced = {
+            let mut open = self.inner.open.lock().expect("open lock");
+            self.inner.generation.fetch_add(1, Ordering::SeqCst);
+            open.replace(Open { book, key, wallet: None, current: None })
+        };
+        // Unlocked while already unlocked: the wallet open is closed, not left
+        // syncing and saving beside the one about to open on the same file.
+        if let Some(wallet) = replaced.and_then(|open| open.wallet) {
+            Self::close(&wallet);
+        }
         self.touched();
         self.open_current().await;
         Ok(())
@@ -357,41 +447,68 @@ impl Engine {
     /// Opens the wallet last open on this network, if it has one.
     async fn open_current(&self) {
         let network = self.network();
+        let Some(generation) = self.next_generation() else { return };
         let Ok((book, key)) = self.parts() else { return };
         let current = if wallets_on(self.dir_text(), network) { book.current(network) } else { None };
         let Some(entry) = current else {
             self.publish_wallets();
-            self.set_phase(Phase::NoWallet);
+            self.set_phase_for(generation, Phase::NoWallet);
             return;
         };
-        self.set_phase(Phase::Opening);
+        if !self.set_phase_for(generation, Phase::Opening) {
+            return;
+        }
         let path = book.path(entry.file.clone());
         match FobWallet::open(path, Self::key_for_ffi(&key)) {
-            Ok(wallet) => self.use_wallet(wallet, entry).await,
-            Err(e) => self.set_phase(Phase::Failed(e.to_string())),
+            Ok(wallet) => self.use_wallet(wallet, entry, generation).await,
+            Err(e) => {
+                self.set_phase_for(generation, Phase::Failed(e.to_string()));
+            }
         }
     }
 
-    async fn use_wallet(&self, wallet: Arc<FobWallet>, entry: WalletEntry) {
-        {
+    /// Keeps `wallet`, opened for `generation`, as the one open, unless a lock
+    /// or another open overtook it meanwhile. Then nobody could stop or see
+    /// it: left alone it would keep its keys in memory after "Locked", and
+    /// save its whole state over the next one opened on the same file. So it's
+    /// closed and dropped here, and the phase is left to whoever moved on.
+    async fn use_wallet(&self, wallet: Arc<FobWallet>, entry: WalletEntry, generation: u64) {
+        let kept = {
             let mut open = self.inner.open.lock().expect("open lock");
-            if let Some(open) = open.as_mut() {
-                if let Some(old) = open.wallet.replace(wallet.clone()) {
-                    Self::close(&old);
+            match open.as_mut().filter(|_| self.current(generation)) {
+                Some(open) => {
+                    if let Some(old) = open.wallet.replace(wallet.clone()) {
+                        Self::close(&old);
+                    }
+                    open.current = Some(entry);
+                    true
                 }
-                open.current = Some(entry);
+                None => false,
             }
+        };
+        if !kept {
+            Self::close(&wallet);
+            return;
         }
         self.inner.toast_done.store(0, Ordering::Relaxed);
         self.inner.listener.on_update(Update::Status(Arc::new(wallet.status())));
         self.publish_wallets();
         self.read_screens().await;
-        self.set_phase(Phase::Open);
-        if self.inner.options.online {
-            let observer: Arc<dyn SyncObserver> = Arc::new(Observer(Arc::downgrade(&self.inner)));
-            wallet.start_sync(observer.clone());
-            wallet.start_prices(observer);
+        {
+            // Started with `open` held and the generation checked: a lock from
+            // here on takes this wallet and stops what's started, and one
+            // before has already closed it, so nothing starts on it.
+            let _open = self.inner.open.lock().expect("open lock");
+            if !self.current(generation) {
+                return;
+            }
+            if self.inner.options.online {
+                let observer: Arc<dyn SyncObserver> = Arc::new(Observer(Arc::downgrade(&self.inner)));
+                wallet.start_sync(observer.clone());
+                wallet.start_prices(observer);
+            }
         }
+        self.set_phase_for(generation, Phase::Open);
     }
 
     /// Makes a wallet with `make` in a file of its own, named `name` (blank
@@ -402,10 +519,11 @@ impl Engine {
             let network = this.network();
             let (book, key) = this.parts()?;
             book.check_name(name.clone())?;
+            let generation = this.next_generation().ok_or_else(|| FobError::Other { reason: "locked".into() })?;
             let file = book.new_file(network);
             let wallet = make(book.path(file.clone()), Self::key_for_ffi(&key), network)?;
             let entry = book.add(file, name)?;
-            this.use_wallet(wallet, entry).await;
+            this.use_wallet(wallet, entry, generation).await;
             Ok(())
         })
         .await
@@ -487,15 +605,13 @@ impl Engine {
 
     /// Takes the open wallet off this device; its seed restores it. Another
     /// then opens, this network's first; with none left, a new one is asked for.
-    /// It asks for the passphrase first, as showing keys does: a wallet whose
-    /// seed was never written down is lost with its file, and a desktop is
-    /// often left unlocked.
-    pub async fn forget_wallet(&self, typed: String) -> Result<(), FobError> {
-        let typed = Zeroizing::new(typed);
+    /// It takes the passphrase again first, as showing keys does: a wallet
+    /// whose seed was never written down is lost with its file, and a desktop
+    /// is often left unlocked.
+    pub async fn forget_wallet(&self, confirmed: Confirmed) -> Result<(), FobError> {
+        self.check(confirmed)?;
         let this = self.clone();
         Self::run(async move {
-            let dir = this.inner.options.dir.clone();
-            tokio::task::spawn_blocking(move || passphrase::unlock(&dir, &typed)).await.expect("derive").map_err(key_error)?;
             let (book, _) = this.parts()?;
             let (wallet, current) = {
                 let open = this.inner.open.lock().expect("open lock");
@@ -615,13 +731,11 @@ impl Engine {
 
     /// Sends a prepared payment, once the passphrase has been given again. It
     /// runs to the end whatever the screen does; Rust records it either way.
-    pub async fn send(&self, prepared: Arc<Prepared>, typed: String) -> Result<String, FobError> {
-        let typed = Zeroizing::new(typed);
+    pub async fn send(&self, prepared: Arc<Prepared>, confirmed: Confirmed) -> Result<String, FobError> {
+        self.check(confirmed)?;
         let this = self.clone();
         Self::run(async move {
-            let dir = this.inner.options.dir.clone();
-            tokio::task::spawn_blocking(move || passphrase::unlock(&dir, &typed)).await.expect("derive").map_err(key_error)?;
-            let wallet = this.wallet().ok_or_else(|| FobError::Other { reason: "no wallet open".into() })?;
+            let wallet = this.open_wallet()?;
             this.inner.sending.fetch_add(1, Ordering::SeqCst);
             let sent = wallet.send(prepared.id).await;
             this.inner.sending.fetch_sub(1, Ordering::SeqCst);
@@ -630,6 +744,29 @@ impl Engine {
             sent
         })
         .await
+    }
+
+    // ---- Secrets
+
+    /// The seed phrase, once the passphrase has been given again; `None` for
+    /// a wallet restored from keys, which has none.
+    pub fn seed_phrase(&self, confirmed: Confirmed) -> Result<Option<SeedPhrase>, FobError> {
+        self.check(confirmed)?;
+        Ok(self.open_wallet()?.seed_phrase())
+    }
+
+    /// The wallet code's text, once the passphrase has been given again.
+    pub async fn wallet_code(&self, confirmed: Confirmed) -> Result<Vec<u8>, FobError> {
+        self.check(confirmed)?;
+        let wallet = self.open_wallet()?;
+        Ok(Self::run(async move { wallet.wallet_code().await }).await)
+    }
+
+    /// The keys, once the passphrase has been given again.
+    pub async fn keys_page(&self, confirmed: Confirmed) -> Result<Vec<KeyGroup>, FobError> {
+        self.check(confirmed)?;
+        let wallet = self.open_wallet()?;
+        Ok(Self::run(async move { wallet.keys_page().await }).await)
     }
 
     // ---- Meeting someone
@@ -790,13 +927,13 @@ mod tests {
         let one = engine.wallet().unwrap().primary_address();
         engine.create_wallet("Two".into()).await.unwrap();
         let two = engine.wallet().unwrap().primary_address();
-        let refused = engine.forget_wallet("not the passphrase".into()).await.unwrap_err();
+        let refused = engine.confirm("not the passphrase".into()).await.err().unwrap();
         assert_eq!(refused.to_string(), "That isn't the passphrase");
         assert_eq!(engine.wallet().unwrap().primary_address(), two, "nothing removed without it");
-        engine.forget_wallet(PASS.into()).await.unwrap();
+        engine.forget_wallet(engine.confirm(PASS.into()).await.unwrap()).await.unwrap();
         assert_eq!(engine.phase(), Phase::Open);
         assert_eq!(engine.wallet().unwrap().primary_address(), one);
-        engine.forget_wallet(PASS.into()).await.unwrap();
+        engine.forget_wallet(engine.confirm(PASS.into()).await.unwrap()).await.unwrap();
         assert_eq!(engine.phase(), Phase::NoWallet);
         assert!(engine.wallet().is_none());
     }
@@ -808,7 +945,10 @@ mod tests {
         engine.set_up(PASS.into()).await.unwrap();
         engine.create_wallet("Spending".into()).await.unwrap();
         assert!(engine.confirm("not the passphrase".into()).await.is_err());
-        engine.confirm(PASS.into()).await.unwrap();
+        let seed = engine.seed_phrase(engine.confirm(PASS.into()).await.unwrap()).unwrap().expect("a new wallet has a seed");
+        assert!(!seed.phrase.is_empty());
+        assert!(!engine.keys_page(engine.confirm(PASS.into()).await.unwrap()).await.unwrap().is_empty());
+        assert!(!engine.wallet_code(engine.confirm(PASS.into()).await.unwrap()).await.unwrap().is_empty());
         let prepared = Arc::new(Prepared {
             id: 1,
             to: String::new(),
@@ -822,8 +962,92 @@ mod tests {
             receipt: None,
             split: None,
         });
-        let refused = engine.send(prepared, "not the passphrase".into()).await.unwrap_err();
-        assert_eq!(refused.to_string(), "That isn't the passphrase", "refused before the wallet is asked");
+        // A minute after the passphrase, it no longer counts.
+        let generation = engine.inner.generation.load(Ordering::SeqCst);
+        let stale = Confirmed { generation, at: Instant::now().checked_sub(CONFIRMED_FOR).unwrap() };
+        let refused = engine.send(prepared, stale).await.unwrap_err();
+        assert_eq!(refused.to_string(), "Type your passphrase again", "refused before the wallet is asked");
+        let stale = Confirmed { generation, at: Instant::now().checked_sub(CONFIRMED_FOR).unwrap() };
+        assert!(engine.seed_phrase(stale).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_passphrase_counts_only_for_the_wallet_open_when_it_was_typed() {
+        let dir = dir("confirm-generation");
+        let (engine, _) = engine_at(&dir);
+        engine.set_up(PASS.into()).await.unwrap();
+        engine.create_wallet("One".into()).await.unwrap();
+
+        let before_lock = engine.confirm(PASS.into()).await.unwrap();
+        engine.lock();
+        engine.unlock(PASS.into()).await.unwrap();
+        assert_eq!(engine.seed_phrase(before_lock).err().unwrap().to_string(), "Type your passphrase again");
+
+        let before_switch = engine.confirm(PASS.into()).await.unwrap();
+        engine.create_wallet("Two".into()).await.unwrap();
+        assert!(engine.keys_page(before_switch).await.is_err(), "given for another wallet");
+        assert!(engine.forget_wallet(engine.confirm(PASS.into()).await.unwrap()).await.is_ok());
+    }
+
+    /// Once armed, locks from another thread the moment an open starts, and
+    /// returns only once that lock has moved the generation on, so the open
+    /// finishes after it. The listener can't lock itself: phases are published
+    /// with the phase's lock held.
+    #[derive(Default)]
+    struct LockWhileOpening {
+        engine: std::sync::OnceLock<std::sync::Weak<Inner>>,
+        armed: AtomicBool,
+        locker: StdMutex<Option<std::thread::JoinHandle<()>>>,
+        phases: StdMutex<Vec<Phase>>,
+    }
+
+    impl Listener for LockWhileOpening {
+        fn on_update(&self, update: Update) {
+            let Update::Phase(phase) = update else { return };
+            let opening = phase == Phase::Opening;
+            self.phases.lock().unwrap().push(phase);
+            if !opening || !self.armed.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            let Some(inner) = self.engine.get().and_then(std::sync::Weak::upgrade) else { return };
+            let before = inner.generation.load(Ordering::SeqCst);
+            let engine = Engine { inner: inner.clone() };
+            *self.locker.lock().unwrap() = Some(std::thread::spawn(move || engine.lock()));
+            while inner.generation.load(Ordering::SeqCst) == before {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn locking_while_a_wallet_opens_leaves_it_locked_with_nothing_open() {
+        let dir = dir("lock-opening");
+        let heard = Arc::new(LockWhileOpening::default());
+        let options = Options { dir: dir.clone(), cache_dir: dir.join("cache"), online: false };
+        let engine = Engine::new(options, heard.clone(), || Clock { now: 1_793_448_000, utc_offset: 0, hours_24: true });
+        heard.engine.set(Arc::downgrade(&engine.inner)).unwrap();
+        engine.set_up(PASS.into()).await.unwrap();
+        engine.create_wallet("One".into()).await.unwrap();
+        let address = engine.wallet().unwrap().primary_address();
+        engine.lock();
+        heard.phases.lock().unwrap().clear();
+
+        heard.armed.store(true, Ordering::SeqCst);
+        engine.unlock(PASS.into()).await.unwrap();
+        heard.locker.lock().unwrap().take().expect("locked while opening").join().unwrap();
+        assert_eq!(engine.phase(), Phase::Locked);
+        assert_eq!(*heard.phases.lock().unwrap(), [Phase::Opening, Phase::Locked], "never shown open");
+        assert!(engine.wallet().is_none(), "the wallet opened meanwhile was closed, not kept");
+        assert!(engine.inner.open.lock().unwrap().is_none(), "nor its key");
+
+        // Unlocking again opens it, and changes to it stick.
+        engine.unlock(PASS.into()).await.unwrap();
+        assert_eq!(engine.phase(), Phase::Open);
+        assert_eq!(engine.wallet().unwrap().primary_address(), address);
+        engine.change(|wallet| async move { wallet.set_profile("Sam".into(), None).await }).await.unwrap();
+        engine.lock();
+        engine.unlock(PASS.into()).await.unwrap();
+        assert_eq!(engine.read(|wallet, _| async move { wallet.profile().await }).await.flatten().unwrap().name, "Sam");
     }
 
     #[tokio::test]

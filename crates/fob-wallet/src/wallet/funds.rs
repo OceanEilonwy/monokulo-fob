@@ -261,4 +261,13 @@ impl Wallet {
         detail.rate_age = self.price_age(clock.now).await;
         Some(detail)
     }
+
+    /// Whether payment `tx` is one the node gave no answer for when it was
+    /// sent, and that Fob still offers it with each sync (it keeps the signed
+    /// transaction until the node takes it or turns it down). Not once it's
+    /// mined, released, or marked not confirmed, when it's no longer offered.
+    pub async fn unanswered(&self, tx: &str) -> bool {
+        let state = self.inner.state.lock().await;
+        state.sent.iter().any(|s| s.tx == tx && s.signed.is_some() && s.height.is_none() && !s.released && !s.not_confirmed)
+    }
 }

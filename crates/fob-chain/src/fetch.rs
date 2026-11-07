@@ -31,14 +31,27 @@ const RETRIES: u32 = 5;
 /// once: kept well inside what a phone gives an app. The chunks asked for
 /// aim at a few megabytes.
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
-/// The most one block may take in a response, transactions and all: far
-/// past any block yet, so a small request can't be answered with a huge
+/// What one block is allowed in a response at first, transactions and all:
+/// far past any block yet, so a small request can't be answered with a huge
 /// response either.
 const MAX_BLOCK_BYTES: usize = 2 * 1024 * 1024;
+/// The most a response for one block may grow to. Monero has no fixed block
+/// size: a block may weigh twice the median of recent ones, which grows with
+/// use, so a block past [`MAX_BLOCK_BYTES`] can come (a flood of
+/// transactions, say), and sync can't skip it. It's asked for alone, with
+/// the limit doubled each time it's refused, up to this. That one request may
+/// pass [`MAX_RESPONSE`] while it lasts: blocks that size are rare, and so
+/// is that much held at once.
+const MAX_ONE_BLOCK: usize = 64 * 1024 * 1024;
 
 /// The most a response for `count` blocks may be.
 fn response_limit(count: u64) -> usize {
     (count as usize).saturating_mul(MAX_BLOCK_BYTES).saturating_add(64 * 1024).min(MAX_RESPONSE)
+}
+
+/// The next limit to try for one block refused at `limit`.
+fn larger_limit(limit: usize) -> usize {
+    limit.saturating_mul(2).min(MAX_ONE_BLOCK)
 }
 
 /// Whether `error` is a response refused for its size.
@@ -313,9 +326,10 @@ async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u6
     while (blocks.len() as u64) < count {
         let from = start + blocks.len() as u64;
         let mut left = count - blocks.len() as u64;
+        let mut limit = response_limit(left);
         let mut attempt = 0;
         let got = loop {
-            let result = match transport.post("get_blocks.bin", request(from, left), Some(response_limit(left))).await {
+            let result = match transport.post("get_blocks.bin", request(from, left), Some(limit)).await {
                 Ok(response) => {
                     bytes += response.len();
                     transport.count_received(response.len());
@@ -336,7 +350,12 @@ async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u6
                     tokio::time::sleep(std::time::Duration::from_millis(250 << attempt)).await;
                 }
                 // Blocks bigger than asking for so many allows: fewer at a time.
-                Err(e) if too_large(&e) && left > 1 => left /= 2,
+                Err(e) if too_large(&e) && left > 1 => {
+                    left /= 2;
+                    limit = response_limit(left);
+                }
+                // One block bigger than that: more room for it, up to the most.
+                Err(e) if too_large(&e) && limit < MAX_ONE_BLOCK => limit = larger_limit(limit),
                 other => break other?,
             }
         };
@@ -519,8 +538,48 @@ mod tests {
         assert_eq!(response_limit(1), MAX_BLOCK_BYTES + 64 * 1024);
         assert_eq!(response_limit(Tuning::DEFAULT.max_chunk), MAX_RESPONSE);
         assert_eq!(response_limit(u64::MAX), MAX_RESPONSE);
-        assert!(MAX_RESPONSE * Tuning::DEFAULT.max_parallel <= 128 * 1024 * 1024);
+        const { assert!(MAX_RESPONSE * Tuning::DEFAULT.max_parallel <= 128 * 1024 * 1024) };
         assert!(too_large(&InterfaceError::InvalidInterface("node's response was too large".into())));
         assert!(!too_large(&InterfaceError::InterfaceError("timed out".into())));
+    }
+
+    /// One block past what a block is first allowed is asked for again with
+    /// room doubled, up to [`MAX_ONE_BLOCK`], rather than stopping sync for
+    /// good there (review of audit #15).
+    #[test]
+    fn one_big_block_gets_more_room_up_to_the_most() {
+        let mut limits = vec![response_limit(1)];
+        while *limits.last().unwrap() < MAX_ONE_BLOCK {
+            limits.push(larger_limit(*limits.last().unwrap()));
+        }
+        assert_eq!(limits.len(), 6, "{limits:?}");
+        assert_eq!(larger_limit(MAX_ONE_BLOCK), MAX_ONE_BLOCK);
+        const { assert!(MAX_ONE_BLOCK > MAX_RESPONSE) };
+    }
+
+    /// A node whose answer for one block is always too large: asked with the
+    /// limit doubled each time, then refused once it would pass the most.
+    #[tokio::test]
+    async fn a_block_too_large_even_alone_is_asked_for_with_more_room_then_refused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = [0; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let said = MAX_ONE_BLOCK + 1;
+                    let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {said}\r\nConnection: close\r\n\r\n").as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        let transport = Transport::new(&format!("http://127.0.0.1:{port}"), false).unwrap();
+        let adaptive = Adaptive::new(Tuning::DEFAULT);
+        let refused = chunk(&transport, &adaptive, 10, 1).await.err().expect("too large even at the most");
+        assert!(too_large(&refused), "{refused:?}");
+        assert_eq!(transport.requests(), 6, "2 MiB, then doubled to 64 MiB");
     }
 }

@@ -76,6 +76,7 @@ impl Wallet {
                 scan_stop: AtomicBool::new(false),
                 scan_job: std::sync::Mutex::new(None),
                 scan_running: Mutex::new(()),
+                sending: Mutex::new(()),
                 unsaved: AtomicBool::new(false),
                 saved_at: std::sync::Mutex::new(Instant::now()),
                 db: std::sync::Mutex::new(Some(db)),

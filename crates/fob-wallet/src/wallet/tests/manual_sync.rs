@@ -9,13 +9,96 @@ fn the_node_says_what_it_knows_of_each_payment() {
 }
 
 /// Before a payment is called not confirmed, the node is asked whether its
-/// coins are spent (audit #28); only a clear "unspent" for each lets it be.
+/// coins are spent (audit #28).
 #[test]
 fn a_key_image_answer_is_read_only_when_it_is_whole() {
     assert_eq!(key_images_spent(r#"{"spent_status":[0,1,2],"status":"OK"}"#, 3), Some(vec![false, true, true]));
     assert_eq!(key_images_spent(r#"{"spent_status":[0],"status":"OK"}"#, 2), None, "not for as many");
     assert_eq!(key_images_spent(r#"{"spent_status":[0],"status":"BUSY"}"#, 1), None);
     assert_eq!(key_images_spent("not JSON", 1), None);
+}
+
+/// All spent or none is a clear answer, and marks the payment after a day:
+/// spent, something else took its coins, and it would otherwise say it's on
+/// its way for ever. Anything else waits a day more, so a node that breaks
+/// the endpoint doesn't hold the coins for good (review of audit #28, #73).
+#[test]
+fn a_payment_whose_coins_the_node_cant_say_about_waits_a_day_more() {
+    assert_eq!(CoinsSaid::of(Some(&[false, false])), CoinsSaid::Unspent);
+    assert_eq!(CoinsSaid::of(Some(&[true, true])), CoinsSaid::Spent);
+    assert_eq!(CoinsSaid::of(Some(&[true, false])), CoinsSaid::CantSay, "no one payment does that");
+    assert_eq!(CoinsSaid::of(Some(&[])), CoinsSaid::CantSay, "no coins to ask about");
+    assert_eq!(CoinsSaid::of(None), CoinsSaid::CantSay);
+    let t = 10 * DAY;
+    for coins in [CoinsSaid::Unspent, CoinsSaid::Spent] {
+        assert!(!still_missing(coins, t, t + NOT_CONFIRMED_AFTER - 1));
+        assert!(still_missing(coins, t, t + NOT_CONFIRMED_AFTER), "{coins:?}");
+    }
+    assert!(!still_missing(CoinsSaid::CantSay, t, t + NOT_CONFIRMED_AFTER));
+    assert!(!still_missing(CoinsSaid::CantSay, t, t + NOT_CONFIRMED_UNSURE_AFTER - 1));
+    assert!(still_missing(CoinsSaid::CantSay, t, t + NOT_CONFIRMED_UNSURE_AFTER));
+}
+
+#[tokio::test]
+async fn the_node_is_asked_about_a_quiet_payments_coins() {
+    let said = Arc::new(std::sync::Mutex::new(String::new()));
+    let answer = said.clone();
+    let url = scripted_node(move |text| {
+        let spent = answer.lock().unwrap().clone();
+        async move { if text.contains("is_key_image_spent") { spent } else { r#"{"jsonrpc":"2.0","id":0,"result":{}}"#.to_owned() } }
+    })
+    .await;
+    let wallet = a_used_wallet(&dir("quiet-coins")).await;
+    let tx = "out";
+    let t = now();
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.node = url;
+        state.sent[0].height = None;
+        state.sent[0].time = t - NOT_CONFIRMED_AFTER;
+        state.outputs.truncate(1);
+        state.outputs[0].spent_in = Some(tx.into());
+    }
+    let rpc = wallet.rpc().await.unwrap();
+    let missing = SentLookup { missing: vec![tx.into()], ..Default::default() };
+    let cases = [
+        (r#"{"spent_status":[0],"status":"OK"}"#, true, "unspent: it may not have gone through"),
+        (r#"{"spent_status":[1],"status":"OK"}"#, true, "spent by something else: it never will"),
+        (r#"{"spent_status":[0],"status":"BUSY"}"#, false, "can't say: asked again next time"),
+        ("not JSON", false, "can't say"),
+    ];
+    for (answer, kept, why) in cases {
+        *said.lock().unwrap() = answer.into();
+        assert_eq!(wallet.check_missing(&rpc, missing.clone()).await.missing.contains(&tx.to_owned()), kept, "{why}");
+    }
+
+    // A day more, and a node that never answers doesn't hold the coins.
+    wallet.inner.state.lock().await.sent[0].time = t - NOT_CONFIRMED_UNSURE_AFTER;
+    assert!(wallet.check_missing(&rpc, missing.clone()).await.missing.contains(&tx.to_owned()));
+
+    // No coins known to ask about, as while a rescan finds them again.
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.sent[0].time = t - NOT_CONFIRMED_AFTER;
+        state.outputs[0].key_image = None;
+    }
+    *said.lock().unwrap() = r#"{"spent_status":[],"status":"OK"}"#.into();
+    assert!(!wallet.check_missing(&rpc, missing.clone()).await.missing.contains(&tx.to_owned()));
+    wallet.inner.state.lock().await.sent[0].time = t - NOT_CONFIRMED_UNSURE_AFTER;
+    assert!(wallet.check_missing(&rpc, missing.clone()).await.missing.contains(&tx.to_owned()));
+
+    // Spent elsewhere: marked, and its coins stay spent.
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.sent[0].time = t - NOT_CONFIRMED_AFTER;
+        state.outputs[0].key_image = Some("aa".into());
+    }
+    *said.lock().unwrap() = r#"{"spent_status":[1],"status":"OK"}"#.into();
+    let lookup = wallet.check_missing(&rpc, missing).await;
+    wallet.note_missing(&lookup).await.unwrap();
+    let state = wallet.inner.state.lock().await;
+    assert!(state.sent[0].not_confirmed);
+    assert_eq!(state.outputs[0].spent_in.as_deref(), Some(tx));
 }
 
 #[tokio::test]

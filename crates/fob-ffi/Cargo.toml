@@ -26,6 +26,9 @@ wipe-freed = []
 
 [dependencies]
 fob-wallet = { path = "../fob-wallet" }
+# Draws other people's contact photos in memory-safe Rust, so no app hands
+# their bytes to a platform C decoder (src/photo.rs).
+image-webp = "0.2"
 thiserror = "2"
 uniffi = { version = "=0.32.2", features = ["tokio"] }
 zeroize = "1"

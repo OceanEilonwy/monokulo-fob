@@ -272,6 +272,53 @@ async fn a_payment_the_node_gave_no_answer_for_is_kept_as_sent() {
     assert_eq!(wallet.inner.state.lock().await.sent[0].signed, None);
 }
 
+/// A node still syncing answers BUSY, which reaches the wallet as a rejection
+/// with no reason: the payment is offered again, not taken as turned down
+/// (review of audit #24).
+#[test]
+fn a_busy_node_hasnt_turned_a_payment_down() {
+    assert!(turned_down("double spend"));
+    assert!(turned_down("fee too low"));
+    assert!(!turned_down(""));
+    assert!(!turned_down("  "));
+    assert!(!turned_down("BUSY"));
+    assert!(!turned_down("daemon is busy, try again later"));
+}
+
+/// Two payments sharing a coin, sent at once, can't both pass the check that
+/// its coins are unspent before either is recorded (review of audit #24).
+#[tokio::test]
+async fn two_payments_sent_at_once_never_spend_one_coin_twice() {
+    let wallet = Wallet::create(&dir("send-together"), [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.outputs.push(received("coin", 1, XMR));
+    let to = wallet.inner.keys.address(9);
+    let (answer, node) = tokio::sync::oneshot::channel::<()>();
+    let first = {
+        let (wallet, to) = (wallet.clone(), to.clone());
+        tokio::spawn(async move {
+            let unsure = async move {
+                node.await.ok();
+                Err(Unpublished::Unsure)
+            };
+            wallet.publish_and_record("first".into(), 30, outgoing(&to, &["coin"]), "0200".into(), unsure).await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let second = {
+        let wallet = wallet.clone();
+        tokio::spawn(async move {
+            let never = async { panic!("not published: its coin is the first's") };
+            wallet.publish_and_record("second".into(), 30, outgoing(&to, &["coin"]), "0300".into(), never).await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    answer.send(()).unwrap();
+    assert_eq!(first.await.unwrap().unwrap(), "first");
+    assert!(matches!(second.await.unwrap(), Err(FobError::Screen(ScreenError::NoSuchPayment))));
+    let state = wallet.inner.state.lock().await;
+    assert_eq!(state.sent.iter().map(|s| s.tx.as_str()).collect::<Vec<_>>(), ["first"]);
+}
+
 /// A payment names its coins, not their places in the list, which a rescan
 /// moves (audit #25): one prepared before a rescan spends the coins it
 /// chose, and one whose coin the rescan hasn't found again isn't sent.

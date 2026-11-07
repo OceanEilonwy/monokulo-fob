@@ -4,9 +4,12 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.util.Base64
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.ProviderException
+import java.security.UnrecoverableKeyException
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -18,12 +21,20 @@ import javax.crypto.spec.GCMParameterSpec
  * and kept wrapped by an AES key that never leaves the Android Keystore, so
  * a copy of the app's files alone can't open the wallet.
  *
- * The wrapping key can only decrypt while the phone is unlocked, and lives in
- * StrongBox where the phone has one. It is deliberately not bound to the
- * lock prompt Fob shows before Backup, Keys and Send: that prompt is a check
- * in the app, not a key operation, so it does not stop code running as Fob
- * from unwrapping the file key. Binding the key to it would stop the wallet
- * opening for syncing, which happens without a prompt.
+ * The wrapping key lives in StrongBox where the phone has one, and on Android
+ * 15 (API 35) and later can only decrypt while the phone is unlocked. Before
+ * Android 15 an unlocked-device-required key was tied to the lock screen's own
+ * key, and some phones lost it for good when the screen lock was removed or
+ * changed. That would lose the file key, and with it what only this phone
+ * keeps (contacts, notes, receipts, signed payments not yet seen on chain);
+ * the funds come back from the recovery words, those don't. So below API 35
+ * the wrapping key is a plain one, StrongBox-backed where it can be.
+ *
+ * It is deliberately not bound to the lock prompt Fob shows before Backup,
+ * Keys and Send: that prompt is a check in the app, not a key operation, so
+ * it does not stop code running as Fob from unwrapping the file key. Binding
+ * the key to it would stop the wallet opening for syncing, which happens
+ * without a prompt.
  */
 class Vault(context: Context) {
     private val prefs = context.getSharedPreferences("vault", Context.MODE_PRIVATE)
@@ -36,17 +47,25 @@ class Vault(context: Context) {
      * only ever read, to move its file key over.
      */
     private fun keystoreKey(): SecretKey {
-        (store().getKey(ALIAS, null) as? SecretKey)?.let { return it }
-        // Strongest first; each later try drops what some phones refuse.
-        val tries = listOf(true to true, false to true, false to false)
+        readable { store().getKey(ALIAS, null) as? SecretKey }?.let { return it }
+        // Strongest first; each later try drops what some phones refuse. An
+        // unlocked-device-required key is only asked for where it can't be
+        // lost with the screen lock (see the class comment).
+        val unlockedSafe = Build.VERSION.SDK_INT >= UNLOCKED_SAFE_API
+        val tries = listOf(true to unlockedSafe, false to unlockedSafe, false to false).distinct()
         for ((index, attempt) in tries.withIndex()) {
             val (strongBox, unlocked) = attempt
             try {
                 val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
                 generator.init(spec(strongBox, unlocked))
                 return generator.generateKey()
-            } catch (e: ProviderException) {
-                // StrongBoxUnavailableException is one of these.
+            } catch (e: Exception) {
+                // A refusal can come from init (InvalidAlgorithmParameterException,
+                // a GeneralSecurityException) or from generateKey (ProviderException,
+                // StrongBoxUnavailableException among them); either way the next,
+                // plainer try may work. Anything else is a real fault.
+                if (e !is GeneralSecurityException && e !is ProviderException) throw e
+                runCatching { store().deleteEntry(ALIAS) }
                 if (index == tries.lastIndex) throw e
             }
         }
@@ -68,9 +87,28 @@ class Vault(context: Context) {
     private fun unwrap(stored: String, key: SecretKey): ByteArray {
         val bytes = Base64.decode(stored, Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, bytes, 0, IV))
+        readable { cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, bytes, 0, IV)) }
         return cipher.doFinal(bytes, IV, bytes.size - IV)
     }
+
+    /**
+     * Runs [read], turning the Keystore's word that a key is gone for good
+     * into a [KeyLost] that says so, rather than a bare crypto exception.
+     */
+    private inline fun <T> readable(read: () -> T): T = try {
+        read()
+    } catch (e: KeyPermanentlyInvalidatedException) {
+        throw KeyLost(e)
+    } catch (e: UnrecoverableKeyException) {
+        throw KeyLost(e)
+    }
+
+    /** The phone's Keystore can no longer open the key Fob's local files are sealed with. */
+    class KeyLost(cause: Throwable) : GeneralSecurityException(
+        "This phone's keystore can no longer open Fob's wallet files, maybe after the screen lock changed. " +
+            "Your funds are safe: restore the wallet from its recovery words.",
+        cause,
+    )
 
     private fun wrap(fileKey: ByteArray, key: SecretKey): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -90,9 +128,14 @@ class Vault(context: Context) {
 
     /** The wallet file key, made the first time it's asked for; prefer [withFileKey]. */
     fun fileKey(): ByteArray {
-        prefs.getString(PREF, null)?.let { return unwrap(it, keystoreKey()) }
+        prefs.getString(PREF, null)?.let { stored ->
+            // A file key wrapped before needs the key it was wrapped with: making
+            // a new one here would only fail to unwrap, less clearly.
+            val key = readable { store().getKey(ALIAS, null) as? SecretKey } ?: throw KeyLost(UnrecoverableKeyException("no key under $ALIAS"))
+            return unwrap(stored, key)
+        }
         prefs.getString(OLD_PREF, null)?.let { stored ->
-            val oldKey = store().getKey(OLD_ALIAS, null) as SecretKey
+            val oldKey = readable { store().getKey(OLD_ALIAS, null) as? SecretKey } ?: throw KeyLost(UnrecoverableKeyException("no key under $OLD_ALIAS"))
             val key = unwrap(stored, oldKey)
             moveOver(key)
             return key
@@ -127,6 +170,8 @@ class Vault(context: Context) {
         const val OLD_ALIAS = "fob-wallet-file"
         const val OLD_PREF = "file-key"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
+        /** Android 15, where an unlocked-device-required key outlives a screen lock change. */
+        const val UNLOCKED_SAFE_API = 35
         const val IV = 12
     }
 }

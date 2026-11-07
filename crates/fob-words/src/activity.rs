@@ -103,6 +103,12 @@ pub fn status(status: PaymentStatus) -> String {
     }
 }
 
+/// Under a payment out the node gave no answer for when it was sent, on Paid
+/// and on the payment's own screen. Someone told only "Sent" whose payee says
+/// nothing came may pay again by hand while Fob still offers this one, and
+/// both could arrive; this says why it may yet.
+pub const UNANSWERED: &str = "The node didn't answer, so Fob keeps sending it until it does.";
+
 /// The words for where a price can't be had.
 const NOT_AVAILABLE: &str = "Not available";
 
@@ -369,14 +375,16 @@ mod tests {
 
         let rows = by_day(vec![sent, paid, arriving, on_the_way, confirming], vec![], clock(0)).remove(0).rows;
         let shown: Vec<_> = rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.amount.as_str(), r.fiat.as_deref())).collect();
+        // A receipt's "$13.50" is what the payee wrote, so it's not shown as
+        // the payment's worth; without a price of Fob's own, nothing is.
         assert_eq!(
             shown,
             [
                 ("86Ux … 7kQa", "Sent · 10:15", "−0.5", None),
-                ("Kiosk Café", "Receipt, 3 items · 09:12", "−0.1421", Some("$13.50")),
+                ("Kiosk Café", "Receipt, 3 items · 09:12", "−0.1421", None),
                 ("Received", "Not ready · 3 of 10 · 08:40", "+0.653", None),
                 ("Received", "On the way · 11:05", "+1", None),
-                ("Kiosk Café", "Confirming · 4 of 10 · receipt, 1 item · 07:00", "−0.000000000001", Some("$13.50")),
+                ("Kiosk Café", "Confirming · 4 of 10 · receipt, 1 item · 07:00", "−0.000000000001", None),
             ]
         );
     }

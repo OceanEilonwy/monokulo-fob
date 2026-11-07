@@ -101,7 +101,10 @@ async fn the_paid_screen_offers_to_save_whoever_a_payment_went_to() {
     assert!(wallet.said_offer("split").await.is_none());
     assert!(wallet.said_offer("nothing").await.is_none());
     let add = wallet.said_offer("named-sam").await.unwrap();
-    assert_eq!((add.add_to.map(|c| c.id), add.button.as_str()), (Some(sam.id), "Add to Sam"));
+    // A code named Sam proves nothing, so there's no one-tap Add to Sam: the
+    // footnote names Sam and the address, and the button saves someone new.
+    assert_eq!((add.add_to.as_ref().map(|c| c.id), add.button.as_str()), (None, "Save as a contact"));
+    assert!(add.footnote.as_deref().is_some_and(|f| f.starts_with("This code said it was Sam,")));
     let plain_offer = wallet.said_offer("plain").await.unwrap();
     assert_eq!(plain_offer.draft.send_address.as_deref(), Some(plain.as_str()));
     // "Paid, not saved": an address once paid with a named code is only ever paid at.

@@ -21,7 +21,7 @@ fn block(seed: u64) -> usize {
     let mut outputs = 0;
     for tx in blob.chunks(1_500) {
         let bytes = tx.to_vec();
-        let keys: Vec<[u8; 32]> = bytes.chunks_exact(32).take(2).map(|c| c.try_into().unwrap()).collect();
+        let keys: Vec<[u8; 32]> = bytes.as_chunks::<32>().0.iter().take(2).copied().collect();
         let mut extra = Vec::new();
         for (i, key) in keys.iter().enumerate() {
             extra.extend_from_slice(key);

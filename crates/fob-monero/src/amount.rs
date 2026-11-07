@@ -27,9 +27,26 @@ pub fn format_short(amount: u64) -> String {
     format(amount - amount % TENTH_MILLI)
 }
 
+/// `text` with its decimal comma, if it has one, made a point. A comma
+/// followed by exactly three digits after a non-zero whole ("1,000") is
+/// refused: it reads as a thousands separator as readily as a decimal comma,
+/// and taking it as a decimal turns a thousand into one. A two-decimal
+/// currency already refused it for having too many decimals, so this makes
+/// XMR and the three-decimal currencies (KWD, BHD) say the same. "0,001"
+/// stays a decimal, since no thousands start with zero.
+pub(crate) fn decimal_point(text: &str) -> Result<String> {
+    if let Some((whole, frac)) = text.split_once(',') {
+        let thousands = frac.len() == 3 && frac.chars().all(|c| c.is_ascii_digit()) && whole.chars().any(|c| c != '0');
+        if thousands {
+            return Err(MoneroError::BadAmount);
+        }
+    }
+    Ok(text.replace(',', "."))
+}
+
 /// Text someone typed ("0.5", ".25", "1,5") as atomic units.
 pub fn parse(text: &str) -> Result<u64> {
-    let text = text.trim().replace(',', ".");
+    let text = decimal_point(text.trim())?;
     let (whole, frac) = text.split_once('.').unwrap_or((&text, ""));
     if whole.is_empty() && frac.is_empty()
         || !whole.chars().all(|c| c.is_ascii_digit())
@@ -108,6 +125,20 @@ mod tests {
         for bad in ["", ".", "abc", "1.2.3", "-1", "0.0000000000001", "99999999999"] {
             assert!(parse(bad).is_err(), "{bad} parsed");
         }
+    }
+
+    #[test]
+    fn a_comma_that_could_be_thousands_is_refused_not_read_as_a_decimal() {
+        // "1,000" was 1 XMR; it could as well mean a thousand, so neither.
+        for bad in ["1,000", "12,500", " 1,000 ", "1,000,000"] {
+            assert!(parse(bad).is_err(), "{bad} parsed");
+        }
+        // The point stays unambiguous, and other decimal commas still work.
+        assert_eq!(parse("1.000").unwrap(), ATOMIC_PER_XMR);
+        assert_eq!(parse("0,001").unwrap(), ATOMIC_PER_XMR / 1000);
+        assert_eq!(parse(",001").unwrap(), ATOMIC_PER_XMR / 1000);
+        assert_eq!(parse("1,25").unwrap(), 5 * ATOMIC_PER_XMR / 4);
+        assert_eq!(parse("1,0005").unwrap(), 1_000_500_000_000);
     }
 
     #[test]

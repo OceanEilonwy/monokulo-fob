@@ -122,6 +122,14 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
     var payCode by remember { mutableStateOf<String?>(null) }
     var touchNotice by remember { mutableStateOf<String?>(null) }
     rememberPayReading(model, touch, enabled = canSpend && payCode == null, onProblem = { touchNotice = it }) { code -> touchNotice = null; payCode = code }
+    // The reader is off while the drawer is up, so a tag or a browser's link
+    // reaches the activity instead: it's told, so the link doesn't open Send
+    // over a payment about to be swiped.
+    val drawerUp = payCode != null
+    androidx.compose.runtime.DisposableEffect(drawerUp) {
+        model.payDrawerUp = drawerUp
+        onDispose { model.payDrawerUp = false }
+    }
     Box(Modifier.fillMaxSize()) {
     val manual by model.manual.collectAsState()
     // Manual Sync can turn the gesture off altogether.

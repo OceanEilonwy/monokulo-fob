@@ -6,7 +6,7 @@
 pub mod engine;
 pub mod picture;
 
-pub use engine::{Engine, Listener, Met, Options, Phase, Update};
+pub use engine::{Confirmed, Engine, Listener, Met, Options, Phase, Update};
 pub use fob_ffi::form;
 pub use fob_ffi as views;
 pub use fob_ffi::{Device, FobError, set_device};

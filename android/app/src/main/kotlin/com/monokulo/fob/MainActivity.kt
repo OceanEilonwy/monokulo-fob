@@ -273,8 +273,19 @@ class MainActivity : FragmentActivity() {
                 val pending by link
                 LaunchedEffect(pending) {
                     val code = pending ?: return@LaunchedEffect
-                    if (model.hasWallet()) nav.go(Screen.Send(code))
                     link.value = null
+                    if (!model.hasWallet()) return@LaunchedEffect
+                    // A link (an NFC tag, which reaches Fob this way on any
+                    // screen without its own reader, or a browser) never opens
+                    // over a payment: it would replace a Confirm about to be
+                    // swiped with one for its own address, or one mid-send,
+                    // whose result would then be lost. It's dropped, with a
+                    // word why, rather than kept to open later out of nowhere.
+                    if (paymentUp(nav)) {
+                        model.tell("Finish this payment first, then open the link again.")
+                        return@LaunchedEffect
+                    }
+                    nav.go(Screen.Send(code))
                 }
                 BackHandler(enabled = nav.stack.size > 1) { nav.back() }
                 // The price toast over whatever screen is open, above its bottom bar.
@@ -391,6 +402,10 @@ class MainActivity : FragmentActivity() {
         prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(title).setAllowedAuthenticators(allowed).build())
         return asked.await()
     }
+
+    /** Confirm or Paid is on screen, a payment is being sent, or Home's pay drawer is up. */
+    private fun paymentUp(nav: Nav): Boolean =
+        nav.current is Screen.Confirm || nav.current is Screen.Paid || model.paying
 
     /** A phone-lock prompt is up, asked before the activity was made again. */
     fun identityPending(): Boolean = holder.identity?.isActive == true

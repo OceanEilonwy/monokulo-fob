@@ -10,6 +10,13 @@ use crate::clock::{Clock, local, short_when, time_of_day};
 /// About how long a block takes.
 const BLOCK_SECONDS: u64 = 120;
 
+/// The most blocks a piece is counted as still waiting: about ten years.
+/// Anyone can send a dust output time-locked to near u64::MAX, and waiting
+/// blocks that far out overflow the seconds (and the clock's i64) instead of
+/// saying anything useful, so "ready" stops at a date that already reads as
+/// never.
+const MAX_WAIT_BLOCKS: u64 = 10 * 365 * 24 * 3600 / BLOCK_SECONDS;
+
 /// Where a piece came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -125,7 +132,8 @@ pub fn summarise(pieces: Vec<Piece>, ready: u64, last_block_time: u64, clock: Cl
     let mut views: Vec<PieceView> = pieces
         .into_iter()
         .map(|p| {
-            let ready_at = from + (p.needed - p.confirmations) * BLOCK_SECONDS;
+            let waiting = (p.needed - p.confirmations).min(MAX_WAIT_BLOCKS);
+            let ready_at = from.saturating_add(waiting * BLOCK_SECONDS);
             PieceView {
                 atomic: p.amount,
                 amount: amount::format_short(p.amount),
@@ -287,5 +295,20 @@ mod tests {
         assert_eq!((n.pieces[0].source.clone(), n.pieces[0].came.as_str(), n.seconds_left), (Source::Received, "08:48", 600));
         let empty = coins(vec![], vec![], NOW, 10, None, None, clock());
         assert_eq!(empty.held, None);
+    }
+
+    #[test]
+    fn a_coin_locked_until_the_end_of_time_neither_panics_nor_wraps() {
+        // A time lock near u64::MAX makes the wallet ask for about
+        // u64::MAX / 120 confirmations; that used to overflow every Home draw.
+        let locked = Piece { amount: 1, confirmations: 0, needed: u64::MAX / BLOCK_SECONDS + 5, source: Source::Received, time: NOW };
+        let n = summarise(vec![locked.clone(), piece(XMR, 3, Source::Received, NOW)], 0, NOW, clock()).unwrap();
+        let last = n.pieces.last().unwrap();
+        assert_eq!(last.atomic, 1, "the locked coin is the last ready");
+        assert_eq!(last.ready_at, NOW + MAX_WAIT_BLOCKS * BLOCK_SECONDS);
+        assert!(last.seconds_left > 9 * 365 * 24 * 3600, "not ready any time soon");
+        assert_eq!(n.seconds_left, last.seconds_left);
+        let all = coins(vec![], vec![Piece { needed: u64::MAX, ..locked }], NOW, 10, None, None, clock());
+        assert_eq!(all.not_ready_coins[0].ready_at, NOW + MAX_WAIT_BLOCKS * BLOCK_SECONDS);
     }
 }

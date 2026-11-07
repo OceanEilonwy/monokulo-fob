@@ -135,10 +135,12 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             Divider()
             InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
         }
-        // A total Fob's price disagrees with must be looked at before the swipe works.
+        // A total Fob's price disagrees with, or has no price to check, must be
+        // looked at before the swipe works.
         val mismatch = receipt?.mismatch
-        mismatch?.let { Warning(it, title = "The receipt doesn't match the amount") }
-        if (mismatch != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
+        val notice = mismatch ?: receipt?.unchecked
+        notice?.let { Warning(it, title = if (mismatch != null) "The receipt doesn't match the amount" else "Check the amount yourself") }
+        if (notice != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
         else ErrorText(error)
         val label = when {
@@ -147,6 +149,6 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
             else -> "Swipe to send ${prepared!!.amountText} XMR"
         }
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (mismatch == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (notice == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
     }
 }
