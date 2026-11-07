@@ -2899,3 +2899,90 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      spending and removing a wallet take it; `fob-gtk` is kept from calling those on
      the wallet directly by clippy. The process is made non-dumpable, the data folder
      0700 and its files 0600.
+
+## Trezor
+
+359. **A wallet can keep its spend key on a Trezor** (Model T, Safe 3, Safe 5:
+     the ones running trezor-core, which hold Monero; Model One doesn't). Restore
+     › Connect a Trezor: the device exports the private view key and primary
+     address (it asks first), and Fob makes a wallet from them that watches as a
+     view-only one does, with `device = trezor` beside the keys in the file. It
+     is one Monero wallet per Trezor (and per passphrase): the keys are those at
+     `m/44'/128'/0'`, as Trezor Suite and the Monero GUI use.
+360. **The protocol is Monero's own cold-signing one with the device**
+     (`crates/fob-wallet/src/trezor`), after `src/device_trezor` in monero-project
+     and `apps/monero` in trezor-firmware, written here without their
+     dependencies: a hand-sized protocol buffer codec, the 64-byte report
+     framing, and the message numbers and fields. The device makes the
+     transaction's keys, one-time addresses, commitments and CLSAGs; Fob sends
+     inputs with their rings (as monero-oxide chose them), makes the Bulletproof+
+     itself when there are more than two outputs (the device asks for that and
+     checks it), assembles the transaction with monero-oxide's types, and checks
+     the prefix hash and signed message against the device's, the range proof,
+     and every signature, before anything is broadcast.
+361. **Key images come from the device too.** A view key can't tell when money is
+     spent; the device can, from each output's one-time key and the key of the
+     transaction it came in. So every output now records its transaction's public
+     key (and the extra key at its index, if the transaction had those: `tx_key`,
+     `extra_key` in the outputs table, database version 7), picked at scan time as
+     the one whose shared secret makes the output's key. Home asks to connect the
+     Trezor while any output has no key image ("Connect your Trezor"); the sync
+     asks the device for them (it confirms once), checks each against the proof
+     the device gives, then asks the node `is_key_image_spent`. One found spent
+     is marked `spent-before-sync`: spent by a transaction Fob never saw, with no
+     Activity row. Outputs without a key image can't be chosen for a payment, and
+     a payment they're needed for says to connect the Trezor.
+362. **The device's questions reach the screen through callbacks.** Rust talks to
+     the device on its own thread over a `TrezorLink` the app implements with
+     Android's USB host API (bulk transfers on the device's first interface, the
+     WebUSB one), and puts the device's questions through `TrezorPrompts`: a
+     press to confirm, the PIN (typed here as the positions on the scrambled
+     keypad the device shows, as Trezor Suite does), the passphrase (here, or on
+     the device where it can). The app blocks that thread until the person
+     answers in the sheet over whatever screen is open. Saying no on the device
+     cancels and leaves a prepared payment prepared.
+363. **The fee for a device-signed payment is for a little more weight** (48
+     bytes) than the same payment signed here: the device writes the extra
+     itself, which may differ by a key, and it checks that the fee equals inputs
+     less outputs exactly, so it's fixed before the device sees it. The device
+     shows that fee, and so does Confirm.
+364. **An independent audit of the Trezor code** (2026-11-07) found no theft
+     path and nine things to tighten; every one is answered in the same branch:
+     a rewind keeps what a device's sync found spent (the marks `spent-before-sync`
+     and `spent-in-pool-at-sync` aren't transaction hashes, and were being let go
+     with every reorg or rescan); the address the device exports is asked for
+     again with `MoneroGetAddress(show_display)`, so the device shows it on its
+     own screen and the two have to agree, or no wallet is made; the node's
+     `is_key_image_spent` answer is no longer final: spent in the pool only is a
+     tentative mark, and every sync asks the node about every key image again,
+     freeing a coin whose spend never got mined; what the device makes of the
+     outputs is checked with the view key before anything is broadcast (the
+     change's one-time key, view tag, commitment and encrypted amount all follow
+     from the transaction key in the extra; the pseudo outputs balance the
+     outputs and the fee; each input's offsets are its ring's); unplugging the
+     device ends the exchange at once (Android listens for the detach; both
+     clients have a Cancel); outputs kept before Fob recorded transaction keys
+     are counted (`trezor_frozen`) and a rescan refreshes their keys, where they
+     were silently unspendable; key images are kept before the node is asked,
+     so a node that's away doesn't cost another confirmation on the device; the
+     PIN and passphrase are wiped from the message buffers and parsed replies
+     (every parsed reply is wiped as it goes), and the screens clear what was
+     typed; the device's own failure text is never shown, only Fob's words for
+     its code. A payment that times out while the device is being waited on is
+     still sent once signed. What remains: a real device on stagenet, which
+     none of this has met; and Trezor's `GetTxKey` and live refresh, unused.
+365. **The desktop has it too.** `fob-wallet`'s `usb` feature (on for `fob-app`,
+     never for `fob-ffi`'s Android build) talks to the device through libusb
+     (`rusb`, with libusb built in, so the AppImage needs nothing from the
+     system; the Flatpak gets `--device=all`, the only grant that reaches a raw
+     USB device). On Linux the device must be readable by the person: Trezor's
+     udev rules, which Trezor Suite installs. The engine opens the device,
+     runs the exchange on the wallet's runtime and puts the device's questions
+     to the window through a `Prompter`: each question crosses to the GTK main
+     thread as a message with a channel for its answer, and Fob's thread waits
+     on that channel. Start gets "Connect a Trezor (USB)", Home two banners
+     (key images to fetch; coins to rescan for), Confirm sends through the
+     device with no passphrase (the device's screen is the confirmation), and
+     the root draws one dialog at a time: a spinner with Cancel, a blank 3 × 3
+     keypad for the PIN, a passphrase entry with "On the Trezor" where the
+     device can take it.

@@ -364,7 +364,9 @@ impl Wallet {
         let spends: HashSet<String> = state.spends.iter().map(|s| s.tx.clone()).collect();
         let pending: HashSet<String> = state.sent.iter().filter(|s| !s.released && (s.height.is_none() || s.height >= Some(from))).map(|s| s.tx.clone()).collect();
         for output in &mut state.outputs {
-            if output.spent_in.as_ref().is_some_and(|t| !spends.contains(t) && !pending.contains(t)) {
+            // What a device's key image sync found spent names no transaction;
+            // it stays until the next sync asks the node again.
+            if output.spent_in.as_ref().is_some_and(|t| !hardware::is_sync_mark(t) && !spends.contains(t) && !pending.contains(t)) {
                 output.spent_in = None;
             }
         }
@@ -613,8 +615,16 @@ impl Wallet {
             let key = hex::encode(output.key().compress().to_bytes());
             // Seen before: the same output again, or the burning bug (a
             // second output with a key already received, which can't
-            // both be spent). Only the first counts.
-            if state.outputs.iter().any(|o| o.key == key || (o.tx == tx && o.output == hex::encode(output.serialize()))) {
+            // both be spent). Only the first counts; one kept before Fob
+            // recorded transaction keys takes them now, for a device.
+            if let Some(known) = state.outputs.iter_mut().find(|o| o.key == key || (o.tx == tx && o.output == hex::encode(output.serialize()))) {
+                if known.tx_key.is_none()
+                    && let Some((tx_key, extra)) = scanned.tx_keys.get(&tx).and_then(|(tx_keys, additional)| keys.tx_key_for(&output, tx_keys, additional.as_deref()))
+                {
+                    known.tx_key = Some(hex::encode(tx_key));
+                    known.extra_key = extra.map(hex::encode);
+                    changed = true;
+                }
                 continue;
             }
             self.inner.pool.lock().expect("pool lock").remove(&tx);
@@ -629,6 +639,11 @@ impl Wallet {
             if let Some(image) = key_image.as_deref().and_then(hash_bytes) {
                 images.entry(image).or_insert(state.outputs.len());
             }
+            let (tx_key, extra_key) = scanned
+                .tx_keys
+                .get(&tx)
+                .and_then(|(tx_keys, additional)| keys.tx_key_for(&output, tx_keys, additional.as_deref()))
+                .map_or((None, None), |(tx_key, extra)| (Some(hex::encode(tx_key)), extra.map(hex::encode)));
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
             state.outputs.push(Owned {
@@ -643,6 +658,8 @@ impl Wallet {
                 subaddress,
                 key_image,
                 spent_in: None,
+                tx_key,
+                extra_key,
             });
             changed = true;
         }

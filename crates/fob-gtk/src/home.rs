@@ -28,6 +28,8 @@ pub enum Input {
     SyncClosed,
     SyncNow,
     ScanAgain,
+    /// Ask the Trezor for the key images it hasn't given.
+    TrezorSync,
     Say(String),
 }
 
@@ -64,6 +66,18 @@ impl Home {
 
     fn reminder(&self) -> Option<(String, String)> {
         self.screens.as_ref().and_then(|View(s)| s.reminder.as_ref()).map(|r| (r.title.clone(), r.line.clone()))
+    }
+
+    /// Money a Trezor wallet can't spend until the device has been asked.
+    fn trezor_waiting(&self) -> Option<String> {
+        let n = self.screens.as_ref().map_or(0, |View(s)| s.trezor_unsynced);
+        (n > 0).then(|| format!("Connect your Trezor: {} come in and {} for its key image{}", if n == 1 { "a payment has".to_owned() } else { format!("{n} payments have") }, if n == 1 { "waits" } else { "wait" }, if n == 1 { "" } else { "s" }))
+    }
+
+    /// Coins kept before Fob recorded transaction keys: a rescan finds them again.
+    fn trezor_frozen(&self) -> Option<String> {
+        let n = self.screens.as_ref().map_or(0, |View(s)| s.trezor_frozen);
+        (n > 0).then(|| format!("{} arrived before Fob kept transaction keys, so the Trezor can't be asked about {}: scan again from before", if n == 1 { "A coin".to_owned() } else { format!("{n} coins") }, if n == 1 { "it" } else { "them" }))
     }
 
     /// Manual Sync shows Sync in the chip's place, unless something's wrong.
@@ -219,6 +233,22 @@ impl SimpleComponent for Home {
                             set_revealed: model.reminder().is_some(),
                             connect_button_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Settings)); },
                         },
+                        adw::Banner {
+                            set_button_label: Some("Sync"),
+                            #[watch]
+                            set_title: &model.trezor_waiting().unwrap_or_default(),
+                            #[watch]
+                            set_revealed: model.trezor_waiting().is_some(),
+                            connect_button_clicked => Input::TrezorSync,
+                        },
+                        adw::Banner {
+                            set_button_label: Some("Scan"),
+                            #[watch]
+                            set_title: &model.trezor_frozen().unwrap_or_default(),
+                            #[watch]
+                            set_revealed: model.trezor_frozen().is_some(),
+                            connect_button_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Scan)); },
+                        },
                         #[local_ref]
                         days -> gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
@@ -289,6 +319,16 @@ impl SimpleComponent for Home {
                 relm4::spawn(async move {
                     if let Err(e) = engine.change(|wallet| async move { wallet.scan_again().await }).await {
                         sender.input(Input::Say(e.to_string()));
+                    }
+                });
+            }
+            Input::TrezorSync => {
+                let (engine, then) = (self.engine.clone(), sender.clone());
+                let prompter = crate::trezor::prompter(&sender);
+                relm4::spawn(async move {
+                    match engine.trezor_sync(prompter).await {
+                        Ok(n) => then.input(Input::Say(if n == 1 { "One coin's key image is in".into() } else { format!("{n} coins' key images are in") })),
+                        Err(e) => then.input(Input::Say(e.to_string())),
                     }
                 });
             }

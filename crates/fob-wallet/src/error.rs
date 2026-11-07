@@ -27,6 +27,12 @@ pub enum FobError {
     /// With Manual Sync on, the node refused a payment. A coin in it may have
     /// been spent since the last scan. What the node said, if anything.
     SpendRejected(String),
+    /// A Trezor couldn't be reached, refused, or answered wrongly, and why.
+    Trezor(String),
+    /// The person said no on the Trezor, or to its PIN or passphrase.
+    TrezorCancelled,
+    /// This wallet's spend key is on a Trezor: the device has to be there.
+    TrezorNeeded,
 }
 
 impl FobError {
@@ -54,6 +60,9 @@ impl std::fmt::Display for FobError {
             FobError::Send(why) => fob_words::errors::send(why),
             FobError::ReorgTooDeep => fob_words::errors::reorg_too_deep(),
             FobError::SpendRejected(said) => fob_words::errors::spend_rejected(said),
+            FobError::Trezor(why) => fob_words::errors::trezor(why),
+            FobError::TrezorCancelled => fob_words::errors::trezor_cancelled(),
+            FobError::TrezorNeeded => fob_words::errors::trezor_needed(),
         })
     }
 }

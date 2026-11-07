@@ -570,15 +570,24 @@ fun ConfirmScreen(
             // Sent: neither this nor the filled form under it is a step back from Paid.
             .onSuccess { tx -> nav.back(); if (nav.current is Screen.Send) nav.back(); nav.go(Screen.Paid(ready, tx)) }
             // Trying used up the prepared payment: back to the form to make another.
-            .onFailure { error = it.reason(); failed = true; refused = it is uniffi.fob.FobException.SpendRejected }
+            // Not so when the Trezor said no or couldn't be reached: it's still prepared.
+            .onFailure {
+                error = it.reason()
+                failed = !(it is uniffi.fob.FobException.TrezorCancelled || it is uniffi.fob.FobException.Trezor)
+                refused = it is uniffi.fob.FobException.SpendRejected
+            }
     }
 
+    val trezor = model.wallet.value?.isTrezor() == true
     fun swiped() {
         val ready = prepared ?: return
         busy = true
         error = null
         scope.launch {
-            if (!confirmIdentity(title)) {
+            if (trezor) {
+                // The device shows the payment and asks there; the phone's lock isn't needed.
+                sent(ready, runCatching { model.sendWithTrezor(ready) })
+            } else if (!confirmIdentity(title)) {
                 error = "Not sent."
             } else {
                 sent(ready, runCatching { model.send(ready) })
@@ -602,9 +611,10 @@ fun ConfirmScreen(
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = model::openScan)
         else ErrorText(error)
         val label = when {
-            busy -> "Sending…"
+            busy -> if (trezor) "Confirm on the Trezor…" else "Sending…"
             failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+            trezor -> "Swipe, then confirm on the Trezor"
             else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
         }
         if (notice != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())

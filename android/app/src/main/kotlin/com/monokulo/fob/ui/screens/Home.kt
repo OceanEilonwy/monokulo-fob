@@ -82,6 +82,7 @@ import com.monokulo.fob.ui.PrimaryButton
 import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.SyncChip
 import com.monokulo.fob.ui.Warning
+import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.SyncButton
 import com.monokulo.fob.ui.display
 import kotlinx.coroutines.delay
@@ -194,6 +195,36 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
         Column(Modifier.padding(horizontal = 16.dp)) {
             // The words behind the phone's lock, as from Backup and keys.
             reminder?.let { BackupCard(it) { openLocked(Screen.ShowSeed) } }
+            // A Trezor wallet with money the device hasn't been asked about yet.
+            val trezorUnsynced by model.trezorUnsynced.collectAsState()
+            var trezorError by remember { mutableStateOf<String?>(null) }
+            var trezorBusy by remember { mutableStateOf(false) }
+            if (trezorUnsynced > 0u) {
+                val n = trezorUnsynced.toInt()
+                Warning(
+                    if (trezorBusy) "Talking to the Trezor…" else "${if (n == 1) "A payment has" else "$n payments have"} come in. Connect the Trezor to make ${if (n == 1) "it" else "them"} spendable and see if ${if (n == 1) "it's" else "they're"} spent.",
+                    Modifier.padding(bottom = 12.dp), title = "Connect your Trezor", icon = Icons.usb,
+                    onClick = {
+                        if (trezorBusy) return@Warning
+                        trezorBusy = true
+                        trezorError = null
+                        scope.launch {
+                            runCatching { model.trezorSync() }.onFailure { trezorError = it.reason() }
+                            trezorBusy = false
+                        }
+                    },
+                )
+                trezorError?.let { Text(it, color = Fob.red, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)) }
+            }
+            // Coins kept before Fob recorded transaction keys: the device can't be asked about them until a rescan finds them again.
+            val trezorFrozen by model.trezorFrozen.collectAsState()
+            if (trezorFrozen > 0u) {
+                val n = trezorFrozen.toInt()
+                Warning(
+                    "${if (n == 1) "A coin" else "$n coins"} arrived before Fob kept transaction keys, so the Trezor can't be asked about ${if (n == 1) "it" else "them"}. Scan again from before ${if (n == 1) "it" else "they"} arrived.",
+                    Modifier.padding(bottom = 12.dp), title = "Scan again for your Trezor", icon = Icons.refresh, onClick = model::openScan,
+                )
+            }
             notReady?.let { ReadyCard(it) }
         }
 

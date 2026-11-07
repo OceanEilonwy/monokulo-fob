@@ -150,6 +150,38 @@ impl Wallet {
         Wallet::new(path, file_key, Keys::view_only(network, address, view_hex)?, Some(restore_height.unwrap_or(0)))
     }
 
+    /// A wallet whose keys are on the Trezor reached over `link`: the
+    /// device exports the view key (asking first) and keeps the spend key.
+    /// Without a `restore_height` it starts at the chain's tip, as a new
+    /// wallet does: right for a Trezor that hasn't held Monero before.
+    pub fn restore_trezor(
+        path: &Path,
+        file_key: [u8; 32],
+        network: Network,
+        link: &dyn trezor::Link,
+        prompts: &dyn trezor::Prompts,
+        restore_height: Option<u64>,
+    ) -> Result<Wallet> {
+        let session = trezor::Session::open(link, prompts)?;
+        let (view, address) = session.watch_key(network)?;
+        // The cable could have changed the address on the way; the device
+        // shows it on its own screen, for the person to compare with
+        // Receive, and says it again: both have to agree.
+        if session.address_shown(network)? != address {
+            return Err(FobError::Trezor("the address the Trezor shows isn't the one it sent: don't use this cable or computer".into()));
+        }
+        let keys = Keys::trezor(network, &address, &view)?;
+        let wallet = Wallet::new(path, file_key, keys, restore_height)?;
+        {
+            // Nothing to write down here: the device has its own backup.
+            let mut state = wallet.inner.state.try_lock().expect("a new wallet is not shared yet");
+            state.backup_pending = false;
+            state.restored = true;
+            wallet.save_state(&state)?;
+        }
+        Ok(wallet)
+    }
+
     /// The wallet saved at `path`, its database, made first from the sealed
     /// file beside it if it's still in that. The sealed file is deleted once the
     /// database has opened whole. A photo saved before Fob read

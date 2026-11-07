@@ -23,9 +23,18 @@ pub(super) struct Owned {
     /// is the burning bug and isn't counted.
     #[serde(default)]
     pub(super) key: String,
-    /// `None` in a view-only wallet, which can't tell when it's spent.
+    /// `None` in a view-only wallet, which can't tell when it's spent, and
+    /// in a device's until the device has been asked.
     pub(super) key_image: Option<String>,
     pub(super) spent_in: Option<String>,
+    /// The transaction key the output was made with, and the extra key at
+    /// its index if its transaction carried those: what a device needs to
+    /// make its key image and spend it. In hex; `None` before Fob kept
+    /// them.
+    #[serde(default)]
+    pub(super) tx_key: Option<String>,
+    #[serde(default)]
+    pub(super) extra_key: Option<String>,
 }
 
 /// A transaction on the chain that spent the wallet's outputs.
