@@ -8,9 +8,10 @@
 //!
 //! The view key's digits reach the GPU as push constants. They and the shader's
 //! working state are in memory the driver manages: the buffers are cleared after
-//! each batch, and freed, but a driver's own copies can't be reached.
+//! each batch and freed once scanning rests, but a driver's own copies can't be
+//! reached.
 
-use std::{ffi::CStr, path::PathBuf};
+use std::{cell::RefCell, ffi::CStr, path::PathBuf};
 
 use ash::vk;
 use zeroize::Zeroizing;
@@ -43,6 +44,11 @@ pub struct Tuning {
 
 /// Tuned on a Mali-G715: 16 windows hold a key's state in the shader longest, and a dispatch to about 60 ms.
 pub const TUNING: Tuning = Tuning { batch: 32_768, windows: 16, submit_every: 1, group: 64 };
+
+/// A discrete GPU has no dispatch near its watchdog, so a batch is one submit. Smaller
+/// batches would let the cores finish more while it works, but on an RX 6800 XT a batch
+/// costs at least 3.7 ms however small: 8,192 keys were slower overall, and 16,384 no faster.
+pub const DISCRETE_TUNING: Tuning = Tuning { submit_every: 8, ..TUNING };
 
 /// What went wrong, for the log. Never holds key material.
 #[derive(Debug)]
@@ -83,6 +89,20 @@ struct Buffer {
     memory: vk::DeviceMemory,
 }
 
+/// What a batch runs in, kept for the next one. Cleared after each batch, as `run_on`
+/// does, and freed by [`Gpu::release`], by a failure and with the GPU.
+struct Arena {
+    input: Buffer,
+    state: Buffer,
+    out: Buffer,
+    set: vk::DescriptorSet,
+    /// The most items and input bytes it takes.
+    items: u32,
+    input_bytes: usize,
+    in_map: *mut u8,
+    out_map: *mut u32,
+}
+
 pub struct Gpu {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -105,6 +125,7 @@ pub struct Gpu {
     tuning: Tuning,
     name: String,
     driver: u32,
+    arena: RefCell<Option<Arena>>,
 }
 
 // Vulkan's handles may move between threads; they're only used under the one lock.
@@ -114,6 +135,7 @@ impl Drop for Gpu {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            self.release();
             for pipeline in [self.init, self.window, self.last, self.check] {
                 self.device.destroy_pipeline(pipeline, None);
             }
@@ -140,6 +162,15 @@ impl Gpu {
     /// `any_kind` also takes software renderers, which only the test tool wants:
     /// they'd be a slower CPU.
     pub fn start(cache_dir: Option<PathBuf>, tuning: Tuning, any_kind: bool) -> Result<Gpu, GpuError> {
+        Self::start_tuned(cache_dir, Some(tuning), any_kind)
+    }
+
+    /// [`start`](Gpu::start), tuned for the GPU it finds: what the app uses.
+    pub fn start_for_device(cache_dir: Option<PathBuf>, any_kind: bool) -> Result<Gpu, GpuError> {
+        Self::start_tuned(cache_dir, None, any_kind)
+    }
+
+    fn start_tuned(cache_dir: Option<PathBuf>, tuning: Option<Tuning>, any_kind: bool) -> Result<Gpu, GpuError> {
         unsafe {
             let entry = ash::Entry::load().map_err(|e| GpuError(format!("no Vulkan: {e}")))?;
             let app = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_0);
@@ -149,9 +180,9 @@ impl Gpu {
     }
 
     /// Takes `instance`, destroying it on failure as well.
-    unsafe fn on_instance(entry: &ash::Entry, instance: ash::Instance, cache_dir: Option<PathBuf>, tuning: Tuning, any_kind: bool) -> Result<Gpu, GpuError> {
+    unsafe fn on_instance(entry: &ash::Entry, instance: ash::Instance, cache_dir: Option<PathBuf>, tuning: Option<Tuning>, any_kind: bool) -> Result<Gpu, GpuError> {
         unsafe {
-            let found = Self::choose(&instance, tuning, any_kind);
+            let found = Self::choose(&instance, tuning.unwrap_or(TUNING), any_kind);
             let (physical, family, name) = match found {
                 Ok(found) => found,
                 Err(e) => {
@@ -159,7 +190,12 @@ impl Gpu {
                     return Err(e);
                 }
             };
-            let driver = instance.get_physical_device_properties(physical).driver_version;
+            let properties = instance.get_physical_device_properties(physical);
+            let driver = properties.driver_version;
+            let tuning = tuning.unwrap_or(match properties.device_type {
+                vk::PhysicalDeviceType::DISCRETE_GPU => DISCRETE_TUNING,
+                _ => TUNING,
+            });
             let priorities = [1.0];
             let queues = [vk::DeviceQueueCreateInfo::default().queue_family_index(family).queue_priorities(&priorities)];
             let device = match instance.create_device(physical, &vk::DeviceCreateInfo::default().queue_create_infos(&queues), None) {
@@ -196,6 +232,7 @@ impl Gpu {
                 tuning,
                 name,
                 driver,
+                arena: RefCell::new(None),
             };
             gpu.build(family, cache_dir)?;
             Ok(gpu)
@@ -348,6 +385,78 @@ impl Gpu {
         }
     }
 
+    /// Gives back the memory kept between batches, for when scanning rests. The next
+    /// batch makes it again.
+    pub fn release(&self) {
+        if let Some(arena) = self.arena.borrow_mut().take() {
+            unsafe { self.free_arena(arena) };
+        }
+    }
+
+    unsafe fn free_arena(&self, arena: Arena) {
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            let _ = self.device.free_descriptor_sets(self.descriptors, &[arena.set]);
+            self.free(&arena.input);
+            self.free(&arena.state);
+            self.free(&arena.out);
+        }
+    }
+
+    /// Room for at least `items` items with `input_bytes` of input. Sizes go up in
+    /// powers of two, so a run of growing batches makes it only a few times.
+    unsafe fn new_arena(&self, items: u32, input_bytes: usize) -> Result<Arena, GpuError> {
+        unsafe {
+            let device = &self.device;
+            let items = items.next_power_of_two();
+            let input_bytes = input_bytes.next_power_of_two();
+            let local = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+            let visible = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+            let cached = visible | vk::MemoryPropertyFlags::HOST_CACHED;
+            let (input, _) = self.buffer(input_bytes as u64, &[visible])?;
+            let state = self.buffer(u64::from(items) * STATE_BYTES, &[local, vk::MemoryPropertyFlags::empty()]);
+            let out = self.buffer(u64::from(items) * OUT_WORDS as u64 * 4, &[cached, visible]);
+            let (state, out) = match (state, out) {
+                (Ok((state, _)), Ok((out, _))) => (state, out),
+                (state, out) => {
+                    self.free(&input);
+                    let mut problem = None;
+                    for made in [state, out] {
+                        match made {
+                            Ok((buffer, _)) => self.free(&buffer),
+                            Err(e) => problem = Some(e),
+                        }
+                    }
+                    return Err(problem.expect("one of them failed"));
+                }
+            };
+            let layouts = [self.set_layout];
+            let made = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(self.descriptors).set_layouts(&layouts));
+            let set = match made {
+                Ok(sets) => sets[0],
+                Err(e) => {
+                    for buffer in [&input, &state, &out] {
+                        self.free(buffer);
+                    }
+                    return Err(GpuError(format!("descriptor set: {e}")));
+                }
+            };
+            let infos: Vec<[vk::DescriptorBufferInfo; 1]> = [&input, &state, &out].iter().map(|b| [vk::DescriptorBufferInfo { buffer: b.buffer, offset: 0, range: vk::WHOLE_SIZE }]).collect();
+            let writes: Vec<_> = infos.iter().enumerate().map(|(i, info)| vk::WriteDescriptorSet::default().dst_set(set).dst_binding(i as u32).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(info)).collect();
+            device.update_descriptor_sets(&writes, &[]);
+            // Mapped for as long as they're kept: the rest is the same memory each batch.
+            let maps = device.map_memory(input.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty()).and_then(|in_map| Ok((in_map, device.map_memory(out.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())?)));
+            let arena = Arena { input, state, out, set, items, input_bytes, in_map: std::ptr::null_mut(), out_map: std::ptr::null_mut() };
+            match maps {
+                Ok((in_map, out_map)) => Ok(Arena { in_map: in_map as *mut u8, out_map: out_map as *mut u32, ..arena }),
+                Err(e) => {
+                    self.free_arena(arena);
+                    Err(failed("mapping")(e))
+                }
+            }
+        }
+    }
+
     unsafe fn submit(&self, record: impl Fn(vk::CommandBuffer)) -> Result<(), GpuError> {
         unsafe {
             let device = &self.device;
@@ -369,53 +478,36 @@ impl Gpu {
     /// input is in `input`, reading back each item's words through `read`.
     unsafe fn run(&self, input: &[u8], count: u32, stages: &[(vk::Pipeline, [i32; 16])], read: &mut dyn FnMut(&[u32])) -> Result<(), GpuError> {
         unsafe {
-            let device = &self.device;
-            let local = vk::MemoryPropertyFlags::DEVICE_LOCAL;
-            let visible = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-            let cached = visible | vk::MemoryPropertyFlags::HOST_CACHED;
-            let (in_buffer, _) = self.buffer(input.len() as u64, &[visible])?;
-            let state = self.buffer(u64::from(count) * STATE_BYTES, &[local, vk::MemoryPropertyFlags::empty()]);
-            let out = self.buffer(u64::from(count) * OUT_WORDS as u64 * 4, &[cached, visible]);
-            let set = {
-                let layouts = [self.set_layout];
-                device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(self.descriptors).set_layouts(&layouts))
-            };
-            let result = match (&state, &out, &set) {
-                (Ok((state, _)), Ok((out, _)), Ok(set)) => self.run_on(&in_buffer, state, out, set[0], input, count, stages, read),
-                (Err(GpuError(e)), _, _) | (_, Err(GpuError(e)), _) => Err(GpuError(e.clone())),
-                (_, _, Err(e)) => Err(GpuError(format!("descriptor set: {e}"))),
-            };
-            let _ = device.device_wait_idle();
-            if let Ok(set) = &set {
-                let _ = device.free_descriptor_sets(self.descriptors, set);
+            let mut kept = self.arena.borrow_mut();
+            if kept.as_ref().is_none_or(|a| a.items < count || a.input_bytes < input.len()) {
+                if let Some(small) = kept.take() {
+                    self.free_arena(small);
+                }
+                *kept = Some(self.new_arena(count, input.len())?);
             }
-            self.free(&in_buffer);
-            if let Ok((state, _)) = &state {
-                self.free(state);
-            }
-            if let Ok((out, _)) = &out {
-                self.free(out);
+            let arena = kept.as_ref().expect("just made");
+            let result = self.run_on(arena, input, count, stages, read);
+            if result.is_err() {
+                // What it held may not have been cleared, and the GPU is being retired.
+                if let Some(arena) = kept.take() {
+                    self.free_arena(arena);
+                }
             }
             result
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn run_on(&self, in_buffer: &Buffer, state: &Buffer, out: &Buffer, set: vk::DescriptorSet, input: &[u8], count: u32, stages: &[(vk::Pipeline, [i32; 16])], read: &mut dyn FnMut(&[u32])) -> Result<(), GpuError> {
+    unsafe fn run_on(&self, arena: &Arena, input: &[u8], count: u32, stages: &[(vk::Pipeline, [i32; 16])], read: &mut dyn FnMut(&[u32])) -> Result<(), GpuError> {
         unsafe {
             let device = &self.device;
-            let in_map = device.map_memory(in_buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty()).map_err(failed("mapping"))? as *mut u8;
-            std::ptr::copy_nonoverlapping(input.as_ptr(), in_map, input.len());
-            device.unmap_memory(in_buffer.memory);
-            let out_map = device.map_memory(out.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty()).map_err(failed("mapping"))? as *mut u32;
-
-            let infos: Vec<[vk::DescriptorBufferInfo; 1]> = [in_buffer, state, out].iter().map(|b| [vk::DescriptorBufferInfo { buffer: b.buffer, offset: 0, range: vk::WHOLE_SIZE }]).collect();
-            let writes: Vec<_> = infos.iter().enumerate().map(|(i, info)| vk::WriteDescriptorSet::default().dst_set(set).dst_binding(i as u32).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(info)).collect();
-            device.update_descriptor_sets(&writes, &[]);
+            std::ptr::copy_nonoverlapping(input.as_ptr(), arena.in_map, input.len());
 
             let groups = count.div_ceil(self.tuning.group);
-            let sets = [set];
-            for part in stages.chunks(self.tuning.submit_every.max(1)) {
+            let sets = [arena.set];
+            let used = u64::from(count) * STATE_BYTES;
+            let every = self.tuning.submit_every.max(1);
+            let parts = stages.len().div_ceil(every);
+            for (at, part) in stages.chunks(every).enumerate() {
                 self.submit(|command| {
                     device.cmd_bind_descriptor_sets(command, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &sets, &[]);
                     for (pipeline, digits) in part {
@@ -427,20 +519,24 @@ impl Gpu {
                         bytes[64..68].copy_from_slice(&count.to_ne_bytes());
                         device.cmd_push_constants(command, self.layout, vk::ShaderStageFlags::COMPUTE, 0, &bytes);
                         device.cmd_dispatch(command, groups, 1, 1);
-                        let barrier = [vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::HOST_READ)];
-                        device.cmd_pipeline_barrier(command, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::HOST, vk::DependencyFlags::empty(), &barrier, &[], &[]);
+                        let barrier = [vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::TRANSFER_WRITE | vk::AccessFlags::HOST_READ)];
+                        device.cmd_pipeline_barrier(command, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::HOST, vk::DependencyFlags::empty(), &barrier, &[], &[]);
+                    }
+                    // The working state is points multiplied by the key. It's cleared in the
+                    // last submit, for no wait of its own, and the next batch starts after that.
+                    if at + 1 == parts {
+                        device.cmd_fill_buffer(command, arena.state.buffer, 0, used, 0);
+                        let barrier = [vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)];
+                        device.cmd_pipeline_barrier(command, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &barrier, &[], &[]);
                     }
                 })?;
             }
-            let words = std::slice::from_raw_parts_mut(out_map, count as usize * OUT_WORDS);
+            let words = std::slice::from_raw_parts_mut(arena.out_map, count as usize * OUT_WORDS);
             read(words);
 
-            // The results and the working state are points multiplied by the key.
+            // The results are points multiplied by the key too.
             words.fill(0);
-            device.unmap_memory(out.memory);
-            self.submit(|command| {
-                device.cmd_fill_buffer(command, state.buffer, 0, vk::WHOLE_SIZE, 0);
-            })
+            Ok(())
         }
     }
 
@@ -466,13 +562,9 @@ impl Gpu {
         }
         stages.push((self.last, [0; 16]));
 
-        let mut input = Vec::with_capacity(keys.len() * 32);
-        for key in keys {
-            input.extend_from_slice(key);
-        }
         let mut points = Zeroizing::new(vec![]);
         unsafe {
-            self.run(&input, keys.len() as u32, &stages, &mut |words| points.extend_from_slice(words))?;
+            self.run(keys.as_flattened(), keys.len() as u32, &stages, &mut |words| points.extend_from_slice(words))?;
         }
         Ok(Points(points))
     }

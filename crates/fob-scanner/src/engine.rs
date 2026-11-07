@@ -72,7 +72,7 @@ pub fn warm_up() {
         return;
     }
     let dir = CACHE_DIR.lock().expect("cache lock").clone();
-    let started = std::thread::Builder::new().name("fob-scanner-gpu".into()).spawn(move || match Gpu::start(dir, TUNING, false) {
+    let started = std::thread::Builder::new().name("fob-scanner-gpu".into()).spawn(move || match Gpu::start_for_device(dir, false) {
         Ok(gpu) if matches!(vectors::passes(&gpu), Ok(true)) => {
             let _ = GPU.set(Mutex::new(Some(gpu)));
         }
@@ -150,6 +150,16 @@ fn route_for(mode: Mode, keys: usize, gpu_ready: bool) -> Route {
 /// The most keys to give [`derive`] at once.
 pub(crate) fn batch() -> usize {
     TUNING.batch
+}
+
+/// Scanning has caught up: gives back the memory the GPU kept between batches. A
+/// GPU in use is left alone, as whoever's using it still wants that memory.
+pub fn rest() {
+    if let Some(Ok(gpu)) = GPU.get().map(Mutex::try_lock)
+        && let Some(gpu) = gpu.as_ref()
+    {
+        gpu.release();
+    }
 }
 
 /// 8aR on the GPU, or `None` once it's failed, which retires it.

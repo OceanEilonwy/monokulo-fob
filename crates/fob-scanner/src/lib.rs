@@ -20,7 +20,7 @@ pub mod gpu;
 mod policy;
 mod vectors;
 
-pub use engine::{Mode, check_wallet, gpu_failed, gpu_identity, gpu_ready, mode, set_cache_dir, set_mode, warm_up};
+pub use engine::{Mode, check_wallet, gpu_failed, gpu_identity, gpu_ready, mode, rest, set_cache_dir, set_mode, warm_up};
 
 use std::{
     collections::HashSet,

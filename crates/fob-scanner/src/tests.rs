@@ -319,6 +319,35 @@ fn payments_in_ordinary_transactions_are_flagged_among_many_blocks() {
     many_blocks();
 }
 
+/// On one thread and on several: each block's answer is its own, and only a block
+/// that pays has its money looked for.
+#[test]
+fn a_scan_finds_money_in_the_block_that_holds_it() {
+    let (w, filter, scanner) = wallet();
+    let mut rng = StdRng::seed_from_u64(9);
+    for count in [3usize, 40] {
+        let pays = |i: usize| i % 13 == 1;
+        let blocks: Vec<_> = (0..count)
+            .map(|i| {
+                let r = random_scalar(&mut rng);
+                let output = if pays(i) { paying(&w, &r, 0, w.spend) } else { stranger(&mut rng) };
+                block_of(vec![output], extra_of(&[point_of(&r)], None))
+            })
+            .collect();
+        let hashes: Vec<[u8; 32]> = blocks.iter().map(|b| b.block.hash()).collect();
+        let miners: Vec<String> = blocks.iter().map(|b| hex::encode(b.block.miner_transaction().hash())).collect();
+        let (results, last) = scan::scan(&scanner, &filter, blocks, &hashes, false);
+        assert_eq!(results.len(), count);
+        assert!(last.is_some());
+        for (i, result) in results.into_iter().enumerate() {
+            let scanned = result.unwrap();
+            assert_eq!(scanned.hash, hex::encode(hashes[i]), "block {i} of {count}");
+            assert_eq!(!scanned.found.is_empty(), pays(i), "block {i} of {count}");
+            assert_eq!(scanned.miner_tx, if pays(i) { miners[i].clone() } else { String::new() }, "block {i} of {count}");
+        }
+    }
+}
+
 fn many_blocks() {
     let (w, filter, scanner) = wallet();
     let mut rng = StdRng::seed_from_u64(6);

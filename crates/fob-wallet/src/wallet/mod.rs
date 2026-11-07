@@ -35,7 +35,7 @@ use std::{
 use crate::db::Db;
 use crate::decoys::Decoys;
 use crate::send_context::SendContext;
-use crate::fetch::{Adaptive, Pipeline, Tuning};
+use crate::fetch::{Adaptive, Batch, Pipeline, Tuning};
 
 /// A node, as a raw transport, a daemon, a decoy source and what's been learned about it.
 type Connection = (Transport, Daemon, Decoys, Arc<Adaptive>);

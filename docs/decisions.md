@@ -2830,3 +2830,22 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      keeps wallets in its own folder, where the sandbox holds them; Cargo fetches
      crates during its build, checked against `Cargo.lock`, which Flathub itself
      wouldn't allow, so publishing there would mean generating the sources first.
+350. **Everything after the filter gets out of scanning's way.** Blocks were read and
+     freed by the threads scanning them, and freeing across threads fought over the
+     allocator: that cost more than the GPU's own time. Now a block is only borrowed, and a
+     thread of its own frees each batch. A few threads read the blocks beside the filter
+     rather than after it, and a block's hash is worked out once, with the fetching,
+     rather than on the sync task and again in the scan. What's looked up for every
+     transaction is compared in bytes, and hex is only written for what's kept. Replaying
+     5,000 mainnet blocks through `sync_step` on an RX 6800 XT and Ryzen 5950X, with no
+     link in the way, the GPU went from 0.64 s to 0.29 s, and the CPU from 1.95 s to 0.89 s. At 40 MB/s
+     the link still sets the speed (2.92 s to 2.89 s). A phone hasn't been measured.
+351. **The GPU keeps its buffers between batches, and a discrete GPU takes a batch in one
+     submit.** Worth about 0.3 to 1.3 ms a batch on the RX 6800 XT. The buffers are still
+     cleared after each batch, the working state now in the batch's last submit, and they're
+     freed when scanning rests, stops or fails, so up to 39 MB is held only while catching
+     up. Tried and left out on the same card: batches of 8,192 keys (slower, as a batch
+     costs at least 3.7 ms however small, for reasons not found: not the fence, a submit
+     or making buffers), 16,384 (no faster), a compute-only queue and polling the fence
+     (neither any faster). Scans take up to 16 threads rather than 8, which only desktops
+     have, for CPU scanning (0.97 s against 1.60 s for that replay).

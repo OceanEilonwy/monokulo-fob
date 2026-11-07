@@ -371,19 +371,19 @@ impl Wallet {
                 break;
             }
             let mut pipeline = Pipeline::start(transport.clone(), adaptive.clone(), at, to);
-            let blocks = pipeline.next_batch(BATCH as usize).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+            let Batch { blocks, hashes } = pipeline.next_batch(BATCH as usize).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
             if blocks.is_empty() {
                 break;
             }
             let watching = Self::watched(self.inner.state.lock().await.receive_index);
             let (scanner, prefilter) = self.scanner(watching);
             let gpu_allowed = self.gpu_allowed().await;
-            let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, gpu_allowed))
+            let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, &hashes, gpu_allowed))
                 .await
                 .map_err(|e| FobError::Node(format!("scanning: {e}")))?;
             let mut state = self.inner.state.lock().await;
             let mut images = Self::key_images(&state);
-            let sent: HashMap<String, usize> = state.sent.iter().enumerate().map(|(i, s)| (s.tx.clone(), i)).collect();
+            let sent = Self::sent_txs(&state);
             let mut changed = false;
             for result in results {
                 // An address further on came into use: this block again, watching for it.
