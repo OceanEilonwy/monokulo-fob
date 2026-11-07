@@ -286,7 +286,9 @@ node gets.
 
 ## Phases
 
-1. **Server** (done, first version): `monokulo-lws`, below.
+1. **Server** (done, first version): `monokulo-lws`, below. **1b. Server at
+   scale**: `fob-scanner`'s keyring and per-item digits, `monokulo-lws` on
+   `flag_many` (the section after it).
 2. **Fob, read-only light mode**: `fob-chain::light`, the `Backend` setting
    and schema migration, `light_step` with `reconcile`, the Node screen and
    words, the chip. Sending in light mode disabled with "Sending through a
@@ -357,8 +359,98 @@ the unit tests, not yet by a live payment.
 Not built: webhooks and the `/feed` websocket, fiat `rates`, pre-RingCT
 spends (ignored), import fees, remote scanning, the `get_tree_path` FCMP++
 endpoint, TLS on the listener (put it behind a reverse proxy, as monero-lws
-suggests too). Cost is linear in accounts × blocks, which is fine for a
-shop or a family and not for a public service; sharing the per-transaction
-`8·a·R` work across accounts isn't possible (each account has its own `a`),
-so a large server would want the view-tag prefilter per account on a GPU, as
-`fob-scanner` does.
+suggests too). The first version scans every block once per account with
+monero-oxide alone, so its cost is accounts × blocks: fine for a shop or a
+family, not for hundreds of wallets. The next section is how it scales.
+
+## Scanning at scale: fob-scanner on the server
+
+Fob already has the right engine. `fob-scanner` (decisions 331, 332, 350,
+351) doesn't scan; it *prefilters*: for each transaction key `R` in a batch
+of blocks it computes `8·a·R` once (on the GPU in batches of 32,768, or on
+CPU threads), compresses the points with one inversion per 64, and for each
+output checks the view tag (`Keccak("view_tag" ‖ D ‖ i)[0]`, 1 in 256 pass)
+and then the real thing, `P − H_s(D ‖ i)·G ∈ {our spend keys}`. Only blocks
+that hold a real receipt go to monero-oxide's `Scanner`. On an RX 6800 XT it
+put 5,000 mainnet blocks through in 0.29 s for one wallet (0.89 s on 16 CPU
+threads), with 39 MB of GPU state however large the batch.
+
+Today the kernel takes **one view key per dispatch**: the key's 64 signed
+base-16 digits travel as push constants, and every work item multiplies a
+different `R` by the same `a`. A server has the opposite shape: few new
+`R`s a block (about 57), many `a`s. The change is small and lives in
+`fob-scanner`, so Fob gets it too:
+
+- **A keyring, not a key.** `Prefilter` becomes `Keyring`: `add(pair, view)
+  -> AccountId`, `watch(id, pair, subaddress)`, and `flag_many(blocks,
+  threads, gpu_allowed) -> Vec<Hit { account, block, tx }>`. The single-key
+  `Prefilter::flag` stays as a keyring of one, so Fob's call site doesn't
+  change.
+- **Digits per item.** The shader gains a storage buffer of account digits
+  (64 bytes an account; 1,000 accounts are 64 KB) and two push constants,
+  `tx_count` and `first_item`, so work item `i` takes key `R[(first_item +
+  i) mod tx_count]` and the digits of account `(first_item + i) div
+  tx_count`. The grid of accounts × keys is never materialised: the input
+  buffer still holds one copy of each `R`, and a batch of 32,768 items is a
+  slab of the grid. State per item (1,200 B) and output per item (100 B) are
+  as today, so memory doesn't grow with accounts. The stages (INIT, 16
+  WINDOW passes, FINAL ×8) and the constant-time table lookups are
+  untouched; the CPU-side pipelining (finish batch *n* while the GPU does
+  *n*+1) is untouched.
+- **Finish per account.** `finish` and `pays_us` already take a derivation
+  and a spend set; they now take the item's account's spend set. Hashing is
+  the CPU's share: accounts × outputs (about 135 a block) Keccaks, spread
+  over cores. A later step moves compression and the view-tag Keccak onto
+  the GPU too and returns only tag hits, leaving the CPU one scalar
+  multiplication per hit (one in 256 outputs per account). That is phase B;
+  phase A is already a different class of server.
+- **One GPU, one process.** The engine's `OnceLock<Mutex<Gpu>>`, `warm_up`,
+  the self-test vectors, the 20–30 s shader compile with its pipeline cache,
+  `Mode::{Gpu, Auto, Cpu}` and the retire-on-failure path all carry over:
+  `monokulo-lws serve --scan gpu|cpu|auto --cache-dir …`. No GPU means the
+  same prefilter on CPU threads, which still beats one full scan per account
+  because nothing is hashed for accounts that can't own an output.
+
+What changes in `monokulo-lws`'s loop (`scanner.rs`):
+
+1. Fetch 100 blocks (as now), keeping each transaction's first output index
+   from `get_blocks.bin`, not only each block's.
+2. Build (and cache, until an account or a subaddress range changes) the
+   keyring from every active account.
+3. `flag_many` → hits. A hit is one account and one transaction.
+4. For each hit, monero-oxide's `Scanner` for that account alone, on a
+   stand-in block holding that one transaction with its own first output
+   index, so global indices stay right; its `WalletOutput`s become rows as
+   today. Hits are rare, so this is near free.
+5. Candidate spends stop being per account too: one map `global index →
+   (account, output id)` over every account, one lookup per ring member,
+   extended as outputs are found.
+6. The pool is a stand-in block through the same keyring.
+7. Fallbacks: a block `fob-scanner` won't vouch for (v1 transactions, no
+   RingCT outputs, a hard fork newer than it knows) is scanned the old way
+   for every account; outputs without a view tag (before August 2022) skip
+   the tag and take the full derivation, slower but correct.
+
+What it buys, from decision 350's figure of about a million derivations a
+second on a desktop GPU, to be measured:
+
+| | work | time |
+|---|---|---|
+| 1,000 accounts, a day of mainnet (720 blocks × 57 keys) | 41 M derivations | about 40 s |
+| one new account, a year of mainnet | 15 M | about 15 s |
+| 100 accounts imported from 2022 | 150 M | a few minutes |
+| GPU memory | 39 MB a batch | whatever the account count |
+
+Shape of the dependency: `monokulo-lws` depends on `fob-scanner` as a git
+dependency pinned to a revision (as Fob pins `orf-codec`, decision 4), and
+`fob-scanner` loses `publish = false` when it is ready for crates.io. The
+direction is server → Fob, so decision 5 holds: Fob gains no tie to
+Monokulo, and the keyring is a feature Fob could use itself one day (several
+wallets on one phone, one pass).
+
+Order of work: (a) the keyring API and the per-item digits buffer in
+`fob-scanner`, with the existing vectors run per account and a test that a
+keyring of *n* copies of one key flags what the single key flags; (b)
+`monokulo-lws` on `flag_many`, the per-transaction stand-in blocks and the
+global spend map, measured against the 2,000-block mainnet fixture with 1,
+10, 100 and 1,000 keys; (c) view-tag Keccak on the GPU.
