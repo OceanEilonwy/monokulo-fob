@@ -10,7 +10,8 @@ receipts that payment codes can carry (as Monokular's tills add).
   syncing and sending.
 - `crates/fob-screens`, `fob-codes`, `fob-vault`, `fob-price`, `fob-chain`,
   `fob-scanner`, `fob-monero`, `fob-words`: the parts `fob-wallet` is built from
-  (`docs/decisions.md`, decision 339).
+  (`docs/decisions.md`, decision 339). `fob-scanner`'s prefilter is the
+  `monokulo-8ar` crate, in its own repo, shared with monokulo-lws (decision 359).
 - `crates/fob-ffi`: fob-wallet for Kotlin (later Swift) through UniFFI. Types
   only.
 - `crates/fob-app`: what a client draws: unlocking, the open wallet, syncing.

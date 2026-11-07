@@ -17,6 +17,7 @@ pub mod not_ready;
 pub mod prices;
 pub mod profile;
 pub mod requests;
+pub mod scanning;
 pub mod split;
 
 use std::sync::atomic::{AtomicU8, Ordering};

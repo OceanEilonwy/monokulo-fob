@@ -11,6 +11,7 @@ fob-chain = { path = "../fob-chain" }
 fob-codes = { path = "../fob-codes" }
 fob-monero = { path = "../fob-monero" }
 fob-price = { path = "../fob-price" }
+fob-scanner = { path = "../fob-scanner" }
 fob-screens = { path = "../fob-screens" }
 fob-vault = { path = "../fob-vault" }
 zeroize = "1"

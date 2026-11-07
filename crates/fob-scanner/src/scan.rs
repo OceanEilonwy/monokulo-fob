@@ -8,8 +8,9 @@
 //! than a little one. It hands back what it found for the sync step to apply, in
 //! block order, under the lock.
 //!
-//! [`crate::Prefilter`] goes first and finds the few blocks that could hold
-//! the wallet's money. Only those cost a scanner's time.
+//! [`crate::Prefilter`] goes first, on the GPU, and finds the few blocks that
+//! could hold the wallet's money. Only those cost a scanner's time. When it
+//! doesn't filter (no GPU that can, or too small a batch), every block does.
 
 use std::sync::{
     Mutex,
@@ -89,16 +90,30 @@ fn threads(blocks: usize, cores: usize) -> usize {
     if blocks < WORTH_THREADS { 1 } else { cores.saturating_sub(1).clamp(1, MAX_THREADS).min(blocks) }
 }
 
+/// Which of `count` blocks the `Scanner` reads: those the prefilter flags, or all
+/// of them when it didn't filter.
+fn to_read(flags: Option<Vec<bool>>, count: usize) -> Vec<bool> {
+    flags.unwrap_or_else(|| vec![true; count])
+}
+
 /// Scans `blocks`, whose hashes are `hashes`, giving each one's result in the order
-/// given, and the last block for the pool's stand-in. Without `gpu_allowed` the CPU
-/// does the filtering.
+/// given, and the last block for the pool's stand-in. Without `gpu_allowed` (this
+/// wallet's GPU check hasn't passed) nothing is filtered, and the `Scanner` reads
+/// every block; asking still starts the GPU, for later.
 pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock>, hashes: &[[u8; 32]], gpu_allowed: bool) -> (Vec<Result<Scanned, String>>, Option<Block>) {
+    scan_from(scanner, prefilter, blocks, hashes, if gpu_allowed { 0 } else { usize::MAX })
+}
+
+/// [`scan`], filtering on the GPU only from `min_keys` transaction keys
+/// (`usize::MAX` never filters). For measuring where the GPU starts to pay:
+/// `fob-wallet`'s `examples/gpu_crossover.rs`.
+pub fn scan_from(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock>, hashes: &[[u8; 32]], min_keys: usize) -> (Vec<Result<Scanned, String>>, Option<Block>) {
     let last = blocks.last().map(|b| b.block.clone());
     let count = blocks.len();
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads = threads(count, cores);
     if threads == 1 {
-        let flags = prefilter.flag(&blocks, threads, gpu_allowed);
+        let flags = to_read(prefilter.flag(&blocks, threads, min_keys), count);
         let mut clone = None;
         let results = blocks.iter().zip(hashes).zip(flags).map(|((block, hash), flagged)| {
             let mut scanned = seen(block, hash);
@@ -123,10 +138,10 @@ pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock
                 }
             });
         }
-        prefilter.flag(&blocks, threads, gpu_allowed)
+        to_read(prefilter.flag(&blocks, threads, min_keys), count)
     });
 
-    // Almost no block is flagged, and most scans start no threads here.
+    // Almost no block is flagged, and most filtered scans start no threads here.
     let flagged: Vec<usize> = flags.iter().enumerate().filter_map(|(i, flagged)| flagged.then_some(i)).collect();
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
@@ -155,6 +170,12 @@ pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unfiltered_the_scanner_reads_every_block() {
+        assert_eq!(to_read(None, 3), [true, true, true]);
+        assert_eq!(to_read(Some(vec![false, true]), 2), [false, true]);
+    }
 
     #[test]
     fn a_few_blocks_stay_on_one_thread_and_many_leave_a_core_free() {
