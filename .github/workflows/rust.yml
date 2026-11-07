@@ -39,6 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
+      # The packages' downloads, so a run only installs them.
+      - uses: actions/cache@v6
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: pacman-${{ runner.os }}-
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed base-devel git gtk4 libadwaita dbus rustup perl \
@@ -46,6 +52,15 @@ jobs:
           rustup default stable
           rustup component add clippy
       - uses: actions/checkout@v7
+      # The built dependencies: a changed lockfile still starts from the last build.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gtk-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: gtk-${{ runner.os }}-
       - name: Clippy
         run: cargo clippy --locked -p fob-gtk --all-targets -- -D warnings
       - name: The layers below the app stay free of any toolkit

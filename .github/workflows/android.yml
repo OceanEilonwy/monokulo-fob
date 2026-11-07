@@ -43,6 +43,8 @@ jobs:
             ~/.cargo/git
             target
           key: android-rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          # A changed lockfile still starts from the last build, not from nothing.
+          restore-keys: android-rust-${{ runner.os }}-
       - name: cargo-ndk
         run: command -v cargo-ndk || cargo install cargo-ndk --version 4.1.2 --locked
       - name: Build
