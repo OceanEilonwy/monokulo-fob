@@ -267,15 +267,29 @@ impl SimpleComponent for Home {
                             set_halign: gtk::Align::Center,
                             set_spacing: 12,
                             gtk::Button {
-                                set_label: "Receive",
                                 add_css_class: "pill",
                                 connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Receive)); },
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    set_spacing: 8,
+                                    set_halign: gtk::Align::Center,
+                                    #[local_ref]
+                                    receive_icon -> gtk::DrawingArea {},
+                                    gtk::Label { set_label: "Receive" },
+                                },
                             },
                             gtk::Button {
-                                set_label: "Send",
                                 add_css_class: "pill",
                                 add_css_class: "suggested-action",
                                 connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Send)); },
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    set_spacing: 8,
+                                    set_halign: gtk::Align::Center,
+                                    #[local_ref]
+                                    send_icon -> gtk::DrawingArea {},
+                                    gtk::Label { set_label: "Send" },
+                                },
                             },
                         },
                         gtk::Box {
@@ -352,7 +366,9 @@ impl SimpleComponent for Home {
         wallet_button.set_popover(Some(&popover));
         let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, wallet_list, popover };
         let swap_mark = widgets::swap_icon(16, None);
-        let (days, wallet_button, swap_mark) = (&days, &wallet_button, &swap_mark);
+        // As on Android: the arrow in for Receive, out for Send.
+        let (receive_icon, send_icon) = (widgets::arrow_icon(true, 18), widgets::arrow_icon(false, 18));
+        let (days, wallet_button, swap_mark, receive_icon, send_icon) = (&days, &wallet_button, &swap_mark, &receive_icon, &send_icon);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }

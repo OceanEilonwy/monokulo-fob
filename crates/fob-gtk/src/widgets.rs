@@ -334,9 +334,9 @@ pub fn recipient(text: &str) -> gtk::ListBox {
     list
 }
 
-/// Android's swap mark, two arrows the opposite way, `side` px square. In `tint` (r, g, b),
-/// else in the text colour it sits beside.
-pub fn swap_icon(side: i32, tint: Option<(f64, f64, f64)>) -> gtk::DrawingArea {
+/// One of Android's stroke icons on its 24 × 24 grid, `side` px square: `draw` lays out the strokes.
+/// In `tint` (r, g, b), else in the text colour it sits beside, `fade` of its strength.
+fn stroke_icon(side: i32, tint: Option<(f64, f64, f64)>, fade: f64, draw: fn(&cairo::Context)) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder().content_width(side).content_height(side).valign(gtk::Align::Center).build();
     area.set_draw_func(move |area, cr, width, height| {
         let scale = f64::from(width.min(height)) / 24.0;
@@ -345,12 +345,21 @@ pub fn swap_icon(side: i32, tint: Option<(f64, f64, f64)>) -> gtk::DrawingArea {
             Some((r, g, b)) => cr.set_source_rgb(r, g, b),
             None => {
                 let c = area.color();
-                cr.set_source_rgba(f64::from(c.red()), f64::from(c.green()), f64::from(c.blue()), f64::from(c.alpha()) * 0.7);
+                cr.set_source_rgba(f64::from(c.red()), f64::from(c.green()), f64::from(c.blue()), f64::from(c.alpha()) * fade);
             }
         }
         cr.set_line_width(2.0);
         cr.set_line_cap(cairo::LineCap::Round);
         cr.set_line_join(cairo::LineJoin::Round);
+        draw(cr);
+        let _ = cr.stroke();
+    });
+    area
+}
+
+/// Android's swap mark, two arrows the opposite way.
+pub fn swap_icon(side: i32, tint: Option<(f64, f64, f64)>) -> gtk::DrawingArea {
+    stroke_icon(side, tint, 0.7, |cr| {
         // M4 8h15  M15 4l4 4-4 4  M20 16H5  M9 12l-4 4 4 4
         cr.move_to(4.0, 8.0);
         cr.line_to(19.0, 8.0);
@@ -362,9 +371,31 @@ pub fn swap_icon(side: i32, tint: Option<(f64, f64, f64)>) -> gtk::DrawingArea {
         cr.move_to(9.0, 12.0);
         cr.line_to(5.0, 16.0);
         cr.line_to(9.0, 20.0);
-        let _ = cr.stroke();
-    });
-    area
+    })
+}
+
+/// Android's arrow down (money in: Receive) or up (money out: Send), in the colour of
+/// the words beside it.
+pub fn arrow_icon(down: bool, side: i32) -> gtk::DrawingArea {
+    if down {
+        stroke_icon(side, None, 1.0, |cr| {
+            // M12 4v13  M6 11l6 6 6-6
+            cr.move_to(12.0, 4.0);
+            cr.line_to(12.0, 17.0);
+            cr.move_to(6.0, 11.0);
+            cr.line_to(12.0, 17.0);
+            cr.line_to(18.0, 11.0);
+        })
+    } else {
+        stroke_icon(side, None, 1.0, |cr| {
+            // M12 20V7  M6 13l6-6 6 6
+            cr.move_to(12.0, 20.0);
+            cr.line_to(12.0, 7.0);
+            cr.move_to(6.0, 13.0);
+            cr.line_to(12.0, 7.0);
+            cr.line_to(18.0, 13.0);
+        })
+    }
 }
 
 /// Takes the pencil out of an entry row. It says the row can be typed in, which a field
