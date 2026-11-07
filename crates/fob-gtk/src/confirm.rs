@@ -316,8 +316,7 @@ impl Confirm {
 
     fn draw_waiting(&self, filled: &Filled) {
         widgets::empty(&self.body);
-        self.body.append(&widgets::pattern(&filled.to));
-        self.body.append(&widgets::address(&filled.to));
+        self.body.append(&widgets::recipient(&filled.to));
         self.body.append(&gtk::Spinner::builder().spinning(true).halign(gtk::Align::Center).build());
     }
 
@@ -330,8 +329,7 @@ impl Confirm {
                 self.body.append(&widgets::centred(&split.to));
             }
             None => {
-                self.body.append(&widgets::pattern(&prepared.to));
-                self.body.append(&widgets::address(&prepared.to));
+                self.body.append(&widgets::recipient(&prepared.to));
             }
         }
         // The receipt's total is only the code's claim: a hostile code can put

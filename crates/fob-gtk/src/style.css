@@ -41,6 +41,11 @@ preferencesgroup.marked list.boxed-list {
 	font-family: monospace;
 }
 
+.address-line .title,
+.address-row .subtitle {
+	font-family: monospace;
+}
+
 .address-mark {
 	font-family: monospace;
 	font-weight: 700;

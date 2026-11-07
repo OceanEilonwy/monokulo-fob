@@ -250,10 +250,26 @@ pub fn qr(text: &str, side: i32) -> Option<gtk::DrawingArea> {
     Some(area)
 }
 
+/// Fills a rounded rectangle over the whole of `width` by `height` with `(r, g, b)`,
+/// and leaves everything drawn after it inside it.
+fn rounded_clip(cr: &cairo::Context, width: i32, height: i32, radius: f64, (red, green, blue): (f64, f64, f64)) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let (w, h, r) = (f64::from(width), f64::from(height), radius);
+    cr.new_sub_path();
+    cr.arc(w - r, r, r, -FRAC_PI_2, 0.0);
+    cr.arc(w - r, h - r, r, 0.0, FRAC_PI_2);
+    cr.arc(r, h - r, r, FRAC_PI_2, PI);
+    cr.arc(r, r, r, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
+    cr.set_source_rgb(red, green, blue);
+    let _ = cr.fill_preserve();
+    cr.clip();
+}
+
 fn paint_qr(cr: &cairo::Context, code: &views::QrCode, width: i32, height: i32) {
     let side = f64::from(width.min(height));
-    cr.set_source_rgb(1.0, 1.0, 1.0);
-    let _ = cr.paint();
+    // Still dark on white in both themes, so every reader reads it; only its corners are round.
+    rounded_clip(cr, width, height, side * 0.06, (1.0, 1.0, 1.0));
     let size = code.size as usize;
     // Four modules of quiet around it, as readers want.
     let module = side / (size + 8) as f64;
@@ -270,14 +286,23 @@ fn paint_qr(cr: &cairo::Context, code: &views::QrCode, width: i32, height: i32) 
 
 /// An address's pattern, on its white badge, in Rust's colour.
 pub fn pattern(address: &str) -> gtk::DrawingArea {
+    pattern_sized(address, 64)
+}
+
+/// The same, `side` px across with rounded corners, to sit in a row.
+pub fn pattern_sized(address: &str, side: i32) -> gtk::DrawingArea {
     let view = views::address_pattern(address.to_owned());
-    let area = gtk::DrawingArea::builder().content_width(64).content_height(64).halign(gtk::Align::Center).build();
+    let area = gtk::DrawingArea::builder().content_width(side).content_height(side).halign(gtk::Align::Center).valign(gtk::Align::Center).build();
     area.update_property(&[gtk::accessible::Property::Label("This address's pattern")]);
-    area.set_draw_func(move |_, cr, width, _| {
-        cr.set_source_rgb(1.0, 1.0, 1.0);
-        let _ = cr.paint();
+    area.set_draw_func(move |_, cr, width, height| {
+        // Dark behind the dots in the dark theme, as on Android, their colour lightened to read on it.
+        let dark = adw::StyleManager::default().is_dark();
+        rounded_clip(cr, width, height, f64::from(width.min(height)) * 0.2, if dark { (0.165, 0.157, 0.141) } else { (1.0, 1.0, 1.0) });
         let cell = f64::from(width) / 7.0;
-        let channel = |shift: u32| f64::from((view.rgb >> shift) & 0xFF) / 255.0;
+        let channel = |shift: u32| {
+            let value = f64::from((view.rgb >> shift) & 0xFF) / 255.0;
+            if dark { value + (1.0 - value) * 0.45 } else { value }
+        };
         cr.set_source_rgb(channel(16), channel(8), channel(0));
         for row in 0..5 {
             for column in 0..5 {
@@ -293,6 +318,37 @@ pub fn pattern(address: &str) -> gtk::DrawingArea {
 
 /// An address in groups of five, those Rust marks stood out to compare by eye.
 pub fn address(text: &str) -> gtk::Label {
+    let marked = address_markup(text);
+    let label = gtk::Label::builder().label(&marked).use_markup(true).wrap(true).selectable(true).justify(gtk::Justification::Center).build();
+    label.add_css_class("address");
+    label
+}
+
+/// Who a payment goes to, as a row of its own: the pattern, then the address.
+pub fn recipient(text: &str) -> gtk::ListBox {
+    let list = list();
+    let row = adw::ActionRow::builder().title("To").use_markup(true).subtitle(address_markup(text)).subtitle_selectable(true).build();
+    row.add_css_class("address-row");
+    row.add_prefix(&pattern_sized(text, 44));
+    list.append(&row);
+    list
+}
+
+/// An address on one line of its own: its pattern, the address, and a button to copy.
+pub fn address_row(text: &str, on_copy: impl Fn() + 'static) -> gtk::ListBox {
+    let list = list();
+    let row = adw::ActionRow::builder().title(address_markup(text)).use_markup(true).title_lines(0).title_selectable(true).build();
+    row.add_css_class("address-line");
+    row.add_prefix(&pattern_sized(text, 44));
+    let copy = gtk::Button::builder().icon_name("edit-copy-symbolic").valign(gtk::Align::Center).tooltip_text("Copy").css_classes(["flat"]).build();
+    copy.connect_clicked(move |_| on_copy());
+    row.add_suffix(&copy);
+    list.append(&row);
+    list
+}
+
+/// The address's groups as Pango markup, those Rust marks stood out.
+fn address_markup(text: &str) -> String {
     let mut marked = String::new();
     for (i, group) in views::address_groups(text.to_owned()).iter().enumerate() {
         if i > 0 {
@@ -300,14 +356,13 @@ pub fn address(text: &str) -> gtk::Label {
         }
         let escaped = gtk::glib::markup_escape_text(&group.text);
         if group.highlighted {
-            marked.push_str(&format!("<span weight=\"bold\" foreground=\"#b34700\">{escaped}</span>"));
+            // A tint behind them, not a colour on them: orange text can't be read on a dark page.
+            marked.push_str(&format!("<span weight=\"bold\" background=\"#ff6600\" bgalpha=\"35%\">{escaped}</span>"));
         } else {
             marked.push_str(&escaped);
         }
     }
-    let label = gtk::Label::builder().label(&marked).use_markup(true).wrap(true).selectable(true).justify(gtk::Justification::Center).build();
-    label.add_css_class("address");
-    label
+    marked
 }
 
 /// The clipboard's text, for what `then` does with it; `None` when there's none.

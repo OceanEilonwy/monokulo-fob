@@ -54,7 +54,13 @@ impl SimpleComponent for Receive {
 
     view! {
         adw::ToolbarView {
-            add_top_bar = &adw::HeaderBar {},
+            add_top_bar = &adw::HeaderBar {
+                pack_end = &gtk::Button {
+                    set_icon_name: "view-refresh-symbolic",
+                    set_tooltip_text: Some("New address"),
+                    connect_clicked => Input::NewAddress,
+                },
+            },
             #[wrap(Some)]
             set_content = &gtk::ScrolledWindow {
                 set_hscrollbar_policy: gtk::PolicyType::Never,
@@ -78,21 +84,6 @@ impl SimpleComponent for Receive {
                             set_visible: model.headline.is_some(),
                             #[watch]
                             set_label: model.headline.as_deref().unwrap_or(""),
-                        },
-                        gtk::Box {
-                            set_halign: gtk::Align::Center,
-                            set_spacing: 12,
-                            gtk::Button {
-                                set_label: "Copy",
-                                add_css_class: "pill",
-                                add_css_class: "suggested-action",
-                                connect_clicked => Input::Copy,
-                            },
-                            gtk::Button {
-                                set_label: "New address",
-                                add_css_class: "pill",
-                                connect_clicked => Input::NewAddress,
-                            },
                         },
                         adw::PreferencesGroup {
                             set_title: "Ask for an amount",
@@ -213,7 +204,7 @@ impl SimpleComponent for Receive {
             Input::Code(_, View(code)) => {
                 self.error = None;
                 self.headline = code.headline.clone();
-                self.draw(&code.uri);
+                self.draw(&code.uri, &sender);
                 self.uri = Some(code.uri.clone());
             }
             Input::Failed(why) => self.error = Some(why),
@@ -270,14 +261,14 @@ impl Receive {
         });
     }
 
-    fn draw(&self, uri: &str) {
+    fn draw(&self, uri: &str, sender: &ComponentSender<Self>) {
         widgets::empty(&self.code);
         if let Some(qr) = widgets::qr(uri, 280) {
             self.code.append(&qr);
         }
         if let Some(address) = &self.address {
-            self.code.append(&widgets::pattern(address));
-            self.code.append(&widgets::address(address));
+            let then = sender.clone();
+            self.code.append(&widgets::address_row(address, move || then.input(Input::Copy)));
         }
     }
 }
