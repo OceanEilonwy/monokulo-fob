@@ -78,6 +78,17 @@ fn set_window_icon(window: &gtk::Window) {
     }
 }
 
+/// Whether the user's settings ask for dark, read without the desktop portal.
+fn wants_dark() -> bool {
+    let gtk_setting = gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme());
+    let gnome = gio::SettingsSchemaSource::default()
+        .and_then(|source| source.lookup("org.gnome.desktop.interface", true))
+        .is_some_and(|schema| {
+            schema.has_key("color-scheme") && gio::Settings::new("org.gnome.desktop.interface").string("color-scheme") == "prefer-dark"
+        });
+    gtk_setting || gnome
+}
+
 fn main() {
     // Before anything that could hold a key: a crash must not write the
     // unlocked wallet into a core file, and other programs of this user must
@@ -88,6 +99,12 @@ fn main() {
     set_device(Device::Computer);
     gtk::init().expect("a display to draw on");
     adw::init().expect("libadwaita");
+    // libadwaita takes its scheme from the desktop portal. When the portal gives
+    // no answer (blocked, or absent) the user's own word is all there is: the
+    // GNOME color-scheme key, or the old gtk-application-prefer-dark-theme.
+    if wants_dark() {
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    }
     // A scene must not hand off to a Fob that's already open.
     let unique = if scene::dir().is_some() { gio::ApplicationFlags::NON_UNIQUE } else { gio::ApplicationFlags::empty() };
     let application = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN | unique).build();
