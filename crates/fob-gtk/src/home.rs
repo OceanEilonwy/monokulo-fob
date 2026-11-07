@@ -2,7 +2,7 @@
 
 use fob_app::{
     Engine,
-    views::{ChipLook, Screens, SyncDetails, SyncStatus},
+    views::{ChipLook, Network, Screens, SyncDetails, SyncStatus},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -22,6 +22,7 @@ pub enum Input {
     Screens(View<Screens>),
     Status(View<SyncStatus>),
     Wallets(View<Wallets>),
+    SwitchWallet(String),
     SwapBalance,
     ShowSync,
     SyncTick,
@@ -40,6 +41,9 @@ pub struct Home {
     title: String,
     days: gtk::Box,
     sync_card: Option<SyncCard>,
+    /// The wallets under the title, with a way to add one.
+    wallet_list: gtk::ListBox,
+    popover: gtk::Popover,
 }
 
 impl Home {
@@ -103,6 +107,37 @@ impl Home {
         }
     }
 
+    fn draw_wallets(&self, wallets: &Wallets, sender: &ComponentSender<Self>) {
+        widgets::clear(&self.wallet_list);
+        for wallet in &wallets.all {
+            let network = match wallet.network {
+                Network::Mainnet => "Mainnet",
+                Network::Stagenet => "Stagenet, test coins",
+            };
+            let row = widgets::row(&wallet.name, network);
+            if wallets.current.as_ref().is_some_and(|c| c.file == wallet.file) {
+                row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
+            } else {
+                row.set_activatable(true);
+                let (file, sender, popover) = (wallet.file.clone(), sender.clone(), self.popover.clone());
+                row.connect_activated(move |_| {
+                    popover.popdown();
+                    sender.input(Input::SwitchWallet(file.clone()));
+                });
+            }
+            self.wallet_list.append(&row);
+        }
+        let add = widgets::row("Add a wallet", "");
+        add.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+        add.set_activatable(true);
+        let (sender, popover) = (sender.clone(), self.popover.clone());
+        add.connect_activated(move |_| {
+            popover.popdown();
+            let _ = sender.output(RootMsg::Go(Go::AddWallet));
+        });
+        self.wallet_list.append(&add);
+    }
+
     fn draw_days(&self, screens: &Screens, sender: &ComponentSender<Self>) {
         widgets::empty(&self.days);
         if screens.activity.is_empty() {
@@ -134,10 +169,12 @@ impl SimpleComponent for Home {
             add_top_bar = &adw::HeaderBar {
                 #[local_ref]
                 #[wrap(Some)]
-                set_title_widget = window_title -> adw::WindowTitle {
-                    set_title: "Fob",
+                set_title_widget = wallet_button -> gtk::MenuButton {
+                    add_css_class: "flat",
+                    set_always_show_arrow: true,
+                    set_tooltip_text: Some("Wallets"),
                     #[watch]
-                    set_subtitle: &model.title,
+                    set_label: if model.title.is_empty() { "Fob" } else { &model.title },
                 },
                 pack_start = &gtk::Button {
                     set_icon_name: "system-users-symbolic",
@@ -287,9 +324,13 @@ impl SimpleComponent for Home {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let days = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let window_title = adw::WindowTitle::new("Fob", "");
-        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None };
-        let (days, window_title) = (&days, &window_title);
+        let wallet_button = gtk::MenuButton::new();
+        let wallet_list = widgets::list();
+        let popover = gtk::Popover::new();
+        popover.set_child(Some(&wallet_list));
+        wallet_button.set_popover(Some(&popover));
+        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, wallet_list, popover };
+        let (days, wallet_button) = (&days, &wallet_button);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -303,6 +344,15 @@ impl SimpleComponent for Home {
             Input::Status(view) => self.status = Some(view),
             Input::Wallets(View(wallets)) => {
                 self.title = wallets.current.as_ref().map_or(String::new(), |c| c.name.clone());
+                self.draw_wallets(&wallets, &sender);
+            }
+            Input::SwitchWallet(file) => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Err(e) = engine.switch_wallet(file).await {
+                        sender.input(Input::Say(e.to_string()));
+                    }
+                });
             }
             Input::SwapBalance => {
                 // Nothing to swap to: a balance stays readable, so it isn't greyed out.
