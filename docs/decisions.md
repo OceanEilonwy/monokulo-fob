@@ -2956,3 +2956,37 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      shape for its warm-up thread, `settle(timeout)`, and registers it with `atexit`
      so a process that returns from `main` during the one cold shader compile waits
      (up to a minute) instead of exiting with the thread inside the driver.
+362. **The GPU takes a batch from 256 transaction keys, about five blocks**, not
+     512. The 512 was 332's, against the CPU prefilter 360 removed; the fallback now
+     is the `Scanner` on every block, which costs more. `examples/gpu_crossover.rs`
+     (fob-wallet) scans the same mainnet blocks from 3,797,000 through
+     `scan::scan_from` both ways, with a wallet nothing pays. Medians of 21, in ms, on
+     an RX 6800 XT and Ryzen 5950X, after a throwaway batch; "rested" has the GPU's
+     buffers freed before the batch, as after catching up (no different here).
+
+     | blocks | keys | `Scanner` | GPU warm | GPU rested |
+     |---:|---:|---:|---:|---:|
+     | 1 | 43 | 3.1 | 5.5 | 5.6 |
+     | 2 | 89 | 6.3 | 6.4 | 6.4 |
+     | 3 | 145 | 13.3 | 6.6 | 6.6 |
+     | 4 | 211 | 20.0 | 6.7 | 6.6 |
+     | 6 | 342 | 31.6 | 6.8 | 6.9 |
+     | 9 | 499 | 16.4 | 6.9 | 6.9 |
+     | 20 | 1,000 | 18.8 | 7.4 | 7.2 |
+     | 50 | 2,649 | 26.6 | 7.5 | 7.5 |
+     | 100 | 5,139 | 43.1 | 8.1 | 8.1 |
+
+     On the desktop they break even at about 90 keys, two blocks, and the GPU is
+     twice as fast from three. (Under eight blocks the `Scanner` has one thread,
+     hence six blocks costing more than nine.) The phone matters more, and wasn't
+     measured again. The `Scanner` alone costs about 2.2 times the old prefilter per
+     block (5,000 blocks on 16 threads: about 2.15 s from this table, against 351's
+     0.97 s). Scaling 332's CPU figures by that, one block costs the cores about
+     13 mJ against the GPU's 46, and ten about 57 against 24: a crossover nearer
+     four blocks than 332's nine, roughly three to six given the noise (+-16 mJ on
+     one GPU batch). 256 keys sits there, towards the upper end, so a phone errs
+     towards the cores on small batches; it costs the desktop at most 14 ms, on a
+     batch of three or four blocks. Either way a wallet caught up at the tip, a block
+     every two minutes, stays on the cores, and a catch-up of more than five blocks
+     goes to the GPU. The phone's own crossover against the `Scanner` is still to be
+     measured: monokulo-8ar's `scan_speed --tip` times only the GPU's side.

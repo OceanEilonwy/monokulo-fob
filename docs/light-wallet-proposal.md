@@ -375,7 +375,7 @@ tag (`Keccak("view_tag" ‖ D ‖ i)[0]`, 1 in 256 pass) and then the real
 thing, `P − H_s(D ‖ i)·G ∈ {our spend keys}`, with curve25519-dalek on the
 CPU. Only blocks that hold a real receipt go to monero-oxide's `Scanner`.
 It is GPU-only (decision 360): where there is no usable Vulkan GPU, or a
-batch is too small to be worth one (under 512 keys, about nine blocks),
+batch is too small to be worth one (under 256 keys, about five blocks),
 `flag` answers `None` and the caller scans every block with monero-oxide,
 which is the fallback everywhere, Fob included. Any Vulkan GPU does,
 integrated ones included; Apple gets it through MoltenVK when there is an

@@ -101,11 +101,17 @@ fn to_read(flags: Option<Vec<bool>>, count: usize) -> Vec<bool> {
 /// wallet's GPU check hasn't passed) nothing is filtered, and the `Scanner` reads
 /// every block; asking still starts the GPU, for later.
 pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock>, hashes: &[[u8; 32]], gpu_allowed: bool) -> (Vec<Result<Scanned, String>>, Option<Block>) {
+    scan_from(scanner, prefilter, blocks, hashes, if gpu_allowed { GPU_FROM_KEYS } else { usize::MAX })
+}
+
+/// [`scan`], filtering on the GPU only from `min_keys` transaction keys
+/// (`usize::MAX` never filters). For measuring where the GPU starts to pay:
+/// `fob-wallet`'s `examples/gpu_crossover.rs`.
+pub fn scan_from(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock>, hashes: &[[u8; 32]], min_keys: usize) -> (Vec<Result<Scanned, String>>, Option<Block>) {
     let last = blocks.last().map(|b| b.block.clone());
     let count = blocks.len();
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads = threads(count, cores);
-    let min_keys = if gpu_allowed { GPU_FROM_KEYS } else { usize::MAX };
     if threads == 1 {
         let flags = to_read(prefilter.flag(&blocks, threads, min_keys), count);
         let mut clone = None;
