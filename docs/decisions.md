@@ -2899,3 +2899,21 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      spending and removing a wallet take it; `fob-gtk` is kept from calling those on
      the wallet directly by clippy. The process is made non-dumpable, the data folder
      0700 and its files 0600.
+
+## Sharing the scanner
+
+359. **The prefilter lives in its own crate and repo, `monokulo-8ar`.** It's what
+     computes 8aR for many transaction keys on the GPU or the CPU and flags the blocks
+     that may pay a wallet (331, 332, 350, 351): `Prefilter`, the field code, the
+     Vulkan engine and its shader, the modes, the startup and per-wallet vectors, and
+     `examples/scan_speed.rs` with its fixture and the prototypes it came from.
+     `fob-scanner` keeps what is Fob's: `scan.rs`, the fan-out over the cores with
+     monero-oxide's `Scanner` reading flagged blocks, and `policy.rs`, now just Fob's
+     choice that Auto hands over to the GPU from 512 keys, which `scan.rs` passes to
+     `Prefilter::flag`. It re-exports the rest, so no other crate changed. Moved
+     because it has two users, Fob and monokulo-lws, and depended on no other Fob
+     crate; Monokular's `orf-codec` (4) is the precedent for shared code in its own
+     repo. Behaviour is the same: the same tuning, the same `scan.spv`, Auto by
+     default, the same cache file. Until monokulo-8ar has a remote it's a path
+     dependency, relative to this checkout; then a git dependency pinned by rev, as
+     `orf-codec` is.

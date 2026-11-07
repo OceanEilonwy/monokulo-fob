@@ -626,13 +626,12 @@ dependencies = [
 name = "fob-scanner"
 version = "0.1.11"
 dependencies = [
- "ash",
  "curve25519-dalek",
  "hex",
  "monero-wallet",
+ "monokulo-8ar",
  "rand 0.8.8",
  "sha3",
- "subtle",
  "zeroize",
 ]
 
@@ -1933,6 +1932,18 @@ dependencies = [
  "std-shims",
  "subtle",
  "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
+name = "monokulo-8ar"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "curve25519-dalek",
+ "monero-wallet",
+ "sha3",
+ "subtle",
  "zeroize",
 ]
 

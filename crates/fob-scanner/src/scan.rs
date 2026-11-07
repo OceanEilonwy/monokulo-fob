@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::Prefilter;
+use crate::{Prefilter, policy};
 use monero_wallet::{Scanner, WalletOutput, block::Block, interface::ScannableBlock, transaction::{Input, Transaction}};
 
 /// Fewer blocks than this aren't worth starting threads for: a wallet near the
@@ -98,7 +98,7 @@ pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads = threads(count, cores);
     if threads == 1 {
-        let flags = prefilter.flag(&blocks, threads, gpu_allowed);
+        let flags = prefilter.flag(&blocks, threads, gpu_allowed, policy::AUTO_GPU_FROM);
         let mut clone = None;
         let results = blocks.iter().zip(hashes).zip(flags).map(|((block, hash), flagged)| {
             let mut scanned = seen(block, hash);
@@ -123,7 +123,7 @@ pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock
                 }
             });
         }
-        prefilter.flag(&blocks, threads, gpu_allowed)
+        prefilter.flag(&blocks, threads, gpu_allowed, policy::AUTO_GPU_FROM)
     });
 
     // Almost no block is flagged, and most scans start no threads here.
