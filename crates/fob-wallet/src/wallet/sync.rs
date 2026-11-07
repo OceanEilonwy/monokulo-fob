@@ -137,9 +137,9 @@ impl Wallet {
             return Ok(false);
         }
 
-        let blocks = if start == 0 {
+        let Batch { blocks, hashes } = if start == 0 {
             // get_blocks.bin can't start at the genesis block; fetch it alone.
-            rpc.contiguous_scannable_blocks(0..=0).await.map_err(node_err)?
+            Batch::of(rpc.contiguous_scannable_blocks(0..=0).await.map_err(node_err)?)
         } else {
             // Keep fetching ahead while this step scans: reuse the pipeline
             // if it's where the wallet is, else start one to the tip.
@@ -162,7 +162,7 @@ impl Wallet {
             };
             self.set_status(|s| s.waiting_seconds = 0);
             match batch {
-                Ok(blocks) if !blocks.is_empty() => blocks,
+                Ok(batch) if !batch.blocks.is_empty() => batch,
                 Ok(_) => {
                     // Ran out before the tip moved on: start again next step.
                     *pipeline = None;
@@ -187,7 +187,7 @@ impl Wallet {
         let watching = Self::watched(self.inner.state.lock().await.receive_index);
         let (scanner, prefilter) = self.scanner(watching);
         let gpu_allowed = self.gpu_allowed().await;
-        let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, gpu_allowed))
+        let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, &hashes, gpu_allowed))
             .await
             .map_err(|e| FobError::Node(format!("scanning: {e}")))?;
 
@@ -197,7 +197,7 @@ impl Wallet {
             return Ok(true);
         }
         let mut images = Self::key_images(&state);
-        let sent: HashMap<String, usize> = state.sent.iter().enumerate().map(|(i, s)| (s.tx.clone(), i)).collect();
+        let sent = Self::sent_txs(&state);
         let mut changed = false;
         let mut watch_further = false;
         for result in results {
@@ -445,6 +445,7 @@ impl Wallet {
                         }
                         if !more {
                             pace.reset();
+                            fob_scanner::rest();
                             wallet.scan_finished().await;
                             wallet.inner.rounds.send_modify(|n| *n += 1);
                             if wallet.inner.state.lock().await.manual_sync {
@@ -470,6 +471,7 @@ impl Wallet {
     }
 
     pub fn stop_sync(&self) {
+        fob_scanner::rest();
         if let Some(handle) = self.inner.syncing.lock().expect("sync lock").take() {
             handle.abort();
         }
@@ -527,27 +529,32 @@ impl Wallet {
 
     /// Key images of the coins known, each to its place: looked up for every
     /// input of every transaction in a batch.
-    pub(super) fn key_images(state: &State) -> HashMap<String, usize> {
+    pub(super) fn key_images(state: &State) -> HashMap<[u8; 32], usize> {
         let mut images = HashMap::with_capacity(state.outputs.len());
         for (i, output) in state.outputs.iter().enumerate() {
-            if let Some(image) = &output.key_image {
-                images.entry(image.clone()).or_insert(i);
+            if let Some(image) = output.key_image.as_deref().and_then(hash_bytes) {
+                images.entry(image).or_insert(i);
             }
         }
         images
     }
 
+    /// Payments sent, each to its place: looked up for every transaction in a batch.
+    pub(super) fn sent_txs(state: &State) -> HashMap<[u8; 32], usize> {
+        state.sent.iter().enumerate().filter_map(|(i, s)| Some((hash_bytes(&s.tx)?, i))).collect()
+    }
+
     /// Takes in what a scanned block holds for this wallet. Whether it changed
     /// anything. The same block twice changes nothing the second time.
-    pub(super) fn take_block(&self, state: &mut State, images: &mut HashMap<String, usize>, sent: &HashMap<String, usize>, scanned: scan::Scanned) -> bool {
+    pub(super) fn take_block(&self, state: &mut State, images: &mut HashMap<[u8; 32], usize>, sent: &HashMap<[u8; 32], usize>, scanned: scan::Scanned) -> bool {
         let keys = &self.inner.keys;
         let (height, time) = (scanned.height, scanned.time);
         let mut changed = false;
         let mut outgoing: HashSet<String> = HashSet::new();
         let mut incoming = false;
-        for tx in &scanned.txs {
+        for seen in &scanned.txs {
             let mut ours = false;
-            if let Some(&i) = sent.get(&tx.hash) {
+            if let Some(&i) = sent.get(&seen.hash) {
                 state.sent[i].height = Some(height);
                 // It went through after all.
                 state.sent[i].not_confirmed = false;
@@ -555,18 +562,19 @@ impl Wallet {
                 changed = true;
                 ours = true;
             }
-            for image in &tx.key_images {
+            for image in &seen.key_images {
                 if let Some(&i) = images.get(image) {
-                    state.outputs[i].spent_in = Some(tx.hash.clone());
-                    if !state.spends.iter().any(|s| s.tx == tx.hash) {
-                        state.spends.push(ChainSpend { tx: tx.hash.clone(), height, time, fee: tx.fee });
+                    let tx = hex::encode(seen.hash);
+                    if !state.spends.iter().any(|s| s.tx == tx) {
+                        state.spends.push(ChainSpend { tx: tx.clone(), height, time, fee: seen.fee });
                     }
+                    state.outputs[i].spent_in = Some(tx);
                     changed = true;
                     ours = true;
                 }
             }
             if ours {
-                outgoing.insert(tx.hash.clone());
+                outgoing.insert(hex::encode(seen.hash));
             }
         }
 
@@ -596,8 +604,8 @@ impl Wallet {
                 state.receive_index = state.receive_index.max(subaddress);
             }
             let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
-            if let Some(image) = &key_image {
-                images.entry(image.clone()).or_insert(state.outputs.len());
+            if let Some(image) = key_image.as_deref().and_then(hash_bytes) {
+                images.entry(image).or_insert(state.outputs.len());
             }
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
@@ -653,6 +661,12 @@ impl Wallet {
         self.sync_now().await;
         Ok(())
     }
+}
+
+/// A hash or key image as the wallet's file keeps it, in bytes. Anything else
+/// can't match what's on the chain.
+fn hash_bytes(text: &str) -> Option<[u8; 32]> {
+    hex::decode(text).ok()?.try_into().ok()
 }
 
 /// How far back a reorganisation reaches, against the hashes kept.

@@ -188,6 +188,24 @@ mod tests {
         words
     }
 
+    /// A batch runs in what the last one left: nothing of it may show in the answers.
+    #[test]
+    #[ignore = "needs a GPU; run with --ignored"]
+    fn batches_in_turn_get_their_own_answers() {
+        let gpu = Gpu::start_for_device(None, false).expect("a GPU");
+        let (batch, group) = (gpu.tuning().batch, gpu.tuning().group as usize);
+        let view = Scalar::from_bytes_mod_order([0x5a; 32]);
+        let digits = fe::Digits::new(&view.to_bytes());
+        let mut seed = first_seed();
+        for size in [batch, 1, 3 * group + 1, batch - 1, group - 1, 2, batch / 2 + 1] {
+            let case = Case { view, keys: keys(&mut seed, size) };
+            assert!(agrees(&case, &gpu.derive(&digits, &case.keys).expect("the GPU ran")), "{size} keys");
+        }
+        gpu.release();
+        let case = Case { view, keys: keys(&mut seed, 2 * group + 1) };
+        assert!(agrees(&case, &gpu.derive(&digits, &case.keys).expect("the GPU ran")), "after resting");
+    }
+
     #[test]
     fn the_vectors_cover_what_they_should() {
         let cases = cases(64);

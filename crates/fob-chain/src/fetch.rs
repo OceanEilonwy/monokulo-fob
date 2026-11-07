@@ -272,9 +272,24 @@ impl Adaptive {
     }
 }
 
+/// Blocks with their hashes, side by side. Hashing is done once, with the fetching,
+/// so it doesn't hold up the sync step, which needs each hash to check the chain.
+#[derive(Default)]
+pub struct Batch {
+    pub blocks: Vec<ScannableBlock>,
+    pub hashes: Vec<[u8; 32]>,
+}
+
+impl Batch {
+    pub fn of(blocks: Vec<ScannableBlock>) -> Batch {
+        let hashes = blocks.iter().map(|b| b.block.hash()).collect();
+        Batch { blocks, hashes }
+    }
+}
+
 /// Blocks `start..start + count`, from as many requests as the node needs,
 /// with the response's size in bytes.
-async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u64) -> Result<(Vec<ScannableBlock>, usize), InterfaceError> {
+async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u64) -> Result<(Batch, usize), InterfaceError> {
     let mut blocks: Vec<ScannableBlock> = Vec::with_capacity(count as usize);
     let mut bytes = 0;
     while (blocks.len() as u64) < count {
@@ -311,7 +326,7 @@ async fn chunk(transport: &Transport, adaptive: &Adaptive, start: u64, count: u6
         // Older nodes ignore max_block_count and send more: keep what was asked.
         blocks.extend(got.into_iter().take(left as usize));
     }
-    Ok((blocks, bytes))
+    Ok((Batch::of(blocks), bytes))
 }
 
 /// An error from reusing a connection the node had closed while it sat idle.
@@ -329,9 +344,9 @@ impl<T> Drop for Owned<T> {
     }
 }
 
-type Chunk = Result<Vec<ScannableBlock>, InterfaceError>;
+type Chunk = Result<Batch, InterfaceError>;
 /// One request's blocks, with the response's size in bytes.
-type Fetched = Result<(Vec<ScannableBlock>, usize), InterfaceError>;
+type Fetched = Result<(Batch, usize), InterfaceError>;
 
 /// Blocks fetched ahead of the scanner, in order.
 ///
@@ -367,7 +382,7 @@ impl Pipeline {
                 let Some(mut next) = window.pop_front() else { break };
                 let done = match (&mut next.0).await {
                     Ok(Ok((blocks, bytes))) => {
-                        adaptive.record_ok(blocks.len(), bytes);
+                        adaptive.record_ok(blocks.blocks.len(), bytes);
                         Ok(blocks)
                     }
                     Ok(Err(e)) => Err(e),
@@ -385,28 +400,32 @@ impl Pipeline {
     /// The next blocks in order: at least one chunk, plus whatever else has
     /// arrived, up to about `max` blocks. Empty once everything up to `end`
     /// has been handed over.
-    pub async fn next_batch(&mut self, max: usize) -> Result<Vec<ScannableBlock>, InterfaceError> {
-        let mut blocks = match self.rx.recv().await {
+    pub async fn next_batch(&mut self, max: usize) -> Result<Batch, InterfaceError> {
+        let mut batch = match self.rx.recv().await {
             Some(chunk) => chunk?,
-            None => return Ok(vec![]),
+            None => return Ok(Batch::default()),
         };
-        while blocks.len() < max {
+        while batch.blocks.len() < max {
             match self.rx.try_recv() {
-                Ok(chunk) => blocks.extend(chunk?),
+                Ok(chunk) => {
+                    let chunk = chunk?;
+                    batch.blocks.extend(chunk.blocks);
+                    batch.hashes.extend(chunk.hashes);
+                }
                 Err(_) => break,
             }
         }
-        for block in &blocks {
+        for (block, hash) in batch.blocks.iter().zip(&batch.hashes) {
             if block.block.number() as u64 != self.next {
                 return Err(invalid("the node sent blocks out of order"));
             }
             if self.last.is_some_and(|last| block.block.header.previous != last) {
                 return Err(invalid("the node sent blocks that don't follow on"));
             }
-            self.last = Some(block.block.hash());
+            self.last = Some(*hash);
             self.next += 1;
         }
-        Ok(blocks)
+        Ok(batch)
     }
 }
 
@@ -419,7 +438,7 @@ pub async fn blocks(transport: &Transport, start: u64, end: u64) -> Result<Vec<S
     let mut pipeline = Pipeline::start(transport.clone(), adaptive, start, end);
     let mut res = Vec::with_capacity((end - start + 1) as usize);
     loop {
-        let batch = pipeline.next_batch(usize::MAX).await?;
+        let batch = pipeline.next_batch(usize::MAX).await?.blocks;
         if batch.is_empty() {
             return Ok(res);
         }
