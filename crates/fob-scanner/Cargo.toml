@@ -10,7 +10,7 @@ description = "Finds the blocks that may hold a wallet's money, quickly, for mon
 hex = "0.4"
 monero-wallet = "0.2"
 # The prefilter itself (decisions 359, 360), pinned by rev as orf-codec is (decision 4).
-monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "d98d677" }
+monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "da7dc52" }
 
 [dev-dependencies]
 curve25519-dalek = { version = "4", features = ["precomputed-tables"] }

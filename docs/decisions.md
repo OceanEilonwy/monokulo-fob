@@ -2941,3 +2941,18 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      dropped. Apple's GPUs are meant to come through MoltenVK later. On an RX 6800 XT
      the 2,000-block fixture still gives digest e0c4c620, at about 44,000 blocks/s
      warm against 45,000 before, and 29,000 on a first run as before.
+361. **Leaving waits for the sync loop to let go of the wallet.** `stop_sync` aborted
+     the loop and the ZMQ task and returned at once. An aborted task drops what it
+     holds on Fob's runtime thread, and when that was the last clone of the wallet,
+     its database closed there, while the caller moved on. In a test binary the
+     caller was `main` returning, so `exit` ran SQLCipher's own shutdown on one thread
+     as the connection closed on another: a segfault in `sqlite3FreeCodecArg` after
+     the test had passed, about one run in eight of
+     `sync_now_cuts_the_wait_short…` (a core dump showed it; it was first put down
+     to the GPU thread, wrongly). `stop_sync` now waits for the aborted tasks, and the
+     closing save it spawns, to end: at most 2 s, in practice milliseconds, and from
+     inside a multi-thread runtime through `block_in_place` so no worker is held.
+     Forty runs in a row pass where four of thirty crashed. monokulo-8ar got the same
+     shape for its warm-up thread, `settle(timeout)`, and registers it with `atexit`
+     so a process that returns from `main` during the one cold shader compile waits
+     (up to a minute) instead of exiting with the thread inside the driver.

@@ -14,7 +14,7 @@
 pub mod scan;
 mod policy;
 
-pub use monokulo_8ar::{Engine, Prefilter, Reason, check_wallet, engine, gpu, gpu_failed, gpu_identity, gpu_ready, rest, set_cache_dir, startup_vectors, wallet_vectors, warm_up};
+pub use monokulo_8ar::{Engine, Prefilter, Reason, check_wallet, engine, gpu, gpu_failed, gpu_identity, gpu_ready, rest, set_cache_dir, settle, startup_vectors, wallet_vectors, warm_up};
 
 #[cfg(test)]
 mod tests;

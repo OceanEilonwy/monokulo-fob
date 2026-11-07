@@ -2,6 +2,38 @@
 
 use super::*;
 
+/// How long leaving waits for the loop to let go of the wallet. An aborted
+/// task drops what it holds on the runtime's thread, and when that is the
+/// last clone of a wallet, its database closes there. A process exiting
+/// meanwhile (a test binary, say) runs SQLCipher's own shutdown on the main
+/// thread at the same time, and that crashes. So the caller waits, a few
+/// milliseconds as a rule, and a bounded while at worst.
+const STOP_WAIT: Duration = Duration::from_secs(2);
+
+/// Waits, up to `timeout`, for tasks that hold a clone of a wallet to end,
+/// aborted or finished. Safe from inside a runtime: the waiting is done on
+/// Fob's own runtime, and a worker of a multi-thread runtime steps aside
+/// while it blocks.
+fn settle(tasks: Vec<tokio::task::JoinHandle<()>>, timeout: Duration) {
+    if tasks.is_empty() {
+        return;
+    }
+    let (done, finished) = std::sync::mpsc::channel();
+    crate::runtime().spawn(async move {
+        for task in tasks {
+            let _ = task.await;
+        }
+        let _ = done.send(());
+    });
+    let wait = || {
+        let _ = finished.recv_timeout(timeout);
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(wait),
+        _ => wait(),
+    }
+}
+
 impl Wallet {
     pub fn status(&self) -> SyncStatus {
         self.inner.status.lock().expect("status lock").clone()
@@ -488,11 +520,14 @@ impl Wallet {
 
     pub fn stop_sync(&self) {
         fob_scanner::rest();
+        let mut ending = vec![];
         if let Some(handle) = self.inner.syncing.lock().expect("sync lock").take() {
             handle.abort();
+            ending.push(handle);
         }
         if let Some((endpoint, task)) = self.inner.zmq_task.lock().expect("zmq lock").take() {
             task.abort();
+            ending.push(task);
             // Still on: it connects again with the loop.
             self.set_zmq_status(ZmqStatus::Connecting, Some(&endpoint));
         }
@@ -500,8 +535,9 @@ impl Wallet {
         // Leaving Fob, or this wallet: the scanning since the last save stays.
         if self.inner.unsaved.load(Ordering::Relaxed) {
             let wallet = self.clone();
-            crate::runtime().spawn(async move { wallet.flush().await });
+            ending.push(crate::runtime().spawn(async move { wallet.flush().await }));
         }
+        settle(ending, STOP_WAIT);
     }
 
     /// The sync loop's wait between rounds, cut short by [`sync_now`](Wallet::sync_now)
