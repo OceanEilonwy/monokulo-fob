@@ -56,6 +56,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -98,6 +99,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import uniffi.fob.QrCode
+import uniffi.fob.SecretQr
 import kotlin.math.PI
 import kotlin.math.cos
 import uniffi.fob.addressPattern
@@ -502,11 +504,33 @@ fun IconBadge(path: String, tint: Color, size: Dp = 40.dp, receipt: Boolean = fa
  * only [description].
  */
 @Composable
-fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) {
+fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: String = "Payment code", quiet: Int = 2) =
+    QrModules(code.size.toInt(), { code.dark[it] }, size, modifier, description, quiet)
+
+/** The wallet code's QR, as [QrImage]; its modules are bytes the screen zeroes when it goes. */
+@Composable
+fun QrImage(code: SecretQr, size: Dp, modifier: Modifier = Modifier, description: String, quiet: Int = 2) =
+    QrModules(code.size.toInt(), { code.dark[it] != 0.toByte() }, size, modifier, description, quiet)
+
+/** The path a code was last drawn with, so it can be emptied once it's off the screen. */
+private class DrawnModules { var path: androidx.compose.ui.graphics.Path? = null }
+
+@Composable
+private fun QrModules(n: Int, dark: (Int) -> Boolean, size: Dp, modifier: Modifier, description: String, quiet: Int) {
+    // The wallet code's modules are its keys laid out: the bytes they come
+    // from are zeroed when its screen goes, and the path drawn from them is
+    // emptied then too (and whenever it's built again at another size), so
+    // it doesn't hold the layout until it's collected. Emptying frees the
+    // path's points rather than overwriting them, and the drawing's own copies
+    // on the render thread are Android's, so this narrows the window; it
+    // can't promise nothing is left in memory.
+    val drawn = remember { DrawnModules() }
+    DisposableEffect(drawn) {
+        onDispose { drawn.path?.reset(); drawn.path = null }
+    }
     // One path, built once: the modules as one shape rather than some 800 rects, which cost the GPU pipeline a fill op
     // apiece on every frame the screen redrew (over half the render thread, mostly allocating them).
     Spacer(modifier.size(size).semantics { contentDescription = description }.drawWithCache {
-        val n = code.size.toInt()
         // Each module a whole number of pixels, the code centred, so a dense code (a profile's) stays crisp
         // rather than blurring at its edges; a code with more modules than pixels falls back to fractions.
         val whole = kotlin.math.floor(this.size.width / (n + quiet * 2))
@@ -515,8 +539,10 @@ fun QrImage(code: QrCode, size: Dp, modifier: Modifier = Modifier, description: 
         val origin = if (whole >= 1f) kotlin.math.floor(start) else quiet * cell
         val bleed = if (whole >= 1f) 0f else 0.5f
         val modules = androidx.compose.ui.graphics.Path()
+        drawn.path?.reset()
+        drawn.path = modules
         for (y in 0 until n) for (x in 0 until n) {
-            if (code.dark[y * n + x]) {
+            if (dark(y * n + x)) {
                 modules.addRect(androidx.compose.ui.geometry.Rect(origin + x * cell, origin + y * cell, origin + x * cell + cell + bleed, origin + y * cell + cell + bleed))
             }
         }

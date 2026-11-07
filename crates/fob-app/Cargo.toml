@@ -11,8 +11,6 @@ fob-ffi = { path = "../fob-ffi" }
 fob-wallet = { path = "../fob-wallet" }
 # Reads a QR code from a picture, on a device with no camera to scan with.
 rqrr = { version = "0.11", default-features = false }
-# Draws photos from other people's codes, in memory-safe Rust.
-image-webp = "0.2"
 # Makes a photo from your own picture small, which image-webp can't do lossily.
 webp = { version = "0.3", default-features = false }
 serde = { version = "1", features = ["derive"] }

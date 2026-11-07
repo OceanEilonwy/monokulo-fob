@@ -511,9 +511,12 @@ pub fn found(network: Network, current: Option<&str>, text: &str) -> Result<Foun
 pub struct Offer {
     /// The address paid.
     pub address: String,
-    /// The contact the code's name matches (any case): the button keeps
-    /// the address with them.
-    pub add_to: Option<Contact>,
+    /// The contact the code's name looks like ([`Book::named`]), though the
+    /// address isn't one of theirs. Only said, never offered as a one-tap
+    /// Add to: the name is whatever the code wrote, so anyone's code can be
+    /// named for a contact, and filing its address with them would make
+    /// every later payment to it read as theirs in Activity.
+    pub namesake: Option<Contact>,
     /// The name on the code, when it had one.
     pub name: Option<String>,
     /// New contact, filled.
@@ -532,16 +535,20 @@ pub fn new_contact(address: &str, name: Option<&str>, note: Option<&str>) -> Dra
 }
 
 /// What to offer after paying `address` with a code named `name` (if any)
-/// for `note`: nothing when the address is already a contact's; Add to the
-/// contact the name matches; otherwise Save as a contact.
+/// for `note`: nothing when the address is already a contact's; otherwise
+/// Save as a contact, saying which contact the name looks like when one
+/// does. A code carries nothing that proves who made it (its name is only
+/// text), so an address nobody has is never filed with an existing contact
+/// from here; if it really is theirs, it's set on their card, where the
+/// address is shown.
 pub fn offer(book: &Book, address: &str, name: Option<&str>, note: Option<&str>) -> Option<Offer> {
     if book.owner(address).is_some() {
         return None;
     }
     let draft = new_contact(address, name, note);
     let name = name.and_then(clean_name);
-    let add_to = name.as_deref().and_then(|n| book.named(n)).cloned();
-    Some(Offer { address: address.to_owned(), add_to, name, draft })
+    let namesake = name.as_deref().and_then(|n| book.named(n)).cloned();
+    Some(Offer { address: address.to_owned(), namesake, name, draft })
 }
 
 /// What happens to the addresses of codes named for someone, under the send

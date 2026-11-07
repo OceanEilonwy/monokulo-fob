@@ -7,6 +7,7 @@ impl Wallet {
         let state = State {
             node: keys.network.default_nodes()[0].to_owned(),
             node_self_signed: false,
+            node_pin: None,
             custom_nodes: vec![],
             gpu_checked_on: None,
             gpu_check_passed: false,
@@ -75,6 +76,7 @@ impl Wallet {
                 scan_stop: AtomicBool::new(false),
                 scan_job: std::sync::Mutex::new(None),
                 scan_running: Mutex::new(()),
+                sending: Mutex::new(()),
                 unsaved: AtomicBool::new(false),
                 saved_at: std::sync::Mutex::new(Instant::now()),
                 db: std::sync::Mutex::new(Some(db)),

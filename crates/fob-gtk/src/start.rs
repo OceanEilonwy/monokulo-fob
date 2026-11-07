@@ -26,6 +26,8 @@ pub enum Input {
     Go,
     Failed(String),
     Done,
+    /// Add a wallet was left: what was typed goes.
+    Left,
 }
 
 pub struct Start {
@@ -81,6 +83,15 @@ impl SimpleComponent for Start {
                             add = words -> adw::EntryRow {
                                 #[watch]
                                 set_visible: model.way != Way::New,
+                                // Seed words and a wallet code hold the spend
+                                // key: an input method told it's a password,
+                                // and private, doesn't learn them into its
+                                // dictionary. Left visible, so 25 words can be
+                                // checked; the desktop can't hide them from
+                                // screenshots anyway (decision 342).
+                                set_input_hints: secret_hints(),
+                                #[watch]
+                                set_input_purpose: if matches!(model.way, Way::Words | Way::Code) { gtk::InputPurpose::Password } else { gtk::InputPurpose::FreeForm },
                                 #[watch]
                                 set_title: match model.way {
                                     Way::Code => "Wallet code",
@@ -91,6 +102,7 @@ impl SimpleComponent for Start {
                             #[local_ref]
                             add = view_key -> adw::PasswordEntryRow {
                                 set_title: "Secret view key",
+                                set_input_hints: secret_hints(),
                                 #[watch]
                                 set_visible: model.way == Way::ViewOnly,
                             },
@@ -136,6 +148,14 @@ impl SimpleComponent for Start {
     fn update(&mut self, input: Input, sender: ComponentSender<Self>) {
         match input {
             Input::Phase(Phase::Failed(why)) => self.error = Some(why),
+            // Locked (left alone, or with the desktop): what was typed toward a
+            // wallet mustn't wait in the form for whoever unlocks next.
+            // An attempt still running answers with Done or Failed, which ends `busy`.
+            Input::Phase(Phase::Locked | Phase::NoPassphrase) | Input::Left => {
+                self.error = None;
+                self.adding = false;
+                self.clear(true);
+            }
             Input::Phase(_) => {}
             Input::Adding => self.adding = true,
             Input::Way(i) => {
@@ -146,14 +166,14 @@ impl SimpleComponent for Start {
             Input::Failed(why) => {
                 self.busy = false;
                 self.error = Some(why);
+                // The secret goes with a failed attempt, so it doesn't sit in
+                // GTK's buffer; the name and restore point stay to try again.
+                self.clear(false);
             }
             Input::Done => {
                 self.busy = false;
                 self.error = None;
-                for row in [&self.name, &self.words, &self.restore_point] {
-                    row.set_text("");
-                }
-                self.view_key.set_text("");
+                self.clear(true);
                 if std::mem::take(&mut self.adding) {
                     let _ = sender.output(RootMsg::Go(Go::Back));
                 }
@@ -162,7 +182,26 @@ impl SimpleComponent for Start {
     }
 }
 
+/// What an input method is told about a field holding a secret: don't correct,
+/// suggest or remember it.
+fn secret_hints() -> gtk::InputHints {
+    gtk::InputHints::NO_SPELLCHECK | gtk::InputHints::NO_EMOJI | gtk::InputHints::PRIVATE
+}
+
 impl Start {
+    /// Empties the secret fields, and with `all` the rest too. An address for
+    /// a watch-only wallet isn't secret, so it stays after a failed attempt.
+    fn clear(&self, all: bool) {
+        if all || matches!(self.way, Way::Words | Way::Code) {
+            self.words.set_text("");
+        }
+        self.view_key.set_text("");
+        if all {
+            self.name.set_text("");
+            self.restore_point.set_text("");
+        }
+    }
+
     fn lead(&self) -> String {
         let network = match self.engine.network() {
             fob_app::views::Network::Mainnet => "real money, on mainnet",
@@ -177,7 +216,7 @@ impl Start {
         }
         self.busy = true;
         self.error = None;
-        let (name, text, key) = (self.name.text().to_string(), self.words.text().to_string(), self.view_key.text().to_string());
+        let (name, text, key) = (self.name.text().to_string(), crate::widgets::secret_text(self.words.text()), crate::widgets::secret_text(self.view_key.text()));
         let point = Some(self.restore_point.text().to_string()).filter(|p| !p.trim().is_empty());
         let (engine, way, sender) = (self.engine.clone(), self.way, sender.clone());
         relm4::spawn(async move {
@@ -185,7 +224,7 @@ impl Start {
                 Way::New => engine.create_wallet(name).await,
                 Way::Words => engine.restore_words(name, text, point).await,
                 Way::Code => engine.restore_code(name, text, point).await,
-                Way::ViewOnly => engine.restore_view_only(name, text, key, point).await,
+                Way::ViewOnly => engine.restore_view_only(name, String::clone(&text), String::clone(&key), point).await,
             };
             sender.input(match result {
                 Ok(()) => Input::Done,

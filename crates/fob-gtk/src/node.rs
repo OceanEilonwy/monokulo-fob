@@ -29,6 +29,11 @@ pub enum Input {
     Checked(u64, View<NodeReport>),
     AddChecked,
     Failed(String),
+    /// The node in use: its address, the key it's held to, and whether it
+    /// last answered with another.
+    Pin { round: u64, url: String, pin: Option<String>, changed: bool },
+    /// Asked whether to trust the node's new certificate.
+    AskTrust(String),
 }
 
 pub struct Node {
@@ -41,6 +46,8 @@ pub struct Node {
     new_report: Option<View<NodeReport>>,
     error: Option<String>,
     current: gtk::Box,
+    /// The self-signed node's pinned key, and a changed certificate's warning.
+    pin_rows: gtk::Box,
     others: gtk::ListBox,
     url: adw::EntryRow,
     trusted: adw::SwitchRow,
@@ -53,8 +60,9 @@ struct Observer {
 }
 
 impl NodeCheckObserver for Observer {
-    fn on_progress(&self, report: NodeReport) {
+    fn on_progress(&self, report: NodeReport) -> Result<(), fob_app::views::FobError> {
         let _ = self.to.send((self.wrap)(View(report.into())));
+        Ok(())
     }
 }
 
@@ -117,6 +125,11 @@ impl SimpleComponent for Node {
                         set_margin_all: 16,
                         #[local_ref]
                         current -> gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 8,
+                        },
+                        #[local_ref]
+                        pin_rows -> gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
                             set_spacing: 8,
                         },
@@ -184,7 +197,7 @@ impl SimpleComponent for Node {
     }
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
-        let (current, new_rows) = (gtk::Box::new(gtk::Orientation::Vertical, 8), gtk::Box::new(gtk::Orientation::Vertical, 8));
+        let (current, new_rows, pin_rows) = (gtk::Box::new(gtk::Orientation::Vertical, 8), gtk::Box::new(gtk::Orientation::Vertical, 8), gtk::Box::new(gtk::Orientation::Vertical, 8));
         let (others, url, trusted) = (gtk::ListBox::new(), adw::EntryRow::new(), adw::SwitchRow::new());
         let model = Node {
             engine,
@@ -195,12 +208,13 @@ impl SimpleComponent for Node {
             new_report: None,
             error: None,
             current: current.clone(),
+            pin_rows: pin_rows.clone(),
             others: others.clone(),
             url: url.clone(),
             trusted: trusted.clone(),
             new_rows: new_rows.clone(),
         };
-        let (current, new_rows, others, url, trusted) = (&current, &new_rows, &others, &url, &trusted);
+        let (current, new_rows, pin_rows, others, url, trusted) = (&current, &new_rows, &pin_rows, &others, &url, &trusted);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -286,8 +300,33 @@ impl SimpleComponent for Node {
                 self.changing = false;
                 self.error = Some(why);
             }
+            Input::Pin { round, url, pin, changed } => {
+                if round == self.round {
+                    self.draw_pin(&url, pin.as_deref(), changed, &sender);
+                }
+            }
+            Input::AskTrust(url) => {
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Trust the new certificate?")
+                    .body("Only if you gave your node a new certificate yourself. If you didn't, someone else may be answering in its place, and could tell Fob things that aren't true.")
+                    .build();
+                dialog.add_responses(&[("cancel", "_Cancel"), ("trust", "_Trust it")]);
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("trust", adw::ResponseAppearance::Destructive);
+                let then = sender.clone();
+                // Choosing the node again forgets its pin, and the key it
+                // answers with next is the one it's held to from then on.
+                dialog.connect_response(Some("trust"), move |_, _| then.input(Input::Use(url.clone(), true)));
+                dialog.present(Some(&self.current));
+            }
         }
     }
+}
+
+/// A pin's hex in groups of four, easier to compare with the node's own.
+fn grouped(hex: &str) -> String {
+    let groups: Vec<&str> = hex.as_bytes().chunks(4).filter_map(|c| std::str::from_utf8(c).ok()).collect();
+    groups.chunks(8).map(|line| line.join(" ")).collect::<Vec<_>>().join("\n")
 }
 
 impl Node {
@@ -317,6 +356,10 @@ impl Node {
                 .await;
             if let Some(report) = report {
                 then.input(Input::Report(round, View(report.into())));
+            }
+            let pin = engine.read(|wallet, _| async move { (wallet.node().await.url, wallet.node_pin().await, wallet.certificate_changed()) }).await;
+            if let Some((url, pin, changed)) = pin {
+                then.input(Input::Pin { round, url, pin, changed });
             }
             let choices = engine
                 .read(|wallet, _| async move {
@@ -356,6 +399,31 @@ impl Node {
         address.set_selectable(true);
         self.current.append(&address);
         check_rows(&self.current, report);
+    }
+
+    /// The key a self-signed node is held to, to compare with what the node's
+    /// own machine says; and when it last answered with another, a warning and
+    /// the one way to accept it, which asks first.
+    fn draw_pin(&self, url: &str, pin: Option<&str>, changed: bool, sender: &ComponentSender<Self>) {
+        widgets::empty(&self.pin_rows);
+        if changed {
+            let warning = widgets::words("This node answered with a different certificate from the one Fob accepted, so Fob stopped talking to it. If you gave it a new certificate, trust the new one. If not, someone may be pretending to be your node.");
+            warning.add_css_class("error");
+            self.pin_rows.append(&warning);
+            let trust = gtk::Button::builder().label("Trust the new certificate").halign(gtk::Align::Center).css_classes(["pill", "destructive-action"]).build();
+            let (then, url) = (sender.clone(), url.to_owned());
+            trust.connect_clicked(move |_| then.input(Input::AskTrust(url.clone())));
+            self.pin_rows.append(&trust);
+        }
+        if let Some(pin) = pin {
+            let list = widgets::list();
+            let row = widgets::row("Accepted certificate key", &grouped(pin));
+            row.set_subtitle_selectable(true);
+            row.add_css_class("property");
+            list.append(&row);
+            self.pin_rows.append(&list);
+            self.pin_rows.append(&widgets::dim("The SHA3-256 of the node's public key. Fob talks to this node only while it answers with this key."));
+        }
     }
 
     fn draw_others(&self, choices: &[NodeChoice], sender: &ComponentSender<Self>) {

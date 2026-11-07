@@ -8,7 +8,17 @@ use fob_wallet::{activity, address, amount, backup, clock, contacts, not_ready, 
 
 uniffi::setup_scaffolding!();
 
+#[cfg(feature = "wipe-freed")]
+pub mod wiping;
+
+/// Freed memory is zeroed, so secrets copied on their way to and from the
+/// app don't outlive their use (see [`wiping`]).
+#[cfg(feature = "wipe-freed")]
+#[global_allocator]
+static ALLOCATOR: wiping::Wiping = wiping::Wiping;
+
 pub mod form;
+pub mod photo;
 
 /// What went wrong, for the app to show. (The field is `reason`, not
 /// `message`, which Kotlin's `Throwable` already has.)
@@ -111,7 +121,9 @@ impl From<fob_wallet::Network> for Network {
 }
 
 fn file_key(key: Vec<u8>) -> Result<[u8; 32]> {
-    key.try_into().map_err(|_| FobError::Other { reason: "the wallet key must be 32 bytes".into() })
+    // The app's copy is zeroed by the app; this one is zeroed here.
+    let key = zeroize::Zeroizing::new(key);
+    <[u8; 32]>::try_from(key.as_slice()).map_err(|_| FobError::Other { reason: "the wallet key must be 32 bytes".into() })
 }
 
 /// Balances and lists: four decimals.
@@ -137,8 +149,33 @@ pub struct Receipt {
     pub lines: Vec<ReceiptLine>,
     pub item_count: u32,
     pub tax: Option<String>,
+    /// The receipt's own total, as the code says: Confirm shows it below the
+    /// XMR amount and Fob's own valuation, never in their place.
     pub total: String,
     pub currency: String,
+    /// On Confirm, when the total and what the XMR amount is worth at Fob's
+    /// price are far apart: the warning to show, and to have acknowledged
+    /// before paying.
+    pub mismatch: Option<String>,
+    /// On Confirm, when Fob has no price in the receipt's currency to check
+    /// the total with: the softer notice to show, still to have acknowledged
+    /// before paying, since a code can name any currency to dodge the check.
+    pub unchecked: Option<String>,
+}
+
+impl Receipt {
+    /// The receipt for paying `atomic`, checked against Fob's price.
+    async fn checked(wallet: &fob_wallet::Wallet, r: receipt::ReceiptView, atomic: u64) -> Receipt {
+        // The wallet keeps a current price only in the user's own currency,
+        // so that is the one rate a receipt can be checked against.
+        let prices: Vec<_> = wallet.price_now().await.into_iter().collect();
+        let (mismatch, unchecked) = match receipt::check(&r, atomic, &exact(atomic), &prices) {
+            receipt::Check::Matches => (None, None),
+            receipt::Check::Mismatch(warning) => (Some(warning), None),
+            receipt::Check::Unchecked(notice) => (None, Some(notice)),
+        };
+        Receipt { mismatch, unchecked, ..Receipt::from(r) }
+    }
 }
 
 impl From<receipt::ReceiptView> for Receipt {
@@ -151,6 +188,8 @@ impl From<receipt::ReceiptView> for Receipt {
             tax: r.tax,
             total: r.total,
             currency: r.currency,
+            mismatch: None,
+            unchecked: None,
         }
     }
 }
@@ -293,10 +332,13 @@ pub struct KeyRow {
     pub badge_text: String,
     /// "With the view key, restores this wallet anywhere."; none for the public keys.
     pub line: Option<String>,
-    /// 64 hex digits, the whole address, or "1690400 · 2 Sep 2026".
-    pub value: String,
-    /// What Copy puts on the clipboard: the value, the restore height without its date.
-    pub clip: String,
+    /// 64 hex digits, the whole address, or "1690400 · 2 Sep 2026", as
+    /// UTF-8. Bytes rather than a string so the app can zero them once the
+    /// screen is gone; a string can't be wiped.
+    pub value: Vec<u8>,
+    /// What Copy puts on the clipboard: the value, the restore height
+    /// without its date. UTF-8 bytes, as `value`.
+    pub clip: Vec<u8>,
     /// "Copy the secret spend key"
     pub copy: String,
 }
@@ -322,8 +364,8 @@ impl From<backup::KeyGroup> for KeyGroup {
                 },
                 badge_text: k.badge_text,
                 line: k.line,
-                value: k.value.to_string(),
-                clip: k.clip.to_string(),
+                value: k.value.as_bytes().to_vec(),
+                clip: k.clip.as_bytes().to_vec(),
                 copy: k.copy,
             })
             .collect();
@@ -1066,16 +1108,30 @@ impl From<fob_wallet::SyncStatus> for SyncStatus {
 
 /// Hears about syncing; implemented by the app. Called from Fob's own
 /// threads: hand the status to the UI, don't call back into the wallet here.
+///
+/// It returns a Result so that an exception thrown in the app comes back as
+/// an error rather than a panic: UniFFI panics on an exception from a method
+/// that can't fail, and that would end the sync task silently.
 #[uniffi::export(with_foreign)]
 pub trait SyncObserver: Send + Sync {
-    fn on_status(&self, status: SyncStatus);
+    fn on_status(&self, status: SyncStatus) -> Result<()>;
 }
 
 struct Observer(Arc<dyn SyncObserver>);
 
 impl fob_wallet::SyncListener for Observer {
     fn on_status(&self, status: fob_wallet::SyncStatus) {
-        self.0.on_status(status.into());
+        // The next status replaces this one, so a failure to hear it only
+        // costs the screen one update; syncing goes on.
+        if let Err(e) = self.0.on_status(status.into()) {
+            eprintln!("fob: the app couldn't take a sync status: {e}");
+        }
+    }
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for FobError {
+    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        FobError::Other { reason: e.reason }
     }
 }
 
@@ -1237,7 +1293,18 @@ pub struct PaymentRequest {
 pub struct SeedPhrase {
     /// "polyseed" (16 words) or "classic" (25).
     pub kind: String,
-    pub words: Vec<String>,
+    /// The words, one space between each, as UTF-8. Bytes rather than
+    /// strings so the app can zero them once it has the words on screen.
+    pub phrase: Vec<u8>,
+}
+
+/// A QR code holding a secret (the wallet code): as [`QrCode`], but with the
+/// modules as bytes the app can zero once the code is off the screen.
+#[derive(uniffi::Record)]
+pub struct SecretQr {
+    pub size: u32,
+    /// Row by row, 1 for dark and 0 for light.
+    pub dark: Vec<u8>,
 }
 
 #[derive(uniffi::Record)]
@@ -1427,7 +1494,10 @@ async fn prepared(wallet: &fob_wallet::Wallet, p: fob_wallet::Prepared) -> Prepa
             (total, _) => total,
         },
         fiat_age: age,
-        receipt: p.receipt.map(Into::into),
+        receipt: match p.receipt {
+            Some(r) => Some(Receipt::checked(wallet, r, p.amount).await),
+            None => None,
+        },
         split,
     }
 }
@@ -1567,7 +1637,7 @@ impl FobWallet {
                 fob_wallet::SeedKind::Polyseed => "polyseed".into(),
                 fob_wallet::SeedKind::Classic => "classic".into(),
             },
-            words: words.split(' ').map(str::to_owned).collect(),
+            phrase: words.as_bytes().to_vec(),
         })
     }
 
@@ -1576,8 +1646,18 @@ impl FobWallet {
         Ok(self.inner.backup_done().await?)
     }
 
-    pub async fn wallet_code(&self) -> String {
-        self.inner.wallet_code().await.to_string()
+    /// The wallet code as UTF-8 bytes, for the desktop's dialog; the phone
+    /// shows [`wallet_code_qr`](Self::wallet_code_qr) and never has the text.
+    pub async fn wallet_code(&self) -> Vec<u8> {
+        self.inner.wallet_code().await.as_bytes().to_vec()
+    }
+
+    /// The wallet code as a QR code, drawn here so the code's text stays in
+    /// Rust, where it's wiped.
+    pub async fn wallet_code_qr(&self) -> Result<SecretQr> {
+        let code = self.inner.wallet_code().await;
+        let m = qr::encode(&code)?;
+        Ok(SecretQr { size: m.size, dark: m.dark.iter().map(|&d| u8::from(d)).collect() })
     }
 
     /// Backup and keys' words (no secrets), and Settings' line for its row;
@@ -1642,6 +1722,19 @@ impl FobWallet {
         self.inner.node().await.into()
     }
 
+    /// The key a self-signed node in use is held to (hex of its SHA3-256 pin),
+    /// to show so it can be compared with the node's own; None until the node
+    /// first answers, or when it isn't self-signed.
+    pub async fn node_pin(&self) -> Option<String> {
+        self.inner.node_pin().await
+    }
+
+    /// Whether the node in use last answered with a key other than its pin.
+    /// Choosing the node again ([`set_node`](Self::set_node)) trusts the new one.
+    pub fn certificate_changed(&self) -> bool {
+        self.inner.certificate_changed()
+    }
+
     /// Settings' Node line: "Working · node.example:38081".
     pub async fn node_line(&self) -> String {
         self.inner.node_line().await
@@ -1655,7 +1748,14 @@ impl FobWallet {
     /// Runs the Node screen's checks on `node`, telling `observer` as each
     /// one finishes; gives the last report.
     pub async fn check_node(&self, node: NodeSetting, observer: Arc<dyn NodeCheckObserver>) -> NodeReport {
-        self.inner.check_node(&node.into(), &|report| observer.on_progress(report.clone().into())).await.into()
+        // A report the app couldn't take is only a missed update: the checks
+        // go on and the last report is returned anyway.
+        let progress = |report: &fob_wallet::node::Report| {
+            if let Err(e) = observer.on_progress(report.clone().into()) {
+                eprintln!("fob: the app couldn't take a node report: {e}");
+            }
+        };
+        self.inner.check_node(&node.into(), &progress).await.into()
     }
 
     /// The other nodes to offer (the network's, then this wallet's own), each
@@ -1904,7 +2004,11 @@ impl FobWallet {
     /// without asking the node: Confirm shows it at once, the fee to come.
     pub async fn preview(&self, to: String, amount: String, in_fiat: bool, code: Option<String>) -> Result<PaymentPreview> {
         let p = self.inner.preview_typed(&to, &amount, in_fiat, code.as_deref()).await?;
-        Ok(PaymentPreview { to: p.to, amount_text: exact(p.amount), amount_fiat: self.inner.worth_now(p.amount).await, receipt: p.receipt.map(Into::into) })
+        let receipt = match p.receipt {
+            Some(r) => Some(Receipt::checked(&self.inner, r, p.amount).await),
+            None => None,
+        };
+        Ok(PaymentPreview { to: p.to, amount_text: exact(p.amount), amount_fiat: self.inner.worth_now(p.amount).await, receipt })
     }
 
     /// Split up's screen for `counts` pieces of each note (none as it
@@ -1982,6 +2086,7 @@ impl FobWallet {
     /// The payment `tx` for its own screen; the clock as for `activity_days`.
     pub async fn payment(&self, tx: String, now: u64, utc_offset: i32, hours_24: bool) -> Option<PaymentDetail> {
         let d = fob_wallet::words::activity::detail(self.inner.payment(&tx, clock::Clock { now, utc_offset, hours_24 }).await?);
+        let unanswered = self.inner.unanswered(&tx).await.then(|| fob_wallet::words::activity::UNANSWERED.to_owned());
         Some(PaymentDetail {
             amount_text: d.amount,
             amount_exact: d.exact,
@@ -2005,6 +2110,7 @@ impl FobWallet {
             tx,
             footer: d.footer,
             can_release: d.can_release,
+            unanswered,
         })
     }
 
@@ -3062,6 +3168,10 @@ pub struct PaymentDetail {
     pub footer: Option<String>,
     /// Sent, not confirmed: its coins can be released.
     pub can_release: bool,
+    /// "The node didn't answer, so Fob keeps sending it until it does.": the
+    /// node gave no answer when it was sent and Fob still offers it with each
+    /// sync; none once it answered, or for a payment in.
+    pub unanswered: Option<String>,
 }
 
 /// Receive's note as typed, cut to what a payment code holds.
@@ -3287,9 +3397,9 @@ impl NodeChoice {
 }
 
 /// Hears a node's checks as each finishes; implemented by the app. Called
-/// from Fob's own threads.
+/// from Fob's own threads. Fallible for the same reason as [`SyncObserver`].
 #[uniffi::export(with_foreign)]
 pub trait NodeCheckObserver: Send + Sync {
-    fn on_progress(&self, report: NodeReport);
+    fn on_progress(&self, report: NodeReport) -> Result<()>;
 }
 

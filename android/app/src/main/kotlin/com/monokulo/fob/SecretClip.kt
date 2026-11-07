@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
 
 /**
  * A secret key copied from Keys, taken off the clipboard again after a
@@ -27,21 +29,39 @@ object SecretClip {
     private val changed = ClipboardManager.OnPrimaryClipChangedListener { if (!marked()) ours = false }
     private val clearLater = Runnable { clear() }
 
-    /** Copies [text] under [label], marked sensitive so previews don't show it, to be cleared after a minute. */
-    fun copy(context: Context, label: String, text: String) {
+    /**
+     * Copies [secret] (UTF-8, as Rust hands keys over) under [label], marked
+     * sensitive so previews don't show it, to be cleared after a minute.
+     *
+     * The text goes to the clipboard as characters Fob zeroes as soon as it's
+     * handed over, never as a String of Fob's own: a JVM String can't be wiped,
+     * and stays on the heap until it's collected and its memory reused. What
+     * Android does with it on the way (it writes the text into the call to the
+     * clipboard service as a String of its own) and keeps on the clipboard is
+     * out of Fob's reach, which is why it's taken off again soon after.
+     */
+    fun copy(context: Context, label: String, secret: ByteArray) {
         val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
         manager?.removePrimaryClipChangedListener(changed)
         manager = clipboard
-        clipboard.setPrimaryClip(
-            ClipData.newPlainText(label, text).apply {
-                // Android 13 and later hide it from the keyboard's and the system's previews; earlier versions ignore it.
-                val sensitive = if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"
-                description.extras = PersistableBundle().apply {
-                    putBoolean(sensitive, true)
-                    putBoolean(MARK, true)
-                }
-            },
-        )
+        val decoded = Charsets.UTF_8.decode(ByteBuffer.wrap(secret))
+        val chars = CharArray(decoded.remaining()).also { decoded.get(it) }
+        if (decoded.hasArray()) decoded.array().fill('\u0000')
+        try {
+            clipboard.setPrimaryClip(
+                ClipData.newPlainText(label, CharBuffer.wrap(chars)).apply {
+                    // Android 13 and later hide it from the keyboard's and the system's previews; earlier versions ignore it.
+                    val sensitive = if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"
+                    description.extras = PersistableBundle().apply {
+                        putBoolean(sensitive, true)
+                        putBoolean(MARK, true)
+                    }
+                },
+            )
+        } finally {
+            // The clip is in the clipboard service now; Fob's own copy goes.
+            chars.fill('\u0000')
+        }
         ours = true
         // Told while Fob is on screen when something else is copied, so that isn't cleared.
         clipboard.addPrimaryClipChangedListener(changed)

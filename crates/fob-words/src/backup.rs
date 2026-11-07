@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 use crate::{Device, device};
 
 /// What Keys' page writes out.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct KeyValues {
     /// The secret spend key; none for a view-only wallet.
     pub spend: Option<Zeroizing<String>>,
@@ -17,6 +17,22 @@ pub struct KeyValues {
     pub restore_height: u64,
     /// When the restore height was, when that can be named.
     pub date: Option<String>,
+}
+
+// Zeroizing's Debug prints what it holds, and spend and view are the secret
+// keys, so printing the values (as KeyRow does) must not show them. Whether
+// there is a spend key is kept, since that alone says nothing secret.
+impl std::fmt::Debug for KeyValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyValues")
+            .field("has_spend", &self.spend.is_some())
+            .field("address", &self.address)
+            .field("public_view", &self.public_view)
+            .field("public_spend", &self.public_spend)
+            .field("restore_height", &self.restore_height)
+            .field("date", &self.date)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a key's badge says it lets someone do, which also sets its colour.
@@ -38,7 +54,7 @@ impl KeyBadge {
 }
 
 /// One key on Keys' page, ready to draw.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct KeyRow {
     /// "Secret spend key", "Main address"
     pub title: String,
@@ -54,6 +70,20 @@ pub struct KeyRow {
     pub clip: Zeroizing<String>,
     /// The Copy button's label: "Copy the secret spend key".
     pub copy: String,
+}
+
+// Zeroizing's Debug prints what it holds, and value and clip are secret keys
+// on the secret card, so printing a row must not show them.
+impl std::fmt::Debug for KeyRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyRow")
+            .field("title", &self.title)
+            .field("badge", &self.badge)
+            .field("badge_text", &self.badge_text)
+            .field("line", &self.line)
+            .field("copy", &self.copy)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A card of keys under its heading: "Secret: keep to yourself", "Public".
@@ -277,6 +307,15 @@ mod tests {
             restore_height: 1_690_400,
             date: date.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn printing_the_values_or_a_row_never_shows_a_secret_key() {
+        let printed = format!("{:?} {:#?}", values(true, Some("2 Sep 2026")), values(true, None));
+        assert!(!printed.contains(SPEND) && !printed.contains(VIEW), "{printed}");
+        assert!(printed.contains("has_spend: true"));
+        let rows = format!("{:?}", page(values(true, None)));
+        assert!(!rows.contains(SPEND) && !rows.contains(VIEW), "{rows}");
     }
 
     #[test]

@@ -92,7 +92,7 @@ fun ReleaseCoins(model: WalletModel, tx: String) {
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Not confirmed", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text("Your node has no record of this payment a day after it was sent, so it probably didn't go through. Its coins stay held until you release them.", color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp)
+            Text("Your node has no record of this payment a day after it was sent, and its coins aren't spent on the chain as far as it says. It may not have gone through, but a node can be wrong: ask whoever you paid before paying again. Its coins stay held until you release them.", color = Fob.muted, fontSize = 14.sp, lineHeight = 20.sp)
             ErrorText(error)
             OutlineButton("Release coins", { asking = true }, Modifier.fillMaxWidth())
         }
@@ -142,6 +142,10 @@ fun PaymentDetails(d: PaymentDetail) {
     Card {
         InfoRow("Status", d.status)
         d.progress?.let { Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) { ProgressBar(it, height = 4.dp, fill = Fob.green) } }
+        // The node gave no answer when it was sent: said under its status, so
+        // someone told nothing came knows Fob is still offering it, and that
+        // paying again by hand meanwhile could pay twice.
+        d.unanswered?.let { Text(it, color = Fob.orangeText, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) }
         Divider()
         InfoRow("Amount", d.amountExact)
         d.party?.let { Divider(); InfoRow(d.partyLabel, it) }

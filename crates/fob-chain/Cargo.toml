@@ -21,6 +21,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The fingerprint a self-signed node's key is remembered by.
+sha3 = "0.10"
 socket2 = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }

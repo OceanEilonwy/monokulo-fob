@@ -44,6 +44,7 @@ pub fn certificate(problem: CertProblem) -> &'static str {
         CertProblem::Expired => "expired",
         CertProblem::NotYetValid => "not valid yet",
         CertProblem::OtherName => "for another address",
+        CertProblem::Changed => "changed since you accepted it",
         CertProblem::BadSignature => "signature doesn't match",
         CertProblem::Invalid => "not valid",
     }

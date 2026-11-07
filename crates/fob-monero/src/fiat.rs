@@ -144,8 +144,9 @@ pub fn rate(price: u64, currency: &Currency) -> String {
 
 /// Money someone typed ("12.5", "12,50", "$12.50", "12.50 USD") in the
 /// currency's smallest unit. A comma is a decimal point, as XMR amounts
-/// take it; no thousands separators; no more decimals than the currency
-/// has.
+/// take it, except one that could be a thousands separator ("1,000"),
+/// which is refused whatever the currency's decimals; no thousands
+/// separators; no more decimals than the currency has.
 pub fn parse(text: &str, currency: &Currency) -> Result<u64> {
     let mut text = text.trim();
     if let Some(symbol) = currency.symbol {
@@ -155,7 +156,7 @@ pub fn parse(text: &str, currency: &Currency) -> Result<u64> {
     if text.is_char_boundary(cut) && text[cut..].eq_ignore_ascii_case(&currency.code) {
         text = text[..cut].trim_end();
     }
-    let text = text.replace(',', ".");
+    let text = crate::amount::decimal_point(text)?;
     let (whole, frac) = text.split_once('.').unwrap_or((&text, ""));
     if whole.is_empty() && frac.is_empty()
         || !whole.chars().all(|c| c.is_ascii_digit())
@@ -279,6 +280,21 @@ mod tests {
         for bad in ["", ".", "1.234", "1,234.56", "-1", "abc", "€3", "99999999999999999999"] {
             assert!(parse(bad, &usd()).is_err(), "{bad} parsed");
         }
+    }
+
+    #[test]
+    fn a_comma_that_could_be_thousands_is_refused_in_every_currency() {
+        // Three-decimal currencies used to read "1,000" as 1.000, a
+        // thousandth of what a merchant typing a thousand meant.
+        for code in ["KWD", "BHD", "USD", "JPY"] {
+            assert!(parse("1,000", &currency(code)).is_err(), "1,000 {code} parsed");
+            assert!(parse("1,000 KWD", &currency(code)).is_err(), "{code}");
+        }
+        assert_eq!(currency("KWD").decimals, 3);
+        assert_eq!(parse("1.000", &currency("KWD")).unwrap(), 1_000);
+        assert_eq!(parse("0,005", &currency("KWD")).unwrap(), 5);
+        assert_eq!(parse("1,5", &currency("KWD")).unwrap(), 1_500);
+        assert_eq!(parse("1,50", &usd()).unwrap(), 150);
     }
 
     #[test]

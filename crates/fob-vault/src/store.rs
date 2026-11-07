@@ -29,9 +29,7 @@ pub fn save<T: Serialize>(path: &Path, key: &[u8; 32], value: &T) -> Result<()> 
     file.extend_from_slice(MAGIC);
     file.extend_from_slice(&nonce);
     file.extend_from_slice(&sealed);
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &file).map_err(|e| VaultError::Storage(e.to_string()))?;
-    std::fs::rename(&tmp, path).map_err(|e| VaultError::Storage(e.to_string()))
+    crate::files::write_private(path, &file).map_err(|e| VaultError::Storage(e.to_string()))
 }
 
 pub fn load<T: DeserializeOwned>(path: &Path, key: &[u8; 32]) -> Result<T> {

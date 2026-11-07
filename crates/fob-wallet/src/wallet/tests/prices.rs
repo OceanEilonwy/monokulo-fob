@@ -12,7 +12,7 @@ async fn a_payment_seen_now_keeps_the_price_of_the_moment() {
     {
         let mut state = wallet.inner.state.lock().await;
         state.outputs.push(received("in", t - 120, XMR / 2));
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
         assert!(wallet.record_prices(&mut state));
         wallet.save_state(&state).unwrap();
     }

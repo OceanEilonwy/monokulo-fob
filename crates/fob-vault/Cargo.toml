@@ -12,6 +12,8 @@ chacha20poly1305 = "0.10"
 curve25519-dalek = "4"
 fob-monero = { path = "../fob-monero" }
 hex = "0.4"
+# mlock for the keys held in memory.
+libc = "0.2"
 monero-seed = { path = "../../third_party/monero-seed" }
 monero-wallet = "0.2"
 polyseed = { path = "../../third_party/polyseed" }

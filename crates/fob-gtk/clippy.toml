@@ -1,0 +1,12 @@
+# The engine hands out the whole FobWallet for what screens show, and these
+# are its methods that show secrets or spend. Here they go through the engine,
+# which takes the passphrase again first (Engine::confirm), so none of them can
+# be reached by a screen that didn't ask.
+disallowed-methods = [
+    { path = "fob_ffi::FobWallet::seed_phrase", reason = "use Engine::seed_phrase, which asks for the passphrase" },
+    { path = "fob_ffi::FobWallet::wallet_code", reason = "use Engine::wallet_code, which asks for the passphrase" },
+    { path = "fob_ffi::FobWallet::wallet_code_qr", reason = "use Engine::wallet_code, which asks for the passphrase" },
+    { path = "fob_ffi::FobWallet::keys_page", reason = "use Engine::keys_page, which asks for the passphrase" },
+    { path = "fob_ffi::FobWallet::send", reason = "use Engine::send, which asks for the passphrase" },
+    { path = "fob_ffi::FobWallet::remove_file", reason = "use Engine::forget_wallet, which asks for the passphrase" },
+]

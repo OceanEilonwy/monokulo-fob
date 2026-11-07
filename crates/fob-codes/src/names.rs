@@ -49,6 +49,14 @@ fn invisible(c: char) -> bool {
     )
 }
 
+/// Characters that aren't default ignorables but draw as nothing anyway: the
+/// blank braille cell, the interlinear annotation marks and the object
+/// replacement character, and the musical null notehead. A font shows an
+/// empty cell for each, so "Sam⠀" would pass for "Sam" and "⠀" for a name.
+fn blank(c: char) -> bool {
+    matches!(c, '\u{2800}' | '\u{fff9}'..='\u{fffc}' | '\u{1d159}')
+}
+
 /// Pictographs and symbols an emoji sequence is built from (skin tones
 /// among them).
 fn emoji(c: char) -> bool {
@@ -56,7 +64,7 @@ fn emoji(c: char) -> bool {
 }
 
 /// `text` as a name or note keeps it: no control characters (a line break,
-/// a bell) and nothing that draws nothing ([`invisible`]), so two names
+/// a bell) and nothing that draws nothing ([`invisible`], [`blank`]), so two names
 /// that look the same are the same. A joiner between two emoji, and a
 /// variation selector or tag after one, stay: they make one emoji of
 /// several (a family, a flag).
@@ -69,7 +77,7 @@ pub fn clean(text: &str) -> String {
             c if c.is_control() => false,
             '\u{200d}' => last.is_some_and(|l| emoji(l) || l == '\u{fe0f}') && chars.get(i + 1).is_some_and(|&n| emoji(n)),
             '\u{fe00}'..='\u{fe0f}' | '\u{e0020}'..='\u{e007f}' => last.is_some_and(|l| emoji(l) || ('\u{e0020}'..='\u{e007f}').contains(&l)),
-            c => !invisible(c),
+            c => !invisible(c) && !blank(c),
         };
         if keep {
             kept.push(c);
@@ -81,61 +89,104 @@ pub fn clean(text: &str) -> String {
 
 /// The Latin letter a letter of another script is drawn like (lower case),
 /// or a digit like a letter: the confusables a name could hide behind.
+///
+/// Cherokee capitals are drawn like Latin ones (Ꭺ, Ꮪ), but lower case first
+/// turns them into Cherokee small letters (U+AB70 on), which look nothing like
+/// Latin, so it's those that are matched here, each beside its capital. The
+/// pairs come from Unicode's confusables list.
 fn latin(c: char) -> char {
     match c {
-        'а' => 'a',
+        'а' | 'α' | 'ɑ' => 'a',
         'в' | 'β' => 'b',
         'с' | 'ϲ' => 'c',
         'ԁ' => 'd',
         'е' | 'ё' | 'ε' => 'e',
-        'ɡ' => 'g',
-        'н' | 'һ' | 'η' => 'h',
+        'ɡ' | 'ց' => 'g',
+        'н' | 'һ' | 'η' | 'հ' => 'h',
         'і' | 'ї' | 'ι' | 'ı' => 'i',
         'ј' | 'ϳ' => 'j',
         'к' | 'κ' => 'k',
         'ӏ' | '1' | '|' => 'l',
         'м' | 'μ' => 'm',
-        'о' | 'ο' | '0' => 'o',
+        'ո' => 'n',
+        'о' | 'ο' | '0' | 'օ' => 'o',
         'р' | 'ρ' => 'p',
         'ԛ' => 'q',
         'ѕ' => 's',
         'т' | 'τ' => 't',
-        'υ' => 'u',
+        'υ' | 'ս' => 'u',
         'ѵ' | 'ν' => 'v',
         'ԝ' => 'w',
         'х' | 'χ' => 'x',
         'у' | 'ү' => 'y',
         'ζ' => 'z',
+        // Cherokee, small and capital: Ꭺ Ᏼ Ꮯ Ꭰ Ꭼ Ꮐ Ꮋ Ꭻ Ꮶ Ꮮ Ꮇ Ꮲ Ꭱ Ꮪ Ꭲ Ꮩ Ꮃ Ꮓ.
+        '\u{ab7a}' | '\u{13aa}' => 'a',
+        '\u{13fc}' | '\u{13f4}' => 'b',
+        '\u{abaf}' | '\u{13df}' => 'c',
+        '\u{ab70}' | '\u{13a0}' => 'd',
+        '\u{ab7c}' | '\u{13ac}' => 'e',
+        '\u{ab90}' | '\u{13c0}' => 'g',
+        '\u{ab8b}' | '\u{13bb}' => 'h',
+        '\u{ab7b}' | '\u{13ab}' => 'j',
+        '\u{abb6}' | '\u{13e6}' => 'k',
+        '\u{abae}' | '\u{13de}' => 'l',
+        '\u{ab87}' | '\u{13b7}' => 'm',
+        '\u{abb2}' | '\u{13e2}' => 'p',
+        '\u{ab71}' | '\u{13a1}' => 'r',
+        '\u{abaa}' | '\u{13da}' => 's',
+        '\u{ab72}' | '\u{13a2}' => 't',
+        '\u{aba9}' | '\u{13d9}' => 'v',
+        '\u{ab83}' | '\u{13b3}' => 'w',
+        '\u{ab93}' | '\u{13c3}' => 'z',
         c => c,
     }
 }
 
 /// A name as it looks, to tell whether two could be taken for one another:
 /// cleaned, in compatibility form (full-width letters, ligatures and the
-/// like as plain letters), lower case, letters of other scripts that look
-/// Latin as Latin, without spaces.
+/// like as plain letters) taken apart, lower case, without its combining
+/// marks, letters of other scripts that look Latin as Latin, without spaces
+/// or the joiners and selectors kept inside an emoji.
+///
+/// Every combining mark goes, not only accents: an overlay (U+0334–0338, the
+/// marks for symbols from U+20D0) on a letter still reads as the letter, so
+/// "S̶am" must clash with "Sam". That makes "José" clash with "Jose" too, and
+/// a few names in scripts whose vowels are marks clash with one another;
+/// a clash only asks before saving, so erring that way is the safe one.
 pub fn skeleton(name: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    clean(name).nfkc().flat_map(char::to_lowercase).filter(|c| !c.is_whitespace()).map(latin).collect()
+    use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+    clean(name)
+        .nfkd()
+        .flat_map(char::to_lowercase)
+        .filter(|&c| !c.is_whitespace() && !is_combining_mark(c) && !invisible(c) && c != '\u{200d}')
+        .map(latin)
+        .collect()
+}
+
+/// Whether a cleaned name shows anything: its skeleton isn't empty. A name
+/// of nothing but combining marks or spaces draws as a blank.
+fn visible(name: &str) -> bool {
+    !skeleton(name).is_empty()
 }
 
 /// A name with control characters taken out and spaces trimmed, cut to
-/// [`NAME_MAX`] characters; `None` when nothing is left. For names that
-/// come from payment codes.
+/// [`NAME_MAX`] characters; `None` when nothing is left that shows. For
+/// names that come from payment codes.
 pub fn clean_name(text: &str) -> Option<String> {
     let kept = clean(text);
     let cut: String = kept.trim().chars().take(NAME_MAX).collect();
     let cut = cut.trim_end();
-    (!cut.is_empty()).then(|| cut.to_owned())
+    visible(cut).then(|| cut.to_owned())
 }
 
 /// A typed name, checked: 1 to [`NAME_MAX`] characters once trimmed (control
-/// characters, a pasted line break, dropped).
+/// characters, a pasted line break, dropped), and something in it that shows.
 pub fn check_name(text: &str) -> Result<String> {
     let kept = clean(text);
     let name = kept.trim();
     match name.chars().count() {
-        0 => Err(CodeError::NameEmpty),
+        _ if !visible(name) => Err(CodeError::NameEmpty),
         n if n > NAME_MAX => Err(CodeError::NameTooLong { max: NAME_MAX }),
         _ => Ok(name.to_owned()),
     }
@@ -290,6 +341,60 @@ fn without_profile(bytes: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Greek, IPA, Armenian and Cherokee letters drawn like Latin ones don't
+    /// make a second "Sam" that looks like the first.
+    #[test]
+    fn lookalikes_from_other_scripts_have_the_latin_skeleton() {
+        assert_eq!(skeleton("Sam"), "sam");
+        assert_eq!(skeleton("Sαm"), "sam", "Greek alpha");
+        assert_eq!(skeleton("Sɑm"), "sam", "Latin alpha");
+        assert_eq!(skeleton("Ꮪam"), "sam", "Cherokee DU, which lower case makes U+ABAA");
+        assert_eq!(skeleton("ᏚᎪᎷ"), "sam", "all Cherokee capitals");
+        assert_eq!(skeleton("Ꭺnna"), "anna");
+        assert_eq!(skeleton("Ᏼob"), "bob", "Cherokee YV, small U+13FC");
+        assert_eq!(skeleton("Jօhո"), "john", "Armenian oh and vo");
+        assert_eq!(skeleton("\u{13b3}\u{13ac}\u{13de}"), "wel", "Cherokee LA, GV, TLE");
+        assert_eq!(skeleton("Gսs"), skeleton("Gus"), "Armenian seh");
+        assert_ne!(skeleton("Sam"), skeleton("Sum"), "a real difference stays one");
+    }
+
+    /// Characters that draw as an empty cell, and marks laid over a letter,
+    /// don't make a second "Sam", and a name of only them is no name.
+    #[test]
+    fn blanks_and_overlays_neither_hide_a_clash_nor_make_a_name() {
+        let sam = skeleton("Sam");
+        for lookalike in [
+            "Sam\u{2800}",
+            "S\u{2800}am",
+            "Sam\u{fffc}",
+            "Sam\u{fff9}\u{fffb}",
+            "Sa\u{fffa}m",
+            "S\u{336}am",
+            "S\u{334}a\u{338}m",
+            "Sam\u{20d2}",
+            "Sam\u{20e0}",
+            "Sam\u{1d159}",
+            "Sa\u{301}m",
+            "Sám",
+            "Sam\u{3000}",
+            "Sam\u{fe0f}",
+        ] {
+            assert_eq!(skeleton(lookalike), sam, "{lookalike:?}");
+        }
+        for blank in ["\u{2800}", "\u{2800}\u{2800}", "\u{fffc}", "\u{336}", "\u{20dd}\u{20e0}", " \u{301} ", "\u{3000}"] {
+            assert_eq!(clean_name(blank), None, "{blank:?}");
+            assert!(matches!(check_name(blank), Err(CodeError::NameEmpty)), "{blank:?}");
+        }
+        // The blank cell is taken out of what's kept, too.
+        assert_eq!(clean_name("Sam\u{2800}").as_deref(), Some("Sam"));
+        // Emoji and other scripts are still names.
+        assert_eq!(check_name("❤\u{fe0f}").unwrap(), "❤\u{fe0f}");
+        assert!(check_name("1\u{fe0f}\u{20e3}").is_ok(), "a keycap");
+        assert_eq!(check_name("李").unwrap(), "李");
+        assert_eq!(check_name("राम").unwrap(), "राम");
+        assert_ne!(skeleton("राम"), "");
+    }
 
     /// `real` (a plain one) as Android 16 encodes it: an extended
     /// header with the profile flag (and `flags` besides), an sRGB profile,

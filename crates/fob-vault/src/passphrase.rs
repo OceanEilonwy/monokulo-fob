@@ -138,25 +138,8 @@ fn open(passphrase: &str, sealed: &Sealed) -> Result<Zeroizing<[u8; 32]>> {
 
 /// Written whole or not at all, readable only by this user.
 fn write(dir: &Path, sealed: &Sealed) -> Result<()> {
-    let storage = |e: std::io::Error| VaultError::Storage(e.to_string());
-    std::fs::create_dir_all(dir).map_err(storage)?;
     let text = serde_json::to_vec_pretty(sealed).map_err(|e| VaultError::Storage(e.to_string()))?;
-    let tmp = path(dir).with_extension("json.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp).map_err(storage)?;
-        file.write_all(&text).map_err(storage)?;
-        file.sync_all().map_err(storage)?;
-    }
-    std::fs::rename(&tmp, path(dir)).map_err(storage)
+    crate::files::write_private(&path(dir), &text).map_err(|e| VaultError::Storage(e.to_string()))
 }
 
 #[cfg(test)]

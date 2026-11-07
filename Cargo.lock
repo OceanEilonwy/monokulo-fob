@@ -532,7 +532,6 @@ version = "0.1.10"
 dependencies = [
  "fob-ffi",
  "fob-wallet",
- "image-webp",
  "rqrr",
  "serde",
  "serde_json",
@@ -553,6 +552,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha3",
  "socket2",
  "tokio",
  "tokio-rustls",
@@ -583,9 +583,13 @@ dependencies = [
 name = "fob-ffi"
 version = "0.1.10"
 dependencies = [
+ "curve25519-dalek",
  "fob-wallet",
+ "image-webp",
+ "serde_json",
  "thiserror 2.0.21",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]
@@ -653,6 +657,7 @@ dependencies = [
  "curve25519-dalek",
  "fob-monero",
  "hex",
+ "libc",
  "monero-seed",
  "monero-wallet",
  "polyseed",

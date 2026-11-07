@@ -1,6 +1,6 @@
 package com.monokulo.fob.ui
 
-import android.graphics.BitmapFactory
+import android.graphics.Bitmap
 import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -19,7 +19,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -27,29 +26,41 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import uniffi.fob.decodePhoto
 
-/** The most pixels a side of a photo Rust keeps; anything claiming more isn't decoded. */
-private const val PHOTO_SIDE_MAX = 128
-
-/** Photos decoded for their size on screen, so a list draws each contact's once. */
+/** Photos decoded once, so a list draws each contact's without decoding it again. */
 private val decoded = LruCache<String, ImageBitmap>(64)
 
-private fun key(photo: ByteArray, px: Int) = "${photo.contentHashCode()}:${photo.size}:$px"
+private fun key(photo: ByteArray) = "${photo.contentHashCode()}:${photo.size}"
 
 /**
- * [photo] decoded for [px] pixels a side: its header read first, nothing
- * decoded that claims more than Rust keeps, scaled down as it's decoded;
- * null when it can't be (the initial shows).
+ * [photo] as a bitmap, null when it can't be (the initial shows).
+ *
+ * Decoded by Rust ([decodePhoto], the pure-Rust image-webp), never by
+ * BitmapFactory: a contact's photo comes from someone else, a phone touched
+ * while Meet is open saves it without asking, and Rust checks only its
+ * headers when it keeps it. Android's own WebP decoder is C (Skia's libwebp),
+ * where a crafted picture has reached native code before (CVE-2023-4863), so
+ * a stranger's bytes never reach it; only the pixels Rust made do. Your own
+ * photo is drawn the same way, as it's the same kind of kept WebP; only the
+ * picture you pick to make it from goes through Android's decoder (Photo.kt),
+ * since you chose that picture yourself.
  */
-private fun decodePhoto(photo: ByteArray, px: Int): ImageBitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(photo, 0, photo.size, bounds)
-    val side = maxOf(bounds.outWidth, bounds.outHeight)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || side > PHOTO_SIDE_MAX) return@runCatching null
-    var sample = 1
-    while (side / (sample * 2) >= px) sample *= 2
-    BitmapFactory.decodeByteArray(photo, 0, photo.size, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
-}.getOrNull()?.also { decoded.put(key(photo, px), it) }
+private fun photoBitmap(photo: ByteArray): ImageBitmap? = runCatching {
+    val pixels = decodePhoto(photo) ?: return@runCatching null
+    val width = pixels.width.toInt()
+    val height = pixels.height.toInt()
+    val rgba = pixels.rgba
+    if (width <= 0 || height <= 0 || rgba.size != width * height * 4) return@runCatching null
+    // Colours as ARGB ints, which createBitmap premultiplies itself: copying
+    // RGBA bytes straight in would skip that, and a photo with see-through
+    // edges would draw too bright.
+    val colors = IntArray(width * height) { i ->
+        val at = i * 4
+        (rgba[at + 3].toInt() and 0xff shl 24) or (rgba[at].toInt() and 0xff shl 16) or (rgba[at + 1].toInt() and 0xff shl 8) or (rgba[at + 2].toInt() and 0xff)
+    }
+    Bitmap.createBitmap(colors, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
+}.getOrNull()?.also { decoded.put(key(photo), it) }
 
 /**
  * A contact's avatar (Shared › "Contact avatar"): their photo in a circle,
@@ -59,10 +70,10 @@ private fun decodePhoto(photo: ByteArray, px: Int): ImageBitmap? = runCatching {
  */
 @Composable
 fun Avatar(name: String, initial: String, photo: ByteArray?, size: Dp, modifier: Modifier = Modifier, describe: Boolean = false, fill: Color = Fob.sunken) {
-    val px = with(LocalDensity.current) { size.roundToPx() }.coerceAtLeast(1)
-    // Decoded off the main thread; one decoded before shows at once.
-    val image by produceState(photo?.let { decoded.get(key(it, px)) }, photo, px) {
-        value = photo?.let { p -> decoded.get(key(p, px)) ?: withContext(Dispatchers.Default) { decodePhoto(p, px) } }
+    // Decoded off the main thread; one decoded before shows at once. At most
+    // 128 pixels a side, it's scaled to the avatar as it's drawn.
+    val image by produceState(photo?.let { decoded.get(key(it)) }, photo) {
+        value = photo?.let { p -> decoded.get(key(p)) ?: withContext(Dispatchers.Default) { photoBitmap(p) } }
     }
     val shown = image
     val label = if (shown != null) "$name's photo" else name

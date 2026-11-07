@@ -12,6 +12,22 @@ name: Release
 # Secrets: FOB_KEYSTORE_BASE64 (the keystore file, base64), FOB_KEYSTORE_PASSWORD,
 # FOB_KEY_ALIAS, FOB_KEY_PASSWORD.
 # A tag must name the workspace's version (Cargo.toml).
+#
+# What builds a release is fixed, because it ends up inside a wallet: the Rust
+# toolchain is one version (RUST_TOOLCHAIN), rustup-init is checked by hash, and
+# every action is named by commit, not by a tag that can move (the tag it was is
+# in the comment). Release APKs build from a clean target/, never from a cache
+# that other runs wrote. Each job's artifacts carry their SHA-256, checked again
+# before publishing.
+#
+# Still to do: the AppImage and Flatpak aren't signed (no minisign/GPG, no
+# signed Flatpak repo), so SHA256SUMS, on the same page, gives integrity, not
+# authenticity. The Flatpak job's container image is named by tag.
+
+env:
+  RUST_TOOLCHAIN: "1.98.1"
+  RUSTUP_VERSION: "1.29.3"
+  RUSTUP_INIT_SHA256: "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55"
 
 on:
   push:
@@ -34,7 +50,7 @@ jobs:
       FOB_KEY_ALIAS: ${{ secrets.FOB_KEY_ALIAS }}
       FOB_KEY_PASSWORD: ${{ secrets.FOB_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Version
         id: version
         run: |
@@ -53,28 +69,25 @@ jobs:
           elif [ "$GITHUB_REF_TYPE" = tag ]; then
             echo "a release needs the signing secrets"; exit 1
           fi
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          # A release builds from nothing other runs left behind.
+          cache-disabled: true
       - name: Install Android SDK platform and NDK
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.2" "ndk;27.0.12077973" > /dev/null
       - name: Rust for Android
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
           rustup target add aarch64-linux-android x86_64-linux-android
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/bin/cargo-ndk
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: android-rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # No cache: no target/ or cargo-ndk binary that another run wrote. What
+      # goes in the APK is built here, from crates Cargo checks against Cargo.lock.
       - name: cargo-ndk
-        run: command -v cargo-ndk || cargo install cargo-ndk --version 4.1.2 --locked
+        run: cargo install cargo-ndk --version 4.1.2 --locked
       - name: Build
         working-directory: android
         run: |
@@ -97,8 +110,8 @@ jobs:
               cp "$out/app-$abi-release-unsigned.apk" "dist/fob-$version-$abi-unsigned.apk"
             fi
           done
-          cd dist && sha256sum * > SHA256SUMS
-      - uses: actions/upload-artifact@v7
+          cd dist && sha256sum * > fob-apk.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: fob-release
           path: dist/*
@@ -115,17 +128,27 @@ jobs:
           apt-get install -y --no-install-recommends build-essential ca-certificates curl file pkg-config \
             desktop-file-utils git libglib2.0-bin libgtk-4-dev libadwaita-1-dev librsvg2-common \
             adwaita-icon-theme gsettings-desktop-schemas
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # rustup-init of a fixed version, checked by hash, installing a fixed Rust.
       - name: Toolchain
         run: |
-          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+          curl -fsSL -o rustup-init "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init"
+          echo "$RUSTUP_INIT_SHA256  rustup-init" | sha256sum -c -
+          chmod +x rustup-init
+          ./rustup-init -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+          rm rustup-init
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Build
         run: crates/fob-gtk/appimage.sh
-      - uses: actions/upload-artifact@v7
+      - name: Checksum
+        working-directory: dist
+        run: sha256sum *.AppImage > fob-appimage.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: fob-appimage
-          path: dist/*.AppImage
+          path: |
+            dist/*.AppImage
+            dist/fob-appimage.sha256
           retention-days: 30
 
   flatpak:
@@ -134,7 +157,8 @@ jobs:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The Rust here is the SDK extension's, a fixed branch of it (25.08).
       - name: Build
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
@@ -142,10 +166,15 @@ jobs:
           flatpak-builder --disable-rofiles-fuse --force-clean --repo=flatpak-repo flatpak-build crates/fob-gtk/data/com.monokulo.Fob.yml
           mkdir -p dist
           flatpak build-bundle flatpak-repo "dist/fob-$version-x86_64.flatpak" com.monokulo.Fob --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
-      - uses: actions/upload-artifact@v7
+      - name: Checksum
+        working-directory: dist
+        run: sha256sum *.flatpak > fob-flatpak.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: fob-flatpak
-          path: dist/*.flatpak
+          path: |
+            dist/*.flatpak
+            dist/fob-flatpak.sha256
           retention-days: 30
 
   publish:
@@ -156,14 +185,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: dist
           merge-multiple: true
+      # Each job's sums are checked first, so what's published is what was built.
       - name: One SHA256SUMS for everything
         working-directory: dist
         run: |
-          rm -f SHA256SUMS
+          sha256sum -c *.sha256
+          rm -f *.sha256 SHA256SUMS
           sha256sum * > SHA256SUMS
       - name: Release
         env:

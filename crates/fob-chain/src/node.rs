@@ -392,13 +392,14 @@ struct Live {
 }
 
 impl Live {
-    fn new(node: &Setting) -> Result<Live, Failure> {
+    /// `pin`, the key the wallet holds this node to, if it holds it to one.
+    fn new(node: &Setting, pin: Option<[u8; 32]>) -> Result<Live, Failure> {
         match reachable(&node.url) {
             Err(EndpointProblem::Onion) => return Err(Failure::Onion),
             Err(_) => return Err(Failure::BadAddress),
             Ok(()) => {}
         }
-        let transport = Transport::new(&normalize(&node.url), node.self_signed).map_err(|_| Failure::Other)?;
+        let transport = Transport::pinned(&normalize(&node.url), node.self_signed, pin).map_err(|_| Failure::Other)?;
         Ok(Live { transport, self_signed: node.self_signed })
     }
 
@@ -508,23 +509,28 @@ pub(crate) async fn run<P: Probe>(probe: &P, mut report: Report, known_tip: u64,
 
 /// Checks `node` for a wallet on `network` that last saw `known_tip`, at
 /// `now` (seconds since the epoch), telling `progress` as checks finish.
-pub async fn check(network: Network, node: &Setting, known_tip: u64, now: u64, progress: &(dyn Fn(&Report) + Sync)) -> Report {
+/// `pin` is the key the wallet holds the node to, if any: a check that
+/// accepted another would call working a node the wallet itself refuses.
+pub async fn check(network: Network, node: &Setting, pin: Option<[u8; 32]>, known_tip: u64, now: u64, progress: &(dyn Fn(&Report) + Sync)) -> Report {
     let report = Report::pending(network, node);
     progress(&report);
-    match Live::new(node) {
+    match Live::new(node, pin) {
         Ok(live) => run(&live, report, known_tip, now, progress).await,
         Err(failure) => report.unanswered(failure),
     }
 }
 
 /// Checks several nodes at once, with each one's line for the list (the
-/// fastest of two or more that pass says so).
-pub async fn check_all(network: Network, nodes: &[Setting], known_tip: u64, now: u64) -> Vec<(Report, Line)> {
+/// fastest of two or more that pass says so). `pinned` is a node the wallet
+/// holds to a key, with the key: that node, if it's among them, is checked
+/// held to it, as in [`check`].
+pub async fn check_all(network: Network, nodes: &[Setting], pinned: Option<&(Setting, [u8; 32])>, known_tip: u64, now: u64) -> Vec<(Report, Line)> {
     let handles: Vec<_> = nodes
         .iter()
         .map(|node| {
             let node = node.clone();
-            tokio::spawn(async move { check(network, &node, known_tip, now, &|_| {}).await })
+            let pin = pinned.filter(|(setting, _)| normalize(&setting.url) == normalize(&node.url) && setting.self_signed == node.self_signed).map(|(_, pin)| *pin);
+            tokio::spawn(async move { check(network, &node, pin, known_tip, now, &|_| {}).await })
         })
         .collect();
     let mut reports = Vec::with_capacity(handles.len());
@@ -544,10 +550,12 @@ fn lines(reports: &[Report]) -> Vec<Line> {
     reports.iter().enumerate().map(|(i, r)| r.line(Some(i) == fastest)).collect()
 }
 
-/// Whether `node` is on `network`, before switching to it.
+/// Whether `node` is on `network`, before switching to it. Held to no pin:
+/// switching to a node, the one in use included, is how a person accepts a
+/// key, so the wallet forgets the old pin and pins the key it next meets.
 pub async fn on_network(network: Network, node: &Setting) -> Result<(), SwitchRefused> {
     reachable(&node.url).map_err(SwitchRefused::Endpoint)?;
-    let live = Live::new(node).map_err(SwitchRefused::Failed)?;
+    let live = Live::new(node, None).map_err(SwitchRefused::Failed)?;
     let info = live.info().await.map_err(SwitchRefused::Failed)?;
     if info.nettype != network.name() {
         return Err(SwitchRefused::OtherNetwork { theirs: info.nettype, ours: network.name().to_owned() });

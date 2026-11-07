@@ -13,9 +13,10 @@ pub(super) struct Owned {
     pub(super) amount: u64,
     pub(super) subaddress: u32,
     pub(super) coinbase: bool,
-    /// The block its transaction's unlock time names, if any (a mined
-    /// reward's is 60 blocks on): it can't be spent before the chain has
-    /// that many blocks. 0 for none.
+    /// Its transaction's unlock time as Monero writes it: a block (a mined
+    /// reward's is 60 blocks on), so it can't be spent before the chain has
+    /// that many blocks; or, from [`TIME_LOCK_FROM`] on, a Unix time, so it
+    /// can't be spent before the chain's blocks are that late. 0 for none.
     #[serde(default)]
     pub(super) unlock_block: u64,
     /// The output's one-time key, in hex: a second output with the same key
@@ -72,6 +73,12 @@ pub(super) struct Sent {
     /// code said it was, not checked by anyone.
     #[serde(default)]
     pub(super) recipient_name: Option<String>,
+    /// The signed transaction, in hex, while the node may not have it: the
+    /// node gave no answer when it was sent (it timed out, the line dropped),
+    /// so it's offered again with each sync until the node takes it or turns
+    /// it down. `None` once it has, and for every payment the node answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) signed: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -81,6 +88,11 @@ pub(super) struct State {
     /// verified, still encrypted). Off in older files.
     #[serde(default)]
     pub(super) node_self_signed: bool,
+    /// For a node whose self-signed certificate is accepted: the fingerprint
+    /// of its key, in hex, from the first connection to it, which every later
+    /// one must match. Choosing a node, this one again included, forgets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) node_pin: Option<String>,
     /// Nodes this wallet was given, besides its network's own: kept to change
     /// back to. Each URL once, as [`node::normalize`] leaves it.
     #[serde(default)]
@@ -171,13 +183,40 @@ pub(super) struct State {
     pub(super) backup_pending: bool,
 }
 
+/// An unlock time from here on is a Unix time, not a block (Monero's
+/// `CRYPTONOTE_MAX_BLOCK_NUMBER`).
+pub(super) const TIME_LOCK_FROM: u64 = 500_000_000;
+
+/// A block's time, in seconds, as Monero reckons a time lock in blocks.
+const BLOCK_SECONDS: u64 = 120;
+
 impl Owned {
     /// Confirmations before it can be spent: 10 (60 for a mined reward), or
     /// more if its unlock time names a later block. Monero lets an output
-    /// with unlock time `b` be spent once the chain has `b` blocks.
+    /// with unlock time `b` be spent once the chain has `b` blocks. A time
+    /// lock is [`State::needed`]'s, which knows the chain's time.
     pub(super) fn needed(&self) -> u64 {
         let window = if self.coinbase { COINBASE_UNLOCK } else { UNLOCK };
-        window.max(self.unlock_block.saturating_sub(self.height))
+        let block = if self.unlock_block >= TIME_LOCK_FROM { 0 } else { self.unlock_block };
+        window.max(block.saturating_sub(self.height))
+    }
+
+    /// The Unix time it's locked until, if it's locked to a time.
+    pub(super) fn unlock_time(&self) -> Option<u64> {
+        (self.unlock_block >= TIME_LOCK_FROM).then_some(self.unlock_block)
+    }
+
+    /// Whether this is the coin `id` names: its transaction and the output
+    /// as kept, which says where on the chain it is. A payment names its
+    /// coins this way, not by their place in the wallet's list, which moves
+    /// when a rescan forgets coins and finds them again.
+    pub(super) fn is(&self, id: &(String, String)) -> bool {
+        self.tx == id.0 && self.output == id.1
+    }
+
+    /// How it's named in a payment: see [`is`](Owned::is).
+    pub(super) fn id(&self) -> (String, String) {
+        (self.tx.clone(), self.output.clone())
     }
 }
 
@@ -203,9 +242,21 @@ impl State {
         }
     }
 
-    /// How long `output` waits before it can be spent.
+    /// How long `output` waits before it can be spent. One locked to a time
+    /// waits until the last block scanned is that late, the chain's clock and
+    /// not the phone's, counted as the blocks that time is from it (so it
+    /// shows as not ready yet, with about how long). monerod judges it by
+    /// its own clock plus two hours; a block's time can be at most two hours
+    /// ahead of that, so this is never early.
     pub(super) fn needed(&self, output: &Owned) -> u64 {
-        manual::needed(output.needed(), self.manual())
+        let rules = match output.unlock_time() {
+            Some(time) => {
+                let left = time.saturating_sub(self.last_block_time).div_ceil(BLOCK_SECONDS);
+                output.needed().max(if left == 0 { 0 } else { confirmations(self, output.height) + left })
+            }
+            None => output.needed(),
+        };
+        manual::needed(rules, self.manual())
     }
 
     /// What can be spent now.

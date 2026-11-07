@@ -257,10 +257,13 @@ impl Wallet {
             None => false,
         };
 
+        // Before looking them up: one the node never had may have it now.
+        self.publish_unanswered(&rpc).await;
         let mut to_scan = vec![];
         if !unsettled.is_empty() {
             let hashes: Vec<&str> = unsettled.iter().map(|(tx, _)| tx.as_str()).collect();
             let lookup = self.look_up_sent(&rpc, &hashes).await?;
+            let lookup = self.check_missing(&rpc, lookup).await;
             for (tx, height) in &lookup.mined {
                 let known = unsettled.iter().find(|(hash, _)| hash == tx).and_then(|(_, h)| *h);
                 if known != Some(*height) {
@@ -309,6 +312,39 @@ impl Wallet {
         Ok(sent_lookup(&response))
     }
 
+    /// `lookup`, less the payments it says the node has never heard of that
+    /// aren't to be marked not confirmed yet: see [`still_missing`]. The
+    /// node is asked whether each one's coins are spent, on the chain or in
+    /// its pool, by their key images.
+    pub(super) async fn check_missing(&self, rpc: &Daemon, mut lookup: SentLookup) -> SentLookup {
+        let asking: Vec<(String, u64, Vec<String>)> = {
+            let state = self.inner.state.lock().await;
+            let old = now().saturating_sub(NOT_CONFIRMED_AFTER);
+            state
+                .sent
+                .iter()
+                .filter(|s| s.height.is_none() && !s.released && !s.not_confirmed && s.time <= old && lookup.missing.contains(&s.tx))
+                .map(|s| (s.tx.clone(), s.time, state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&s.tx)).filter_map(|o| o.key_image.clone()).collect()))
+                .collect()
+        };
+        let images: Vec<&str> = asking.iter().flat_map(|(_, _, images)| images.iter().map(String::as_str)).collect();
+        let said = if images.is_empty() {
+            None
+        } else {
+            let body = serde_json::json!({ "key_images": images }).to_string();
+            rpc.rpc_call("is_key_image_spent", Some(body), 1024 * 1024).await.ok().and_then(|r| key_images_spent(&r, images.len()))
+        };
+        let mut said = said.map(Vec::into_iter);
+        let now = now();
+        for (tx, time, images) in &asking {
+            let answer: Option<Vec<bool>> = said.as_mut().map(|said| said.by_ref().take(images.len()).collect());
+            if !still_missing(CoinsSaid::of(answer.as_deref()), *time, now) {
+                lookup.missing.retain(|missing| missing != tx);
+            }
+        }
+        lookup
+    }
+
     /// Marks what the node has never heard of, a day after it was sent, as not
     /// confirmed, and puts back what it has heard of again. Only says so: the
     /// coins stay spent until someone releases them.
@@ -337,6 +373,7 @@ impl Wallet {
         }
         let hashes: Vec<&str> = quiet.iter().map(String::as_str).collect();
         if let Ok(lookup) = self.look_up_sent(rpc, &hashes).await {
+            let lookup = self.check_missing(rpc, lookup).await;
             let _ = self.note_missing(&lookup).await;
         }
     }
@@ -351,6 +388,7 @@ impl Wallet {
         };
         state.sent[i].not_confirmed = false;
         state.sent[i].released = true;
+        state.sent[i].signed = None;
         for output in &mut state.outputs {
             if output.spent_in.as_deref() == Some(tx) {
                 output.spent_in = None;
@@ -420,7 +458,7 @@ impl Wallet {
 }
 
 /// What a node said of some sent payments.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct SentLookup {
     /// Each with the height it was mined at.
     pub(super) mined: Vec<(String, u64)>,
@@ -443,6 +481,64 @@ pub(super) fn sent_lookup(response: &str) -> SentLookup {
     }
     lookup.missing = value.get("missed_tx").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
     lookup
+}
+
+/// Reads an `is_key_image_spent` answer for `asked` key images: whether each
+/// is spent, on the chain or in the pool. `None` for an answer that isn't
+/// one, or not for as many.
+pub(super) fn key_images_spent(response: &str, asked: usize) -> Option<Vec<bool>> {
+    let value = serde_json::from_str::<serde_json::Value>(response).ok()?;
+    if value.get("status").and_then(|s| s.as_str()) != Some("OK") {
+        return None;
+    }
+    let statuses: Vec<u64> = serde_json::from_value(value.get("spent_status")?.clone()).ok()?;
+    (statuses.len() == asked).then(|| statuses.into_iter().map(|s| s != 0).collect())
+}
+
+/// What the node said of the coins a payment it has never heard of spent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum CoinsSaid {
+    /// None of them spent: the payment isn't anywhere, as far as the node knows.
+    Unspent,
+    /// Every one spent by something else: this wallet's seed used elsewhere,
+    /// or another payment of its own sent at the same moment. This payment
+    /// can never be mined now, and its coins aren't coming back.
+    Spent,
+    /// No answer it could read, some spent and some not (which no single
+    /// payment does), or no coins known to ask about, as while a rescan
+    /// finds them again.
+    CantSay,
+}
+
+impl CoinsSaid {
+    /// From whether each coin is spent, as [`key_images_spent`] reads it.
+    pub(super) fn of(spent: Option<&[bool]>) -> CoinsSaid {
+        match spent {
+            Some(spent) if !spent.is_empty() && spent.iter().all(|s| *s) => CoinsSaid::Spent,
+            Some(spent) if !spent.is_empty() && spent.iter().all(|s| !*s) => CoinsSaid::Unspent,
+            _ => CoinsSaid::CantSay,
+        }
+    }
+}
+
+/// Whether a payment the node has never heard of, sent at `time`, is to be
+/// marked not confirmed now, with what the node said of its coins.
+///
+/// A clear answer either way marks it after [`NOT_CONFIRMED_AFTER`]. Unspent,
+/// it may simply not have gone through. Spent, it can't any more: something
+/// else took its coins. Either way someone is better asked before paying
+/// again than left with a payment that says it's on its way for ever. The
+/// coins stay spent until someone releases them, and spent by another
+/// payment, a release only lets the node refuse a payment with them. A node
+/// that hides a payment it mined says its coins are spent too: the scan
+/// that reaches its block puts it back as sent, released or not.
+///
+/// Anything else waits until [`NOT_CONFIRMED_UNSURE_AFTER`]: a node that
+/// answers this badly once is asked again at the next look, and one that
+/// never answers it doesn't hold the coins for good.
+pub(super) fn still_missing(coins: CoinsSaid, time: u64, now: u64) -> bool {
+    let after = if coins == CoinsSaid::CantSay { NOT_CONFIRMED_UNSURE_AFTER } else { NOT_CONFIRMED_AFTER };
+    now.saturating_sub(time) >= after
 }
 
 /// Applies `lookup` to the payments sent. Whether anything changed.

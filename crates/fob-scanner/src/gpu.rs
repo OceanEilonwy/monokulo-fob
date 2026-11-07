@@ -8,15 +8,27 @@
 //!
 //! The view key's digits reach the GPU as push constants. They and the shader's
 //! working state are in memory the driver manages: the buffers are cleared after
-//! each batch and freed once scanning rests, but a driver's own copies can't be
-//! reached.
+//! each batch (the mapped results again before they're freed) and freed once
+//! scanning rests, and the CPU's copies of the digits are wiped, but a driver's own
+//! copies can't be reached.
 
 use std::{cell::RefCell, ffi::CStr, path::PathBuf};
 
 use ash::vk;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::fe::{Digits, Fe};
+
+/// A batch's pipelines and their push constants, the view key's digits. Wiped on drop.
+struct Stages(Vec<(vk::Pipeline, [i32; 16])>);
+
+impl Drop for Stages {
+    fn drop(&mut self) {
+        for (_, digits) in &mut self.0 {
+            digits.zeroize();
+        }
+    }
+}
 
 const SPIRV: &[u8] = include_bytes!("../shaders/scan.spv");
 /// A key's working state on the GPU: 300 words.
@@ -396,6 +408,13 @@ impl Gpu {
     unsafe fn free_arena(&self, arena: Arena) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            // A failed batch may have left points multiplied by the key in the results:
+            // they're wiped before the memory goes back. (The input is the
+            // transactions' public keys only.) Freeing unmaps.
+            if !arena.out_map.is_null() {
+                let words = std::slice::from_raw_parts_mut(arena.out_map, arena.items as usize * OUT_WORDS);
+                words.zeroize();
+            }
             let _ = self.device.free_descriptor_sets(self.descriptors, &[arena.set]);
             self.free(&arena.input);
             self.free(&arena.state);
@@ -518,6 +537,8 @@ impl Gpu {
                         }
                         bytes[64..68].copy_from_slice(&count.to_ne_bytes());
                         device.cmd_push_constants(command, self.layout, vk::ShaderStageFlags::COMPUTE, 0, &bytes);
+                        // The view key's digits: the driver has copied them now.
+                        bytes.zeroize();
                         device.cmd_dispatch(command, groups, 1, 1);
                         let barrier = [vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::TRANSFER_WRITE | vk::AccessFlags::HOST_READ)];
                         device.cmd_pipeline_barrier(command, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::HOST, vk::DependencyFlags::empty(), &barrier, &[], &[]);
@@ -546,25 +567,29 @@ impl Gpu {
             return Ok(Points(Zeroizing::new(vec![])));
         }
         let windows = self.tuning.windows;
-        let mut stages = Vec::with_capacity(66);
-        let mut first = [0i32; 16];
+        // Every copy of the view key's digits made here is wiped when it goes, on
+        // an error too: `Stages` on drop, the rest as `Zeroizing`. Sized up front so
+        // no copy is left behind by a reallocation.
+        let mut stages = Stages(Vec::with_capacity(66));
+        let mut first = Zeroizing::new([0i32; 16]);
         first[0] = i32::from(digits.get(63));
-        stages.push((self.init, first));
-        let order: Vec<i32> = (0..63).rev().map(|i| i32::from(digits.get(i))).collect();
+        stages.0.push((self.init, *first));
+        let mut order = Zeroizing::new(Vec::with_capacity(63));
+        order.extend((0..63).rev().map(|i| i32::from(digits.get(i))));
         for part in order.chunks(windows) {
-            let mut pc = [0i32; 16];
+            let mut pc = Zeroizing::new([0i32; 16]);
             pc[..part.len()].copy_from_slice(part);
             let pipeline = match self.tail {
                 Some((short, tail)) if part.len() == short => tail,
                 _ => self.window,
             };
-            stages.push((pipeline, pc));
+            stages.0.push((pipeline, *pc));
         }
-        stages.push((self.last, [0; 16]));
+        stages.0.push((self.last, [0; 16]));
 
         let mut points = Zeroizing::new(vec![]);
         unsafe {
-            self.run(keys.as_flattened(), keys.len() as u32, &stages, &mut |words| points.extend_from_slice(words))?;
+            self.run(keys.as_flattened(), keys.len() as u32, &stages.0, &mut |words| points.extend_from_slice(words))?;
         }
         Ok(Points(points))
     }

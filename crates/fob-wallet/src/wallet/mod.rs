@@ -16,11 +16,13 @@ mod tests;
 pub use crate::activity::{Activity, Direction};
 pub use crate::catch_up::{ScanProgress, SyncStatus};
 #[cfg(test)]
-use manual_sync::{SentLookup, sent_lookup};
-use state::{ChainSpend, Owned, Sent, State, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
-use sync::publish_failure;
+use manual_sync::{CoinsSaid,SentLookup, key_images_spent, sent_lookup, still_missing};
 #[cfg(test)]
-use sync::{ReorgReach, reorg_reach};
+use send::turned_down;
+use state::{ChainSpend, Owned, Sent, State, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
+use sync::{Unpublished, publish_failure};
+#[cfg(test)]
+use sync::{ReorgReach, pool_left, pool_spends, reorg_reach};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -91,13 +93,22 @@ const LOOKAHEAD: u32 = 200;
 const RESTORE_SKIP: u32 = 50;
 /// Ring size for transactions since the 2022 hard fork.
 const RING_LEN: u8 = 16;
-/// The most Fob pays per unit of weight, whatever a node asks: about 100× the
-/// usual normal fee.
-const MAX_FEE_PER_WEIGHT: u64 = 2_000_000;
+/// The most Fob pays per unit of weight, whatever a node asks. With the tail
+/// emission an honest mainnet node's normal fee is about 20,000 per byte
+/// (less with larger blocks), so this leaves it room to rise about twenty
+/// times before Fob refuses, where a node used to be able to ask for a
+/// hundred times that.
+const MAX_FEE_PER_WEIGHT: u64 = 400_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
 /// A sent payment the node has never heard of for this long, in seconds, is marked not confirmed.
 const NOT_CONFIRMED_AFTER: u64 = 24 * 3600;
+/// The same, when the node can't say whether the payment's coins are spent
+/// (no answer it could read, one that doesn't fit, or no coins known to ask
+/// about): a day more, so one answer that fails doesn't call a payment that
+/// went through not confirmed, and a node that never answers doesn't hold
+/// the coins forever.
+const NOT_CONFIRMED_UNSURE_AFTER: u64 = 2 * NOT_CONFIRMED_AFTER;
 /// How often syncing asks about sent payments gone quiet.
 const QUIET_CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How often it polls while the node's ZMQ publisher is heard, which
@@ -238,7 +249,8 @@ struct PreparedTx {
 struct Outgoing {
     to: String,
     amount: u64,
-    inputs: Vec<usize>,
+    /// The coins it spends, each as [`Owned::id`] names it.
+    inputs: Vec<(String, String)>,
     input_total: u64,
     receipt: Option<String>,
     note: Option<String>,
@@ -276,6 +288,10 @@ struct Inner {
     scan_job: std::sync::Mutex<Option<ScanProgress>>,
     /// Held by a pull or a scan of chosen blocks: one at a time.
     scan_running: Mutex<()>,
+    /// Held by a payment from the check that its coins are unspent until
+    /// it's recorded: two payments sharing a coin, sent at once, would both
+    /// pass the check before either was recorded.
+    sending: Mutex<()>,
     /// Scanning since the last save.
     unsaved: AtomicBool,
     /// When the file was last saved.

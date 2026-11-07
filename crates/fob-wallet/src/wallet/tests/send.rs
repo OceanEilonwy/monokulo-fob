@@ -78,7 +78,7 @@ async fn send_s_sheet_says_what_s_ready_and_who_was_paid() {
         state.outputs.push(Owned { height: 20, ..received("in", t, 2 * XMR) });
         // Not ready: not counted.
         state.outputs.push(Owned { height: 95, key: "late".into(), ..received("late", t, XMR) });
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
     }
     assert_eq!(wallet.ready_line(t).await, "2 XMR ready to spend");
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
@@ -113,6 +113,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
         pieces,
         back: vec![],
         recipient_name: None,
+        signed: None,
     };
     {
         let mut state = wallet.inner.state.lock().await;
@@ -219,7 +220,7 @@ async fn a_payment_published_is_recorded_even_if_its_caller_goes_away() {
         node.await.ok();
         Ok(())
     };
-    let call = wallet.publish_and_record("hash".into(), 30, outgoing(&to, vec![0]), publish);
+    let call = wallet.publish_and_record("hash".into(), 30, outgoing(&to, &["coin"]), "signed".into(), publish);
     assert!(tokio::time::timeout(Duration::from_millis(20), call).await.is_err(), "still publishing when dropped");
     published.send(()).unwrap();
     for _ in 0..100 {
@@ -232,16 +233,121 @@ async fn a_payment_published_is_recorded_even_if_its_caller_goes_away() {
     let state = reopened.inner.state.lock().await;
     let sent = state.sent.iter().find(|s| s.tx == "hash").expect("recorded, and saved");
     assert_eq!((sent.note.as_deref(), sent.recipient_name.as_deref(), sent.to.as_str()), (Some("Lunch"), Some("Sam"), to.as_str()));
+    assert_eq!(sent.signed, None, "the node answered: nothing to offer again");
     assert_eq!(state.outputs[0].spent_in.as_deref(), Some("hash"));
     drop(state);
     // Its inputs spent, another payment from them is refused before anything is published.
     let never = async { panic!("not published") };
-    assert!(matches!(wallet.publish_and_record("again".into(), 30, outgoing(&to, vec![0]), never).await, Err(FobError::Screen(ScreenError::NoSuchPayment))));
+    assert!(matches!(wallet.publish_and_record("again".into(), 30, outgoing(&to, &["coin"]), String::new(), never).await, Err(FobError::Screen(ScreenError::NoSuchPayment))));
     // A node refusing it records nothing.
     wallet.inner.state.lock().await.outputs.push(received("coin-2", 1, XMR));
-    let refused = async { Err(FobError::Node("rejected".into())) };
-    assert!(wallet.publish_and_record("refused".into(), 30, outgoing(&to, vec![1]), refused).await.is_err());
+    let refused = async { Err(Unpublished::Refused(FobError::Node("rejected".into()))) };
+    assert!(wallet.publish_and_record("refused".into(), 30, outgoing(&to, &["coin-2"]), String::new(), refused).await.is_err());
     assert!(wallet.inner.state.lock().await.sent.iter().all(|s| s.tx != "refused"));
+}
+
+/// A node that gave no answer may have taken the payment (audit #24): it's
+/// recorded as sent, its coins spent so a second try can't pick others and
+/// pay twice, and the signed transaction kept, saved, to offer again.
+#[tokio::test]
+async fn a_payment_the_node_gave_no_answer_for_is_kept_as_sent() {
+    let path = dir("send-unanswered");
+    let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.outputs.push(received("coin", 1, XMR));
+    let to = wallet.inner.keys.address(9);
+    let timed_out = async { Err(Unpublished::Unsure) };
+    assert_eq!(wallet.publish_and_record("hash".into(), 30, outgoing(&to, &["coin"]), "0200".into(), timed_out).await.unwrap(), "hash");
+    let reopened = Wallet::open(&path, [1; 32]).unwrap();
+    let state = reopened.inner.state.lock().await;
+    let sent = state.sent.iter().find(|s| s.tx == "hash").expect("recorded, and saved");
+    assert_eq!(sent.signed.as_deref(), Some("0200"));
+    assert_eq!(state.outputs[0].spent_in.as_deref(), Some("hash"));
+    drop(state);
+    // Released a day on, nothing is offered again.
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.sent[0].not_confirmed = true;
+    }
+    wallet.release_payment("hash").await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.sent[0].signed, None);
+}
+
+/// A node still syncing answers BUSY, which reaches the wallet as a rejection
+/// with no reason: the payment is offered again, not taken as turned down
+/// (review of audit #24).
+#[test]
+fn a_busy_node_hasnt_turned_a_payment_down() {
+    assert!(turned_down("double spend"));
+    assert!(turned_down("fee too low"));
+    assert!(!turned_down(""));
+    assert!(!turned_down("  "));
+    assert!(!turned_down("BUSY"));
+    assert!(!turned_down("daemon is busy, try again later"));
+}
+
+/// Two payments sharing a coin, sent at once, can't both pass the check that
+/// its coins are unspent before either is recorded (review of audit #24).
+#[tokio::test]
+async fn two_payments_sent_at_once_never_spend_one_coin_twice() {
+    let wallet = Wallet::create(&dir("send-together"), [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.outputs.push(received("coin", 1, XMR));
+    let to = wallet.inner.keys.address(9);
+    let (answer, node) = tokio::sync::oneshot::channel::<()>();
+    let first = {
+        let (wallet, to) = (wallet.clone(), to.clone());
+        tokio::spawn(async move {
+            let unsure = async move {
+                node.await.ok();
+                Err(Unpublished::Unsure)
+            };
+            wallet.publish_and_record("first".into(), 30, outgoing(&to, &["coin"]), "0200".into(), unsure).await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let second = {
+        let wallet = wallet.clone();
+        tokio::spawn(async move {
+            let never = async { panic!("not published: its coin is the first's") };
+            wallet.publish_and_record("second".into(), 30, outgoing(&to, &["coin"]), "0300".into(), never).await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    answer.send(()).unwrap();
+    assert_eq!(first.await.unwrap().unwrap(), "first");
+    assert!(matches!(second.await.unwrap(), Err(FobError::Screen(ScreenError::NoSuchPayment))));
+    let state = wallet.inner.state.lock().await;
+    assert_eq!(state.sent.iter().map(|s| s.tx.as_str()).collect::<Vec<_>>(), ["first"]);
+}
+
+/// A payment names its coins, not their places in the list, which a rescan
+/// moves (audit #25): one prepared before a rescan spends the coins it
+/// chose, and one whose coin the rescan hasn't found again isn't sent.
+#[tokio::test]
+async fn a_rescan_between_prepare_and_send_never_spends_the_wrong_coin() {
+    let wallet = Wallet::create(&dir("send-rescan"), [1; 32], Network::Stagenet).unwrap();
+    let to = wallet.inner.keys.address(9);
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.push(received("first", 1, XMR));
+        state.outputs.push(received("chosen", 1, 2 * XMR));
+    }
+    let prepared = outgoing(&to, &["chosen"]);
+    // Rescanned: found again the other way round, with another coin first.
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.clear();
+        state.outputs.push(received("newer", 1, 3 * XMR));
+        state.outputs.push(received("chosen", 1, 2 * XMR));
+        state.outputs.push(received("first", 1, XMR));
+    }
+    wallet.publish_and_record("hash".into(), 30, prepared, String::new(), async { Ok(()) }).await.unwrap();
+    let spent: Vec<(String, Option<String>)> = wallet.inner.state.lock().await.outputs.iter().map(|o| (o.tx.clone(), o.spent_in.clone())).collect();
+    let spent: Vec<(&str, Option<&str>)> = spent.iter().map(|(tx, s)| (tx.as_str(), s.as_deref())).collect();
+    assert_eq!(spent, [("newer", None), ("chosen", Some("hash")), ("first", None)]);
+    // A rescan still under way, its coin not found again: not sent.
+    wallet.inner.state.lock().await.outputs.retain(|o| o.tx == "first");
+    let never = async { panic!("not published") };
+    assert!(matches!(wallet.publish_and_record("gone".into(), 30, outgoing(&to, &["chosen"]), String::new(), never).await, Err(FobError::Screen(ScreenError::NoSuchPayment))));
 }
 
 #[tokio::test(start_paused = true)]

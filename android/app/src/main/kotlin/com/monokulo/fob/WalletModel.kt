@@ -300,7 +300,7 @@ class WalletModel(private val app: Application) {
     }
 
     private suspend fun book(): WalletList = booking.withLock {
-        book ?: withContext(Dispatchers.IO) { WalletList.open(app.filesDir.absolutePath, vault.fileKey()) }.also { book = it }
+        book ?: withContext(Dispatchers.IO) { vault.withFileKey { WalletList.open(app.filesDir.absolutePath, it) } }.also { book = it }
     }
 
     private suspend fun listChanged(book: WalletList) {
@@ -320,7 +320,7 @@ class WalletModel(private val app: Application) {
                 val book = book()
                 listChanged(book)
                 val file = _current.value?.file ?: return@launch
-                withContext(Dispatchers.IO) { FobWallet.open(book.path(file), vault.fileKey()) }
+                withContext(Dispatchers.IO) { vault.withFileKey { FobWallet.open(book.path(file), it) } }
             }.onSuccess { if (_network.value == network) use(it) else it.close() }
                 .onFailure { _openError.value = it.message }
         }
@@ -367,6 +367,7 @@ class WalletModel(private val app: Application) {
     private suspend fun use(wallet: FobWallet) {
         _wallet.value?.let { close(it) }
         _wallet.value = wallet
+        sends.clear()
         _status.value = wallet.status()
         _you.value = You(wallet.profile(), wallet.profileRow())
         _manual.value = wallet.manualSettings()
@@ -786,7 +787,7 @@ class WalletModel(private val app: Application) {
         val wallet = withContext(Dispatchers.IO) {
             book.checkName(name)
             val file = book.newFile(network)
-            make(book.path(file), vault.fileKey(), network).also { book.add(file, name) }
+            vault.withFileKey { make(book.path(file), it, network) }.also { book.add(file, name) }
         }
         pendingName = ""
         listChanged(book)
@@ -974,21 +975,53 @@ class WalletModel(private val app: Application) {
     suspend fun prepareSplit(counts: List<UInt>): Prepared = requireNotNull(_wallet.value).prepareSplit(counts)
 
     /**
+     * Each send begun, by prepared id, kept after it ends: a Confirm made
+     * again, or come back to, takes the result from here ([sendBegun]) rather
+     * than offering the swipe again for a payment Rust has used up, where a
+     * second try would say "Not sent" about one that went out. Read and
+     * written on the main thread only. Cleared with the wallet, as ids are
+     * the wallet's own.
+     */
+    private val sends = HashMap<ULong, Deferred<String>>()
+
+    /** How many sends are under way; a link opened meanwhile waits ([paying]). */
+    private var sendsUnderWay = 0
+
+    /** Set by Home while its pay drawer is up, so a link opened meanwhile doesn't replace it. */
+    var payDrawerUp = false
+
+    /** A payment is being sent, or Home's pay drawer is up with one: nothing else should open over it. */
+    val paying: Boolean get() = sendsUnderWay > 0 || payDrawerUp
+
+    /** Says [text] at the bottom of the screen for a few seconds. */
+    fun tell(text: String) = say(text)
+
+    /**
      * Sends [prepared] on the model's scope: once begun it runs to the end
      * even if Confirm goes (the screen made again), and Rust records it
-     * whatever happens to this call.
+     * whatever happens to this call. Asked again for the same payment, it
+     * never sends twice: it waits for the first send and gives its result.
      */
     suspend fun send(prepared: Prepared): String {
-        val wallet = requireNotNull(_wallet.value)
-        return scope.async {
-            try {
-                wallet.send(prepared.id).also { refresh() }
-            } catch (refused: FobException.SpendRejected) {
-                _spendRefused.value = true
-                throw refused
+        val job = sends.getOrPut(prepared.id) {
+            val wallet = requireNotNull(_wallet.value)
+            sendsUnderWay++
+            scope.async {
+                try {
+                    wallet.send(prepared.id).also { refresh() }
+                } catch (refused: FobException.SpendRejected) {
+                    _spendRefused.value = true
+                    throw refused
+                } finally {
+                    sendsUnderWay--
+                }
             }
-        }.await()
+        }
+        return job.await()
     }
+
+    /** The send of [prepared] begun already, under way or over; null when it hasn't been sent. */
+    fun sendBegun(prepared: Prepared): Deferred<String>? = sends[prepared.id]
 
     /** Forgets a prepared payment Confirm left without sending; on the model's scope, as Confirm is going. */
     fun cancelLater(prepared: Prepared) {

@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -99,7 +100,7 @@ import uniffi.fob.PriceCheck
 import uniffi.fob.PriceChecks
 import uniffi.fob.Network
 import uniffi.fob.ZmqStatus
-import uniffi.fob.qrCode
+import uniffi.fob.SecretQr
 
 /** A payment that came with a receipt: the receipt, then what it was worth and its details, as for any payment. */
 @Composable
@@ -713,16 +714,20 @@ fun ZmqScreen(model: WalletModel, nav: Nav) {
 fun WalletCodeScreen(model: WalletModel, nav: Nav) {
     NoScreenshots()
     val wallet by model.wallet.collectAsState()
-    var code by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(wallet) { code = wallet?.walletCode() }
+    // Rust draws the code, so its text never reaches Kotlin; the modules
+    // come as bytes, zeroed once the screen goes.
+    var code by remember { mutableStateOf<SecretQr?>(null) }
+    LaunchedEffect(wallet) { code = runCatching { wallet?.walletCodeQr() }.getOrNull() }
+    DisposableEffect(code) {
+        val shown = code
+        onDispose { shown?.dark?.fill(0) }
+    }
     Page {
         TopBar("Wallet code", onBack = { nav.back() })
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            val c = code
-            if (c != null) {
-                runCatching { qrCode(c) }.getOrNull()?.let { qr ->
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Fob.qrLight).padding(16.dp)) { QrImage(qr, 280.dp, description = "Wallet code") }
-                }
+            val qr = code
+            if (qr != null) {
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Fob.qrLight).padding(16.dp)) { QrImage(qr, 280.dp, description = "Wallet code") }
                 // Centred under the code, also when a big font wraps it.
                 Text("Scan it in Fob, the Monero GUI or Cake Wallet.", color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center)
             }

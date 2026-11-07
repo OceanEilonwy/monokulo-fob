@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -118,6 +119,20 @@ fun KeysScreen(model: WalletModel, nav: Nav) {
     val wallet by model.wallet.collectAsState()
     var groups by remember { mutableStateOf<List<KeyGroup>>(emptyList()) }
     LaunchedEffect(wallet) { groups = wallet?.keysPage() ?: emptyList() }
+    // The keys come as bytes so they can be zeroed once they're off the screen.
+    // The text each is shown as can't be: Compose draws a String, and a JVM
+    // String can't be wiped. It's made only as its line is drawn and dropped
+    // with it, and once the bytes are zeroed a collection is asked for, which
+    // on ART frees the memory the dropped Strings were in (not overwritten,
+    // but given back) sooner than waiting for one would.
+    DisposableEffect(groups) {
+        val shown = groups
+        onDispose {
+            shown.forEach { group -> group.keys.forEach { it.value.fill(0); it.clip.fill(0) } }
+            // Posted, so it runs once the screen's composition, which holds the Strings, is gone.
+            if (shown.isNotEmpty()) android.os.Handler(android.os.Looper.getMainLooper()).post { System.gc() }
+        }
+    }
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -135,8 +150,9 @@ fun KeysScreen(model: WalletModel, nav: Nav) {
                             KeyLine(key, copied = copied == key.title) {
                                 // A secret key comes off the clipboard after a minute or when Fob leaves the screen; a public one stays.
                                 if (key.badge == KeyBadge.PUBLIC) {
-                                    scope.launch { clipboard.setClipEntry(ClipData.newPlainText(key.title, key.clip).toClipEntry()) }
+                                    scope.launch { clipboard.setClipEntry(ClipData.newPlainText(key.title, String(key.clip, Charsets.UTF_8)).toClipEntry()) }
                                 } else {
+                                    // As bytes, so no String of the secret is made to copy it.
                                     SecretClip.copy(context, key.title, key.clip)
                                 }
                                 copied = key.title
@@ -166,8 +182,10 @@ private fun KeyLine(key: KeyRow, copied: Boolean, onCopy: () -> Unit) {
                 Badge(key)
             }
             key.line?.let { Text(it, color = Fob.muted, fontSize = 12.5.sp) }
-            // Hex and an address have no spaces: they break at any letter.
-            Text(key.value, fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, lineHeight = 18.sp)
+            // Hex and an address have no spaces: they break at any letter. The
+            // String is the one copy of the key Fob can't wipe (Compose's Text
+            // needs one); made once for this line, it goes when the line does.
+            Text(remember(key) { String(key.value, Charsets.UTF_8) }, fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, lineHeight = 18.sp)
             if (copied) {
                 Text("Copied", color = Fob.green, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             }

@@ -6,11 +6,14 @@
 pub mod engine;
 pub mod picture;
 
-pub use engine::{Engine, Listener, Met, Options, Phase, Update};
+pub use engine::{Confirmed, Engine, Listener, Met, Options, Phase, Update};
 pub use fob_ffi::form;
 pub use fob_ffi as views;
 pub use fob_ffi::{Device, FobError, set_device};
+pub use fob_wallet::process::{harden_process, keep_files_private};
 pub use fob_wallet::words;
+/// What a client wraps typed secrets in at first touch.
+pub use zeroize::Zeroizing;
 
 /// The device's clock, which only the client knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

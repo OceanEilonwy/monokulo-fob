@@ -340,7 +340,7 @@ fn onion_hosts_are_known_by_name() {
 /// would hear which onion service the wallet uses.
 #[tokio::test]
 async fn an_onion_node_is_refused_before_any_lookup() {
-    let checked = check(Network::Stagenet, &node("xmrnode.onion:38081"), 0, NOW, &|_| {}).await;
+    let checked = check(Network::Stagenet, &node("xmrnode.onion:38081"), None, 0, NOW, &|_| {}).await;
     assert_eq!(rows(&checked)[0], (Step::Answers, failed(Failure::Onion), Mark::Fail));
     assert_eq!(checked.line(false), Line::NoAnswer(failed(Failure::Onion)));
     assert_eq!(on_network(Network::Stagenet, &node("http://xmrnode.onion:38081")).await, Err(SwitchRefused::Endpoint(EndpointProblem::Onion)));
@@ -358,7 +358,7 @@ fn addresses_are_written_one_way() {
 #[tokio::test]
 async fn a_canned_node_is_checked_over_http() {
     let port = canned_node(false).await;
-    let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), 0, now(), &|_| {}).await;
+    let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), None, 0, now(), &|_| {}).await;
     let rows = rows(&report);
     assert_eq!(rows.len(), 4, "no certificate over http");
     assert_eq!((rows[0].0, rows[0].2), (Step::Answers, Mark::Pass));
@@ -374,7 +374,7 @@ async fn a_closed_port_refuses_to_connect() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().port()
     };
-    let report = check(Network::Stagenet, &node(&format!("http://127.0.0.1:{port}")), 0, now(), &|_| {}).await;
+    let report = check(Network::Stagenet, &node(&format!("http://127.0.0.1:{port}")), None, 0, now(), &|_| {}).await;
     assert_eq!(rows(&report)[0], (Step::Answers, failed(Failure::Refused), Mark::Fail));
 }
 
@@ -384,10 +384,10 @@ async fn a_closed_port_refuses_to_connect() {
 async fn a_self_signed_certificate_passes_only_when_accepted() {
     let port = canned_node(true).await;
     let url = format!("https://127.0.0.1:{port}");
-    let refused = check(Network::Stagenet, &node(&url), 0, now(), &|_| {}).await;
+    let refused = check(Network::Stagenet, &node(&url), None, 0, now(), &|_| {}).await;
     assert_eq!(rows(&refused)[..2], [(Step::Certificate, failed(NOT_ACCEPTED), Mark::Fail), (Step::Answers, Outcome::Skipped, Mark::Skipped)]);
     assert_eq!(refused.verdict(), Verdict::Failed(Step::Certificate));
-    let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
+    let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, None, 0, now(), &|_| {}).await;
     assert_eq!(rows(&accepted)[..3], [(Step::Certificate, Outcome::Certificate(Some(CertProblem::SelfSigned)), Mark::Pass), (Step::Answers, rows(&accepted)[1].1.clone(), Mark::Pass), (Step::Network, network(), Mark::Pass)]);
     // Switching to it checks the same way.
     assert_eq!(on_network(Network::Stagenet, &node(&url)).await, Err(SwitchRefused::Failed(NOT_ACCEPTED)));
@@ -402,9 +402,9 @@ async fn monerods_own_certificate_works_once_accepted() {
     for tls12 in [false, true] {
         let port = canned(Canned::Tls { monerod: true, tls12 }).await;
         let url = format!("https://127.0.0.1:{port}");
-        let refused = check(Network::Stagenet, &node(&url), 0, now(), &|_| {}).await;
+        let refused = check(Network::Stagenet, &node(&url), None, 0, now(), &|_| {}).await;
         assert_eq!(rows(&refused)[0], (Step::Certificate, failed(NOT_ACCEPTED), Mark::Fail), "TLS 1.2: {tls12}");
-        let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
+        let accepted = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, None, 0, now(), &|_| {}).await;
         assert_eq!(rows(&accepted)[0], (Step::Certificate, Outcome::Certificate(Some(CertProblem::SelfSigned)), Mark::Pass), "TLS 1.2: {tls12}");
         assert_eq!(rows(&accepted)[2], (Step::Network, network(), Mark::Pass), "TLS 1.2: {tls12}");
         assert_eq!(on_network(Network::Stagenet, &Setting { url, self_signed: true }).await, Ok(()));
@@ -421,7 +421,7 @@ async fn a_handshake_not_signed_by_the_certificates_key_is_refused_even_when_acc
         for tls12 in [false, true] {
             let port = canned(Canned::WrongKey { monerod, tls12 }).await;
             let url = format!("https://127.0.0.1:{port}");
-            let marked = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, 0, now(), &|_| {}).await;
+            let marked = check(Network::Stagenet, &Setting { url: url.clone(), self_signed: true }, None, 0, now(), &|_| {}).await;
             let case = format!("monerod: {monerod}, TLS 1.2: {tls12}");
             let bad = Failure::Certificate(CertProblem::BadSignature);
             assert_eq!(rows(&marked)[..2], [(Step::Certificate, failed(bad), Mark::Fail), (Step::Answers, Outcome::Skipped, Mark::Skipped)], "{case}");
@@ -437,7 +437,7 @@ async fn a_handshake_not_signed_by_the_certificates_key_is_refused_even_when_acc
 async fn a_node_that_redirects_is_not_followed() {
     let good = canned_node(false).await;
     let port = canned(Canned::Redirect(good)).await;
-    let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), 0, now(), &|_| {}).await;
+    let report = check(Network::Stagenet, &node(&format!("127.0.0.1:{port}")), None, 0, now(), &|_| {}).await;
     assert_eq!(rows(&report)[0], (Step::Answers, failed(Failure::Status(307)), Mark::Fail));
     assert_eq!(report.verdict(), Verdict::Failed(Step::Answers));
 }
@@ -466,7 +466,7 @@ fn only_a_nodes_own_certificate_problems_can_be_accepted() {
     }
     assert_eq!(CertProblem::of(&webpki("EndEntityUsedAsCa")), CertProblem::Invalid);
     assert_eq!(CertProblem::of(&rustls::Error::General("x".into())), CertProblem::Invalid);
-    for (problem, acceptable) in [(CertProblem::SelfSigned, true), (CertProblem::Expired, true), (CertProblem::OtherName, true), (CertProblem::BadSignature, false), (CertProblem::Invalid, false)] {
+    for (problem, acceptable) in [(CertProblem::SelfSigned, true), (CertProblem::Expired, true), (CertProblem::OtherName, true), (CertProblem::Changed, false), (CertProblem::BadSignature, false), (CertProblem::Invalid, false)] {
         assert_eq!(problem.acceptable(), acceptable, "{problem:?}");
         let refused = Failure::refused(Some(Err(problem)), true);
         assert_eq!(refused, (!acceptable).then_some(Failure::Certificate(problem)), "marked: {problem:?}");
@@ -515,9 +515,83 @@ fn a_certificates_key_is_read_from_any_version() {
 #[tokio::test]
 #[ignore = "needs public nodes"]
 async fn checks_tell_fast_from_wrong_over_http() {
-    let stagenet = check(Network::Stagenet, &node(Network::Stagenet.default_nodes()[0]), 0, now(), &|_| {}).await;
+    let stagenet = check(Network::Stagenet, &node(Network::Stagenet.default_nodes()[0]), None, 0, now(), &|_| {}).await;
     println!("{stagenet:?}");
     assert_eq!(stagenet.verdict(), Verdict::Working);
-    let mainnet_node = check(Network::Stagenet, &node(Network::Mainnet.default_nodes()[0]), 0, now(), &|_| {}).await;
+    let mainnet_node = check(Network::Stagenet, &node(Network::Mainnet.default_nodes()[0]), None, 0, now(), &|_| {}).await;
     assert_eq!(mainnet_node.verdict(), Verdict::Failed(Step::Network));
+}
+
+/// A node's Content-Length is only its word (audit #12): a huge one is
+/// refused past the limit, and without one never has the phone set aside
+/// what it says, which would abort the app.
+#[tokio::test]
+async fn a_huge_content_length_is_refused_not_allocated() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            tokio::spawn(async move {
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1099511627776\r\nConnection: close\r\n\r\n{}").await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    let transport = Transport::new(&format!("http://127.0.0.1:{port}"), false).unwrap();
+    let limited = transport.post("get_info", vec![], Some(1024)).await;
+    assert!(matches!(limited, Err(InterfaceError::InvalidInterface(_))), "{limited:?}");
+    // No limit: the body ends short, and that's all.
+    assert!(transport.post("get_info", vec![], None).await.is_err());
+}
+
+/// A self-signed node is trusted on first use (audit #13): the key it
+/// answered with first is pinned, and a later handshake with another key
+/// is refused as changed, the node marked or not.
+#[tokio::test]
+async fn a_self_signed_node_is_held_to_the_key_it_first_answered_with() {
+    let first = canned(Canned::Tls { monerod: false, tls12: false }).await;
+    let other = canned(Canned::Tls { monerod: true, tls12: false }).await;
+    let url = |port: u16| format!("https://127.0.0.1:{port}");
+    let fresh = Transport::pinned(&url(first), true, None).unwrap();
+    assert_eq!(fresh.pin(), None, "nothing until a handshake");
+    fresh.post("get_info", vec![], Some(1024)).await.unwrap();
+    let pin = fresh.pin().expect("pinned on first use");
+    // The same key again, on a new connection: accepted.
+    let again = Transport::pinned(&url(first), true, Some(pin)).unwrap();
+    again.post("get_info", vec![], Some(1024)).await.unwrap();
+    assert_eq!(again.certificate(), Some(Err(CertProblem::SelfSigned)));
+    // Another key where that one was: refused, and said so.
+    let changed = Transport::pinned(&url(other), true, Some(pin)).unwrap();
+    assert!(changed.post("get_info", vec![], Some(1024)).await.is_err());
+    assert_eq!(changed.certificate(), Some(Err(CertProblem::Changed)));
+    assert_eq!(Failure::refused(changed.certificate(), true), Some(Failure::Certificate(CertProblem::Changed)));
+    assert_eq!(changed.pin(), Some(pin), "still held to the first");
+}
+
+/// The Node and Settings screens check a node held to the wallet's pin: one
+/// answering with another key isn't called working while the wallet's own
+/// connection refuses it (review of audit #13).
+#[tokio::test]
+async fn a_node_is_checked_held_to_the_wallets_pin() {
+    let port = canned(Canned::Tls { monerod: false, tls12: false }).await;
+    let setting = Setting { url: format!("https://127.0.0.1:{port}"), self_signed: true };
+    let theirs = crate::transport::Transport::pinned(&setting.url, true, None).unwrap();
+    theirs.post("get_info", vec![], Some(1024)).await.unwrap();
+    let pin = theirs.pin().unwrap();
+    let held = check(Network::Stagenet, &setting, Some(pin), 0, now(), &|_| {}).await;
+    assert_eq!(rows(&held)[0].2, Mark::Pass, "its own key");
+    let other = [7; 32];
+    let changed = Failure::Certificate(CertProblem::Changed);
+    let refused = check(Network::Stagenet, &setting, Some(other), 0, now(), &|_| {}).await;
+    assert_eq!(rows(&refused)[0], (Step::Certificate, failed(changed), Mark::Fail));
+    let listed = check_all(Network::Stagenet, std::slice::from_ref(&setting), Some(&(setting.clone(), other)), 0, now()).await;
+    assert_eq!(listed[0].1, Line::Certificate(failed(changed)));
+    // Another node's pin isn't this one's.
+    let elsewhere = Setting { url: "https://elsewhere.example:18081".into(), self_signed: true };
+    let listed = check_all(Network::Stagenet, std::slice::from_ref(&setting), Some(&(elsewhere, other)), 0, now()).await;
+    assert_eq!(listed[0].0.verdict(), held.verdict());
 }

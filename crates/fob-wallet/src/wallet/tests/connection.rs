@@ -197,3 +197,72 @@ async fn an_onion_node_is_refused_and_never_reached() {
     // And instant updates can't point at it either.
     assert!(matches!(wallet.set_zmq(true, Some("tcp://xmrnode.onion:38083")).await, Err(FobError::Endpoint(EndpointProblem::Onion))));
 }
+
+/// A self-signed node's key is kept from the first connection, and a later
+/// one with another key fails, saying why, until the node is chosen again
+/// (audit #13).
+#[tokio::test]
+async fn a_self_signed_node_s_key_is_kept_and_a_changed_one_refused() {
+    let wallet = Wallet::create(&dir("node-pin"), [1; 32], Network::Stagenet).unwrap();
+    let port = crate::node::canned::canned_node(true).await;
+    let url = format!("https://127.0.0.1:{port}");
+    wallet.set_node(&url, true).await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.node_pin, None, "chosen: nothing kept yet");
+    wallet.connection().await.unwrap();
+    let pin = wallet.inner.state.lock().await.node_pin.clone().expect("kept on first use");
+    let reopened = Wallet::open(&wallet.inner.path, [1; 32]).unwrap();
+    assert_eq!(reopened.inner.state.lock().await.node_pin.as_deref(), Some(pin.as_str()), "and saved");
+    // Another key than the one kept (here, the kept one changed instead).
+    wallet.inner.state.lock().await.node_pin = Some("00".repeat(32));
+    *wallet.inner.rpc.lock().await = None;
+    let refused = wallet.connection().await.err().expect("refused");
+    let link = wallet.inner.link.lock().unwrap().clone().unwrap();
+    assert_eq!(link.1.certificate(), Some(Err(transport::CertProblem::Changed)));
+    assert_eq!(sync_failure(&refused, link.1.certificate(), true).0, "Certificate changed since you accepted it, not accepted");
+    // Chosen again: the key it has now is accepted.
+    wallet.set_node(&url, true).await.unwrap();
+    wallet.connection().await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.node_pin.as_deref(), Some(pin.as_str()));
+}
+
+/// The Node and Settings screens check the node in use held to its pin, as
+/// syncing is: one answering with another key isn't called working there
+/// (review of audit #13). Other nodes have no pin to be held to.
+#[tokio::test]
+async fn the_node_in_use_is_checked_held_to_its_pin() {
+    let wallet = Wallet::create(&dir("node-pin-check"), [1; 32], Network::Stagenet).unwrap();
+    let port = crate::node::canned::canned_node(true).await;
+    let setting = node::Setting { url: format!("https://127.0.0.1:{port}"), self_signed: true };
+    wallet.set_node(&setting.url, true).await.unwrap();
+    wallet.connection().await.unwrap();
+    // The canned node's blocks aren't blocks: it gets past its certificate.
+    let changed = node::Verdict::Failed(node::Step::Certificate);
+    assert_eq!(wallet.check_node(&setting, &|_| {}).await.verdict(), node::Verdict::Failed(node::Step::Blocks), "its own key");
+    wallet.inner.state.lock().await.node_pin = Some("00".repeat(32));
+    assert_eq!(wallet.check_node(&setting, &|_| {}).await.verdict(), changed);
+    assert_eq!(wallet.check_nodes(std::slice::from_ref(&setting)).await[0].0.verdict(), changed);
+}
+
+/// Decoys are chosen from what the node in use said of the chain's outputs,
+/// kept per node and forgotten on changing node, so a node that lied in it
+/// is never believed after it's left, by this wallet or another (audit #64).
+#[tokio::test]
+async fn the_output_distribution_is_kept_per_node_and_forgotten_on_changing() {
+    let wallet = Wallet::create(&dir("decoys-per-node"), [1; 32], Network::Stagenet).unwrap();
+    let first = crate::node::canned::canned_node(false).await;
+    let second = crate::node::canned::canned_node(false).await;
+    let (first, second) = (format!("http://127.0.0.1:{first}"), format!("http://127.0.0.1:{second}"));
+    assert_ne!(wallet.decoys_path(&first), wallet.decoys_path(&second));
+    assert_eq!(wallet.decoys_path(&first), wallet.decoys_path(&format!("{first}/")), "the same node, written another way");
+    wallet.set_node(&first, false).await.unwrap();
+    let shared = wallet.inner.path.with_file_name("wallet-stagenet.decoys");
+    for file in [&shared, &wallet.decoys_path(&first), &wallet.decoys_path(&second)] {
+        std::fs::write(file, 0u64.to_le_bytes()).unwrap();
+    }
+    wallet.connection().await.unwrap();
+    assert!(!shared.exists(), "no one knows whose the old shared one was");
+    assert!(wallet.decoys_path(&first).exists(), "the node in use's own is kept");
+    wallet.set_node(&second, false).await.unwrap();
+    assert!(!wallet.decoys_path(&first).exists(), "the node left's is forgotten");
+    assert!(!wallet.decoys_path(&second).exists(), "and the one chosen's, from before");
+}
