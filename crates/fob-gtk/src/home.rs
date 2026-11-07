@@ -365,9 +365,9 @@ impl SimpleComponent for Home {
         popover.set_child(Some(&wallet_list));
         wallet_button.set_popover(Some(&popover));
         let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, wallet_list, popover };
-        let swap_mark = widgets::swap_icon(16, None);
+        let swap_mark = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
         // As on Android: the arrow in for Receive, out for Send.
-        let (receive_icon, send_icon) = (widgets::arrow_icon(true, 18), widgets::arrow_icon(false, 18));
+        let (receive_icon, send_icon) = (crate::icons::icon(crate::icons::DOWN, 18, 1.0), crate::icons::icon(crate::icons::UP, 18, 1.0));
         let (days, wallet_button, swap_mark, receive_icon, send_icon) = (&days, &wallet_button, &swap_mark, &receive_icon, &send_icon);
         let widgets = view_output!();
         ComponentParts { model, widgets }

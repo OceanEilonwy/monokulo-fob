@@ -104,7 +104,7 @@ impl SimpleComponent for Settings {
                             #[wrap(Some)]
                             set_header_suffix = &gtk::Button {
                                 add_css_class: "flat",
-                                set_label: "Add",
+                                set_child: Some(&widgets::icon_label(crate::icons::PLUS, "Add", false)),
                                 connect_clicked => Input::AddWallet,
                             },
                         },

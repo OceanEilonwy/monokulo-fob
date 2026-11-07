@@ -6,6 +6,7 @@ mod coins;
 mod confirm;
 mod contacts;
 mod home;
+mod icons;
 mod manual;
 mod meet;
 mod node;

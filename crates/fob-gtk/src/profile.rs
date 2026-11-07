@@ -91,7 +91,7 @@ impl SimpleComponent for Profile {
                             set_halign: gtk::Align::Center,
                             set_spacing: 12,
                             gtk::Button {
-                                set_label: "Meet someone",
+                                set_child: Some(&widgets::icon_label(crate::icons::MEET, "Meet someone", false)),
                                 add_css_class: "pill",
                                 add_css_class: "suggested-action",
                                 #[watch]
@@ -99,7 +99,7 @@ impl SimpleComponent for Profile {
                                 connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Meet)); },
                             },
                             gtk::Button {
-                                set_label: "Share my profile",
+                                set_child: Some(&widgets::icon_label(crate::icons::SHARE, "Share my profile", false)),
                                 add_css_class: "pill",
                                 #[watch]
                                 set_sensitive: model.has_profile,

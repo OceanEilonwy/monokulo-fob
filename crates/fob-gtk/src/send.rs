@@ -87,8 +87,8 @@ impl SimpleComponent for Send {
                         gtk::Box {
                             set_halign: gtk::Align::Center,
                             set_spacing: 12,
-                            gtk::Button { set_label: "Paste a code", add_css_class: "pill", connect_clicked => Input::Paste },
-                            gtk::Button { set_label: "Open a picture", add_css_class: "pill", connect_clicked => Input::Picture },
+                            gtk::Button { set_child: Some(&widgets::icon_label(crate::icons::REQUEST, "Paste a code", false)), add_css_class: "pill", connect_clicked => Input::Paste },
+                            gtk::Button { set_child: Some(&widgets::icon_label(crate::icons::PICTURE, "Open a picture", false)), add_css_class: "pill", connect_clicked => Input::Picture },
                         },
                         adw::PreferencesGroup {
                             #[local_ref]
@@ -148,7 +148,7 @@ impl SimpleComponent for Send {
                             add_css_class: "suggested-action",
                             add_css_class: "pill",
                             set_halign: gtk::Align::Center,
-                            set_label: "Review",
+                            set_child: Some(&widgets::icon_label(crate::icons::ARROW, "Review", true)),
                             #[watch]
                             set_sensitive: model.can_review(),
                             connect_clicked => Input::Review,
@@ -181,7 +181,7 @@ impl SimpleComponent for Send {
             people_rows: vec![],
             filling: false,
         };
-        let unit_swap = widgets::swap_icon(16, None);
+        let unit_swap = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
         let (to, amount_row, note, people, unit_swap) = (&to, &amount_row, &note, &people, &unit_swap);
         let widgets = view_output!();
         widgets::hide_pencil(amount_row);

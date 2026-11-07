@@ -66,12 +66,12 @@ impl SimpleComponent for Request {
                             set_halign: gtk::Align::Center,
                             set_spacing: 12,
                             gtk::Button {
-                                set_label: "Show the code again",
+                                set_child: Some(&widgets::icon_label(crate::icons::SCAN, "Show the code again", false)),
                                 add_css_class: "pill",
                                 connect_clicked => Input::ShowCode,
                             },
                             gtk::Button {
-                                set_label: "Delete request",
+                                set_child: Some(&widgets::icon_label(crate::icons::TRASH, "Delete request", false)),
                                 add_css_class: "pill",
                                 add_css_class: "destructive-action",
                                 connect_clicked => Input::Delete,

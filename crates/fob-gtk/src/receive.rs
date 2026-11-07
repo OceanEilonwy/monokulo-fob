@@ -105,7 +105,7 @@ impl SimpleComponent for Receive {
                             },
                         },
                         gtk::Button {
-                            set_label: "Keep as a request",
+                            set_child: Some(&widgets::icon_label(crate::icons::REQUEST, "Keep as a request", false)),
                             set_tooltip_text: Some("On its own new address, so you can see when it's paid"),
                             set_halign: gtk::Align::Center,
                             add_css_class: "pill",

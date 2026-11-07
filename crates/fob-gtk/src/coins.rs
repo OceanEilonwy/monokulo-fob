@@ -77,7 +77,7 @@ impl SimpleComponent for Coins {
         }
         self.body.append(&ready);
         if coins.can_split {
-            let split = gtk::Button::builder().label("Split up").halign(gtk::Align::Center).css_classes(["pill"]).build();
+            let split = gtk::Button::builder().child(&widgets::icon_label(crate::icons::SPLIT, "Split up", false)).halign(gtk::Align::Center).css_classes(["pill"]).build();
             let then = sender.clone();
             split.connect_clicked(move |_| {
                 let _ = then.output(RootMsg::Go(Go::Split));
