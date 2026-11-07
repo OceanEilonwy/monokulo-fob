@@ -19,11 +19,10 @@ use crate::{
     widgets,
 };
 
-/// Every wallet, the one open, and the network.
+/// Every wallet, and the one open.
 pub struct Wallets {
     pub all: Vec<WalletEntry>,
     pub current: Option<WalletEntry>,
-    pub network: Network,
 }
 
 #[derive(Debug)]
@@ -36,7 +35,6 @@ pub enum Input {
     Highlight,
     Hub(View<BackupHub>),
     Switch(String),
-    Network(u32),
     AddWallet,
     Rename(String, String),
     Forget,
@@ -59,7 +57,6 @@ pub struct Settings {
     engine: Engine,
     wallets_group: adw::PreferencesGroup,
     wallet_rows: Vec<gtk::Widget>,
-    network_row: adw::ComboRow,
     backup_group: adw::PreferencesGroup,
     backup_rows: Vec<adw::ActionRow>,
     node_line: String,
@@ -120,12 +117,6 @@ impl SimpleComponent for Settings {
                                 set_subtitle: &gtk::glib::markup_escape_text(&model.profile_line),
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Profile)); },
-                            },
-                            #[local_ref]
-                            add = network_row -> adw::ComboRow {
-                                set_title: "Network",
-                                set_model: Some(&gtk::StringList::new(&["Stagenet, test coins", "Mainnet, real money"])),
-                                connect_selected_notify[sender] => move |row| sender.input(Input::Network(row.selected())),
                             },
                         },
                         #[local_ref]
@@ -217,13 +208,11 @@ impl SimpleComponent for Settings {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
-        let network_row = adw::ComboRow::new();
         let scan_line = engine.scan_engine(false).line;
         let model = Settings {
             engine,
             wallets_group: wallets_group.clone(),
             wallet_rows: vec![],
-            network_row: network_row.clone(),
             backup_group: backup_group.clone(),
             backup_rows: vec![],
             node_line: String::new(),
@@ -238,7 +227,7 @@ impl SimpleComponent for Settings {
             scan_line,
             gpu_refused: false,
         };
-        let (wallets_group, backup_group, network_row) = (&wallets_group, &backup_group, &network_row);
+        let (wallets_group, backup_group) = (&wallets_group, &backup_group);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -311,19 +300,6 @@ impl SimpleComponent for Settings {
                     }
                 });
             }
-            Input::Network(i) => {
-                let network = if i == 1 { Network::Mainnet } else { Network::Stagenet };
-                // The row following the engine, not someone choosing.
-                if network == self.engine.network() {
-                    return;
-                }
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    if let Err(e) = engine.switch_network(network).await {
-                        sender.input(Input::Say(e.to_string()));
-                    }
-                });
-            }
             Input::AddWallet => {
                 let _ = sender.output(RootMsg::Go(Go::AddWallet));
             }
@@ -380,7 +356,6 @@ impl SimpleComponent for Settings {
 
 impl Settings {
     fn draw_wallets(&mut self, wallets: &Wallets, sender: &ComponentSender<Self>) {
-        self.network_row.set_selected(if wallets.network == Network::Mainnet { 1 } else { 0 });
         for row in self.wallet_rows.drain(..) {
             self.wallets_group.remove(&row);
         }

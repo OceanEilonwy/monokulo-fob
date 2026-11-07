@@ -97,7 +97,6 @@ import uniffi.fob.Activity
 import uniffi.fob.CurrencyList
 import uniffi.fob.PriceCheck
 import uniffi.fob.PriceChecks
-import uniffi.fob.Network
 import uniffi.fob.ZmqStatus
 import uniffi.fob.SecretQr
 
@@ -139,13 +138,11 @@ fun ReceiptScreen(model: WalletModel, nav: Nav, activity: Activity) {
 @Composable
 fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     val wallet by model.wallet.collectAsState()
-    val network by model.network.collectAsState()
     val current by model.current.collectAsState()
     val theme by model.theme.collectAsState()
     val status by model.status.collectAsState()
     val scope = rememberCoroutineScope()
     var forgetting by remember { mutableStateOf(false) }
-    var switching by remember { mutableStateOf(false) }
     var choosingTheme by remember { mutableStateOf(false) }
     val prices by model.prices.collectAsState()
     // Every line here is the model's, read with the wallet, so the screen opens whole: your profile's row ("Add a
@@ -239,15 +236,6 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 }
             }
             Column {
-                SectionLabel("Network")
-                Card {
-                    SettingRow(
-                        "Use mainnet", if (network == Network.MAINNET) "Real money" else "Off: stagenet, with test coins",
-                        checked = network == Network.MAINNET, onChecked = { switching = true },
-                    )
-                }
-            }
-            Column {
                 SectionLabel("Receipts")
                 Card {
                     SettingRow("Kept with each payment", "Receipts from payment codes that carry one")
@@ -260,19 +248,6 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
             }
             Text("Fob 0.1.0", color = Fob.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
         }
-    }
-    if (switching) {
-        val target = if (network == Network.MAINNET) Network.STAGENET else Network.MAINNET
-        AlertDialog(
-            onDismissRequest = { switching = false },
-            title = { Text(if (target == Network.MAINNET) "Use mainnet?" else "Back to stagenet?") },
-            text = {
-                if (target == Network.MAINNET) Warning("Mainnet is real money. Fob is new: start with amounts you could lose. Your stagenet wallet stays here.")
-                else Text("Your mainnet wallet stays on this phone.")
-            },
-            confirmButton = { TextButton("Switch", { switching = false; model.switchNetwork(target); nav.reset(if (model.hasWallet(target)) Screen.Home else Screen.Welcome) }) },
-            dismissButton = { TextButton("Cancel", { switching = false }, color = Fob.ink) },
-        )
     }
     if (choosingTheme) {
         AlertDialog(
