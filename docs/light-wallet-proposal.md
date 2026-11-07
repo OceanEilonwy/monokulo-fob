@@ -287,8 +287,9 @@ node gets.
 ## Phases
 
 1. **Server** (done, first version): `monokulo-lws`, below. **1b. Server at
-   scale**: `fob-scanner`'s keyring and per-item digits, `monokulo-lws` on
-   `flag_many` (the section after it).
+   scale**: the prefilter lifted into `monokulo-8ar` (done, decision 359),
+   its keyring and per-item digits, `monokulo-lws` on `flag_many` (the
+   section after it).
 2. **Fob, read-only light mode**: `fob-chain::light`, the `Backend` setting
    and schema migration, `light_step` with `reconcile`, the Node screen and
    words, the chip. Sending in light mode disabled with "Sending through a
@@ -363,10 +364,11 @@ suggests too). The first version scans every block once per account with
 monero-oxide alone, so its cost is accounts × blocks: fine for a shop or a
 family, not for hundreds of wallets. The next section is how it scales.
 
-## Scanning at scale: fob-scanner on the server
+## Scanning at scale: the prefilter on the server
 
-Fob already has the right engine. `fob-scanner` (decisions 331, 332, 350,
-351) doesn't scan; it *prefilters*: for each transaction key `R` in a batch
+Fob already has the right engine. The prefilter (`monokulo-8ar`, lifted out
+of `fob-scanner` by decision 359; decisions 331, 332, 350, 351) doesn't
+scan; it *prefilters*: for each transaction key `R` in a batch
 of blocks it computes `8·a·R` once (on the GPU in batches of 32,768, or on
 CPU threads), compresses the points with one inversion per 64, and for each
 output checks the view tag (`Keccak("view_tag" ‖ D ‖ i)[0]`, 1 in 256 pass)
@@ -379,7 +381,7 @@ Today the kernel takes **one view key per dispatch**: the key's 64 signed
 base-16 digits travel as push constants, and every work item multiplies a
 different `R` by the same `a`. A server has the opposite shape: few new
 `R`s a block (about 57), many `a`s. The change is small and lives in
-`fob-scanner`, so Fob gets it too:
+`monokulo-8ar`, so Fob gets it too:
 
 - **A keyring, not a key.** `Prefilter` becomes `Keyring`: `add(pair, view)
   -> AccountId`, `watch(id, pair, subaddress)`, and `flag_many(blocks,
@@ -464,15 +466,16 @@ second on a desktop GPU, to be measured:
 | 100 accounts imported from 2022 | 150 M | a few minutes |
 | GPU memory | 39 MB a batch | whatever the account count |
 
-Shape of the dependency: `monokulo-lws` depends on `fob-scanner` as a git
-dependency pinned to a revision (as Fob pins `orf-codec`, decision 4), and
-`fob-scanner` loses `publish = false` when it is ready for crates.io. The
-direction is server → Fob, so decision 5 holds: Fob gains no tie to
-Monokulo, and the keyring is a feature Fob could use itself one day (several
+Shape of the dependency: the prefilter is its own crate and repository,
+`monokulo-8ar` (decision 359), which both Fob's `fob-scanner` and
+`monokulo-lws` depend on, pinned by revision until it is on crates.io (as
+Fob pins `orf-codec`, decision 4). Fob's `fob-scanner` keeps only
+`scan.rs` (the reader threads and the monero-oxide fan-out) and its GPU
+threshold. The keyring is a feature Fob could use itself one day (several
 wallets on one phone, one pass).
 
 Order of work: (a) the keyring API and the per-item digits buffer in
-`fob-scanner`, with the existing vectors run per account and a test that a
+`monokulo-8ar`, with the existing vectors run per account and a test that a
 keyring of *n* copies of one key flags what the single key flags; (b)
 `monokulo-lws` on `flag_many`, the per-transaction stand-in blocks and the
 global spend map, measured against the 2,000-block mainnet fixture with 1,
