@@ -28,6 +28,8 @@ pub enum Input {
     SyncTick,
     SyncClosed,
     SyncNow,
+    /// The refresh is over.
+    Refreshed,
     ScanAgain,
     /// Ask the Trezor for the key images it hasn't given.
     TrezorSync,
@@ -41,6 +43,7 @@ pub struct Home {
     title: String,
     days: gtk::Box,
     sync_card: Option<SyncCard>,
+    refreshing: bool,
     /// The wallets under the title, with a way to add one.
     wallet_list: gtk::ListBox,
     popover: gtk::Popover,
@@ -193,6 +196,11 @@ impl SimpleComponent for Home {
                 pack_end = &gtk::Button {
                     set_icon_name: "view-refresh-symbolic",
                     set_tooltip_text: Some("Refresh"),
+                    // Turning while it checks, so a press shows it did something.
+                    #[watch]
+                    set_class_active: ("refreshing", model.refreshing),
+                    #[watch]
+                    set_sensitive: !model.refreshing,
                     connect_clicked => Input::SyncNow,
                 },
             },
@@ -364,7 +372,7 @@ impl SimpleComponent for Home {
         let popover = gtk::Popover::new();
         popover.set_child(Some(&wallet_list));
         wallet_button.set_popover(Some(&popover));
-        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, wallet_list, popover };
+        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, refreshing: false, wallet_list, popover };
         let swap_mark = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
         // As on Android: the arrow in for Receive, out for Send.
         let (receive_icon, send_icon) = (crate::icons::icon(crate::icons::DOWN, 18, 1.0), crate::icons::icon(crate::icons::UP, 18, 1.0));
@@ -418,15 +426,26 @@ impl SimpleComponent for Home {
                 }
             }
             Input::SyncNow => {
+                if self.refreshing {
+                    return;
+                }
+                self.refreshing = true;
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
+                    let started = std::time::Instant::now();
                     match engine.sync_now().await {
                         Ok(Some(said)) => sender.input(Input::Say(format!("{} · {}", said.title, said.line))),
                         Ok(None) => {}
                         Err(e) => sender.input(Input::Say(format!("Couldn't check · {e}"))),
                     }
+                    // A check that's over at once still turns long enough to be seen.
+                    if let Some(left) = std::time::Duration::from_millis(800).checked_sub(started.elapsed()) {
+                        relm4::tokio::time::sleep(left).await;
+                    }
+                    sender.input(Input::Refreshed);
                 });
             }
+            Input::Refreshed => self.refreshing = false,
             Input::ScanAgain => {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {

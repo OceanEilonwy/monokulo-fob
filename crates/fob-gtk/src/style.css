@@ -27,6 +27,16 @@ preferencesgroup.marked list.boxed-list {
 	background: alpha(@warning_bg_color, 0.26);
 }
 
+/* The refresh button, turning while it checks. */
+@keyframes refresh-spin {
+	from { -gtk-icon-transform: rotate(0turn); }
+	to { -gtk-icon-transform: rotate(1turn); }
+}
+
+button.refreshing image {
+	animation: refresh-spin 800ms linear infinite;
+}
+
 .balance {
 	font-size: 40px;
 	font-weight: 700;
