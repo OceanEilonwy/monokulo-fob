@@ -477,9 +477,9 @@ Shape of the dependency: the prefilter is its own crate and repository,
 `monokulo-8ar` (decision 359), which both Fob's `fob-scanner` and
 `monokulo-lws` depend on, pinned by revision until it is on crates.io (as
 Fob pins `orf-codec`, decision 4). Fob's `fob-scanner` keeps only
-`scan.rs` (the reader threads and the monero-oxide fan-out) and its GPU
-threshold. The keyring is a feature Fob could use itself one day (several
-wallets on one phone, one pass).
+`scan.rs` (the reader threads and the monero-oxide fan-out). The keyring
+is a feature Fob could use itself one day (several wallets on one phone,
+one pass).
 
 Order of work: (a) the keyring API and the per-item digits buffer in
 `monokulo-8ar`, with the existing vectors run per account and a test that a
