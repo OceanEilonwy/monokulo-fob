@@ -87,7 +87,10 @@ impl SimpleComponent for Meet {
                             set_label: model.error.as_deref().unwrap_or(""),
                         },
                         gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
                             set_halign: gtk::Align::Center,
+                            // One width, so the stacked buttons line up.
+                            set_width_request: 280,
                             set_spacing: 12,
                             #[watch]
                             set_visible: model.stage == Stage::Show,
