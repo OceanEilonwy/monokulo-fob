@@ -54,11 +54,12 @@ fun TrezorOverlay(model: WalletModel) {
         SheetHandle()
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             when (val a = ask) {
-                null -> Waiting("Talking to the Trezor…")
-                is TrezorAsk.Button -> Waiting(buttonWords(a.what))
+                null -> Waiting("Talking to the Trezor…", onCancel = asks::cancel)
+                is TrezorAsk.Button -> Waiting(buttonWords(a.what), onCancel = asks::cancel)
                 is TrezorAsk.Progress -> {
                     Text("Working with the Trezor…", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                     ProgressBar(if (a.total == 0u) 0f else a.done.toFloat() / a.total.toFloat())
+                    OutlineButton("Cancel", asks::cancel, Modifier.fillMaxWidth())
                 }
                 TrezorAsk.Pin -> PinPad(onDone = asks::answerPin)
                 is TrezorAsk.Passphrase -> PassphraseEntry(a.onDevice, onDone = asks::answerPassphrase)
@@ -69,6 +70,7 @@ fun TrezorOverlay(model: WalletModel) {
 
 /** What to say for the device's screens, by the names its firmware gives them. */
 private fun buttonWords(what: String): String = when {
+    what.contains("address", ignoreCase = true) -> "The Trezor shows this wallet's address. Fob shows the same one on Receive: if they ever differ, don't use this wallet."
     what.contains("watch", ignoreCase = true) || what.contains("export", ignoreCase = true) -> "On the Trezor, allow Fob to watch this wallet: it asks to export the view key."
     what.contains("sync", ignoreCase = true) || what.contains("key_image", ignoreCase = true) -> "On the Trezor, allow the key image sync: it shows which of this wallet's coins are spent."
     what.contains("tx", ignoreCase = true) || what.contains("send", ignoreCase = true) || what.contains("output", ignoreCase = true) || what.contains("fee", ignoreCase = true) -> "Check the payment on the Trezor and confirm it there."
@@ -76,9 +78,10 @@ private fun buttonWords(what: String): String = when {
 }
 
 @Composable
-private fun Waiting(text: String) {
+private fun Waiting(text: String, onCancel: () -> Unit) {
     Text(text, fontSize = 17.sp, lineHeight = 24.sp)
     WaitingBar(120.dp, "Waiting for the Trezor")
+    OutlineButton("Cancel", onCancel, Modifier.fillMaxWidth())
 }
 
 /**
@@ -105,9 +108,9 @@ private fun PinPad(onDone: (String?) -> Unit) {
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlineButton("Cancel", { onDone(null) }, Modifier.weight(1f))
+        OutlineButton("Cancel", { typed = ""; onDone(null) }, Modifier.weight(1f))
         OutlineButton("Delete", { typed = typed.dropLast(1) }, Modifier.weight(1f))
-        PrimaryButton("Enter", { onDone(typed) }, Modifier.weight(1f), enabled = typed.isNotEmpty())
+        PrimaryButton("Enter", { val pin = typed; typed = ""; onDone(pin) }, Modifier.weight(1f), enabled = typed.isNotEmpty())
     }
 }
 
@@ -121,8 +124,8 @@ private fun PassphraseEntry(onDevice: Boolean, onDone: (TrezorPassphrase) -> Uni
         visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
     )
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlineButton("Cancel", { onDone(TrezorPassphrase.Cancelled) }, Modifier.weight(1f))
-        PrimaryButton("Use", { onDone(TrezorPassphrase.Typed(text)) }, Modifier.weight(1f))
+        OutlineButton("Cancel", { text = ""; onDone(TrezorPassphrase.Cancelled) }, Modifier.weight(1f))
+        PrimaryButton("Use", { val typed = text; text = ""; onDone(TrezorPassphrase.Typed(typed)) }, Modifier.weight(1f))
     }
     if (onDevice) {
         Box(Modifier.height(4.dp))

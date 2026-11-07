@@ -113,6 +113,19 @@ async fn a_trezor_wallet_keeps_its_keys_on_the_device() {
     assert_eq!(again.trezor_unsynced().await, 0);
 }
 
+/// A cable that swaps the exported address is caught: the device shows the
+/// real one on its own screen and says it again, and the two must agree.
+#[tokio::test]
+async fn a_trezor_whose_shown_address_differs_makes_no_wallet() {
+    let full = Keys::generate(Network::Stagenet).keys;
+    let mut fake = fake_trezor(&full);
+    fake.shown_address = Some(Keys::generate(Network::Stagenet).keys.primary_address());
+    let person = crate::trezor::session::fake::Person::new();
+    let path = dir("trezor-swapped");
+    assert!(matches!(Wallet::restore_trezor(&path, [1; 32], Network::Stagenet, &fake, &person, Some(5)), Err(FobError::Trezor(t)) if t.contains("isn't the one it sent")));
+    assert!(!path.with_extension("db").exists() || Wallet::open(&path, [1; 32]).is_err(), "nothing kept");
+}
+
 /// Money found for a Trezor wallet keeps the key its transaction was made
 /// with (the right one of several), can't be spent until the device has
 /// given its key image, and the node is asked whether that image is spent
@@ -159,4 +172,73 @@ async fn a_trezor_wallet_s_outputs_wait_for_their_key_images() {
     assert_eq!(image, hex::encode(full.key_image(output.key(), output.key_offset()).unwrap()), "the device's key image is the one the spend key gives");
     // The counting node says every key image is spent: so it is marked, with no transaction to name.
     assert_eq!(state.outputs[0].spent_in.as_deref(), Some(SPENT_BEFORE_SYNC));
+    drop(state);
+
+    // A rewind (a reorg, a rescan) keeps what the device's sync found; a
+    // spend by a transaction that fell out it would not.
+    {
+        let mut state = wallet.inner.state.lock().await;
+        let copy = state.outputs[0].clone();
+        state.outputs.push(Owned { spent_in: Some("deadbeef".into()), height: 5, ..copy });
+    }
+    wallet.rewind(50, None).await.unwrap();
+    let state = wallet.inner.state.lock().await;
+    assert_eq!(state.outputs[0].spent_in.as_deref(), Some(SPENT_BEFORE_SYNC), "the mark stays");
+    assert_eq!(state.outputs[1].spent_in, None, "an unknown transaction's spend is let go");
+    drop(state);
+
+    // Asked again with the device already done, the node is asked again and nothing else is.
+    let before = wallet.inner.state.lock().await.outputs[0].key_image.clone();
+    let fake2 = fake_trezor(&full);
+    let person2 = crate::trezor::session::fake::Person::new();
+    assert_eq!(wallet.trezor_sync(Arc::new(fake2), Arc::new(person2)).await.unwrap(), 0);
+    assert_eq!(wallet.inner.state.lock().await.outputs[0].key_image, before);
+}
+
+/// Spent in the pool only is a tentative mark: the next sync asks the node
+/// again, and a spend that never got mined frees the coin.
+#[tokio::test]
+async fn a_pool_spend_from_the_node_is_asked_about_again() {
+    let full = Keys::generate(Network::Stagenet).keys;
+    let fake = fake_trezor(&full);
+    let person = crate::trezor::session::fake::Person::new();
+    let answer = Arc::new(std::sync::Mutex::new("2".to_owned()));
+    let answers = answer.clone();
+    let url = scripted_node(move |text| {
+        let answers = answers.clone();
+        async move {
+            if text.contains("is_key_image_spent") {
+                format!(r#"{{"spent_status":[{}],"status":"OK"}}"#, answers.lock().unwrap())
+            } else if text.contains("get_height") {
+                r#"{"height":3000000,"status":"OK"}"#.to_owned()
+            } else {
+                r#"{"jsonrpc":"2.0","id":0,"result":{}}"#.to_owned()
+            }
+        }
+    })
+    .await;
+    let wallet = Wallet::restore_trezor(&dir("trezor-pool"), [1; 32], Network::Stagenet, &fake, &person, Some(5)).unwrap();
+    wallet.inner.state.lock().await.node = url;
+    let (block, _) = block_paying(&wallet.inner.keys, 5_000_000_000, 10);
+    let hashes = [block.block.hash()];
+    let (scanner, prefilter) = wallet.scanner(10);
+    let (results, _) = scan::scan(&scanner, &prefilter, vec![block], &hashes, false);
+    {
+        let mut state = wallet.inner.state.lock().await;
+        let mut images = Wallet::key_images(&state);
+        wallet.take_block(&mut state, &mut images, &HashMap::new(), results.into_iter().next().unwrap().unwrap());
+        state.tip = 100;
+    }
+    wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in.as_deref(), Some(SPENT_IN_POOL_AT_SYNC));
+    // The pool forgot it: the coin is free again.
+    *answer.lock().unwrap() = "0".into();
+    let (fake, person) = (fake_trezor(&full), crate::trezor::session::fake::Person::new());
+    wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in, None);
+    // Mined after all: spent for good.
+    *answer.lock().unwrap() = "1".into();
+    let (fake, person) = (fake_trezor(&full), crate::trezor::session::fake::Person::new());
+    wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in.as_deref(), Some(SPENT_BEFORE_SYNC));
 }

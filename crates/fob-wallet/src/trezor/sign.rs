@@ -135,7 +135,7 @@ fn compressed(bytes: &[u8]) -> Result<CompressedPoint> {
 
 /// Runs the protocol with the device and brings back the signed
 /// transaction, checked.
-pub fn sign(session: &Session<'_>, plan: &Plan, rng: &mut (impl RngCore + CryptoRng)) -> Result<Transaction> {
+pub fn sign(session: &Session<'_>, plan: &Plan, view_key: &[u8; 32], rng: &mut (impl RngCore + CryptoRng)) -> Result<Transaction> {
     if plan.inputs.is_empty() {
         return Err(failed("nothing to spend"));
     }
@@ -297,8 +297,112 @@ pub fn sign(session: &Session<'_>, plan: &Plan, rng: &mut (impl RngCore + Crypto
     }
     let tx = make(clsags, pseudo_outs);
     check(&tx, &sources, &order, &message)?;
+    check_outputs(&tx, plan, &outputs, view_key)?;
     progress(session);
     Ok(tx)
+}
+
+/// What the device made of the outputs, checked with the view key: the
+/// change comes back to this wallet (its one-time key, view tag, commitment
+/// and encrypted amount all follow from the transaction key in the extra),
+/// the inputs' pseudo outputs balance the outputs and the fee, and each
+/// input's offsets are its ring's. A device or cable that lied about any of
+/// these would give a transaction that burns the change or that the node
+/// refuses; this says so before it leaves.
+fn check_outputs(tx: &Transaction, plan: &Plan, outputs: &[Destination], view_key: &[u8; 32]) -> Result<()> {
+    use curve25519_dalek::{EdwardsPoint, Scalar as DalekScalar, traits::Identity};
+    use monero_wallet::extra::Extra;
+    let Transaction::V2 { prefix, proofs: Some(RctProofs { base, prunable: RctPrunable::Clsag { pseudo_outs, .. } }) } = tx else {
+        return Err(failed("not a signed transaction"));
+    };
+    let decompress = |p: &CompressedPoint| p.decompress().map(|p| -> EdwardsPoint { p.into() }).ok_or_else(|| failed("the device gave a key that isn't a point"));
+    // Inputs and outputs balance: Σ pseudo outs = Σ commitments + fee·H.
+    let mut ins = EdwardsPoint::identity();
+    for p in pseudo_outs {
+        ins += decompress(p)?;
+    }
+    let mut outs: EdwardsPoint = Commitment { mask: Scalar::from(DalekScalar::ZERO), amount: plan.fee }.commit().into();
+    for c in &base.commitments {
+        outs += decompress(c)?;
+    }
+    if ins != outs {
+        return Err(failed("the device's commitments don't balance the fee"));
+    }
+    // Each input's offsets are its ring's.
+    for (input, source) in prefix.inputs.iter().zip(inputs_in_order(prefix, plan)) {
+        let Input::ToKey { key_offsets, amount, .. } = input else { return Err(failed("an input isn't a RingCT one")) };
+        let mut positions: Vec<u64> = source.ring.iter().map(|r| r.index).collect();
+        positions.sort_unstable();
+        let mut relative = positions.clone();
+        for i in (1..relative.len()).rev() {
+            relative[i] -= relative[i - 1];
+        }
+        if *key_offsets != relative || amount.is_some() {
+            return Err(failed("the device's input doesn't name its ring"));
+        }
+    }
+    // The change comes back here.
+    if plan.change == 0 {
+        return Ok(());
+    }
+    let change = destination(&plan.change_address, plan.change);
+    let i = outputs.iter().position(|o| o.amount == plan.change && o.same_address(&change)).ok_or_else(|| failed("the change is missing"))?;
+    let (keys, _) = Extra::read(&mut prefix.extra.as_slice()).ok().and_then(|e| e.keys()).ok_or_else(|| failed("the device's extra has no transaction key"))?;
+    let tx_pub: EdwardsPoint = keys.first().copied().ok_or_else(|| failed("the device's extra has no transaction key"))?.into();
+    let view = DalekScalar::from_canonical_bytes(*view_key).into_option().ok_or_else(|| failed("the view key isn't canonical"))?;
+    let derivation = (tx_pub * view).mul_by_cofactor().compress().to_bytes();
+    let mut data = derivation.to_vec();
+    data.extend_from_slice(&super::proto::varint(i as u64));
+    let shared = Scalar::hash(&data);
+    let shared_bytes = <[u8; 32]>::from(shared);
+    let spend: EdwardsPoint = plan.change_address.spend().into();
+    let shared_scalar: DalekScalar = shared.into();
+    let one_time = (&shared_scalar * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE + spend).compress().to_bytes();
+    let output = prefix.outputs.get(i).ok_or_else(|| failed("the change is missing"))?;
+    if output.key.to_bytes() != one_time {
+        return Err(failed("the change doesn't come back to this wallet"));
+    }
+    let view_tag = crypto::keccak(&[b"view_tag".as_slice(), &data].concat())[0];
+    if output.view_tag != Some(view_tag) {
+        return Err(failed("the change's view tag is wrong: this wallet wouldn't see it"));
+    }
+    let mask = Scalar::hash([b"commitment_mask".as_slice(), &shared_bytes].concat());
+    if (Commitment { mask, amount: plan.change }).commit().compress() != base.commitments[i] {
+        return Err(failed("the change's commitment isn't for the change"));
+    }
+    let amount_mask = crypto::keccak(&[b"amount".as_slice(), &shared_bytes].concat());
+    let EncryptedAmount::Compact { amount } = &base.encrypted_amounts[i] else { return Err(failed("the change's amount isn't compact")) };
+    if u64::from_le_bytes(*amount) ^ u64::from_le_bytes(amount_mask[..8].try_into().expect("8")) != plan.change {
+        return Err(failed("the change's encrypted amount isn't the change"));
+    }
+    Ok(())
+}
+
+/// The plan's inputs in the transaction's order: by key image, as
+/// [`sign`] sorted them, which the transaction's inputs now carry.
+fn inputs_in_order(prefix: &TransactionPrefix, plan: &Plan) -> Vec<Source> {
+    // Each input's ring has one real member; the device's key image belongs
+    // to that output. Match by the ring's positions, which are each input's own.
+    let sources: Vec<Source> = plan.inputs.iter().map(source).collect();
+    prefix
+        .inputs
+        .iter()
+        .filter_map(|input| {
+            let Input::ToKey { key_offsets, .. } = input else { return None };
+            let mut positions = Vec::with_capacity(key_offsets.len());
+            let mut at = 0u64;
+            for o in key_offsets {
+                at = at.wrapping_add(*o);
+                positions.push(at);
+            }
+            sources.iter().find(|s| {
+                let mut theirs: Vec<u64> = s.ring.iter().map(|r| r.index).collect();
+                theirs.sort_unstable();
+                theirs == positions
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 fn read_varint(data: &mut &[u8]) -> Result<u64> {

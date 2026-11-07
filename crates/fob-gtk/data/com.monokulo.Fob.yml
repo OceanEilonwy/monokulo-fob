@@ -19,6 +19,8 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
+  # A Trezor on the USB port: no finer grant reaches a raw USB device.
+  - --device=all
 modules:
   - name: fob
     buildsystem: simple

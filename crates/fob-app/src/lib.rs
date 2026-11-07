@@ -5,8 +5,10 @@
 
 pub mod engine;
 pub mod picture;
+pub mod trezor;
 
 pub use engine::{Confirmed, Engine, Listener, Met, Options, Phase, Update};
+pub use trezor::{Prompter, TrezorAnswer, TrezorAsk, TrezorRequest};
 pub use fob_ffi::form;
 pub use fob_ffi as views;
 pub use fob_ffi::{Device, FobError, set_device};

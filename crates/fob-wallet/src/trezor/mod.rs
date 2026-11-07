@@ -17,6 +17,8 @@ pub mod proto;
 pub(crate) mod session;
 pub mod sign;
 mod wire;
+#[cfg(feature = "usb")]
+pub mod usb;
 
 pub use crypto::clear_torsion;
 pub use messages::Transfer;

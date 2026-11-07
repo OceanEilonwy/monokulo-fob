@@ -22,6 +22,7 @@ mod send;
 mod settings;
 mod split;
 mod start;
+mod trezor;
 mod widgets;
 
 use std::path::PathBuf;

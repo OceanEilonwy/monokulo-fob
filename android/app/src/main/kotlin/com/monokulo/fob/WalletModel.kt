@@ -248,6 +248,10 @@ class WalletModel(private val app: Application) {
     private val _trezorUnsynced = MutableStateFlow(0u)
     val trezorUnsynced: StateFlow<UInt> = _trezorUnsynced
 
+    /** Outputs of a Trezor wallet kept before Fob recorded transaction keys: a rescan from before them is needed. */
+    private val _trezorFrozen = MutableStateFlow(0u)
+    val trezorFrozen: StateFlow<UInt> = _trezorFrozen
+
     /** Settings' Node line: "Working · node.example:38081". */
     private val _nodeLine = MutableStateFlow("")
     val nodeLine: StateFlow<String> = _nodeLine
@@ -427,14 +431,15 @@ class WalletModel(private val app: Application) {
         val lock = phoneLock(app)
         // Rust's async calls run on the thread that calls them: off the main one, as this is a lot to write out.
         // Closed meanwhile (another wallet, or forgotten): Rust refuses a closed wallet, and there's nothing of it to show.
-        val (s, unsynced) = try {
-            withContext(Dispatchers.Default) { wallet.screens(seconds, offset, hours24, lock) to if (wallet.isTrezor()) wallet.trezorUnsynced() else 0u }
+        val s = try {
+            withContext(Dispatchers.Default) { wallet.screens(seconds, offset, hours24, lock) }
         } catch (closed: IllegalStateException) {
             return
         }
         // Another wallet opened meanwhile: these answers are the last one's.
         if (_wallet.value !== wallet) return
-        _trezorUnsynced.value = unsynced
+        _trezorUnsynced.value = s.trezorUnsynced
+        _trezorFrozen.value = s.trezorFrozen
         _prices.value = s.prices
         _balance.value = s.balance
         _activity.value = s.activity
@@ -822,7 +827,7 @@ class WalletModel(private val app: Application) {
      */
     private suspend fun <T> withTrezor(block: suspend (TrezorLink, TrezorPrompts) -> T): T {
         val link = TrezorUsb.open(app)
-        trezorAsks.begin()
+        trezorAsks.begin(onCancel = link::close)
         try {
             return block(link, trezorAsks)
         } finally {

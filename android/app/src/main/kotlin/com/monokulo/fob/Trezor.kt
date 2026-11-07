@@ -65,12 +65,22 @@ object TrezorUsb {
     suspend fun open(context: Context): Link {
         val device = find(context) ?: throw FobException.Trezor("No Trezor is plugged in. Connect it with a USB cable (an adapter from the phone's port, if it needs one) and unlock it.")
         if (!permitted(context, device)) throw FobException.Trezor("Fob wasn't allowed to use the Trezor.")
-        return Link(manager(context), device)
+        return Link(context, manager(context), device)
     }
 
-    /** The reports to and from an opened Trezor. Closed when done, so another app can have it. */
-    class Link(manager: UsbManager, device: UsbDevice) : TrezorLink, AutoCloseable {
+    /**
+     * The reports to and from an opened Trezor. Closed when done, so another
+     * app can have it; closed by itself when the cable comes out, so nothing
+     * waits on a device that's gone.
+     */
+    class Link(private val context: Context, manager: UsbManager, private val device: UsbDevice) : TrezorLink, AutoCloseable {
         private val connection: UsbDeviceConnection = manager.openDevice(device) ?: throw FobException.Trezor("The Trezor couldn't be opened. Unplug it and plug it in again.")
+        private val detached = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                val gone: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java) else @Suppress("DEPRECATION") intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                if (gone == null || gone.deviceId == device.deviceId) close()
+            }
+        }
         private val usbInterface: UsbInterface
         private val input: UsbEndpoint
         private val output: UsbEndpoint
@@ -89,6 +99,7 @@ object TrezorUsb {
                 connection.close()
                 throw FobException.Trezor("Another app is using the Trezor. Close Trezor Suite or the other wallet and try again.")
             }
+            ContextCompat.registerReceiver(context, detached, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED), ContextCompat.RECEIVER_EXPORTED)
         }
 
         override fun write(report: ByteArray) {
@@ -108,7 +119,9 @@ object TrezorUsb {
         }
 
         override fun close() {
+            if (closed) return
             closed = true
+            runCatching { context.unregisterReceiver(detached) }
             runCatching { connection.releaseInterface(usbInterface) }
             connection.close()
         }
@@ -116,8 +129,8 @@ object TrezorUsb {
         private companion object {
             const val REPORT = 64
             const val WRITE_TIMEOUT = 3_000
-            /** Each wait on the device, so a closed link is noticed soon. */
-            const val READ_SLICE = 500
+            /** Each wait on the device, so a closed link (unplugged, or cancelled) is noticed soon. */
+            const val READ_SLICE = 300
             /** Reading gives up after this, in milliseconds: five minutes to find the device and press. */
             const val READ_PATIENCE = 5 * 60_000L
         }
@@ -152,7 +165,11 @@ class TrezorAsks : TrezorPrompts {
     private var pinAnswer: CompletableDeferred<String?>? = null
     private var passphraseAnswer: CompletableDeferred<TrezorPassphrase>? = null
 
-    fun begin() {
+    /** Ends the exchange from the phone's side: closes the link, so Rust's wait ends. Set while one is on. */
+    @Volatile var onCancel: (() -> Unit)? = null
+
+    fun begin(onCancel: () -> Unit) {
+        this.onCancel = onCancel
         _busy.value = true
         _ask.value = null
     }
@@ -160,8 +177,16 @@ class TrezorAsks : TrezorPrompts {
     fun end() {
         _busy.value = false
         _ask.value = null
+        onCancel = null
         pinAnswer?.cancel()
         passphraseAnswer?.cancel()
+    }
+
+    /** The person gives up: any question is answered no, and the device is let go. */
+    fun cancel() {
+        pinAnswer?.complete(null)
+        passphraseAnswer?.complete(TrezorPassphrase.Cancelled)
+        onCancel?.invoke()
     }
 
     override fun onButton(what: String) {

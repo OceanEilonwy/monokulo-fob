@@ -160,6 +160,13 @@ pub fn trezor_needed() -> String {
     "connect the Trezor this wallet belongs to".into()
 }
 
+/// `n` coins were kept before Fob recorded transaction keys: the device
+/// can't be asked about them until a rescan finds them again.
+pub fn trezor_frozen(n: u32) -> String {
+    let coins = if n == 1 { "one coin arrived".to_owned() } else { format!("{n} coins arrived") };
+    format!("{coins} before Fob kept transaction keys, so the Trezor can't be asked about them: scan again from before they arrived")
+}
+
 /// Why a code can't be paid, when it's fine as a code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotTaken {

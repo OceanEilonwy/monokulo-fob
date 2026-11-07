@@ -216,6 +216,15 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
                 )
                 trezorError?.let { Text(it, color = Fob.red, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)) }
             }
+            // Coins kept before Fob recorded transaction keys: the device can't be asked about them until a rescan finds them again.
+            val trezorFrozen by model.trezorFrozen.collectAsState()
+            if (trezorFrozen > 0u) {
+                val n = trezorFrozen.toInt()
+                Warning(
+                    "${if (n == 1) "A coin" else "$n coins"} arrived before Fob kept transaction keys, so the Trezor can't be asked about ${if (n == 1) "it" else "them"}. Scan again from before ${if (n == 1) "it" else "they"} arrived.",
+                    Modifier.padding(bottom = 12.dp), title = "Scan again for your Trezor", icon = Icons.refresh, onClick = model::openScan,
+                )
+            }
             notReady?.let { ReadyCard(it) }
         }
 

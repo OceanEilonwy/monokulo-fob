@@ -103,7 +103,7 @@ impl SimpleComponent for Confirm {
                             add_css_class: "pill",
                             set_halign: gtk::Align::Center,
                             #[watch]
-                            set_label: if model.sent.is_some() { "Done" } else if model.busy { "Working…" } else { "Send" },
+                            set_label: if model.sent.is_some() { "Done" } else if model.busy && model.engine.is_trezor() { "Confirm on the Trezor…" } else if model.busy { "Working…" } else if model.engine.is_trezor() { "Send with the Trezor" } else { "Send" },
                             #[watch]
                             set_sensitive: model.sent.is_some() || (model.prepared.is_some() && !model.busy && !model.awaits_acknowledgement()),
                             connect_clicked => Input::Send,
@@ -185,6 +185,23 @@ impl SimpleComponent for Confirm {
                     return;
                 }
                 if self.prepared.is_none() || self.awaits_acknowledgement() {
+                    return;
+                }
+                if self.engine.is_trezor() {
+                    // The device shows the payment and asks there.
+                    let Some(prepared) = self.prepared.clone() else { return };
+                    self.busy = true;
+                    self.error = None;
+                    let (engine, then) = (self.engine.clone(), sender.clone());
+                    let prompter = crate::trezor::prompter(&sender);
+                    relm4::spawn(async move {
+                        then.input(match engine.send_with_trezor(prepared, prompter).await {
+                            Ok(tx) => Input::Sent(tx),
+                            Err(fob_app::FobError::SpendRejected { .. }) => Input::Refused,
+                            // Said no on the device, or it couldn't be reached: still prepared.
+                            Err(e) => Input::Failed(e.to_string()),
+                        });
+                    });
                     return;
                 }
                 let then = sender.clone();

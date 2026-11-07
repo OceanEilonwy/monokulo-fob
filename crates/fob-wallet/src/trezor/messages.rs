@@ -2,6 +2,8 @@
 //! `messages.proto`, `messages-common.proto`, `messages-management.proto`
 //! and `messages-monero.proto` in trezor-firmware.
 
+use zeroize::Zeroizing;
+
 use super::proto::{Malformed, Reader, Writer};
 use crate::network::Network;
 
@@ -48,6 +50,12 @@ pub const MONERO_WATCH_KEY: u16 = 543;
 pub const FAILURE_ACTION_CANCELLED: u64 = 4;
 pub const FAILURE_PIN_CANCELLED: u64 = 6;
 pub const FAILURE_PIN_INVALID: u64 = 7;
+pub const FAILURE_UNEXPECTED_MESSAGE: u64 = 1;
+pub const FAILURE_DATA_ERROR: u64 = 3;
+pub const FAILURE_PROCESS_ERROR: u64 = 9;
+pub const FAILURE_NOT_ENOUGH_FUNDS: u64 = 10;
+pub const FAILURE_NOT_INITIALIZED: u64 = 11;
+pub const FAILURE_BUSY: u64 = 15;
 
 /// `Features.capabilities` values.
 pub const CAPABILITY_MONERO: u64 = 9;
@@ -139,19 +147,21 @@ pub fn button_request(data: &[u8]) -> String {
     r.string(4).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("button {}", r.uint(1).unwrap_or(0)))
 }
 
-pub fn pin_matrix_ack(pin: &str) -> Vec<u8> {
+/// Wiped once sent: the PIN is in it.
+pub fn pin_matrix_ack(pin: &str) -> Zeroizing<Vec<u8>> {
     let mut w = Writer::new();
     w.bytes(1, pin.as_bytes());
-    w.finish()
+    Zeroizing::new(w.finish())
 }
 
-pub fn passphrase_ack(passphrase: Option<&str>, on_device: bool) -> Vec<u8> {
+/// Wiped once sent: the passphrase is in it.
+pub fn passphrase_ack(passphrase: Option<&str>, on_device: bool) -> Zeroizing<Vec<u8>> {
     let mut w = Writer::new();
     if let Some(text) = passphrase {
         w.bytes(1, text.as_bytes());
     }
     w.bool(3, on_device);
-    w.finish()
+    Zeroizing::new(w.finish())
 }
 
 pub fn get_watch_key(network: Network) -> Vec<u8> {

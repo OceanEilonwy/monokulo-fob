@@ -30,6 +30,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 sha3 = "0.10"
 # Opens what a Trezor seals: key images and signatures (src/trezor).
 chacha20poly1305 = "0.10"
+# A Trezor over USB on a computer (src/trezor/usb.rs); Android talks USB itself.
+# libusb is built in, so the AppImage needs nothing from the system.
+rusb = { version = "0.9", features = ["vendored"], optional = true }
+
+[features]
+# The desktop's Trezor link over libusb.
+usb = ["rusb"]
 
 [dev-dependencies]
 fob-chain = { path = "../fob-chain", features = ["test-support"] }

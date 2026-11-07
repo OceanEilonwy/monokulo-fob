@@ -164,6 +164,12 @@ impl Wallet {
     ) -> Result<Wallet> {
         let session = trezor::Session::open(link, prompts)?;
         let (view, address) = session.watch_key(network)?;
+        // The cable could have changed the address on the way; the device
+        // shows it on its own screen, for the person to compare with
+        // Receive, and says it again: both have to agree.
+        if session.address_shown(network)? != address {
+            return Err(FobError::Trezor("the address the Trezor shows isn't the one it sent: don't use this cable or computer".into()));
+        }
         let keys = Keys::trezor(network, &address, &view)?;
         let wallet = Wallet::new(path, file_key, keys, restore_height)?;
         {

@@ -120,6 +120,8 @@ pub enum Msg {
     Say(String),
     ToastDismissed,
     ToastRetry,
+    /// A Trezor's question, from whatever screen is talking to one.
+    Trezor(fob_app::TrezorRequest),
 }
 
 pub struct Root {
@@ -145,6 +147,8 @@ pub struct Root {
     scan: Controller<Scan>,
     manual: Controller<Manual>,
     toasts: adw::ToastOverlay,
+    /// The Trezor's question on screen, while one is.
+    trezor: crate::trezor::Dialogs,
     nav: adw::NavigationView,
     screens: Option<Arc<Screens>>,
     /// A code opened before a wallet was: taken once one is.
@@ -237,7 +241,7 @@ impl SimpleComponent for Root {
         links_go_to(sender.input_sender().clone());
         let toasts = adw::ToastOverlay::new();
         let phase = engine.phase();
-        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, scan, manual, toasts: toasts.clone(), nav: nav.clone(), screens: None, pending: None, toast: None };
+        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, scan, manual, toasts: toasts.clone(), trezor: crate::trezor::Dialogs::default(), nav: nav.clone(), screens: None, pending: None, toast: None };
         let toasts = &toasts;
         let nav = &nav;
         let widgets = view_output!();
@@ -253,6 +257,10 @@ impl SimpleComponent for Root {
             Msg::Open(code) if self.phase == Phase::Open => self.opened(code),
             Msg::Open(code) => self.pending = Some(code),
             Msg::Say(text) => self.toasts.add_toast(adw::Toast::new(&text)),
+            Msg::Trezor(request) => {
+                let window = self.nav.root().and_downcast::<adw::ApplicationWindow>();
+                self.trezor.show(window.as_ref().map(|w| w.upcast_ref()), request);
+            }
             Msg::ToastDismissed => {
                 if let Some((id, _)) = self.toast.take() {
                     self.engine.dismiss_toast(id);

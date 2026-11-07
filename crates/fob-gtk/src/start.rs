@@ -16,6 +16,8 @@ pub enum Way {
     Words,
     Code,
     ViewOnly,
+    /// A Trezor on the USB port: the device gives the view key and signs.
+    Trezor,
 }
 
 #[derive(Debug)]
@@ -74,7 +76,7 @@ impl SimpleComponent for Start {
                         adw::PreferencesGroup {
                             add = &adw::ComboRow {
                                 set_title: "How",
-                                set_model: Some(&gtk::StringList::new(&["Make a new wallet", "Restore from seed words", "Restore from a wallet code", "Watch only, from an address and view key"])),
+                                set_model: Some(&gtk::StringList::new(&["Make a new wallet", "Restore from seed words", "Restore from a wallet code", "Watch only, from an address and view key", "Connect a Trezor (USB)"])),
                                 connect_selected_notify[sender] => move |row| sender.input(Input::Way(row.selected())),
                             },
                             #[local_ref]
@@ -82,7 +84,7 @@ impl SimpleComponent for Start {
                             #[local_ref]
                             add = words -> adw::EntryRow {
                                 #[watch]
-                                set_visible: model.way != Way::New,
+                                set_visible: !matches!(model.way, Way::New | Way::Trezor),
                                 // Seed words and a wallet code hold the spend
                                 // key: an input method told it's a password,
                                 // and private, doesn't learn them into its
@@ -114,6 +116,13 @@ impl SimpleComponent for Start {
                             },
                         },
                         gtk::Label {
+                            add_css_class: "dim-label",
+                            set_wrap: true,
+                            #[watch]
+                            set_visible: model.way == Way::Trezor,
+                            set_label: "Plug in a Trezor Model T, Safe 3 or Safe 5 and unlock it. It will ask to let Fob watch the wallet and show the wallet's address: the spend key never leaves it, and every payment is confirmed on its screen. Leave the restore height empty for a Trezor new to Monero. On Linux the device needs Trezor's udev rules (Trezor Suite installs them).",
+                        },
+                        gtk::Label {
                             add_css_class: "error",
                             set_wrap: true,
                             #[watch]
@@ -128,7 +137,7 @@ impl SimpleComponent for Start {
                             #[watch]
                             set_sensitive: !model.busy,
                             #[watch]
-                            set_label: if model.busy { "Working…" } else if model.way == Way::New { "Make wallet" } else { "Restore" },
+                            set_label: if model.busy { "Working…" } else if model.way == Way::New { "Make wallet" } else if model.way == Way::Trezor { "Connect" } else { "Restore" },
                             connect_clicked => Input::Go,
                         },
                     },
@@ -159,7 +168,7 @@ impl SimpleComponent for Start {
             Input::Phase(_) => {}
             Input::Adding => self.adding = true,
             Input::Way(i) => {
-                self.way = [Way::New, Way::Words, Way::Code, Way::ViewOnly][i.min(3) as usize];
+                self.way = [Way::New, Way::Words, Way::Code, Way::ViewOnly, Way::Trezor][i.min(4) as usize];
                 self.error = None;
             }
             Input::Go => self.go(&sender),
@@ -219,12 +228,14 @@ impl Start {
         let (name, text, key) = (self.name.text().to_string(), crate::widgets::secret_text(self.words.text()), crate::widgets::secret_text(self.view_key.text()));
         let point = Some(self.restore_point.text().to_string()).filter(|p| !p.trim().is_empty());
         let (engine, way, sender) = (self.engine.clone(), self.way, sender.clone());
+        let prompter = crate::trezor::prompter(&sender);
         relm4::spawn(async move {
             let result = match way {
                 Way::New => engine.create_wallet(name).await,
                 Way::Words => engine.restore_words(name, text, point).await,
                 Way::Code => engine.restore_code(name, text, point).await,
                 Way::ViewOnly => engine.restore_view_only(name, String::clone(&text), String::clone(&key), point).await,
+                Way::Trezor => engine.restore_trezor(name, point, prompter).await,
             };
             sender.input(match result {
                 Ok(()) => Input::Done,

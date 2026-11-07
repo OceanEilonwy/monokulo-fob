@@ -39,8 +39,12 @@ Trezor Model T, Safe 3 or Safe 5 (Model One can't hold Monero), plugged into
 the phone over USB. The device hands Fob the view key, so Fob watches and
 catches up as usual; it asks the device for key images (Home says when) and
 for each payment's signatures, which the device confirms on its own screen.
-The PIN is typed on the phone by the positions the device shows. Tested so
-far against the protocol in software only: try it on stagenet first.
+The PIN is typed on the phone by the positions the device shows. The desktop
+app does the same over USB (How › Connect a Trezor (USB)); on Linux the
+device needs Trezor's udev rules, which Trezor Suite installs, or
+[51-trezor.rules](https://data.trezor.io/udev/51-trezor.rules) put in
+`/etc/udev/rules.d/`. Tested so far against the protocol in software only:
+try it on stagenet first.
 
 ### Installing and updating with Obtainium
 

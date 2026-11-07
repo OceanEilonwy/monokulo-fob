@@ -100,6 +100,9 @@ const HARD_FORK: u32 = 16;
 /// What an output's `spent_in` says when a device's key image sync found it
 /// spent before the key image was known: the spending transaction isn't.
 pub(crate) const SPENT_BEFORE_SYNC: &str = "spent-before-sync";
+/// As above, but the node saw the spend in its pool only: the next sync asks
+/// again, and a spend that never got mined frees the coin.
+pub(crate) const SPENT_IN_POOL_AT_SYNC: &str = "spent-in-pool-at-sync";
 /// The most Fob pays per unit of weight, whatever a node asks. With the tail
 /// emission an honest mainnet node's normal fee is about 20,000 per byte
 /// (less with larger blocks), so this leaves it room to rise about twenty
@@ -256,6 +259,7 @@ struct PreparedTx {
 }
 
 /// What a payment records once sent, beside its transaction.
+#[derive(Clone)]
 struct Outgoing {
     to: String,
     amount: u64,

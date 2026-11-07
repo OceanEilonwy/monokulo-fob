@@ -268,6 +268,12 @@ pub struct Screens {
     /// Who was paid before, for Send's sheet while there's no contact.
     pub paid_before: Vec<PaidBefore>,
     pub coins: Coins,
+    /// A Trezor wallet's outputs waiting for the device to give their key
+    /// images: Home asks to connect it. 0 for other wallets.
+    pub trezor_unsynced: u32,
+    /// A Trezor wallet's outputs kept before Fob recorded transaction keys,
+    /// which the device can't be asked about until a rescan finds them again.
+    pub trezor_frozen: u32,
     /// The price toast while lookups fail.
     pub price_toast: Option<PriceToast>,
 }
@@ -1822,6 +1828,7 @@ impl FobWallet {
     pub async fn screens(&self, now: u64, utc_offset: i32, hours_24: bool, phone_lock: bool) -> Screens {
         let clock = clock::Clock { now, utc_offset, hours_24 };
         let lists = self.inner.lists(clock).await;
+        let waiting = self.inner.trezor_waiting().await;
         let paid = |p: Vec<activity::PaidBefore>| p.into_iter().map(fob_wallet::words::activity::paid_before).map(|p| PaidBefore { address: p.address, name: p.name, line: p.line }).collect();
         Screens {
             prices: self.price_settings(now, utc_offset, hours_24).await,
@@ -1838,6 +1845,8 @@ impl FobWallet {
             paid_before: paid(lists.paid_before),
             coins: self.coins(now, utc_offset, hours_24).await,
             price_toast: self.inner.price_toast(clock).await.map(Into::into),
+            trezor_unsynced: waiting.unsynced,
+            trezor_frozen: waiting.frozen,
         }
     }
 

@@ -547,6 +547,80 @@ impl Engine {
         self.adopt(name, move |path, key, network| FobWallet::restore_view_only(path, key, network, address, view_key, restore_point)).await
     }
 
+    // ---- A Trezor
+
+    /// Opens the Trezor on the USB port and runs `with` on it, the device's
+    /// questions going through `prompter`; the device is let go after, and
+    /// the prompter told the exchange is over, whatever happened.
+    async fn with_trezor<T: Send + 'static>(
+        prompter: Arc<crate::trezor::Prompter>,
+        with: impl FnOnce(Arc<crate::trezor::Usb>, Arc<crate::trezor::Prompter>) -> std::pin::Pin<Box<dyn Future<Output = Result<T, FobError>> + Send>> + Send + 'static,
+    ) -> Result<T, FobError> {
+        let link = match crate::trezor::Usb::open() {
+            Ok(link) => link,
+            Err(e) => {
+                prompter.over();
+                return Err(e);
+            }
+        };
+        prompter.hold(link.clone());
+        let result = Self::run(with(link.clone(), prompter.clone())).await;
+        link.close();
+        prompter.over();
+        result
+    }
+
+    /// A wallet whose keys are on the Trezor plugged in: the device gives the
+    /// view key (asking first, and showing the address to compare).
+    pub async fn restore_trezor(&self, name: String, restore_point: Option<String>, prompter: Arc<crate::trezor::Prompter>) -> Result<(), FobError> {
+        let this = self.clone();
+        Self::with_trezor(prompter, move |link, prompter| {
+            Box::pin(async move {
+                let (link, prompts): (Arc<dyn fob_ffi::TrezorLink>, Arc<dyn fob_ffi::TrezorPrompts>) = (link, prompter);
+                this.adopt(name, move |path, key, network| FobWallet::restore_trezor(path, key, network, link, prompts, restore_point)).await
+            })
+        })
+        .await
+    }
+
+    /// Asks the Trezor for the key images it hasn't given; how many outputs that covered.
+    pub async fn trezor_sync(&self, prompter: Arc<crate::trezor::Prompter>) -> Result<u32, FobError> {
+        let this = self.clone();
+        Self::with_trezor(prompter, move |link, prompter| {
+            Box::pin(async move {
+                let wallet = this.open_wallet()?;
+                let synced = wallet.trezor_sync(link, prompter).await;
+                this.read_screens().await;
+                synced
+            })
+        })
+        .await
+    }
+
+    /// Sends a prepared payment signed on the Trezor, which confirms it on
+    /// its own screen: no passphrase here. Like [`send`](Engine::send), it
+    /// runs to the end whatever the screen does.
+    pub async fn send_with_trezor(&self, prepared: Arc<Prepared>, prompter: Arc<crate::trezor::Prompter>) -> Result<String, FobError> {
+        let this = self.clone();
+        Self::with_trezor(prompter, move |link, prompter| {
+            Box::pin(async move {
+                let wallet = this.open_wallet()?;
+                this.inner.sending.fetch_add(1, Ordering::SeqCst);
+                let sent = wallet.send_with_trezor(prepared.id, link, prompter).await;
+                this.inner.sending.fetch_sub(1, Ordering::SeqCst);
+                this.touched();
+                this.read_screens().await;
+                sent
+            })
+        })
+        .await
+    }
+
+    /// Whether the open wallet's spend key is on a Trezor.
+    pub fn is_trezor(&self) -> bool {
+        self.wallet().is_some_and(|w| w.is_trezor())
+    }
+
     /// The name a new wallet gets unless it's given one.
     pub fn next_wallet_name(&self) -> Result<String, FobError> {
         Ok(self.parts()?.0.next_name())

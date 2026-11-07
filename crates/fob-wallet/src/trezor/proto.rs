@@ -105,6 +105,20 @@ fn get_varint(data: &[u8], at: &mut usize) -> Result<u64, Malformed> {
     }
 }
 
+impl Drop for Reader {
+    /// Wiped as it goes: a reply may carry a key.
+    fn drop(&mut self) {
+        for (_, value) in &mut self.fields {
+            match value {
+                Value::Varint(n) => *n = 0,
+                Value::Bytes(b) => zeroize::Zeroize::zeroize(b),
+                Value::Fixed64(b) => *b = [0; 8],
+                Value::Fixed32(b) => *b = [0; 4],
+            }
+        }
+    }
+}
+
 impl Reader {
     pub fn parse(data: &[u8]) -> Result<Reader, Malformed> {
         let mut at = 0;

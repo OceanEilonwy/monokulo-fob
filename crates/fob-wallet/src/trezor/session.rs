@@ -74,8 +74,10 @@ impl<'a> Session<'a> {
     }
 
     fn write(&self, msg_type: u16, data: &[u8]) -> Result<()> {
-        for report in wire::frames(msg_type, data) {
-            self.link.write(&report).map_err(|e| device(format!("couldn't reach the device: {e}")))?;
+        // A PIN or passphrase goes this way: the reports are wiped after.
+        let reports = Zeroizing::new(wire::frames(msg_type, data));
+        for report in reports.iter() {
+            self.link.write(report).map_err(|e| device(format!("couldn't reach the device: {e}")))?;
         }
         Ok(())
     }
@@ -113,11 +115,18 @@ impl<'a> Session<'a> {
                     }
                 }
                 m::FAILURE => {
-                    let (code, text) = m::failure(&data);
+                    // Fob's own words for each code: the device's text isn't
+                    // shown, as a hostile one could say anything there.
+                    let (code, _) = m::failure(&data);
                     return Err(match code {
                         m::FAILURE_ACTION_CANCELLED | m::FAILURE_PIN_CANCELLED => FobError::TrezorCancelled,
                         m::FAILURE_PIN_INVALID => device("the PIN was wrong"),
-                        _ => device(if text.is_empty() { format!("the device refused (code {code})") } else { text }),
+                        m::FAILURE_UNEXPECTED_MESSAGE => device("the Trezor wasn't expecting that: unplug it and try again"),
+                        m::FAILURE_DATA_ERROR | m::FAILURE_PROCESS_ERROR => device("the Trezor refused what Fob sent (its firmware may be older than Fob knows)"),
+                        m::FAILURE_NOT_ENOUGH_FUNDS => device("the Trezor says the amounts don't add up"),
+                        m::FAILURE_NOT_INITIALIZED => device("the Trezor isn't set up yet"),
+                        m::FAILURE_BUSY => device("the Trezor is busy with another app"),
+                        _ => device(format!("the Trezor refused (code {code})")),
                     });
                 }
                 _ => return Ok((reply, data)),
@@ -141,9 +150,17 @@ impl<'a> Session<'a> {
     /// Asks the device for the wallet's private view key and primary
     /// address; the device asks the person first.
     pub fn watch_key(&self, network: Network) -> Result<(Zeroizing<[u8; 32]>, String)> {
-        let data = self.expect(m::MONERO_GET_WATCH_KEY, &m::get_watch_key(network), m::MONERO_WATCH_KEY)?;
+        let data = Zeroizing::new(self.expect(m::MONERO_GET_WATCH_KEY, &m::get_watch_key(network), m::MONERO_WATCH_KEY)?);
         let (key, address) = m::watch_key(&data).map_err(|e| device(e.to_string()))?;
         Ok((Zeroizing::new(key), address))
+    }
+
+    /// Asks the device for the wallet's primary address and to show it on
+    /// its own screen, so the person can compare: what came over the cable
+    /// can't be trusted on its own.
+    pub fn address_shown(&self, network: Network) -> Result<String> {
+        let data = self.expect(m::MONERO_GET_ADDRESS, &m::get_address(network, true, 0), m::MONERO_ADDRESS)?;
+        m::address(&data).map_err(|e| device(e.to_string()))
     }
 
     /// Asks the device for `transfers`' key images (its spend key makes
@@ -221,6 +238,9 @@ pub mod fake {
         pub features: m::Features,
         pub view_key: [u8; 32],
         pub address: String,
+        /// What the device shows (and says) when asked for the address; the
+        /// exported one unless a test puts something else here.
+        pub shown_address: Option<String>,
         /// Makes a key image, its signature's c and r, for an output's key.
         pub key_image: Box<KeyImageMaker>,
         pub enc_key: [u8; 32],
@@ -241,6 +261,7 @@ pub mod fake {
                 features: m::Features { vendor: "trezor.io".into(), version: (2, 8, 0), initialized: true, capabilities: vec![1, m::CAPABILITY_MONERO], model: Some("Safe 3".into()), ..m::Features::default() },
                 view_key: [0; 32],
                 address: String::new(),
+                shown_address: None,
                 key_image: Box::new(|_| ([0; 32], [0; 32], [0; 32])),
                 enc_key: [5; 32],
                 log: Mutex::new(vec![]),
@@ -280,6 +301,11 @@ pub mod fake {
                     let mut w = Writer::new();
                     w.bytes(1, &self.view_key).bytes(2, self.address.as_bytes());
                     (m::MONERO_WATCH_KEY, w.finish())
+                }
+                m::MONERO_GET_ADDRESS => {
+                    let mut w = Writer::new();
+                    w.bytes(1, self.shown_address.as_deref().unwrap_or(&self.address).as_bytes());
+                    (m::MONERO_ADDRESS, w.finish())
                 }
                 m::MONERO_KEY_IMAGE_EXPORT_INIT_REQUEST => (m::MONERO_KEY_IMAGE_EXPORT_INIT_ACK, vec![]),
                 m::MONERO_KEY_IMAGE_SYNC_STEP_REQUEST => {
@@ -481,6 +507,22 @@ mod tests {
         person.passphrase = Passphrase::OnDevice;
         let session = Session::open(&fake, &person).unwrap();
         assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::TrezorCancelled)));
+        // Any other refusal is said in Fob's words, never the device's.
+        *fake.fail.lock().unwrap() = Some((m::MONERO_GET_WATCH_KEY, m::FAILURE_BUSY));
+        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t.contains("busy") && !t.contains("refused")));
+        *fake.fail.lock().unwrap() = Some((m::MONERO_GET_WATCH_KEY, 77));
+        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t == "the Trezor refused (code 77)"));
+    }
+
+    #[test]
+    fn the_address_the_device_shows_is_asked_for() {
+        let mut fake = Fake::new();
+        fake.address = "4abc".into();
+        fake.shown_address = Some("4xyz".into());
+        let person = Person::new();
+        let session = Session::open(&fake, &person).unwrap();
+        assert_eq!(session.address_shown(Network::Mainnet).unwrap(), "4xyz");
+        assert_eq!(fake.log.lock().unwrap().last(), Some(&m::MONERO_GET_ADDRESS));
     }
 
     #[test]
