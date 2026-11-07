@@ -85,7 +85,7 @@ impl SimpleComponent for Start {
                         adw::PreferencesGroup {
                             add = &adw::ComboRow {
                                 set_title: "How",
-                                set_model: Some(&gtk::StringList::new(&["Make a new wallet", "Restore from seed words", "Restore from a wallet code", "Watch only, from an address and view key", "Connect a Trezor (USB)"])),
+                                set_model: Some(&gtk::StringList::new(&["Make a new wallet", "Restore from seed words", "Restore from code", "Watch only", "Connect a Trezor (USB)"])),
                                 connect_selected_notify[sender] => move |row| sender.input(Input::Way(row.selected())),
                             },
                             #[local_ref]
