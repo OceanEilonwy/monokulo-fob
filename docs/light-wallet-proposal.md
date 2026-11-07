@@ -369,13 +369,18 @@ family, not for hundreds of wallets. The next section is how it scales.
 Fob already has the right engine. The prefilter (`monokulo-8ar`, lifted out
 of `fob-scanner` by decision 359; decisions 331, 332, 350, 351) doesn't
 scan; it *prefilters*: for each transaction key `R` in a batch
-of blocks it computes `8·a·R` once (on the GPU in batches of 32,768, or on
-CPU threads), compresses the points with one inversion per 64, and for each
-output checks the view tag (`Keccak("view_tag" ‖ D ‖ i)[0]`, 1 in 256 pass)
-and then the real thing, `P − H_s(D ‖ i)·G ∈ {our spend keys}`. Only blocks
-that hold a real receipt go to monero-oxide's `Scanner`. On an RX 6800 XT it
-put 5,000 mainnet blocks through in 0.29 s for one wallet (0.89 s on 16 CPU
-threads), with 39 MB of GPU state however large the batch.
+of blocks it computes `8·a·R` once on the GPU (Vulkan, batches of 32,768,
+the point compressed on the GPU too), and for each output checks the view
+tag (`Keccak("view_tag" ‖ D ‖ i)[0]`, 1 in 256 pass) and then the real
+thing, `P − H_s(D ‖ i)·G ∈ {our spend keys}`, with curve25519-dalek on the
+CPU. Only blocks that hold a real receipt go to monero-oxide's `Scanner`.
+It is GPU-only (decision 360): where there is no usable Vulkan GPU, or a
+batch is too small to be worth one (under 512 keys, about nine blocks),
+`flag` answers `None` and the caller scans every block with monero-oxide,
+which is the fallback everywhere, Fob included. Any Vulkan GPU does,
+integrated ones included; Apple gets it through MoltenVK when there is an
+Apple client. On an RX 6800 XT it put 5,000 mainnet blocks through in
+0.29 s for one wallet, with 39 MB of GPU state however large the batch.
 
 Today the kernel takes **one view key per dispatch**: the key's 64 signed
 base-16 digits travel as push constants, and every work item multiplies a
@@ -414,11 +419,12 @@ different `R` by the same `a`. A server has the opposite shape: few new
   shrinking to the `vkQueueSubmit` Vulkan requires per queue, or to nothing
   where the GPU has several compute queues. Fob keeps one device and one
   arena, unchanged. `warm_up`, the self-test vectors, the 20–30 s shader
-  compile with its pipeline cache, `Mode::{Gpu, Auto, Cpu}` and the
-  retire-on-failure path all carry over: `monokulo-lws serve --scan
-  gpu|cpu|auto --cache-dir …`. No GPU means the same prefilter on CPU
-  threads, which still beats one full scan per account because nothing is
-  hashed for accounts that can't own an output.
+  compile with its pipeline cache and the retire-on-failure path all carry
+  over, and there is nothing to choose: `monokulo-lws serve --cache-dir …`
+  uses the GPU when it is usable and says so in `/daemon_status`. No GPU
+  means the first version's loop, one monero-oxide scan per account per
+  block: fine for a shop, not for hundreds of wallets, which want a machine
+  with a GPU, integrated included.
 
 What changes in `monokulo-lws`'s loop (`scanner.rs`):
 
@@ -452,7 +458,7 @@ database: an account's `scan_height` says which lane it is in. Fob sees
 `scanned_height` below `blockchain_height` until the merge, hence the
 "Server scanning from 2019" chip. Lanes are configurable
 (`--catch-up-lanes`, `--catch-up-join follow|wait`, `--catch-up-blocks`,
-`--catch-up-in-flight`, `--catch-up-scan`; `monokulo-lws/docs/scanning.md`
+`--catch-up-in-flight`, `--gpu-arenas`; `monokulo-lws/docs/scanning.md`
 has the table); `--catch-up-lanes 0` is the first version's single loop,
 fine for a handful of wallets.
 
