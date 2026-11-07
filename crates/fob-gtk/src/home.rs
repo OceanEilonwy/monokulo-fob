@@ -47,6 +47,10 @@ pub struct Home {
 }
 
 impl Home {
+    fn can_swap(&self) -> bool {
+        self.screens.as_ref().is_some_and(|View(s)| s.balance.can_swap)
+    }
+
     fn big(&self) -> String {
         let Some(View(s)) = &self.screens else { return "—".into() };
         match (&s.balance.fiat_text, s.balance.fiat_first) {
@@ -219,6 +223,8 @@ impl SimpleComponent for Home {
                         gtk::Button {
                             add_css_class: "flat",
                             set_halign: gtk::Align::Center,
+                            #[watch]
+                            set_tooltip_text: if model.can_swap() { Some("Show the other currency first") } else { None },
                             connect_clicked => Input::SwapBalance,
                             #[wrap(Some)]
                             set_child = &gtk::Box {
@@ -228,12 +234,22 @@ impl SimpleComponent for Home {
                                     #[watch]
                                     set_label: &model.big(),
                                 },
-                                gtk::Label {
-                                    add_css_class: "dim-label",
-                                    #[watch]
-                                    set_label: &model.small(),
+                                gtk::Box {
+                                    set_halign: gtk::Align::Center,
+                                    set_spacing: 6,
                                     #[watch]
                                     set_visible: !model.small().is_empty(),
+                                    gtk::Label {
+                                        add_css_class: "dim-label",
+                                        #[watch]
+                                        set_label: &model.small(),
+                                    },
+                                    // Tapping the balance swaps them: the mark says so.
+                                    #[local_ref]
+                                    swap_mark -> gtk::DrawingArea {
+                                        #[watch]
+                                        set_visible: model.can_swap(),
+                                    },
                                 },
                             },
                         },
@@ -330,7 +346,8 @@ impl SimpleComponent for Home {
         popover.set_child(Some(&wallet_list));
         wallet_button.set_popover(Some(&popover));
         let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, wallet_list, popover };
-        let (days, wallet_button) = (&days, &wallet_button);
+        let swap_mark = widgets::swap_icon(16, None);
+        let (days, wallet_button, swap_mark) = (&days, &wallet_button, &swap_mark);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }

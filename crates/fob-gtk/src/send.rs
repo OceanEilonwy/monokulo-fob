@@ -102,16 +102,29 @@ impl SimpleComponent for Send {
                                 connect_changed => Input::Typed,
                                 #[watch]
                                 set_title: model.entry.as_ref().map_or("Amount", |View(e)| e.label.as_str()),
+                                // The unit with the swap mark where it can swap: a flat button, as GTK has them.
                                 add_suffix = &gtk::Button {
                                     add_css_class: "flat",
                                     set_valign: gtk::Align::Center,
-                                    #[watch]
-                                    set_label: model.entry.as_ref().map_or("XMR", |View(e)| e.unit.as_str()),
                                     #[watch]
                                     set_sensitive: model.entry.as_ref().is_some_and(|View(e)| e.can_switch),
                                     #[watch]
                                     set_tooltip_text: model.entry.as_ref().and_then(|View(e)| e.switch_label.as_deref()),
                                     connect_clicked => Input::Switch,
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Box {
+                                        set_spacing: 8,
+                                        gtk::Label {
+                                            add_css_class: "heading",
+                                            #[watch]
+                                            set_label: model.entry.as_ref().map_or("XMR", |View(e)| e.unit.as_str()),
+                                        },
+                                        #[local_ref]
+                                        unit_swap -> gtk::DrawingArea {
+                                            #[watch]
+                                            set_visible: model.entry.as_ref().is_some_and(|View(e)| e.can_switch),
+                                        },
+                                    },
                                 },
                             },
                             #[local_ref]
@@ -168,8 +181,10 @@ impl SimpleComponent for Send {
             people_rows: vec![],
             filling: false,
         };
-        let (to, amount_row, note, people) = (&to, &amount_row, &note, &people);
+        let unit_swap = widgets::swap_icon(16, None);
+        let (to, amount_row, note, people, unit_swap) = (&to, &amount_row, &note, &people, &unit_swap);
         let widgets = view_output!();
+        widgets::hide_pencil(amount_row);
         ComponentParts { model, widgets }
     }
 

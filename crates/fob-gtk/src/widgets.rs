@@ -334,6 +334,58 @@ pub fn recipient(text: &str) -> gtk::ListBox {
     list
 }
 
+/// Android's swap mark, two arrows the opposite way, `side` px square. In `tint` (r, g, b),
+/// else in the text colour it sits beside.
+pub fn swap_icon(side: i32, tint: Option<(f64, f64, f64)>) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder().content_width(side).content_height(side).valign(gtk::Align::Center).build();
+    area.set_draw_func(move |area, cr, width, height| {
+        let scale = f64::from(width.min(height)) / 24.0;
+        cr.scale(scale, scale);
+        match tint {
+            Some((r, g, b)) => cr.set_source_rgb(r, g, b),
+            None => {
+                let c = area.color();
+                cr.set_source_rgba(f64::from(c.red()), f64::from(c.green()), f64::from(c.blue()), f64::from(c.alpha()) * 0.7);
+            }
+        }
+        cr.set_line_width(2.0);
+        cr.set_line_cap(cairo::LineCap::Round);
+        cr.set_line_join(cairo::LineJoin::Round);
+        // M4 8h15  M15 4l4 4-4 4  M20 16H5  M9 12l-4 4 4 4
+        cr.move_to(4.0, 8.0);
+        cr.line_to(19.0, 8.0);
+        cr.move_to(15.0, 4.0);
+        cr.line_to(19.0, 8.0);
+        cr.line_to(15.0, 12.0);
+        cr.move_to(20.0, 16.0);
+        cr.line_to(5.0, 16.0);
+        cr.move_to(9.0, 12.0);
+        cr.line_to(5.0, 16.0);
+        cr.line_to(9.0, 20.0);
+        let _ = cr.stroke();
+    });
+    area
+}
+
+/// Takes the pencil out of an entry row. It says the row can be typed in, which a field
+/// with its own button beside it doesn't need said.
+pub fn hide_pencil(row: &adw::EntryRow) {
+    fn walk(widget: &gtk::Widget) {
+        if let Some(image) = widget.downcast_ref::<gtk::Image>() {
+            if image.icon_name().as_deref() == Some("document-edit-symbolic") {
+                image.set_icon_name(None);
+                image.set_visible(false);
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            walk(&c);
+            child = c.next_sibling();
+        }
+    }
+    walk(row.upcast_ref());
+}
+
 /// An address on one line of its own: its pattern, the address, and a button to copy.
 pub fn address_row(text: &str, on_copy: impl Fn() + 'static) -> gtk::ListBox {
     let list = list();
