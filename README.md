@@ -12,6 +12,8 @@ receipts that payment codes can carry (as Monokular's tills add).
   `fob-scanner`, `fob-monero`, `fob-words`: the parts `fob-wallet` is built from
   (`docs/decisions.md`, decision 339). `fob-scanner`'s prefilter is the
   `monokulo-8ar` crate, in its own repo, shared with monokulo-lws (decision 366).
+  `fob-chain::light` is the light wallet server client (the MyMonero/monero-lws
+  REST API), for syncing through a server instead of scanning (decisions 371–376).
 - `crates/fob-ffi`: fob-wallet for Kotlin (later Swift) through UniFFI. Types
   only.
 - `crates/fob-app`: what a client draws: unlocking, the open wallet, syncing.

@@ -110,10 +110,12 @@ impl Wallet {
     /// sent), forgets the block hashes kept for reorganisations (the server
     /// follows those now) and has the server told of the wallet afresh.
     /// Turning it off has node scanning start again from the server's last
-    /// scanned block less [`BACK_MARGIN`], what it found from there on
-    /// forgotten to be found again.
+    /// scanned block less [`BACK_MARGIN`], never before the wallet's first.
+    /// What the server found stays meanwhile: the node finds it again and
+    /// takes it as known (`take_block`'s rule), so the balance doesn't drop
+    /// while it catches up those blocks.
     pub async fn use_light_wallet(&self, on: bool) -> Result<()> {
-        let back_from = {
+        {
             let mut state = self.inner.state.lock().await;
             match (on, state.sync_mode) {
                 (true, SyncMode::Light) | (false, SyncMode::Node) => return Ok(()),
@@ -126,19 +128,20 @@ impl Wallet {
                     state.light_registered = false;
                     state.light_subaddrs_sent = 0;
                     self.save_state(&state)?;
-                    None
                 }
                 (false, SyncMode::Light) => {
                     state.sync_mode = SyncMode::Node;
-                    self.save_state(&state)?;
                     // Never answered: node scanning carries on where it stopped.
-                    (state.light_scanned_height > 0).then(|| state.light_scanned_height.saturating_sub(BACK_MARGIN).max(state.restore_height.unwrap_or(0)))
+                    if state.light_scanned_height > 0 {
+                        state.next_block = state.light_scanned_height.saturating_sub(BACK_MARGIN).max(state.restore_height.unwrap_or(0));
+                        // No block before it is known to follow: the first batch isn't checked.
+                        state.recent.clear();
+                    }
+                    self.save_state(&state)?;
                 }
             }
-        };
-        if let Some(from) = back_from {
-            self.rewind(from, None).await?;
         }
+        *self.inner.pipeline.lock().await = None;
         self.inner.pool.lock().expect("pool lock").clear();
         self.inner.pool_seen.lock().expect("pool lock").clear();
         *self.inner.light.lock().expect("light lock") = None;
@@ -381,7 +384,9 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
     let mut mined: Vec<&lws::Transaction> = answer.transactions.iter().filter(|t| !t.mempool && t.height.is_some()).collect();
     mined.sort_by_key(|t| t.height);
     let listed: HashSet<String> = mined.iter().map(|t| hex::encode(t.hash.0)).collect();
-    let vouched = |height: u64| height >= answer.start_height && height <= answer.scanned_height;
+    // Strictly below its scanned height: monokulo-lws gives the next block it will
+    // scan there, monero-lws the last one it did, and either way this is scanned.
+    let vouched = |height: u64| height >= answer.start_height && height < answer.scanned_height;
 
     // Gone.
     let before = (state.outputs.len(), state.spends.len());

@@ -377,7 +377,10 @@ impl Wallet {
         if state.sync_mode == state::SyncMode::Light {
             // The server's scanning is what's said: its scanned height and the chain's.
             let host = node::address(state.light_url.as_deref().unwrap_or(""));
-            let (scanned, tip, start) = (state.light_scanned_height + 1, state.tip, state.restore_height.unwrap_or(0));
+            let tip = state.tip;
+            // Its next block, never past the chain's (monokulo-lws already gives the next).
+            let scanned = (state.light_scanned_height + 1).min(tip.max(1));
+            let start = state.restore_height.unwrap_or(0);
             let network = self.network();
             drop(state);
             self.set_status(|s| {

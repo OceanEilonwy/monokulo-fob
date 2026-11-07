@@ -652,3 +652,133 @@ async fn a_server_that_refuses_says_why() {
     assert_eq!(said, "This server won't watch this wallet's addresses: subaddresses are off on this server");
 }
 
+/// What a live run prints of the wallet at each step.
+async fn live_report(wallet: &Wallet, step: &str) {
+    let status = wallet.status();
+    let chip = fob_words::catch_up::chip(status.chip());
+    let state = wallet.inner.state.lock().await;
+    println!(
+        "[{step}] chip {:?} · scanned {} tip {} synced {} connected {} error {:?} · registered {} subaddrs_sent {} light_scanned {} next_block {} restore {:?} · outputs {} pool {:?}",
+        chip.text,
+        status.scanned,
+        status.tip,
+        status.synced,
+        status.connected,
+        status.error,
+        state.light_registered,
+        state.light_subaddrs_sent,
+        state.light_scanned_height,
+        state.next_block,
+        state.restore_height,
+        state.outputs.len(),
+        wallet.inner.pool.lock().unwrap().clone(),
+    );
+}
+
+/// A fresh stagenet wallet through a monokulo-lws running at `LWS_URL`
+/// (`monokulo-lws serve --create auto …`): registered, told of its
+/// subaddresses, synced at the tip with nothing in it; then back to the
+/// node, which scans from the server's height less 30.
+#[tokio::test]
+#[ignore = "needs monokulo-lws on stagenet at LWS_URL, and the network"]
+async fn live_a_fresh_wallet_through_monokulo_lws() {
+    let url = std::env::var("LWS_URL").unwrap_or_else(|_| "http://127.0.0.1:18443".into());
+    let wallet = Wallet::create(&dir("light-live-fresh"), [1; 32], Network::Stagenet).unwrap();
+    println!("address {}", wallet.primary_address());
+    let report = wallet.check_light_server(&url, false).await;
+    println!("test: {:?}", fob_words::light::report(&report));
+    wallet.set_light_server(&url, false).await.unwrap();
+    wallet.use_light_wallet(true).await.unwrap();
+    live_report(&wallet, "light on").await;
+    for poll in 1..=12 {
+        let more = wallet.sync_step().await;
+        live_report(&wallet, &format!("poll {poll}: {more:?}")).await;
+        if wallet.status().synced {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let status = wallet.status();
+    assert!(status.synced, "synced at the tip through the server");
+    assert!(wallet.inner.state.lock().await.light_registered);
+    assert_eq!(wallet.inner.state.lock().await.light_subaddrs_sent, Wallet::watched(0));
+    assert!(wallet.lists(clock_now()).await.days.is_empty(), "an empty activity");
+    println!("chip: {:?}", fob_words::catch_up::chip(status.chip()));
+    println!("details: {:?}", fob_words::catch_up::details(wallet.sync_details(clock_now())));
+    println!("settings row: {:?}", wallet.light_line().await);
+
+    let scanned = wallet.inner.state.lock().await.light_scanned_height;
+    wallet.use_light_wallet(false).await.unwrap();
+    live_report(&wallet, "light off").await;
+    let restore = wallet.inner.state.lock().await.restore_height.unwrap_or(0);
+    assert_eq!(wallet.inner.state.lock().await.next_block, (scanned - 30).max(restore), "the server's height less 30, never before the wallet began");
+    // The node takes over from there.
+    let mut steps = 0;
+    loop {
+        let more = wallet.sync_step().await.unwrap();
+        steps += 1;
+        live_report(&wallet, &format!("node step {steps}")).await;
+        if !more || steps > 20 {
+            break;
+        }
+    }
+    let status = wallet.status();
+    assert!(status.synced, "the node caught up from the server's height");
+    assert!(wallet.status().light.is_none());
+}
+
+/// The wallet in `LIVE_SPEND`/`LIVE_VIEW` (a stagenet test wallet), caught up
+/// by the node and then synced through the server at `LWS_URL`, polling for
+/// `LIVE_WAIT` seconds (default 60) so a payment sent to it meanwhile shows
+/// in the pool and then mined.
+#[tokio::test]
+#[ignore = "needs monokulo-lws on stagenet at LWS_URL, a test wallet's keys, and the network"]
+async fn live_a_payment_through_monokulo_lws() {
+    let url = std::env::var("LWS_URL").unwrap_or_else(|_| "http://127.0.0.1:18443".into());
+    let spend = std::env::var("LIVE_SPEND").expect("LIVE_SPEND");
+    let view = std::env::var("LIVE_VIEW").expect("LIVE_VIEW");
+    let wait: u64 = std::env::var("LIVE_WAIT").ok().and_then(|w| w.parse().ok()).unwrap_or(60);
+    let keys = Keys::from_spend_key(Network::Stagenet, &spend, Some(&view)).unwrap();
+    // Caught up by the node first, from a few blocks back.
+    let probe = Wallet::create(&dir("light-live-probe"), [1; 32], Network::Stagenet).unwrap();
+    while let Err(e) = probe.sync_step().await {
+        println!("probe failed, again: {e}");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    let tip = probe.inner.state.lock().await.tip;
+    let wallet = Wallet::new(&dir("light-live-pay"), [1; 32], keys, Some(tip - 100)).unwrap();
+    println!("address {}", wallet.primary_address());
+    // Public nodes drop connections now and then: a failed step is tried again.
+    loop {
+        match wallet.sync_step().await {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                println!("node step failed, again: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+    live_report(&wallet, "node caught up").await;
+    wallet.set_light_server(&url, false).await.unwrap();
+    wallet.use_light_wallet(true).await.unwrap();
+    let started = Instant::now();
+    let mut poll = 0;
+    while started.elapsed() < Duration::from_secs(wait) {
+        poll += 1;
+        let result = wallet.sync_step().await;
+        live_report(&wallet, &format!("poll {poll}: {result:?}")).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+    let balance = wallet.balance().await;
+    println!("balance {balance:?}");
+    let scanned = wallet.inner.state.lock().await.light_scanned_height;
+    wallet.use_light_wallet(false).await.unwrap();
+    live_report(&wallet, &format!("light off, server had scanned {scanned}")).await;
+    let more = wallet.sync_step().await;
+    live_report(&wallet, &format!("node step: {more:?}")).await;
+    for day in wallet.said_lists(clock_now()).await.days {
+        println!("{day:?}");
+    }
+}
+

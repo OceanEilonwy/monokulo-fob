@@ -79,7 +79,7 @@ fn network_name(api: &str) -> String {
         "main" => "mainnet".into(),
         "stage" => "stagenet".into(),
         "test" => "testnet".into(),
-        other if other.is_empty() => "an unnamed network".into(),
+        "" => "an unnamed network".into(),
         other => other.into(),
     }
 }
