@@ -1,7 +1,8 @@
 # Proposal: a Light Wallet mode for Fob
 
-Status: proposal, 2026-11-07. Nothing in Fob is built yet; the server half
-(`monokulo-lws`) exists as a first working version, in its own repository.
+Status: proposal, 2026-11-07. Phase 2, read-only light mode, is built in Fob
+(decisions 371–376); the server half (`monokulo-lws`) exists as a first
+working version, in its own repository.
 
 ## What it is
 
@@ -290,11 +291,15 @@ node gets.
    scale**: the prefilter lifted into `monokulo-8ar` (done, decision 366),
    its keyring and per-item digits, `monokulo-lws` on `flag_many` (the
    section after it).
-2. **Fob, read-only light mode**: `fob-chain::light`, the `Backend` setting
-   and schema migration, `light_step` with `reconcile`, the Node screen and
-   words, the chip. Sending in light mode disabled with "Sending through a
-   server comes next". Tested against `monokulo-lws` on stagenet, and
-   against monero-lws in Docker for compatibility.
+2. **Fob, read-only light mode** (done, decisions 371–376): `fob-chain::light`,
+   the `Backend` setting and schema migration (version 8, from 7), `light_step`
+   with `reconcile`, the Node screen and words, the chip. Sending in light mode
+   disabled with "Sending through a server comes next". Tested against
+   `monokulo-lws` on stagenet, a faucet payment seen in the pool and then
+   mined; not yet against monero-lws in Docker. Where it differs from this
+   proposal: an amount can't be checked over the API (decision 373), an
+   import is asked only when blocks would go unscanned (372), the wire types
+   are copied rather than depended on (374).
 3. **Sending**: `SendSource` for the light client, inputs from server
    decoys, submit. Tested end to end on stagenet.
 4. **Instant updates**: `/feed` on both sides (monero-lws's websocket

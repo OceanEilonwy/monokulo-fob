@@ -3086,3 +3086,158 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      GPU check has passed, and the `Scanner` reads every block only when it hasn't
      or there is no GPU. `scan_from(min_keys)` stays for `gpu_crossover` to measure
      with.
+
+## Light wallet
+
+Phase 2 of `docs/light-wallet-proposal.md`: Fob syncs read-only through a light
+wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
+
+371. **Where syncing comes from is a per-wallet setting, beside the node.**
+     `light::Backend { Node, Light { url, self_signed } }`, kept in the wallet file
+     as `sync_mode` ('node' | 'light'), `light_url`, `light_self_signed`,
+     `light_pin`, `light_registered`, `light_subaddrs_sent` and
+     `light_scanned_height`. The proposal said schema version 6, migrated from 5,
+     and that `db.rs` refused other versions; by now versions 6 and 7 had come
+     (the node pin, hardware wallets) and `db.rs` migrates step by step, so this
+     is version 8, migrated from 7 the same way: the `ALTER TABLE wallet ADD
+     COLUMN … DEFAULT …`s and the version bump in one transaction. A file from
+     before opens as a node wallet (tested). `light_pin` is beyond the proposal:
+     a self-signed server is pinned to its first key and held to it as the node
+     is (decision 73's transport, `node_pin`'s rule), since every request
+     carries the view key. Choosing a server (`set_light_server`) asks it
+     `/get_version` and refuses, with words, one that doesn't answer, is on
+     another network or has `max_subaddresses` 0, as `set_node` refuses a node
+     on another network; an onion host is refused before anything is looked up.
+     `use_light_wallet(true)` needs a server chosen, keeps outputs, spends and
+     payments sent, forgets the block hashes kept for reorganisations (the
+     server follows those now) and has the server told of the wallet afresh.
+     `use_light_wallet(false)` has the node scan again from the server's
+     scanned height less 30 (decision 9's margin), but never before the
+     wallet's first block. What the server found is kept meanwhile and found
+     again by the node as known (`take_block`'s rule); a first try went through
+     `rewind`, and the live test showed the balance dropping to nothing for the
+     seconds the node took to scan those blocks again. Through a server, instant updates
+     report Off and don't connect, Manual Sync is moot (`manual_scanning`
+     is false, its row and Rescan's hide), `warm_up_send` and the fee refresh
+     ask nothing, and the sync loop is otherwise unchanged: `sync_step`
+     branches to `node_step` (the old body) or `light_step`, which always
+     answers caught up, so the loop polls every 20 s and "Check now" is a poll.
+372. **A poll: registered, told of the addresses, reconciled.** `light_step`
+     follows the proposal's steps. `/login` with `create_account` and
+     `generated_locally: !restored`. A 403 there, or from any later call (an
+     `approve` server answers the first login 200 and queues the account), is
+     "Waiting for approval": the wallet is marked unregistered and logs in again
+     at the next poll, the chip says so and nothing is an error. A 501 is "This
+     server doesn't take new wallets". A new wallet that never synced takes the
+     server's start height as its first block. The proposal asked for an import
+     when the server's start is above the restore height; that would ask a scan
+     from block 0 (the API has no other) of every wallet that synced with its
+     node before switching, so it's asked only when the server's start is above
+     the first block Fob hasn't scanned itself (`next_block`): only then would
+     blocks go unscanned. Its answer ("Approved", "Pending") shows on the chip's
+     card; an import fee is shown nowhere yet (monokulo-lws charges none).
+     Subaddresses: account 0, minors 1 to `watched()`, sent whenever `watched()`
+     passes `light_subaddrs_sent`, before the transactions are asked, so an
+     address a poll's payment moves Receive past is told at the next poll
+     (monokulo-lws watches minors 0 to 199 unasked, so nothing is missed
+     meanwhile). A 409 is said with the server's words.
+373. **What reconciling believes, and what it checks.** `reconcile` takes the
+     server's `/get_address_txs` as the truth for the blocks it vouches for:
+     from its start height to below its scanned height (strictly below:
+     monokulo-lws gives the next block it will scan there, monero-lws the last
+     it did). Every rule is idempotent, tested on a repeated answer.
+     *Gone*: a transaction Fob recorded at a vouched height that isn't listed
+     was reorganised out: its outputs and spends go, a payment sent loses its
+     height, and coins are freed unless a spend still known or one of this
+     wallet's own payments holds them (as `rewind` does). Outputs below the
+     server's start (found by the node before switching) are never judged.
+     *Received*: an output listed whose one-time key isn't known becomes owned
+     (the first with a key wins, decision 23), once it checks: its key must be
+     `H_s(8aR ‖ i)·G` (plus the subaddress's `H_s("SubAddr\0" ‖ a ‖ 0 ‖ minor)`)
+     `+ B` for the transaction key the server names (`Keys::light_output`, which
+     keeps the view key in `fob-vault`), and its mask must be
+     `H_s("commitment_mask" ‖ H_s(8aR ‖ i))`, or 1 for a mined reward. Before
+     hard fork 10 (mainnet 1,978,433, stagenet 269,000) masks were encrypted,
+     not derived, and are taken on the server's word. **The amount can't be
+     checked over this API**, which the proposal thought it could: `receives`
+     carries no commitment, and the 96-byte `rct` of `/get_unspent_outs` is no
+     help, as monokulo-lws works its commitment out from the same mask and amount
+     (`crypto::legacy_rct`), not from the chain. So a server can hide outputs and
+     can misstate an amount; it can't invent an output (the key check) or give
+     one a mask that isn't the chain's. A misstated amount shows in the balance
+     and can't be spent: the node refuses the transaction. Checking it needs the
+     commitment from the chain, which phase 3's sending fetches anyway with
+     `/get_random_outs`' members or could ask a node for. An output that fails
+     is not counted and the poll ends in "The server named N payments that
+     aren't this wallet's". Outputs locked to a time are dropped (decision 48's
+     first rule: there's no chain clock here to judge them by); locked to a
+     block, kept with `unlock_block`. The `WalletOutput` is written in
+     monero-wallet 0.2's format (`wallet_output_bytes`) and read back with
+     `WalletOutput::read`; a test holds the bytes equal to what its scanner
+     writes for the main address, a subaddress and a mined reward. The output's
+     `tx_key` is the key it was derived from, `extra_key` none: the server
+     doesn't say which of the transaction's keys that was. *Spent*: a candidate
+     whose key image is one of the wallet's (worked out with the spend key, as
+     `take_block` does) spends that output; a decoy use names the output with
+     another key image and is ignored. The key image binds the output already,
+     so the candidate's `(tx_pub_key, out_index)` isn't compared too. The API
+     gives no fee: a spend found this way has fee 0 (a view-only wallet finds
+     none, as before). *Sent*: one of this wallet's payments listed gets its
+     height. *Pool*: transactions listed `mempool: true` are the pool, in
+     memory, keeping when each was first seen; their outputs are owned only once
+     mined; this wallet's own payments are left out, as the node's pool scan
+     leaves them. The strongest test scans three hand-made blocks (a reward and
+     a payment, a payment to subaddress 3, a spend) the node way, serves the
+     same facts through a fake server, and finds the same outputs byte for byte,
+     the same spends (but for the fee), balance and addresses.
+374. **The wire types are copied, not depended on.** `fob-chain/src/light/lws.rs`
+     is monokulo-lws's `crates/lws-api/src/lib.rs` at `efb59c8`, under a header
+     saying so; it's kept in sync by hand. The proposal recommended depending on
+     it, pinned; but the repository is private and CI can't fetch it, and
+     decision 44 copied ZMTP for the same kind of reason. `LightClient` rides on
+     `Transport` (a new `post_json` that hands back the status), so it has the
+     node's certificate rule, Basic auth, no redirects, the 15 s connect and 30 s
+     idle limits and the onion refusal. Its `post` maps 400, 403, 409, 501 and
+     503 to `light::Problem`s; a failure says the status or the transport's
+     words, never the request, which holds the view key. `check` (the Test)
+     asks only `/get_version`, which carries nothing of the wallet's.
+375. **The words.** In `fob-words::light` and the chip: Settings › Syncing gets
+     "Sync through: Node | Light wallet server" (a new `Segmented` on Android, a
+     combo row on the desktop), the Node row greyed with "used again when you
+     switch back", Instant updates greyed with "The server watches the chain
+     for you", and a "Light wallet server" row ("lws.example:8443 · synced",
+     "· waiting for approval", "· can't reach", "· 12 behind"). The Light server
+     screen has the address, "Accept its own certificate", Test (network,
+     height, subaddresses, server type and API) and the proposal's privacy
+     words; switching on shows them again, switching off says where scanning
+     picks up. Test can't say whether the server takes new wallets: only a
+     `/login` tells, and that sends the view key, which mustn't go before the
+     switch; the row says "asked when you switch". The chip: "Synced · server",
+     "Server 12 behind", "Server scanning from 2020" (from a day behind),
+     "Waiting for approval", "Can't reach server" — shorter than the proposal's
+     sentences, which are the chip's spoken labels. Send says "Sending through
+     a server comes next" where its errors go, with Review off, and Rust
+     refuses `prepare` and `send` with the same words.
+376. **Tried on stagenet, 2026-11-07**, against monokulo-lws at `efb59c8` run
+     locally (`serve --daemon http://stagenet.xmr-tw.org:38081 --create auto
+     --import auto --scan-interval 5`, GPU keyring on an RX 6800 XT; its
+     `/daemon_status` at 2,245,514 throughout the first run). The ignored tests
+     `live_a_fresh_wallet_through_monokulo_lws` and
+     `live_a_payment_through_monokulo_lws` (`LWS_URL`, `LIVE_SPEND`,
+     `LIVE_VIEW`) did it. A fresh wallet: Test said stagenet, 2,245,514,
+     subaddresses up to 10,000, monokulo-lws API 2, "Ready to use"; the first
+     poll registered it (from 2,245,513, which became its first block), told the
+     server of minors 1–200, and came back "Synced · server" with an empty
+     activity, "Server scanned 2,245,514 of 2,245,514" on the card and
+     "127.0.0.1:18443 · synced" in Settings. Back to the node: it scanned from
+     2,245,513 (the server's height less 30 is before the wallet began) and was
+     synced in one step. A test wallet caught up by the node from 100 blocks
+     back (with the stagenet faucet's first 0.1 XMR), then switched: registered,
+     synced; the faucet's second payment (`4dada8d4…`) showed in the pool
+     through the server within 15 s (one poll after the server's look at the
+     pool), stayed "on its way" for the six minutes until block 2,245,517, and
+     came in mined at the next poll, the pool empty again (server and daemon at
+     2,245,518). Balance 0.2 XMR, Activity "Received · Not ready · 3 of 10".
+     Switched back, the node scanned from the server's 2,245,520 less 30, both
+     outputs kept. Not tried: monero-lws in Docker, an `approve` server, a
+     restore that needs an import (all covered by tests against fake servers).

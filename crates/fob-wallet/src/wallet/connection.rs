@@ -253,7 +253,7 @@ impl Wallet {
         }
         let (on, endpoint) = {
             let state = self.inner.state.lock().await;
-            (state.zmq_on && !state.manual_sync, state.zmq_endpoint.clone())
+            (state.zmq_on && !state.manual_sync && state.sync_mode == state::SyncMode::Node, state.zmq_endpoint.clone())
         };
         self.set_zmq_status(if on { ZmqStatus::Connecting } else { ZmqStatus::Off }, endpoint.as_deref());
         let listener = self.inner.listener.lock().expect("listener lock").clone();

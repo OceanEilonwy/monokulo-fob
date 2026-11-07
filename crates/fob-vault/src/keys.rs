@@ -242,6 +242,37 @@ impl Keys {
         made_with(&extra).map(|()| (keys.first().copied().unwrap_or(extra), Some(extra)))
     }
 
+    /// Checks an output a light wallet server says this wallet received at
+    /// `subaddress` (of account 0): that `key` is the one `tx_key` (the
+    /// transaction key it was derived from) makes at output `index` for this
+    /// wallet. Gives its key offset (`H_s(8aR ‖ index)`, plus the
+    /// subaddress's own `H_s("SubAddr\0" ‖ a ‖ 0 ‖ minor)`) and the mask a
+    /// modern output's commitment has (`H_s("commitment_mask" ‖ H_s(8aR ‖
+    /// index))`), or nothing when the key isn't this wallet's.
+    pub fn light_output(&self, tx_key: &[u8; 32], index: u64, subaddress: u32, key: &[u8; 32]) -> Option<(Scalar, Scalar)> {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        let point = CompressedEdwardsY(*tx_key).decompress()?;
+        let view: curve25519_dalek::Scalar = (*self.view).into();
+        let mut data = Zeroizing::new((point * view).mul_by_cofactor().compress().to_bytes().to_vec());
+        data.extend_from_slice(&varint(index));
+        let shared = Scalar::hash(data.as_slice());
+        let mut offset: curve25519_dalek::Scalar = shared.into();
+        if subaddress != 0 {
+            let mut sub = Zeroizing::new(b"SubAddr\0".to_vec());
+            sub.extend_from_slice(&<[u8; 32]>::from(*self.view));
+            sub.extend_from_slice(&0u32.to_le_bytes());
+            sub.extend_from_slice(&subaddress.to_le_bytes());
+            let derivation: curve25519_dalek::Scalar = Scalar::hash(sub.as_slice()).into();
+            offset += derivation;
+        }
+        let spend: curve25519_dalek::EdwardsPoint = self.spend_pub.into();
+        if (&offset * ED25519_BASEPOINT_TABLE + spend).compress().to_bytes() != *key {
+            return None;
+        }
+        let mask = Scalar::hash([b"commitment_mask".as_slice(), &<[u8; 32]>::from(shared)].concat());
+        Some((Scalar::from(offset), mask))
+    }
+
     /// The spend key, opened from its seal for the caller to sign with: a copy,
     /// wiped when the caller drops it. Keep it no longer than the signing.
     pub fn spend(&self) -> Result<Zeroizing<Scalar>> {

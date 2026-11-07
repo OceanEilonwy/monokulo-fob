@@ -3,6 +3,7 @@ mod connection;
 mod funds;
 mod hardware;
 mod lifecycle;
+mod light;
 mod manual_sync;
 mod people;
 mod prices;

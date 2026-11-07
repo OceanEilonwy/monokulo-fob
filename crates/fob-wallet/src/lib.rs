@@ -20,7 +20,7 @@ pub mod price_alert;
 pub mod trezor;
 pub mod wallet;
 
-pub use fob_chain::{fetch, node, transport, zmq};
+pub use fob_chain::{fetch, light, node, transport, zmq};
 pub use fob_codes::{ndef, pay, qr, receipt, swap, uri};
 pub use fob_monero::{address, amount, fiat, network, pattern};
 pub use fob_price as price;

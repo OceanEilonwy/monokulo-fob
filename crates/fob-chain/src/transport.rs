@@ -408,19 +408,7 @@ impl HttpTransport for Transport {
 impl Transport {
     async fn send(request: reqwest::RequestBuilder, requests: &AtomicU64, response_size_limit: Option<usize>) -> Result<Vec<u8>, InterfaceError> {
         requests.fetch_add(1, Ordering::Relaxed);
-        let err = |e: reqwest::Error| {
-            // reqwest's own message is only "error sending request"; the cause is below it.
-            let e = e.without_url();
-            let mut text = if e.is_connect() { NOT_CONNECTED.to_owned() } else { String::new() };
-            text.push_str(&e.to_string());
-            let mut source = std::error::Error::source(&e);
-            while let Some(cause) = source {
-                text.push_str(": ");
-                text.push_str(&cause.to_string());
-                source = cause.source();
-            }
-            InterfaceError::InterfaceError(text)
-        };
+        let err = |e: reqwest::Error| InterfaceError::InterfaceError(failure_text(e));
         let mut response = request.send().await.map_err(err)?;
         if !response.status().is_success() {
             return Err(InterfaceError::InterfaceError(format!("node answered {}", response.status())));
@@ -444,6 +432,59 @@ impl Transport {
         }
         Ok(body)
     }
+
+    /// POSTs JSON to `route` and gives the status and the body whatever the
+    /// status, up to `limit` bytes: for a light wallet server, whose API
+    /// says things with its statuses (403, 501, 409). Sent again, as
+    /// [`post`](HttpTransport::post) does, when a pooled connection had gone
+    /// stale before the server saw it; every call of that API is safe to
+    /// repeat. A failure's words never hold the body, which holds a view key.
+    pub(crate) async fn post_json(&self, route: &str, body: Vec<u8>, limit: usize) -> Result<(u16, Vec<u8>), String> {
+        let url = format!("{}/{route}", self.base);
+        let mut attempt = 0;
+        loop {
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            let sent = self.client.post(&url).header("Content-Type", "application/json").body(body.clone()).send().await;
+            let mut response = match sent {
+                Ok(response) => response,
+                Err(e) => {
+                    let text = failure_text(e);
+                    if attempt < 2 && crate::fetch::stale(&text) {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(text);
+                }
+            };
+            let status = response.status().as_u16();
+            if response.content_length().is_some_and(|said| said > limit as u64) {
+                return Err("the server's answer was too large".into());
+            }
+            let mut out = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(failure_text)? {
+                out.extend_from_slice(&chunk);
+                if out.len() > limit {
+                    return Err("the server's answer was too large".into());
+                }
+            }
+            return Ok((status, out));
+        }
+    }
+}
+
+/// A failed request's words: reqwest's own message is only "error sending
+/// request", so the causes below it follow. Never the request itself.
+fn failure_text(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut text = if e.is_connect() { NOT_CONNECTED.to_owned() } else { String::new() };
+    text.push_str(&e.to_string());
+    let mut source = std::error::Error::source(&e);
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 #[cfg(test)]

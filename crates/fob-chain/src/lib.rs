@@ -4,6 +4,7 @@
 pub mod decoys;
 pub mod error;
 pub mod fetch;
+pub mod light;
 pub mod node;
 pub mod send_context;
 pub mod transport;

@@ -6,7 +6,7 @@ use super::*;
 impl Wallet {
     /// With Manual Sync on and nothing asked for: the sync loop waits.
     pub(super) async fn waiting_to_be_asked(&self) -> bool {
-        self.inner.state.lock().await.manual_sync && !self.inner.scan_asked.load(Ordering::Relaxed)
+        self.inner.state.lock().await.manual_scanning() && !self.inner.scan_asked.load(Ordering::Relaxed)
     }
 
     /// Tells the sync loop to scan to the newest block, as `title`.

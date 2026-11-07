@@ -210,6 +210,50 @@ pub enum SyncState {
     /// Measured, but the time left dropped for a slowdown: no number.
     CatchingUp { percent: u32 },
     Starting { percent: u32 },
+    /// Syncing through a light wallet server: its last round failed.
+    ServerFailed { local: bool },
+    /// The server hasn't approved this wallet yet.
+    ServerWaiting,
+    /// Asking the server, before its first answer.
+    ServerConnecting,
+    /// The server has scanned to the chain's tip.
+    ServerSynced,
+    /// The server is this many blocks behind the chain.
+    ServerBehind { blocks: u64 },
+    /// The server is catching up from far back: the year it stands at.
+    ServerScanning { year: i32 },
+}
+
+/// A server this far behind is said by the year it's at, not by blocks: a
+/// day of them.
+pub const SERVER_FAR_BEHIND: u64 = 720;
+
+/// Syncing through a light wallet server: what the chip and Settings say
+/// differently.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Light {
+    /// The server, as shown: host and port.
+    pub host: String,
+    /// The server hasn't approved this wallet yet (it answered 403).
+    pub waiting_approval: bool,
+    /// The server's answer to a request to scan from the start, its own
+    /// words ("Pending", "Approved"), once asked.
+    pub import: Option<String>,
+    /// Roughly when the block the server has scanned to was mined, while it
+    /// is [`SERVER_FAR_BEHIND`] or more.
+    pub scanning_from: Option<u64>,
+}
+
+/// The year a Unix time falls in.
+pub fn year_of(time: u64) -> i32 {
+    // Howard Hinnant's civil-from-days, for the year alone.
+    let z = (time / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    (yoe + era * 400 + i64::from(mp >= 10)) as i32
 }
 
 /// Percent done, never 100 before the end.
@@ -220,6 +264,19 @@ fn percent(status: &SyncStatus) -> u32 {
 
 impl SyncStatus {
     pub fn chip(&self) -> Chip {
+        if let Some(light) = &self.light {
+            let state = match () {
+                _ if self.error.is_some() => return Chip { look: Look::Offline, state: SyncState::ServerFailed { local: self.error_local } },
+                _ if light.waiting_approval => SyncState::ServerWaiting,
+                _ if !self.connected => SyncState::ServerConnecting,
+                _ if self.synced => return Chip { look: Look::Synced, state: SyncState::ServerSynced },
+                _ => match light.scanning_from {
+                    Some(time) => SyncState::ServerScanning { year: year_of(time) },
+                    None => SyncState::ServerBehind { blocks: self.tip.saturating_sub(self.scanned) },
+                },
+            };
+            return Chip { look: Look::Ring, state };
+        }
         if self.error.is_some() {
             if self.chain_changed {
                 return Chip { look: Look::Offline, state: SyncState::ChainChanged };
@@ -256,6 +313,10 @@ pub enum Row {
     /// Bytes a second; `None` until it's measured.
     LinkSpeed(Option<f64>),
     LatestBlock(u64),
+    /// Syncing through a server: the blocks it has scanned of the chain's.
+    ServerScanned { scanned: u64, of: u64 },
+    /// The server's answer to a request to scan from the start.
+    ServerImport(String),
 }
 
 /// The card's title.
@@ -267,6 +328,8 @@ pub enum Title {
     Synced,
     Waiting,
     CatchingUp,
+    /// Syncing through a server: titled as its chip says it.
+    Server(SyncState),
 }
 
 /// What the card adds under its rows.
@@ -298,6 +361,24 @@ pub struct Details {
 
 /// The card for `status`.
 pub fn details(status: &SyncStatus, clock: Clock) -> Details {
+    if let Some(light) = &status.light {
+        let mut rows = vec![];
+        if status.tip > 0 && status.connected {
+            rows.push(Row::ServerScanned { scanned: status.scanned, of: status.tip });
+        }
+        if let Some(import) = &light.import {
+            rows.push(Row::ServerImport(import.clone()));
+        }
+        return Details {
+            title: Title::Server(status.chip().state),
+            percent: None,
+            progress: None,
+            rows,
+            note: status.error.is_some().then_some(Note::KeepsTrying),
+            error: status.error.clone(),
+            scan_again: false,
+        };
+    }
     let speeds = status.blocks_per_second.zip(status.link_mb_per_second);
     let waiting = status.connected && !status.synced && status.waiting_seconds >= WAIT_SHOWN;
     let catching_up = !status.synced && status.tip > 0 && status.connected;
@@ -411,6 +492,9 @@ pub struct SyncStatus {
     pub zmq: ZmqStatus,
     /// Where instant updates come from, when set.
     pub zmq_endpoint: Option<String>,
+    /// Syncing through a light wallet server, and how that stands; `None`
+    /// when Fob syncs from its node.
+    pub light: Option<Light>,
 }
 
 #[cfg(test)]

@@ -82,8 +82,28 @@ pub fn chip(c: catch_up::Chip) -> Chip {
         SyncState::Left { seconds, percent } => (format!("{} left", short_time(seconds)), format!("Catching up, {percent}%, about {} left", long_time(seconds))),
         SyncState::CatchingUp { percent } => ("Catching up".to_owned(), format!("Catching up, {percent}%")),
         SyncState::Starting { percent } => ("Starting".to_owned(), format!("Catching up, {percent}%")),
+        state => server_chip(state),
     };
     Chip { look: c.look, text, label }
+}
+
+/// The chip's text and label while syncing through a light wallet server.
+fn server_chip(state: SyncState) -> (String, String) {
+    match state {
+        SyncState::ServerFailed { local: true } => ("Can't save".into(), failed_title(true).into()),
+        SyncState::ServerFailed { local: false } => ("Can't reach server".into(), "Can't reach the light wallet server".into()),
+        SyncState::ServerWaiting => ("Waiting for approval".into(), "Waiting for the server to approve this wallet".into()),
+        SyncState::ServerSynced => ("Synced · server".into(), "Synced through the light wallet server".into()),
+        SyncState::ServerBehind { blocks } => (format!("Server {} behind", grouped(blocks)), format!("The server is {} blocks behind", grouped(blocks))),
+        SyncState::ServerScanning { year } => (format!("Server scanning from {year}"), format!("The server is scanning from {year}")),
+        SyncState::ServerConnecting => ("Connecting".into(), "Connecting to the light wallet server".into()),
+        other => chip_words_unreachable(other),
+    }
+}
+
+/// Node states never reach [`server_chip`]; said as "Syncing" if one did.
+fn chip_words_unreachable(_: SyncState) -> (String, String) {
+    ("Syncing".into(), "Syncing".into())
 }
 
 /// One of the card's rows, as it's said.
@@ -117,6 +137,8 @@ fn row(row: catch_up::Row) -> Row {
         catch_up::Row::LinkSpeed(Some(bytes)) => ("Link speed", link_speed(bytes), link_speed_spoken(bytes)),
         catch_up::Row::LinkSpeed(None) => ("Link speed", "Measuring".to_owned(), "measuring".to_owned()),
         catch_up::Row::LatestBlock(block) => ("Latest block", grouped(block), grouped(block)),
+        catch_up::Row::ServerScanned { scanned, of } => ("Server scanned", format!("{} of {}", grouped(scanned), grouped(of)), format!("{} of {}", grouped(scanned), grouped(of))),
+        catch_up::Row::ServerImport(said) => ("Scan from the start", said.clone(), said),
     };
     Row { label: label.to_owned(), spoken: format!("{label}: {spoken}"), value }
 }
@@ -150,6 +172,11 @@ pub fn details(d: catch_up::Details) -> Details {
             Title::Synced => "Synced",
             Title::Waiting => "Waiting for node",
             Title::CatchingUp => "Catching up",
+            Title::Server(SyncState::ServerSynced) => "Synced through server",
+            Title::Server(SyncState::ServerWaiting) => "Waiting for approval",
+            Title::Server(SyncState::ServerFailed { local }) => if local { failed_title(true) } else { "Can't reach server" },
+            Title::Server(SyncState::ServerBehind { .. } | SyncState::ServerScanning { .. }) => "Server catching up",
+            Title::Server(_) => "Connecting",
         }
         .to_owned(),
         percent: d.percent.map(|p| format!("{p}%")),

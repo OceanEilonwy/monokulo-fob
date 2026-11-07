@@ -133,6 +133,28 @@ pub(super) struct State {
     /// Instant updates on. Off by default.
     #[serde(default)]
     pub(super) zmq_on: bool,
+    /// Where syncing comes from: the node, or a light wallet server.
+    #[serde(default)]
+    pub(super) sync_mode: SyncMode,
+    /// The light wallet server, as last chosen; kept while syncing through
+    /// the node, so switching back uses it.
+    #[serde(default)]
+    pub(super) light_url: Option<String>,
+    #[serde(default)]
+    pub(super) light_self_signed: bool,
+    /// For a server whose self-signed certificate is accepted: its key's
+    /// fingerprint from the first answer, as `node_pin` is for the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) light_pin: Option<String>,
+    /// The server has taken this wallet (`/login` answered).
+    #[serde(default)]
+    pub(super) light_registered: bool,
+    /// The highest minor of account 0 the server has been told to watch.
+    #[serde(default)]
+    pub(super) light_subaddrs_sent: u32,
+    /// The last block the server had scanned at the last poll.
+    #[serde(default)]
+    pub(super) light_scanned_height: u64,
     /// First block to scan. `None` until the first sync of a new wallet,
     /// which starts at the chain's tip.
     pub(super) restore_height: Option<u64>,
@@ -190,6 +212,15 @@ pub(super) struct State {
     /// reminds until it is, even if Fob was closed during the backup step.
     #[serde(default)]
     pub(super) backup_pending: bool,
+}
+
+/// Where a wallet's syncing comes from, as the wallet file says it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum SyncMode {
+    #[default]
+    Node,
+    Light,
 }
 
 /// An unlock time from here on is a Unix time, not a block (Monero's
@@ -266,6 +297,12 @@ impl State {
             None => output.needed(),
         };
         manual::needed(rules, self.manual())
+    }
+
+    /// Manual Sync holds scanning until asked: on, and syncing from the node.
+    /// Through a light wallet server there's no scanning to hold, so it's moot.
+    pub(super) fn manual_scanning(&self) -> bool {
+        self.manual_sync && self.sync_mode == SyncMode::Node
     }
 
     /// What can be spent now.
