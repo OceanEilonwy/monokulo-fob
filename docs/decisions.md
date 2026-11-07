@@ -2849,3 +2849,11 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      or making buffers), 16,384 (no faster), a compute-only queue and polling the fence
      (neither any faster). Scans take up to 16 threads rather than 8, which only desktops
      have, for CPU scanning (0.97 s against 1.60 s for that replay).
+352. **Scanning a range keeps its pipeline.** `scan_blocks` started a new one for each
+     batch, dropping what the last had in flight or queued and asking for it again. It
+     now keeps one until an address coming into use moves the scan back past what's been
+     fetched. Blocks are checked against the last one handed over for as long as a pipeline
+     lives, so a chain that changes between batches now fails the scan, where it used to
+     go unnoticed. That's kept rather than started again from there: blocks from the old
+     chain may already be in the wallet, and scanning again is what's safe. The speed
+     hasn't been measured.

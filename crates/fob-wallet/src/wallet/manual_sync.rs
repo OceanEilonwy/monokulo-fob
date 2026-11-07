@@ -360,18 +360,26 @@ impl Wallet {
     }
 
     /// Scans `from` to `to` without moving Last scan, adding what it finds to
-    /// what's known. Unlike syncing, the blocks needn't follow on from anything.
+    /// what's known. Unlike syncing, the blocks needn't follow on from what was
+    /// scanned before, only from each other: a chain that changes during the scan
+    /// fails it, to be scanned again.
     pub(super) async fn scan_blocks(&self, from: u64, to: u64) -> Result<()> {
         let _running = self.inner.scan_running.lock().await;
         let (transport, _, _, adaptive) = self.connection().await?;
         // get_blocks.bin can't start at the genesis block, which pays no one here.
         let mut at = from.max(1);
+        let mut pipeline: Option<Pipeline> = None;
         while at <= to {
             if self.inner.scan_stop.swap(false, Ordering::Relaxed) {
                 break;
             }
-            let mut pipeline = Pipeline::start(transport.clone(), adaptive.clone(), at, to);
-            let Batch { blocks, hashes } = pipeline.next_batch(BATCH as usize).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
+            // Fetching goes on while this scans. Only an address coming into use moves
+            // the scan back, past what's been fetched, and then it starts again from there.
+            if pipeline.as_ref().is_none_or(|p| p.next != at) {
+                pipeline = Some(Pipeline::start(transport.clone(), adaptive.clone(), at, to));
+            }
+            let running = pipeline.as_mut().expect("just started");
+            let Batch { blocks, hashes } = running.next_batch(BATCH as usize).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
             if blocks.is_empty() {
                 break;
             }
