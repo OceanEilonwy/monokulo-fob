@@ -2713,6 +2713,9 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      memory as push constants. Compiled shaders are cached, as compiling takes 20 to
      30 s, during which the CPU scans. A Vulkan failure retires the GPU until the app
      restarts and its work goes to the cores. Software renderers aren't used.
+     (Since 367 there's no CPU prefilter and no mode to choose: without the GPU, or
+     below 512 keys, the `Scanner` reads every block, and the GPU compresses its own
+     points.)
 333. **A GPU passes test vectors on each cold start** (`vectors.rs`), or isn't
      used: field arithmetic on values around 0, p, 2^255 and 2^256, and 8aR against
      curve25519-dalek on awkward view keys, torsioned, small-order and off-curve keys,
@@ -2986,3 +2989,100 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      the root draws one dialog at a time: a spinner with Cancel, a blank 3 × 3
      keypad for the PIN, a passphrase entry with "On the Trezor" where the
      device can take it.
+
+## Sharing the scanner
+
+366. **The prefilter lives in its own crate and repo, `monokulo-8ar`.** It's what
+     computes 8aR for many transaction keys on the GPU or the CPU and flags the blocks
+     that may pay a wallet (331, 332, 350, 351): `Prefilter`, the field code, the
+     Vulkan engine and its shader, the modes, the startup and per-wallet vectors, and
+     `examples/scan_speed.rs` with its fixture and the prototypes it came from.
+     `fob-scanner` keeps what is Fob's: `scan.rs`, the fan-out over the cores with
+     monero-oxide's `Scanner` reading flagged blocks, and `policy.rs`, now just Fob's
+     choice that Auto hands over to the GPU from 512 keys, which `scan.rs` passes to
+     `Prefilter::flag`. It re-exports the rest, so no other crate changed. Moved
+     because it has two users, Fob and monokulo-lws, and depended on no other Fob
+     crate; Monokular's `orf-codec` (4) is the precedent for shared code in its own
+     repo. Behaviour is the same: the same tuning, the same `scan.spv`, Auto by
+     default, the same cache file. It is a git dependency on
+     `github.com/OceanEilonwy/monokulo-8ar` pinned by rev, as `orf-codec` is; the
+     repository is private, which cargo fetches through the same git credentials
+     as a push.
+367. **The prefilter is GPU-only; monero-oxide is the fallback.** The CPU prefilter
+     and its curve code (`fe.rs`, our own radix-2^51 field arithmetic) are gone from
+     monokulo-8ar. It was the riskiest code to keep right, and what it saved was never
+     what limited a sync: fetching is (350). Without a GPU that passed its checks, or
+     for a batch under 512 transaction keys, `Prefilter::flag` says it didn't filter
+     and `scan.rs` has the `Scanner` read every block, with the same fan-out over the
+     cores. A wallet whose own GPU check failed is scanned the same way. The 512 is
+     332's, measured against the CPU prefilter; the `Scanner` alone costs more per
+     block, so the true crossover is likely lower, but it stays until it's measured.
+     The GPU now inverts Z and compresses each point itself (nine words a key, from
+     the scan-vulkan prototype), so the CPU only does view tags and the spend check,
+     on curve25519-dalek. The startup vectors keep their field values, now checked
+     against plain big integers. There is no Auto, GPU or CPU setting: the GPU starts
+     as the app does and is used whenever it can be. Settings shows a read-only
+     Scanning row, "GPU · <name>" or "CPU · " and why (the GPU is starting, no Vulkan,
+     no GPU that can do it, it failed its check or this wallet's, it stopped working);
+     the phone's old `scan_mode` preference and the desktop's `scan_mode` setting are
+     dropped. Apple's GPUs are meant to come through MoltenVK later. On an RX 6800 XT
+     the 2,000-block fixture still gives digest e0c4c620, at about 44,000 blocks/s
+     warm against 45,000 before, and 29,000 on a first run as before.
+368. **Leaving waits for the sync loop to let go of the wallet.** `stop_sync` aborted
+     the loop and the ZMQ task and returned at once. An aborted task drops what it
+     holds on Fob's runtime thread, and when that was the last clone of the wallet,
+     its database closed there, while the caller moved on. In a test binary the
+     caller was `main` returning, so `exit` ran SQLCipher's own shutdown on one thread
+     as the connection closed on another: a segfault in `sqlite3FreeCodecArg` after
+     the test had passed, about one run in eight of
+     `sync_now_cuts_the_wait_short…` (a core dump showed it; it was first put down
+     to the GPU thread, wrongly). `stop_sync` now waits for the aborted tasks, and the
+     closing save it spawns, to end: at most 2 s, in practice milliseconds, and from
+     inside a multi-thread runtime through `block_in_place` so no worker is held.
+     Forty runs in a row pass where four of thirty crashed. monokulo-8ar got the same
+     shape for its warm-up thread, `settle(timeout)`, and registers it with `atexit`
+     so a process that returns from `main` during the one cold shader compile waits
+     (up to a minute) instead of exiting with the thread inside the driver.
+369. **The GPU takes a batch from 256 transaction keys, about five blocks**, not
+     512. The 512 was 332's, against the CPU prefilter 367 removed; the fallback now
+     is the `Scanner` on every block, which costs more. `examples/gpu_crossover.rs`
+     (fob-wallet) scans the same mainnet blocks from 3,797,000 through
+     `scan::scan_from` both ways, with a wallet nothing pays. Medians of 21, in ms, on
+     an RX 6800 XT and Ryzen 5950X, after a throwaway batch; "rested" has the GPU's
+     buffers freed before the batch, as after catching up (no different here).
+
+     | blocks | keys | `Scanner` | GPU warm | GPU rested |
+     |---:|---:|---:|---:|---:|
+     | 1 | 43 | 3.1 | 5.5 | 5.6 |
+     | 2 | 89 | 6.3 | 6.4 | 6.4 |
+     | 3 | 145 | 13.3 | 6.6 | 6.6 |
+     | 4 | 211 | 20.0 | 6.7 | 6.6 |
+     | 6 | 342 | 31.6 | 6.8 | 6.9 |
+     | 9 | 499 | 16.4 | 6.9 | 6.9 |
+     | 20 | 1,000 | 18.8 | 7.4 | 7.2 |
+     | 50 | 2,649 | 26.6 | 7.5 | 7.5 |
+     | 100 | 5,139 | 43.1 | 8.1 | 8.1 |
+
+     On the desktop they break even at about 90 keys, two blocks, and the GPU is
+     twice as fast from three. (Under eight blocks the `Scanner` has one thread,
+     hence six blocks costing more than nine.) The phone matters more, and wasn't
+     measured again. The `Scanner` alone costs about 2.2 times the old prefilter per
+     block (5,000 blocks on 16 threads: about 2.15 s from this table, against 351's
+     0.97 s). Scaling 332's CPU figures by that, one block costs the cores about
+     13 mJ against the GPU's 46, and ten about 57 against 24: a crossover nearer
+     four blocks than 332's nine, roughly three to six given the noise (+-16 mJ on
+     one GPU batch). 256 keys sits there, towards the upper end, so a phone errs
+     towards the cores on small batches; it costs the desktop at most 14 ms, on a
+     batch of three or four blocks. Either way a wallet caught up at the tip, a block
+     every two minutes, stays on the cores, and a catch-up of more than five blocks
+     goes to the GPU. The phone's own crossover against the `Scanner` is still to be
+     measured: monokulo-8ar's `scan_speed --tip` times only the GPU's side.
+370. **No threshold: every batch goes to the GPU when there is one.** Decision 369's
+     256 keys bought the desktop at most 14 ms on a batch of three or four blocks and
+     the phone an estimated, unmeasured, few tens of millijoules on a one-block batch
+     (under 0.1% of a battery a day, as 332 found for the whole gap), at the price of
+     a constant nobody had measured on the device it was for, and two paths through
+     `scan` to keep right. `policy.rs` is gone; `scan` filters whenever the wallet's
+     GPU check has passed, and the `Scanner` reads every block only when it hasn't
+     or there is no GPU. `scan_from(min_keys)` stays for `gpu_crossover` to measure
+     with.

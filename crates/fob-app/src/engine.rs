@@ -14,7 +14,7 @@ use std::{
 };
 
 use fob_ffi::{
-    Contact, FobError, FobWallet, KeyGroup, Network, PriceRetry, PriceToast, Prepared, PullOutcome, ScanMode, ScannedProfile, Screens, SeedPhrase, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, set_scan_mode,
+    Contact, FobError, FobWallet, KeyGroup, Network, PriceRetry, PriceToast, Prepared, PullOutcome, ScanEngine, ScannedProfile, Screens, SeedPhrase, SyncDetails, SyncObserver, SyncStatus, WalletEntry, WalletList, scan_engine, start_scanning,
     wallets_on,
 };
 use fob_wallet::{files, passphrase};
@@ -71,8 +71,6 @@ pub struct Options {
 struct Settings {
     #[serde(default)]
     mainnet: bool,
-    #[serde(default)]
-    scan_mode: Option<String>,
     /// Minutes untouched before locking; 0 for never.
     #[serde(default = "default_lock_after")]
     lock_after: u32,
@@ -92,23 +90,7 @@ pub enum Met {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { mainnet: false, scan_mode: None, lock_after: default_lock_after() }
-    }
-}
-
-fn scan_name(mode: &ScanMode) -> &'static str {
-    match mode {
-        ScanMode::Auto => "auto",
-        ScanMode::Gpu => "gpu",
-        ScanMode::Cpu => "cpu",
-    }
-}
-
-fn scan_named(name: Option<&str>) -> ScanMode {
-    match name {
-        Some("gpu") => ScanMode::Gpu,
-        Some("cpu") => ScanMode::Cpu,
-        _ => ScanMode::Auto,
+        Settings { mainnet: false, lock_after: default_lock_after() }
     }
 }
 
@@ -181,7 +163,8 @@ fn key_error(e: fob_wallet::error::VaultError) -> FobError {
 impl Engine {
     pub fn new(options: Options, listener: Arc<dyn Listener>, clock: impl Fn() -> Clock + Send + Sync + 'static) -> Engine {
         let settings: Settings = std::fs::read(options.dir.join("settings.json")).ok().and_then(|text| serde_json::from_slice(&text).ok()).unwrap_or_default();
-        set_scan_mode(scan_named(settings.scan_mode.as_deref()), options.cache_dir.to_string_lossy().into_owned());
+        // A scan_mode kept by an older Fob is ignored, and goes at the next save.
+        start_scanning(options.cache_dir.to_string_lossy().into_owned());
         let phase = if passphrase::exists(&options.dir) { Phase::Locked } else { Phase::NoPassphrase };
         let touched = clock().now;
         Engine {
@@ -872,14 +855,10 @@ impl Engine {
 
     // ---- Settings
 
-    pub fn scan_mode(&self) -> ScanMode {
-        scan_named(self.inner.settings.lock().expect("settings lock").scan_mode.as_deref())
-    }
-
-    pub fn set_scan(&self, mode: ScanMode) -> Result<(), FobError> {
-        self.inner.settings.lock().expect("settings lock").scan_mode = Some(scan_name(&mode).to_owned());
-        set_scan_mode(mode, self.inner.options.cache_dir.to_string_lossy().into_owned());
-        self.save_settings()
+    /// What's scanning, for Settings to show. `wallet_refused` is the open
+    /// wallet's `scan_gpu_check_failed`.
+    pub fn scan_engine(&self, wallet_refused: bool) -> ScanEngine {
+        scan_engine(wallet_refused)
     }
 }
 
@@ -1134,7 +1113,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            engine.set_scan(ScanMode::Auto).unwrap();
+            engine.set_lock_after(15).unwrap();
             let mode = |name: &str| std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode("settings.json"), 0o600, "only this user's");
             assert_eq!(mode("vault.json"), 0o600);
@@ -1227,13 +1206,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_scan_mode_is_kept() {
+    async fn an_old_scan_mode_is_dropped() {
         let dir = dir("scan");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"mainnet":false,"scan_mode":"cpu","lock_after":30}"#).unwrap();
         let (engine, _) = engine_at(&dir);
-        assert!(matches!(engine.scan_mode(), ScanMode::Auto));
-        engine.set_scan(ScanMode::Cpu).unwrap();
-        let (again, _) = engine_at(&dir);
-        assert!(matches!(again.scan_mode(), ScanMode::Cpu));
-        again.set_scan(ScanMode::Auto).unwrap();
+        assert_eq!(engine.lock_after(), 30, "the rest is kept");
+        engine.set_lock_after(30).unwrap();
+        let kept = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert!(!kept.contains("scan_mode"), "{kept}");
+        assert!(!engine.scan_engine(false).line.is_empty());
     }
 }

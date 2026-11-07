@@ -14,26 +14,19 @@ use zeroize::Zeroizing;
 async fn main() {
     let node = std::env::args().nth(1).unwrap_or_else(|| "http://node.sethforprivacy.com:18089".into());
     let count: u64 = std::env::args().nth(2).and_then(|n| n.parse().ok()).unwrap_or(720);
-    // FOB_SCAN=gpu, cpu or auto (the default); FOB_SCAN_CACHE keeps the compiled shader.
-    use fob_wallet::scanning::{Mode, gpu_ready, set_cache_dir, set_mode};
+    // The GPU is used if it can be; FOB_SCAN_CACHE keeps the compiled shader.
+    use fob_wallet::scanning::{engine, gpu_ready, set_cache_dir, warm_up};
     if let Ok(dir) = std::env::var("FOB_SCAN_CACHE") {
         set_cache_dir(dir.into());
     }
-    let mode = match std::env::var("FOB_SCAN").as_deref() {
-        Ok("gpu") => Mode::Gpu,
-        Ok("cpu") => Mode::Cpu,
-        _ => Mode::Auto,
-    };
-    set_mode(mode);
-    if mode != Mode::Cpu {
-        for _ in 0..600 {
-            if gpu_ready() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    warm_up();
+    for _ in 0..600 {
+        if gpu_ready() {
+            break;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    println!("scanning: {mode:?}, GPU ready: {}", gpu_ready());
+    println!("scanning: {:?}", engine());
     let transport = Transport::new(&node, false).unwrap();
     let rpc = MoneroDaemon::new(transport.clone()).await.unwrap();
     let tip = rpc.latest_block_number().await.unwrap() as u64;

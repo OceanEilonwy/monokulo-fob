@@ -50,8 +50,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
-import com.monokulo.fob.ScanChoice
-import uniffi.fob.scanGpuFailed
+import uniffi.fob.scanEngine
 import com.monokulo.fob.Screen
 import com.monokulo.fob.Nfc
 import com.monokulo.fob.WalletModel
@@ -148,8 +147,6 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
     var forgetting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
     var choosingTheme by remember { mutableStateOf(false) }
-    var choosingScanning by remember { mutableStateOf(false) }
-    val scanning by model.scanning.collectAsState()
     val prices by model.prices.collectAsState()
     // Every line here is the model's, read with the wallet, so the screen opens whole: your profile's row ("Add a
     // shareable Fob contact" before there's a name), Rust's Node line (again as syncing starts or stops failing)
@@ -223,10 +220,10 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 SectionLabel("Syncing")
                 Card {
                     SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
-                    // Read as the screen opens: the GPU's checks may fail at any time before then.
+                    // Read as the screen opens: the GPU may start, or fail its checks, at any time before then.
+                    // Nothing to choose, so the row isn't clickable.
                     val walletRefused by produceState(false) { value = model.wallet.value?.scanGpuCheckFailed() ?: false }
-                    val gpuFailed = remember { scanGpuFailed() } || walletRefused
-                    ValueRow("Scanning", if (gpuFailed && scanning != ScanChoice.CPU) "${scanning.label}: using the CPU" else scanning.label) { choosingScanning = true }
+                    SettingRow("Scanning", remember(walletRefused) { scanEngine(walletRefused).line })
                     val manual by model.manual.collectAsState()
                     // Manual Sync listens for nothing.
                     if (manual?.on != true) {
@@ -287,18 +284,6 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                 }
             },
             confirmButton = { TextButton("Done", { choosingTheme = false }, color = Fob.ink) },
-        )
-    }
-    if (choosingScanning) {
-        AlertDialog(
-            onDismissRequest = { choosingScanning = false },
-            title = { Text("Scanning") },
-            text = {
-                Column(Modifier.selectableGroup()) {
-                    ScanChoice.entries.forEach { choice -> Choice(choice.description, choice == scanning) { model.setScanning(choice); choosingScanning = false } }
-                }
-            },
-            confirmButton = { TextButton("Done", { choosingScanning = false }, color = Fob.ink) },
         )
     }
     if (forgetting) {
