@@ -17,6 +17,7 @@
 
 pub mod error;
 pub mod price_alert;
+pub mod trezor;
 pub mod wallet;
 
 pub use fob_chain::{fetch, node, transport, zmq};

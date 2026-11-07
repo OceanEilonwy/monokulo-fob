@@ -1,6 +1,7 @@
 mod addresses;
 mod connection;
 mod funds;
+mod hardware;
 mod lifecycle;
 mod manual_sync;
 mod people;
@@ -194,6 +195,8 @@ async fn counting_node(delay: Duration) -> (String, Arc<NodeCalls>) {
                 r#"{"height":3000000,"status":"OK"}"#.to_owned()
             } else if text.contains("on_get_block_hash") {
                 r#"{"jsonrpc":"2.0","id":0,"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_owned()
+            } else if text.contains("is_key_image_spent") {
+                r#"{"spent_status":[1],"status":"OK"}"#.to_owned()
             } else if text.contains("get_fee_estimate") {
                 seen.fee.fetch_add(1, Ordering::Relaxed);
                 r#"{"jsonrpc":"2.0","id":0,"result":{"fee":20000,"quantization_mask":10000,"status":"OK"}}"#.to_owned()
@@ -333,6 +336,8 @@ fn received(tx: &str, time: u64, amount: u64) -> Owned {
         key: tx.into(),
         key_image: None,
         spent_in: None,
+        tx_key: None,
+        extra_key: None,
     }
 }
 

@@ -7,6 +7,11 @@ impl Wallet {
         self.inner.keys.can_spend()
     }
 
+    /// Whether the spend key is on a Trezor, which signs and gives key images.
+    pub fn is_trezor(&self) -> bool {
+        self.inner.keys.device() == Some(Device::Trezor)
+    }
+
     pub fn seed_words(&self) -> Option<(SeedKind, Zeroizing<String>)> {
         self.inner.keys.seed_words()
     }
@@ -58,7 +63,7 @@ impl Wallet {
             _ if state.backup_pending => backup::Backed::Pending,
             _ => backup::Backed::Up,
         };
-        backup::hub(self.inner.keys.seed_word_count(), backed, phone_lock)
+        backup::hub(self.inner.keys.seed_word_count(), backed, phone_lock, self.inner.keys.device().map(Device::name))
     }
 
     /// Keys' page: every key in full, the restore height with its date

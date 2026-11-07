@@ -77,7 +77,9 @@ import com.monokulo.fob.ui.screens.RestoreChooseScreen
 import com.monokulo.fob.ui.screens.RestoreFoundScreen
 import com.monokulo.fob.ui.screens.RestoreScanScreen
 import com.monokulo.fob.ui.screens.RestoreSeedScreen
+import com.monokulo.fob.ui.screens.RestoreTrezorScreen
 import com.monokulo.fob.ui.screens.RestoreViewOnlyScreen
+import com.monokulo.fob.ui.TrezorOverlay
 import com.monokulo.fob.ui.screens.SendScreen
 import com.monokulo.fob.ui.screens.SettingsScreen
 import com.monokulo.fob.ui.screens.SplitScreen
@@ -99,6 +101,8 @@ sealed interface Screen {
     data object RestoreChoose : Screen
     data object RestoreSeed : Screen
     data object RestoreViewOnly : Screen
+    /** Connect a Trezor: the device gives the view key and keeps the spend key. */
+    data object RestoreTrezor : Screen
     data object RestoreScan : Screen
     data class RestoreFound(val code: String) : Screen
     data object Home : Screen
@@ -308,6 +312,8 @@ class MainActivity : FragmentActivity() {
                             // Confirm cancels its payment as it goes, sending or not: no Price from over it.
                             settingsEnabled = nav.current !is Screen.Confirm,
                         )
+                        // The Trezor's questions, over whatever is talking to it.
+                        TrezorOverlay(model)
                     }
                 }
             }
@@ -444,6 +450,7 @@ class MainActivity : FragmentActivity() {
             Screen.RestoreChoose -> RestoreChooseScreen(nav)
             Screen.RestoreSeed -> RestoreSeedScreen(model, nav)
             Screen.RestoreViewOnly -> RestoreViewOnlyScreen(model, nav)
+            Screen.RestoreTrezor -> RestoreTrezorScreen(model, nav)
             Screen.RestoreScan -> RestoreScanScreen(model, nav)
             is Screen.RestoreFound -> RestoreFoundScreen(model, nav, screen.code)
             Screen.Home -> if (open || model.hasWallet()) HomeScreen(model, nav, ::openLocked, ::confirmIdentity, ::identityPending) else WelcomeScreen(model, nav)

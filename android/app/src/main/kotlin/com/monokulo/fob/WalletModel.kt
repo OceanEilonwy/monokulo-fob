@@ -52,6 +52,8 @@ import uniffi.fob.PriceTransport
 import uniffi.fob.SaveOffer
 import uniffi.fob.PaymentPreview
 import uniffi.fob.Prepared
+import uniffi.fob.TrezorLink
+import uniffi.fob.TrezorPrompts
 import uniffi.fob.ReceiveAddress
 import uniffi.fob.Profile
 import uniffi.fob.ProfileRow
@@ -239,6 +241,13 @@ class WalletModel(private val app: Application) {
     private val _reminder = MutableStateFlow<BackupReminder?>(null)
     val reminder: StateFlow<BackupReminder?> = _reminder
 
+    /** The Trezor's questions while Fob talks to one, for the overlay. */
+    val trezorAsks = TrezorAsks()
+
+    /** Outputs of a Trezor wallet the device hasn't given the key images of: Home asks to connect it. */
+    private val _trezorUnsynced = MutableStateFlow(0u)
+    val trezorUnsynced: StateFlow<UInt> = _trezorUnsynced
+
     /** Settings' Node line: "Working · node.example:38081". */
     private val _nodeLine = MutableStateFlow("")
     val nodeLine: StateFlow<String> = _nodeLine
@@ -418,13 +427,14 @@ class WalletModel(private val app: Application) {
         val lock = phoneLock(app)
         // Rust's async calls run on the thread that calls them: off the main one, as this is a lot to write out.
         // Closed meanwhile (another wallet, or forgotten): Rust refuses a closed wallet, and there's nothing of it to show.
-        val s = try {
-            withContext(Dispatchers.Default) { wallet.screens(seconds, offset, hours24, lock) }
+        val (s, unsynced) = try {
+            withContext(Dispatchers.Default) { wallet.screens(seconds, offset, hours24, lock) to if (wallet.isTrezor()) wallet.trezorUnsynced() else 0u }
         } catch (closed: IllegalStateException) {
             return
         }
         // Another wallet opened meanwhile: these answers are the last one's.
         if (_wallet.value !== wallet) return
+        _trezorUnsynced.value = unsynced
         _prices.value = s.prices
         _balance.value = s.balance
         _activity.value = s.activity
@@ -804,6 +814,62 @@ class WalletModel(private val app: Application) {
 
     suspend fun restoreViewOnly(address: String, viewKey: String, restorePoint: String?) =
         adopt { path, key, network -> FobWallet.restoreViewOnly(path, key, network, address, viewKey, restorePoint) }
+
+    /**
+     * Opens the Trezor on the USB port (asking to use it) and runs [block]
+     * with it, the device's questions going to [trezorAsks] meanwhile; the
+     * device is let go after, whatever happened. Throws why it couldn't.
+     */
+    private suspend fun <T> withTrezor(block: suspend (TrezorLink, TrezorPrompts) -> T): T {
+        val link = TrezorUsb.open(app)
+        trezorAsks.begin()
+        try {
+            return block(link, trezorAsks)
+        } finally {
+            trezorAsks.end()
+            link.close()
+        }
+    }
+
+    /** A wallet whose keys are on the Trezor plugged in: the device gives the view key. */
+    suspend fun restoreTrezor(restorePoint: String?) = withTrezor { link, prompts ->
+        adopt { path, key, network -> FobWallet.restoreTrezor(path, key, network, link, prompts, restorePoint) }
+    }
+
+    /** Asks the Trezor for the key images it hasn't given; how many outputs that covered. */
+    suspend fun trezorSync(): UInt = withTrezor { link, prompts ->
+        val wallet = requireNotNull(_wallet.value)
+        wallet.trezorSync(link, prompts).also { refresh() }
+    }
+
+    /**
+     * [send], signed on the Trezor: kept in [sends] like it, once begun. A
+     * payment the device turned down, or couldn't be reached for, is still
+     * prepared, so that send is forgotten and the swipe can come again.
+     */
+    suspend fun sendWithTrezor(prepared: Prepared): String {
+        val job = sends.getOrPut(prepared.id) {
+            val wallet = requireNotNull(_wallet.value)
+            sendsUnderWay++
+            scope.async {
+                try {
+                    withTrezor { link, prompts -> wallet.sendWithTrezor(prepared.id, link, prompts) }.also { refresh() }
+                } catch (refused: FobException.SpendRejected) {
+                    _spendRefused.value = true
+                    throw refused
+                } catch (stillPrepared: FobException.TrezorCancelled) {
+                    sends.remove(prepared.id)
+                    throw stillPrepared
+                } catch (stillPrepared: FobException.Trezor) {
+                    sends.remove(prepared.id)
+                    throw stillPrepared
+                } finally {
+                    sendsUnderWay--
+                }
+            }
+        }
+        return job.await()
+    }
 
     /** Moves to the wallet last open on the other network, if there is one. */
     fun switchNetwork(network: Network) {

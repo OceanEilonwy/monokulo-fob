@@ -3,6 +3,7 @@
 mod addresses;
 mod connection;
 mod funds;
+mod hardware;
 mod lifecycle;
 mod manual_sync;
 mod people;
@@ -65,7 +66,7 @@ use crate::{
     contacts::{self, Contact},
     error::{CodeError, EndpointProblem, FobError, MoneroError, PriceError, Result, ScreenError, VaultError},
     backup,
-    keys::{Keys, SeedKind, StoredKeys},
+    keys::{Device, Keys, SeedKind, StoredKeys},
     manual::{self, ManualSettings, PullMode, PullOutcome, ScanOption, ScanPlan, ScanRequest, ScanTitle},
     network::Network,
     node,
@@ -73,6 +74,7 @@ use crate::{
     price::{self, Source as _},
     receipt::ReceiptView,
     profile, requests, scan, split, store, swap,
+    trezor::{self, sign::Plan},
     uri::{self, WalletCode},
     network::{UNLOCK, ZmqStatus},
     zmq,
@@ -93,6 +95,11 @@ const LOOKAHEAD: u32 = 200;
 const RESTORE_SKIP: u32 = 50;
 /// Ring size for transactions since the 2022 hard fork.
 const RING_LEN: u8 = 16;
+/// The hard fork a hardware wallet is told it signs for: v16, Bulletproofs+.
+const HARD_FORK: u32 = 16;
+/// What an output's `spent_in` says when a device's key image sync found it
+/// spent before the key image was known: the spending transaction isn't.
+pub(crate) const SPENT_BEFORE_SYNC: &str = "spent-before-sync";
 /// The most Fob pays per unit of weight, whatever a node asks. With the tail
 /// emission an honest mainnet node's normal fee is about 20,000 per byte
 /// (less with larger blocks), so this leaves it room to rise about twenty
@@ -243,6 +250,9 @@ pub struct Preview {
 struct PreparedTx {
     signable: SignableTransaction,
     out: Outgoing,
+    /// The same payment as a device signs it, in a wallet whose keys are
+    /// on one.
+    plan: Option<Plan>,
 }
 
 /// What a payment records once sent, beside its transaction.
@@ -384,6 +394,12 @@ impl<T> Pending<T> {
     fn take(&mut self, id: u64) -> Option<T> {
         self.prune();
         self.items.remove(&id).map(|(_, item)| item)
+    }
+
+    /// The one with `id`, left in place.
+    fn get(&mut self, id: u64) -> Option<&T> {
+        self.prune();
+        self.items.get(&id).map(|(_, item)| item)
     }
 }
 

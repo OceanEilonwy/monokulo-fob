@@ -146,6 +146,20 @@ pub fn send(why: &str) -> String {
     format!("couldn't build the transaction: {why}")
 }
 
+/// A Trezor couldn't be reached, refused, or answered wrongly: `why`, in
+/// words already.
+pub fn trezor(why: &str) -> String {
+    why.to_owned()
+}
+
+pub fn trezor_cancelled() -> String {
+    "cancelled on the Trezor".into()
+}
+
+pub fn trezor_needed() -> String {
+    "connect the Trezor this wallet belongs to".into()
+}
+
 /// Why a code can't be paid, when it's fine as a code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotTaken {

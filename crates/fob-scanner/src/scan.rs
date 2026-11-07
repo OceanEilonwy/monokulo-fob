@@ -16,8 +16,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use std::collections::HashMap;
+
 use crate::Prefilter;
-use monero_wallet::{Scanner, WalletOutput, block::Block, interface::ScannableBlock, transaction::{Input, Transaction}};
+use monero_wallet::{Scanner, WalletOutput, block::Block, extra::Extra, interface::ScannableBlock, transaction::{Input, Transaction}};
 
 /// Fewer blocks than this aren't worth starting threads for: a wallet near the
 /// tip sees one or two at a time.
@@ -36,6 +38,11 @@ pub struct SeenTx {
     pub key_images: Vec<[u8; 32]>,
 }
 
+/// The public keys a transaction's extra carries: the transaction keys,
+/// and the extra ones (one per output) if it has those. Without torsion,
+/// as a hardware wallet takes them.
+pub type TxKeys = (Vec<[u8; 32]>, Option<Vec<[u8; 32]>>);
+
 /// One block, scanned.
 pub struct Scanned {
     pub height: u64,
@@ -45,6 +52,24 @@ pub struct Scanned {
     pub miner_tx: String,
     pub txs: Vec<SeenTx>,
     pub found: Vec<WalletOutput>,
+    /// For each transaction something was found in, its keys.
+    pub tx_keys: HashMap<String, TxKeys>,
+}
+
+/// The keys in `extra`, as [`TxKeys`].
+pub fn tx_keys(extra: &[u8]) -> Option<TxKeys> {
+    let (keys, additional) = Extra::read(&mut &extra[..]).ok()?.keys()?;
+    let clean = |points: Vec<monero_wallet::ed25519::Point>| {
+        points
+            .into_iter()
+            .map(|p| {
+                // Any torsion component removed, as Monero's pubkey_clear_torsion.
+                let point: curve25519_dalek::EdwardsPoint = p.into();
+                (point.mul_by_cofactor() * curve25519_dalek::Scalar::from(8u8).invert()).compress().to_bytes()
+            })
+            .collect::<Vec<_>>()
+    };
+    Some((clean(keys), additional.map(clean)))
 }
 
 /// What's in `block` for anyone, without looking for money: `found` comes later,
@@ -72,7 +97,7 @@ fn seen(block: &ScannableBlock, hash: &[u8; 32]) -> Scanned {
                 .collect(),
         })
         .collect();
-    Scanned { height: block.block.number() as u64, time: block.block.header.timestamp, hash: hex::encode(hash), miner_tx: String::new(), txs, found: vec![] }
+    Scanned { height: block.block.number() as u64, time: block.block.header.timestamp, hash: hex::encode(hash), miner_tx: String::new(), txs, found: vec![], tx_keys: HashMap::new() }
 }
 
 /// Finds the money in a block that may hold some.
@@ -80,6 +105,21 @@ fn look_for_money(scanner: &mut Scanner, block: &ScannableBlock, scanned: &mut S
     scanned.miner_tx = hex::encode(block.block.miner_transaction().hash());
     let height = scanned.height;
     scanned.found = scanner.scan(block.clone()).map_err(|e| format!("scanning block {height}: {e:?}"))?.ignore_additional_timelock();
+    // Each found output's transaction keys, which a hardware wallet needs.
+    for output in &scanned.found {
+        let tx = hex::encode(output.transaction());
+        if scanned.tx_keys.contains_key(&tx) {
+            continue;
+        }
+        let extra = if tx == scanned.miner_tx {
+            Some(&block.block.miner_transaction().prefix().extra)
+        } else {
+            block.block.transactions.iter().position(|h| hex::encode(h) == tx).and_then(|i| block.transactions.get(i)).map(|t| &t.prefix().extra)
+        };
+        if let Some(keys) = extra.and_then(|e| tx_keys(e)) {
+            scanned.tx_keys.insert(tx, keys);
+        }
+    }
     Ok(())
 }
 

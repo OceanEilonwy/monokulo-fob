@@ -269,6 +269,7 @@ fun RestoreChooseScreen(nav: Nav) {
                 Way(Icons.scan, "Scan a wallet code", "From Fob, the Monero GUI or Cake Wallet on another device", quickest = true) { nav.go(Screen.RestoreScan) }
                 Way(Icons.lines, "Type your seed phrase", "16 words (Polyseed) or 25 words") { nav.go(Screen.RestoreSeed) }
                 Way(Icons.eye, "View-only wallet", "Address and private view key. Sees payments, can't spend.") { nav.go(Screen.RestoreViewOnly) }
+                Way(Icons.usb, "Connect a Trezor", "Model T, Safe 3 or Safe 5 over USB. The keys stay on it; it signs each payment.") { nav.go(Screen.RestoreTrezor) }
             }
         }
     }
@@ -346,6 +347,25 @@ fun RestoreViewOnlyScreen(model: WalletModel, nav: Nav) {
             Field(address, { address = it }, "Primary address", mono = true, lines = 3)
             Field(key, { key = it }, "Private view key", mono = true, lines = 2, secret = true)
             Field(start, { start = it }, "Start from (optional)", hint = START_HINT)
+        }
+    }
+}
+
+/**
+ * A wallet on a Trezor: plug it in, and the device hands over the view key
+ * (asking first) and keeps the spend key. Payments are confirmed on it.
+ */
+@Composable
+fun RestoreTrezorScreen(model: WalletModel, nav: Nav) {
+    var start by remember { mutableStateOf("") }
+    Restoring(model, nav, "Connect", true, { restoreTrezor(start.ifBlank { null }) }) {
+        TopBar("Connect a Trezor", onBack = { nav.back() })
+        Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(
+                "Plug the Trezor into this phone with a USB cable and unlock it. It will ask to let Fob watch the wallet; the spend key never leaves it, and every payment is confirmed on its screen.",
+                color = Fob.muted, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            Field(start, { start = it }, "Start from (optional)", hint = "If this Trezor has held Monero before: $START_HINT Leave it empty for a Trezor new to Monero.")
         }
     }
 }

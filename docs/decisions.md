@@ -2899,3 +2899,59 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      spending and removing a wallet take it; `fob-gtk` is kept from calling those on
      the wallet directly by clippy. The process is made non-dumpable, the data folder
      0700 and its files 0600.
+
+## Trezor
+
+359. **A wallet can keep its spend key on a Trezor** (Model T, Safe 3, Safe 5:
+     the ones running trezor-core, which hold Monero; Model One doesn't). Restore
+     › Connect a Trezor: the device exports the private view key and primary
+     address (it asks first), and Fob makes a wallet from them that watches as a
+     view-only one does, with `device = trezor` beside the keys in the file. It
+     is one Monero wallet per Trezor (and per passphrase): the keys are those at
+     `m/44'/128'/0'`, as Trezor Suite and the Monero GUI use.
+360. **The protocol is Monero's own cold-signing one with the device**
+     (`crates/fob-wallet/src/trezor`), after `src/device_trezor` in monero-project
+     and `apps/monero` in trezor-firmware, written here without their
+     dependencies: a hand-sized protocol buffer codec, the 64-byte report
+     framing, and the message numbers and fields. The device makes the
+     transaction's keys, one-time addresses, commitments and CLSAGs; Fob sends
+     inputs with their rings (as monero-oxide chose them), makes the Bulletproof+
+     itself when there are more than two outputs (the device asks for that and
+     checks it), assembles the transaction with monero-oxide's types, and checks
+     the prefix hash and signed message against the device's, the range proof,
+     and every signature, before anything is broadcast.
+361. **Key images come from the device too.** A view key can't tell when money is
+     spent; the device can, from each output's one-time key and the key of the
+     transaction it came in. So every output now records its transaction's public
+     key (and the extra key at its index, if the transaction had those: `tx_key`,
+     `extra_key` in the outputs table, database version 7), picked at scan time as
+     the one whose shared secret makes the output's key. Home asks to connect the
+     Trezor while any output has no key image ("Connect your Trezor"); the sync
+     asks the device for them (it confirms once), checks each against the proof
+     the device gives, then asks the node `is_key_image_spent`. One found spent
+     is marked `spent-before-sync`: spent by a transaction Fob never saw, with no
+     Activity row. Outputs without a key image can't be chosen for a payment, and
+     a payment they're needed for says to connect the Trezor.
+362. **The device's questions reach the screen through callbacks.** Rust talks to
+     the device on its own thread over a `TrezorLink` the app implements with
+     Android's USB host API (bulk transfers on the device's first interface, the
+     WebUSB one), and puts the device's questions through `TrezorPrompts`: a
+     press to confirm, the PIN (typed here as the positions on the scrambled
+     keypad the device shows, as Trezor Suite does), the passphrase (here, or on
+     the device where it can). The app blocks that thread until the person
+     answers in the sheet over whatever screen is open. Saying no on the device
+     cancels and leaves a prepared payment prepared.
+363. **The fee for a device-signed payment is for a little more weight** (48
+     bytes) than the same payment signed here: the device writes the extra
+     itself, which may differ by a key, and it checks that the fee equals inputs
+     less outputs exactly, so it's fixed before the device sees it. The device
+     shows that fee, and so does Confirm.
+364. **Not yet**: the signing path has been exercised only against the firmware
+     and monero-project sources (the key image sync runs end to end against a
+     Trezor in software in the tests); a real device on stagenet is the next
+     test. Trezor's `GetTxKey` (transaction keys for proofs) and live refresh
+     aren't used. Ledger isn't supported. An independent audit of this code
+     (2026-11-07) found no theft path and nine things to tighten, listed in the
+     `trezor` branch's pull request; the two that matter most are that a rewind
+     forgets `spent-before-sync`, and that the exported address isn't yet
+     confirmed on the device's own screen.

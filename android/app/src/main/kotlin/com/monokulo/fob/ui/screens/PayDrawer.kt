@@ -92,12 +92,22 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     var failed by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
     var checked by remember { mutableStateOf(false) }
+    val trezor = model.wallet.value?.isTrezor() == true
     fun swiped() {
         val ready = prepared ?: return
         busy = true
         error = null
         scope.launch {
-            if (!confirmIdentity(title)) {
+            if (trezor) {
+                runCatching { model.sendWithTrezor(ready) }
+                    .onSuccess { tx -> onClose(); nav.go(Screen.Paid(ready, tx)) }
+                    // Said no on the device, or it couldn't be reached: still prepared for another swipe.
+                    .onFailure {
+                        error = it.reason()
+                        failed = !(it is uniffi.fob.FobException.TrezorCancelled || it is uniffi.fob.FobException.Trezor)
+                        refused = it is uniffi.fob.FobException.SpendRejected
+                    }
+            } else if (!confirmIdentity(title)) {
                 error = "Not sent."
             } else {
                 runCatching { model.send(ready) }
@@ -144,9 +154,10 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
         else ErrorText(error)
         val label = when {
-            busy -> "Sending…"
+            busy -> if (trezor) "Confirm on the Trezor…" else "Sending…"
             failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+            trezor -> "Swipe, then confirm on the Trezor"
             else -> "Swipe to send ${prepared!!.amountText} XMR"
         }
         SwipeToSend(label, enabled = !busy && !failed && prepared != null && (notice == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }

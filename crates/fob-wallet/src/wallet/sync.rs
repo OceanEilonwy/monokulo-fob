@@ -629,6 +629,11 @@ impl Wallet {
             if let Some(image) = key_image.as_deref().and_then(hash_bytes) {
                 images.entry(image).or_insert(state.outputs.len());
             }
+            let (tx_key, extra_key) = scanned
+                .tx_keys
+                .get(&tx)
+                .and_then(|(tx_keys, additional)| keys.tx_key_for(&output, tx_keys, additional.as_deref()))
+                .map_or((None, None), |(tx_key, extra)| (Some(hex::encode(tx_key)), extra.map(hex::encode)));
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
             state.outputs.push(Owned {
@@ -643,6 +648,8 @@ impl Wallet {
                 subaddress,
                 key_image,
                 spent_in: None,
+                tx_key,
+                extra_key,
             });
             changed = true;
         }

@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 6;
+const VERSION: i32 = 7;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -105,6 +105,8 @@ const OUTPUTS: Table = Table {
         ("key", Text),
         ("key_image", Text),
         ("spent_in", Text),
+        ("tx_key", Text),
+        ("extra_key", Text),
     ],
 };
 const SPENDS: Table = Table { name: "spends", columns: &[("tx", Text), ("height", Int), ("time", Int), ("fee", Int)] };
@@ -442,7 +444,7 @@ impl Db {
         remove_files(path)?;
         let connection = Self::connect(path, key)?;
         let mut schema = String::from("BEGIN;\n");
-        schema.push_str("CREATE TABLE keys (id INTEGER PRIMARY KEY CHECK (id = 1), network TEXT NOT NULL, spend TEXT, view TEXT NOT NULL, spend_pub TEXT NOT NULL, seed_kind TEXT, seed_words TEXT);\n");
+        schema.push_str("CREATE TABLE keys (id INTEGER PRIMARY KEY CHECK (id = 1), network TEXT NOT NULL, spend TEXT, view TEXT NOT NULL, spend_pub TEXT NOT NULL, seed_kind TEXT, seed_words TEXT, device TEXT);\n");
         for table in TABLES {
             schema.push_str(&create_table(table));
         }
@@ -481,6 +483,13 @@ impl Db {
             let upgrade = "BEGIN;\nALTER TABLE sent ADD COLUMN signed TEXT;\nALTER TABLE wallet ADD COLUMN node_pin TEXT;\nPRAGMA user_version = 6;\nCOMMIT;";
             connection.execute_batch(upgrade).map_err(failed)?;
             version = 6;
+        }
+        if version == 6 {
+            // Hardware wallets: which device holds the spend key, and each
+            // output's transaction keys, which the device needs to spend it.
+            let upgrade = "BEGIN;\nALTER TABLE keys ADD COLUMN device TEXT;\nALTER TABLE outputs ADD COLUMN tx_key TEXT;\nALTER TABLE outputs ADD COLUMN extra_key TEXT;\nPRAGMA user_version = 7;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 7;
         }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));

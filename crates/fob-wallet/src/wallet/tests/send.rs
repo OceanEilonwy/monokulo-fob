@@ -19,6 +19,8 @@ async fn a_view_only_wallet_refuses_to_prepare_payments() {
         key: "in".into(),
         key_image: None,
         spent_in: None,
+        tx_key: None,
+        extra_key: None,
     }];
     watch.inner.state.lock().await.tip = 100;
     let coins = watch.said_coins(Clock { now: 6_000, utc_offset: 0, hours_24: true }).await;

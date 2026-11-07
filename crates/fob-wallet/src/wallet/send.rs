@@ -10,7 +10,7 @@ impl Wallet {
     /// from, if any, whose name and receipt go with it as
     /// [`uri::code_terms`] says.
     pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
-        self.inner.keys.spend()?;
+        self.spendable()?;
         let (destination, terms) = self.payment_terms(to, amount, code)?;
         let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
         self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await
@@ -112,18 +112,18 @@ impl Wallet {
         pieces: Option<u32>,
     ) -> Result<Prepared> {
         let amount: u64 = payments.iter().map(|p| p.1).sum();
-        let (_, rpc, decoys, _) = self.connection().await?;
-        let (fee_rate, latest) = self.send_ready(&rpc, &decoys).await?;
-
-        let (mut candidates, available) = {
+        let device = self.inner.keys.device();
+        let (mut candidates, available, unsynced) = {
             let state = self.inner.state.lock().await;
+            let ready = |o: &Owned| o.spent_in.is_none() && confirmations(&state, o.height) >= state.needed(o);
+            // A device's output can't be spent before the device has given
+            // its key image (which says whether it's spent already).
+            let synced = |o: &Owned| device.is_none() || (o.key_image.is_some() && o.tx_key.is_some());
+            let unsynced = state.outputs.iter().filter(|o| ready(o) && !synced(o)).count();
             let mut candidates: Vec<((String, String), u64, WalletOutput)> = state
                 .outputs
                 .iter()
-                .filter(|o| {
-                    o.spent_in.is_none()
-                        && confirmations(&state, o.height) >= state.needed(o)
-                })
+                .filter(|o| ready(o) && synced(o))
                 .filter_map(|o| {
                     let bytes = hex::decode(&o.output).ok()?;
                     Some((o.id(), o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
@@ -131,12 +131,19 @@ impl Wallet {
                 .collect();
             candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
             let available = candidates.iter().map(|c| c.1).sum::<u64>();
-            (candidates, available)
+            (candidates, available, unsynced)
         };
-        let not_enough = |needed: u64| FobError::Screen(ScreenError::NotEnoughFunds { available, needed });
+        let not_enough = |needed: u64| {
+            if unsynced > 0 {
+                return FobError::TrezorNeeded;
+            }
+            FobError::Screen(ScreenError::NotEnoughFunds { available, needed })
+        };
         if available < amount {
             return Err(not_enough(amount));
         }
+        let (_, rpc, decoys, _) = self.connection().await?;
+        let (fee_rate, latest) = self.send_ready(&rpc, &decoys).await?;
 
         // Start with the inputs that cover the amount and a generous fee guess,
         // then add one at a time while the real fee needs more.
@@ -187,13 +194,43 @@ impl Wallet {
                 Err(e) => return Err(FobError::Send(format!("{e:?}"))),
             }
         };
-        let fee = signable.necessary_fee();
+        let mut fee = signable.necessary_fee();
+        let plan = match device {
+            None => None,
+            Some(Device::Trezor) => {
+                // The device's transaction has the same shape as this one,
+                // give or take a few bytes of extra: the fee for a little
+                // more weight covers it, and is what the device shows.
+                let weight = fee_rate.calculate_weight_from_fee(fee).unwrap_or(0) as u64 + trezor::sign::WEIGHT_MARGIN;
+                fee = u64::try_from(fee_rate.calculate_fee_from_weight(weight)).map_err(|_| FobError::Send("the fee is too large".into()))?;
+                if total < amount + fee {
+                    return Err(not_enough(amount + fee));
+                }
+                let network = self.network();
+                let change_address = MoneroAddress::from_str(network.monero(), &self.inner.keys.primary_address()).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
+                let state = self.inner.state.lock().await;
+                let mut inputs = Vec::with_capacity(chosen.len());
+                for (c, with_decoys) in chosen.iter().zip(with_decoys.iter()) {
+                    let owned = state.outputs.iter().find(|o| o.id() == c.0).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
+                    let key = |hex_key: &Option<String>| hex_key.as_deref().and_then(|k| hex::decode(k).ok()).and_then(|k| <[u8; 32]>::try_from(k).ok());
+                    inputs.push(trezor::sign::SpendInput {
+                        with_decoys: with_decoys.clone(),
+                        tx_pub_key: key(&owned.tx_key).ok_or(FobError::TrezorNeeded)?,
+                        additional: key(&owned.extra_key),
+                        index_in_tx: c.2.index_in_transaction(),
+                        subaddress_minor: owned.subaddress,
+                    });
+                }
+                Some(Plan { network, inputs, payments: payments.clone(), change: total - amount - fee, change_address, fee, hard_fork: HARD_FORK })
+            }
+        };
         let receipt = receipt_json.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok());
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         self.inner.prepared.lock().await.insert(
             id,
             PreparedTx {
                 signable,
+                plan,
                 out: Outgoing {
                     to: to.to_owned(),
                     amount,
@@ -290,7 +327,7 @@ impl Wallet {
     /// Builds a split: `counts` of each note paid to this wallet's split
     /// address, the rest back as change, for the confirm screen.
     pub async fn prepare_split(&self, counts: &[u32]) -> Result<Prepared> {
-        self.inner.keys.spend()?;
+        self.spendable()?;
         let (_, notes, budget) = self.split_setup().await;
         let amounts = split::amounts(&notes, counts);
         if amounts.is_empty() {
@@ -307,8 +344,19 @@ impl Wallet {
         Ok(prepared)
     }
 
+    /// Whether this wallet can pay at all: with its own spend key, or a
+    /// device's.
+    pub(super) fn spendable(&self) -> Result<()> {
+        if self.inner.keys.can_spend() { Ok(()) } else { Err(FobError::Vault(VaultError::ViewOnly)) }
+    }
+
     /// Signs and broadcasts a prepared payment. Returns its transaction hash.
+    /// A wallet whose keys are on a device signs with
+    /// [`send_with_trezor`](Wallet::send_with_trezor) instead.
     pub async fn send(&self, id: u64) -> Result<String> {
+        if self.inner.keys.device().is_some() {
+            return Err(FobError::TrezorNeeded);
+        }
         let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
         let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
