@@ -431,6 +431,21 @@ What changes in `monokulo-lws`'s loop (`scanner.rs`):
    for every account; outputs without a view tag (before August 2022) skip
    the tag and take the full derivation, slower but correct.
 
+**A wallet joining with history** (a restore, an import, a rescan) gets a
+lane of its own rather than dragging everyone back: the *live lane* is the
+keyring of every caught-up account and follows the tip; a *catch-up lane*
+fetches from the newcomer's start height with a keyring of only the
+accounts behind, takes in others as its cursor passes their start heights,
+and merges into the live keyring when it reaches the tip. One daemon
+connection (live first), one GPU (batches interleave), nothing new in the
+database: an account's `scan_height` says which lane it is in. Fob sees
+`scanned_height` below `blockchain_height` until the merge, hence the
+"Server scanning from 2019" chip. Lanes are configurable
+(`--catch-up-lanes`, `--catch-up-join follow|wait`, `--catch-up-blocks`,
+`--catch-up-in-flight`, `--catch-up-scan`; `monokulo-lws/docs/scanning.md`
+has the table); `--catch-up-lanes 0` is the first version's single loop,
+fine for a handful of wallets.
+
 What it buys, from decision 350's figure of about a million derivations a
 second on a desktop GPU, to be measured:
 
