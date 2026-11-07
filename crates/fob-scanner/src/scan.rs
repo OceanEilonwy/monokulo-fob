@@ -17,7 +17,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::{Prefilter, policy::GPU_FROM_KEYS};
+use crate::Prefilter;
 use monero_wallet::{Scanner, WalletOutput, block::Block, interface::ScannableBlock, transaction::{Input, Transaction}};
 
 /// Fewer blocks than this aren't worth starting threads for: a wallet near the
@@ -101,7 +101,7 @@ fn to_read(flags: Option<Vec<bool>>, count: usize) -> Vec<bool> {
 /// wallet's GPU check hasn't passed) nothing is filtered, and the `Scanner` reads
 /// every block; asking still starts the GPU, for later.
 pub fn scan(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<ScannableBlock>, hashes: &[[u8; 32]], gpu_allowed: bool) -> (Vec<Result<Scanned, String>>, Option<Block>) {
-    scan_from(scanner, prefilter, blocks, hashes, if gpu_allowed { GPU_FROM_KEYS } else { usize::MAX })
+    scan_from(scanner, prefilter, blocks, hashes, if gpu_allowed { 0 } else { usize::MAX })
 }
 
 /// [`scan`], filtering on the GPU only from `min_keys` transaction keys

@@ -8,11 +8,9 @@
 //! depend on it directly.
 //!
 //! What stays is Fob's: [`scan`], which fans a batch out over the cores and has
-//! the `Scanner` read each flagged block (or every block, unfiltered), and
-//! `policy.rs`, the smallest batch Fob gives the GPU.
+//! the `Scanner` read each flagged block (or every block, unfiltered).
 
 pub mod scan;
-mod policy;
 
 pub use monokulo_8ar::{Engine, Prefilter, Reason, check_wallet, engine, gpu, gpu_failed, gpu_identity, gpu_ready, rest, set_cache_dir, settle, startup_vectors, wallet_vectors, warm_up};
 

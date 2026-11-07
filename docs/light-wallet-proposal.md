@@ -374,10 +374,11 @@ the point compressed on the GPU too), and for each output checks the view
 tag (`Keccak("view_tag" ‖ D ‖ i)[0]`, 1 in 256 pass) and then the real
 thing, `P − H_s(D ‖ i)·G ∈ {our spend keys}`, with curve25519-dalek on the
 CPU. Only blocks that hold a real receipt go to monero-oxide's `Scanner`.
-It is GPU-only (decision 360): where there is no usable Vulkan GPU, or a
-batch is too small to be worth one (under 256 keys, about five blocks),
+It is GPU-only (decision 360): where there is no usable Vulkan GPU,
 `flag` answers `None` and the caller scans every block with monero-oxide,
-which is the fallback everywhere, Fob included. Any Vulkan GPU does,
+which is the fallback everywhere, Fob included. There is no size below
+which a batch is kept off the GPU (decision 363): every batch goes to it
+when it is there. Any Vulkan GPU does,
 integrated ones included; Apple gets it through MoltenVK when there is an
 Apple client. On an RX 6800 XT it put 5,000 mainnet blocks through in
 0.29 s for one wallet, with 39 MB of GPU state however large the batch.

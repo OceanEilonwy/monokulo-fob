@@ -2990,3 +2990,12 @@ against Fob's after a mainnet trial felt slower than it. Measured with
      every two minutes, stays on the cores, and a catch-up of more than five blocks
      goes to the GPU. The phone's own crossover against the `Scanner` is still to be
      measured: monokulo-8ar's `scan_speed --tip` times only the GPU's side.
+363. **No threshold: every batch goes to the GPU when there is one.** Decision 362's
+     256 keys bought the desktop at most 14 ms on a batch of three or four blocks and
+     the phone an estimated, unmeasured, few tens of millijoules on a one-block batch
+     (under 0.1% of a battery a day, as 332 found for the whole gap), at the price of
+     a constant nobody had measured on the device it was for, and two paths through
+     `scan` to keep right. `policy.rs` is gone; `scan` filters whenever the wallet's
+     GPU check has passed, and the `Scanner` reads every block only when it hasn't
+     or there is no GPU. `scan_from(min_keys)` stays for `gpu_crossover` to measure
+     with.
