@@ -32,7 +32,11 @@ import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
+import androidx.compose.foundation.background
+import androidx.compose.ui.semantics.heading
+import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
+import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
@@ -76,18 +80,53 @@ fun WalletsScreen(model: WalletModel, nav: Nav) {
                     Text("Add a wallet", color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
-            Text("Only the open wallet stays up to date. Another catches up when you open it.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
         }
     }
     wallets.firstOrNull { it.file == renaming }?.let { wallet -> RenameDialog(model, wallet) { renaming = null } }
 }
 
-/** A wallet: a tick when open, its name and network, and Rename. */
+/**
+ * Home's wallet switcher, a sheet over it: tapping a wallet opens it and
+ * stays on Home; Manage is the Wallets page, where they're renamed.
+ */
 @Composable
-private fun WalletRow(wallet: WalletEntry, open: Boolean, onRename: () -> Unit, onOpen: () -> Unit) {
+fun WalletSheet(model: WalletModel, nav: Nav, onDismiss: () -> Unit) {
+    val wallets by model.wallets.collectAsState()
+    val current by model.current.collectAsState()
+    LaunchedEffect(Unit) { model.readWallets() }
+    BottomSheet("Wallets", onDismiss = onDismiss) {
+        SheetHandle()
+        Text("Wallets", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp).semantics { heading() })
+        Card {
+            wallets.forEachIndexed { i, wallet ->
+                if (i > 0) Divider()
+                val open = wallet.file == current?.file
+                WalletRow(wallet, open = open, onRename = null, highlight = open) {
+                    if (!open) model.switchWallet(wallet.file)
+                    onDismiss()
+                }
+            }
+            if (wallets.isNotEmpty()) Divider()
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.Button) { onDismiss(); nav.go(Screen.AddWallet) }.padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StrokeIcon(Icons.plus, tint = Fob.orangeText, size = 20.dp)
+                Text("Add a wallet", color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton("Manage", { onDismiss(); nav.go(Screen.Wallets) })
+        }
+    }
+}
+
+/** A wallet: a tick when open, its name and network, and Rename (not where [onRename] is null). */
+@Composable
+private fun WalletRow(wallet: WalletEntry, open: Boolean, onRename: (() -> Unit)?, highlight: Boolean = false, onOpen: () -> Unit) {
     val network = if (wallet.network == Network.MAINNET) "Mainnet" else "Stagenet, test coins"
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(end = 8.dp),
+        Modifier.fillMaxWidth().heightIn(min = 64.dp).then(if (highlight) Modifier.background(Fob.highlight) else Modifier).padding(end = if (onRename != null) 8.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -103,7 +142,7 @@ private fun WalletRow(wallet: WalletEntry, open: Boolean, onRename: () -> Unit, 
                 Text(if (open) "$network · open" else network, fontSize = 13.sp, color = Fob.muted)
             }
         }
-        Box(Modifier.semantics(mergeDescendants = true) { contentDescription = "Rename ${wallet.name}" }) { TextButton("Rename", onRename) }
+        if (onRename != null) Box(Modifier.semantics(mergeDescendants = true) { contentDescription = "Rename ${wallet.name}" }) { TextButton("Rename", onRename) }
     }
 }
 

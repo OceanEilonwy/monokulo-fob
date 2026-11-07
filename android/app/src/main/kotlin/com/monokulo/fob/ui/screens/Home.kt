@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -122,6 +123,8 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
     val touch = rememberTouchState(model)
     var payCode by remember { mutableStateOf<String?>(null) }
     var touchNotice by remember { mutableStateOf<String?>(null) }
+    // The wallets, a sheet over Home.
+    var switching by rememberSaveable { mutableStateOf(false) }
     rememberPayReading(model, touch, enabled = canSpend && payCode == null, onProblem = { touchNotice = it }) { code -> touchNotice = null; payCode = code }
     // The reader is off while the drawer is up, so a tag or a browser's link
     // reaches the activity instead: it's told, so the link doesn't open Send
@@ -147,7 +150,7 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
         // Meet takes the place your photo had, beside the cog; your profile is in Settings.
         // Fob's name until there's a second wallet to tell this one from.
         val title = current?.name?.takeIf { wallets.size > 1 }
-        TopBar(network == Network.STAGENET, title, onWallets = { nav.go(Screen.Wallets) }, onMeet = { nav.go(Screen.Meet) }, onSettings = { nav.go(Screen.Settings) }) {
+        TopBar(network == Network.STAGENET, title, onWallets = { switching = true }, onMeet = { nav.go(Screen.Meet) }, onSettings = { nav.go(Screen.Settings) }) {
             val s = status
             // Manual Sync: a button in the chip's place, but when something's wrong.
             if (s?.manualSync == true && s.error == null) SyncButton(s, model::openScan)
@@ -266,6 +269,7 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
         }
     }
     payCode?.let { code -> PayDrawer(model, nav, code, confirmIdentity, onClose = { payCode = null }) }
+    if (switching) WalletSheet(model, nav, onDismiss = { switching = false })
     }
 }
 
@@ -368,10 +372,15 @@ private fun TopBar(stagenet: Boolean, wallet: String?, onWallets: () -> Unit, on
                     .semantics { contentDescription = walletsLabel },
                 contentAlignment = Alignment.Center,
             ) { FobMark(26.dp) }
-            Text(
-                wallet?.let { if (it.length > 12) it.take(11).trimEnd() + "…" else it } ?: "Fob", style = display(22), maxLines = 1,
-                modifier = Modifier.layoutId("word").clip(RoundedCornerShape(8.dp)).clickable(onClick = onWallets).clearAndSetSemantics {},
-            )
+            // The name in a pill with a chevron: it opens the wallets (a sheet over Home).
+            Row(
+                Modifier.layoutId("word").height(44.dp).clip(CircleShape).background(Fob.card).border(1.dp, Fob.line, CircleShape)
+                    .clickable(onClick = onWallets).clearAndSetSemantics {}.padding(start = 16.dp, end = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(wallet?.let { if (it.length > 12) it.take(11).trimEnd() + "…" else it } ?: "Fob", style = display(20), maxLines = 1)
+                Box(Modifier.rotate(90f)) { StrokeIcon(Icons.chevron, tint = Fob.muted, size = 18.dp) }
+            }
             if (stagenet) Text("Stagenet", color = Fob.orangeText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.layoutId("badge").clip(RoundedCornerShape(10.dp)).background(Fob.highlight).padding(horizontal = 8.dp, vertical = 2.dp))
             Box(Modifier.layoutId("chip")) { chip() }
             MeetButton(onMeet, Modifier.layoutId("you"))
