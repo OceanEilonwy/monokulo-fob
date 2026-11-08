@@ -46,11 +46,26 @@ pub struct Dialogs {
     current: Option<adw::AlertDialog>,
 }
 
+/// The response a dialog gives when Fob takes it down itself: the next
+/// question replaces it, or the exchange is over. Nothing listens for it.
+const TAKEN_DOWN: &str = "taken-down";
+
 impl Dialogs {
-    fn replace(&mut self, parent: Option<&gtk::Widget>, dialog: adw::AlertDialog) {
+    /// Closes the dialog on screen, if one is, without it counting as the
+    /// person's answer.
+    fn take_down(&mut self) {
         if let Some(old) = self.current.take() {
+            // An alert dialog that closes answers with its close response,
+            // "cancel" here: left so, the waiting dialog's cancel would run
+            // and let go of the device between two of its questions (the
+            // view key's export is confirmed, then the address shown).
+            old.set_close_response(TAKEN_DOWN);
             old.force_close();
         }
+    }
+
+    fn replace(&mut self, parent: Option<&gtk::Widget>, dialog: adw::AlertDialog) {
+        self.take_down();
         dialog.present(parent);
         self.current = Some(dialog);
     }
@@ -58,11 +73,7 @@ impl Dialogs {
     pub fn show(&mut self, parent: Option<&gtk::Widget>, request: TrezorRequest) {
         let TrezorRequest { ask, reply, cancel } = request;
         match ask {
-            TrezorAsk::Over => {
-                if let Some(old) = self.current.take() {
-                    old.force_close();
-                }
-            }
+            TrezorAsk::Over => self.take_down(),
             TrezorAsk::Button(what) => self.replace(parent, waiting("Your Trezor", button_words(&what), cancel)),
             TrezorAsk::Progress { done, total } => {
                 let body = format!("Working with the Trezor… {done} of {total}");
