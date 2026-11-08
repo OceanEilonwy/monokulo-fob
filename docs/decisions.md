@@ -3523,3 +3523,18 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      from the stretches asked, that some wallet syncs from where Fob last
      stopped, and, past 20,000 blocks, the 1,000-block windows its payments
      are in (decision 385).
+388. **Tried on stagenet, 2026-11-08**, against monokulo-lws (branch
+     `inclusion-proofs`) at 127.0.0.1:18443, which serves a proof for each
+     transaction that pays the wallet (the real prunable hash, from its
+     node's `get_transactions`, as public nodes send zeros in
+     `get_blocks.bin`) and none for candidate spends.
+     `live_an_existing_wallet_through_monokulo_lws` (`LIVE_FROM=2244400`,
+     `LIVE_NODE=http://stagenet.xmr-tw.org:38081`) synced in one poll at
+     2,245,957: both 0.1 XMR receives (2,245,514 and 2,245,517) proved, the
+     node asked one stretch from 2,244,400, its hashes there (`ac4a886d…`,
+     `e4932ee8…`, the same from `node.monerodevs.org:38089`) matching the
+     proofs' blocks, and the Light server screen said "Amounts · match the
+     chain" and "Checked with · stagenet.xmr-tw.org:38081"; nothing
+     refused, balance 0.2 XMR. The unproved candidate spends neither
+     lowered the state nor refused the answer: the state counts the
+     wallet's outputs, and a spend found would be matched by key image.
