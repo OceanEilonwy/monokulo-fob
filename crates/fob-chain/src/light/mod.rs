@@ -89,6 +89,18 @@ pub enum Problem {
     NotOnChain,
     /// Light mode was asked for with no server chosen.
     NoServerSet,
+    /// The network fee the server gives for sending is more per byte, or
+    /// rounds to more, than Fob pays whatever it's told: a lying server
+    /// could otherwise spend a payment's money on its fee.
+    FeeTooHigh,
+    /// The ring members the server gave for a payment aren't usable: too
+    /// few or too many, one named twice, a key or commitment that isn't a
+    /// point, an amount other than RingCT's, or the payment's own coin with
+    /// another key. Nothing was sent.
+    BadRing,
+    /// The server's node turned a payment down, in its words (shortened,
+    /// and only printable characters).
+    TxRefused(String),
 }
 
 /// A light wallet server's address as people type it: `host:port` gets

@@ -29,8 +29,9 @@ pub const NOT_TESTED: &str = "Test the server first";
 /// The row before any server is chosen.
 pub const NONE_CHOSEN: &str = "None chosen";
 
-/// Send, while syncing through a server.
-pub const SEND_LATER: &str = "Sending through a server comes next";
+/// Send, for a Trezor wallet syncing through a server: the device's key
+/// images are asked of a node, so it sends through one.
+pub const TREZOR_SENDS_THROUGH_NODE: &str = "A Trezor wallet sends through a node for now. Switch Sync through to Node in Settings to send";
 /// The import row when the server has no scans from the start to offer.
 pub const IMPORT_NOT_OFFERED: &str = "Not offered by this server";
 
@@ -74,6 +75,10 @@ pub fn problem(problem: &Problem) -> String {
         Problem::Contradiction => "The light server's answer contradicts itself. Nothing from it was taken".into(),
         Problem::NotOnChain => NOT_ON_CHAIN.into(),
         Problem::NoServerSet => "Choose a light wallet server first".into(),
+        Problem::FeeTooHigh => "The light server asked a network fee far above the usual, so nothing was sent".into(),
+        Problem::BadRing => "The light server's ring members for this payment aren't usable, so nothing was sent".into(),
+        Problem::TxRefused(said) if said.is_empty() => "The light server's node turned the payment down".into(),
+        Problem::TxRefused(said) => format!("The light server's node turned the payment down: {said}"),
     }
 }
 
@@ -312,5 +317,8 @@ mod tests {
         assert_eq!(problem(&Problem::NotTaken), "This server doesn't take new wallets");
         assert_eq!(problem(&Problem::OtherNetwork { theirs: "main".into(), ours: "stage".into() }), "The server is on mainnet, and this wallet is on stagenet");
         assert!(turning_off().starts_with("Fob will scan on this phone again"));
+        assert_eq!(problem(&Problem::FeeTooHigh), "The light server asked a network fee far above the usual, so nothing was sent");
+        assert_eq!(problem(&Problem::TxRefused("double spend".into())), "The light server's node turned the payment down: double spend");
+        assert_eq!(problem(&Problem::TxRefused(String::new())), "The light server's node turned the payment down");
     }
 }

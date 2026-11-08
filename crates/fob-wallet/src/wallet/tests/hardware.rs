@@ -242,3 +242,24 @@ async fn a_pool_spend_from_the_node_is_asked_about_again() {
     wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
     assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in.as_deref(), Some(SPENT_BEFORE_SYNC));
 }
+
+/// A Trezor wallet syncing through a light wallet server sends through a
+/// node: its key images come from one. Send says so, and refuses.
+#[tokio::test]
+async fn a_trezor_wallet_sends_through_a_node_not_a_server() {
+    let full = Keys::generate(Network::Stagenet).keys;
+    let fake = fake_trezor(&full);
+    let person = crate::trezor::session::fake::Person::new();
+    let wallet = Wallet::restore_trezor(&dir("trezor-light"), [1; 32], Network::Stagenet, &fake, &person, Some(5)).unwrap();
+    assert!(wallet.send_notice().await.is_none(), "through its node it sends");
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.sync_mode = SyncMode::Light;
+        state.light_url = Some("https://lws.example:8443".into());
+    }
+    let notice = wallet.send_notice().await.unwrap();
+    assert_eq!(notice, "A Trezor wallet sends through a node for now. Switch Sync through to Node in Settings to send");
+    let refused = wallet.prepare(&full.address(3), 1, None, None).await.unwrap_err();
+    assert_eq!(refused, FobError::TrezorThroughServer);
+    assert_eq!(refused.to_string(), notice);
+}

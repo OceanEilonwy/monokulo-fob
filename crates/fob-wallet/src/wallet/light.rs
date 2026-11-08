@@ -214,7 +214,7 @@ impl Wallet {
     }
 
     /// The server's client, made once per server.
-    async fn light_client(&self) -> Result<LightClient> {
+    pub(super) async fn light_client(&self) -> Result<LightClient> {
         let (setting, pin) = {
             let state = self.inner.state.lock().await;
             let Some(url) = state.light_url.clone() else { return Err(FobError::Light(Problem::NoServerSet)) };
@@ -243,7 +243,7 @@ impl Wallet {
     }
 
     /// The protocol's only credential: the address and its private view key.
-    fn light_login(&self) -> lws::Login {
+    pub(super) fn light_login(&self) -> lws::Login {
         lws::Login { address: self.inner.keys.primary_address(), view_key: lws::Hex(*self.inner.keys.view_bytes()) }
     }
 
@@ -378,6 +378,8 @@ impl Wallet {
             }
         };
         let rejected = done.refused;
+        // Payments the server gave no answer for, offered again.
+        self.publish_unanswered_through(&client).await;
 
         // 4. Status.
         self.set_status(|s| {
@@ -547,6 +549,9 @@ const TIP_SLACK: u64 = 10;
 ///   output, with the fee the server gives (0, not known, from a server
 ///   that gives none).
 /// - **Sent**: a payment of this wallet's that's listed gets its height.
+/// - **Not confirmed**: a payment of this wallet's neither mined nor in the
+///   pool a day after it was sent is marked so, as the node path marks one
+///   its node never heard of; its coins can then be released.
 /// - **Pool**: transactions listed with `mempool: true` are the pool, kept
 ///   in memory; their outputs aren't owned until mined.
 /// - **Clock**: the latest block time among the transactions it vouches
@@ -671,6 +676,17 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
             sent.not_confirmed = false;
             sent.released = false;
             sent.signed = None;
+            changed = true;
+        }
+    }
+
+    // Not confirmed: a payment of this wallet's the server has neither
+    // mined nor in its pool a day after it was sent, as the node path marks
+    // one its node has never heard of. Mined later, it's taken back above.
+    let pooled: HashSet<String> = answer.transactions.iter().filter(|t| t.mempool).map(|t| hex::encode(t.hash.0)).collect();
+    for sent in &mut state.sent {
+        if sent.height.is_none() && !sent.not_confirmed && !sent.released && now.saturating_sub(sent.time) >= NOT_CONFIRMED_AFTER && !pooled.contains(&sent.tx) {
+            sent.not_confirmed = true;
             changed = true;
         }
     }

@@ -171,3 +171,25 @@ async fn an_answer_too_large_is_refused() {
     let client = LightClient::new(&url, false).unwrap();
     assert_eq!(client.get_address_txs(&login()).await.unwrap_err(), Problem::Unreachable("the server's answer was too large".into()));
 }
+
+/// A transaction the server's node took is "OK"; one it turned down comes
+/// back as monero-lws and monokulo-lws send it, a 422 with the reason,
+/// which is kept; a 422 without a readable body is still a refusal.
+#[tokio::test]
+async fn a_submitted_transaction_is_taken_or_refused_with_the_reason() {
+    let (url, seen) = fake_server(|route, body| match (route, body.contains("\"tx\":\"0102\"")) {
+        ("submit_raw_tx", true) => (200, r#"{"status":"OK","not_relayed":false}"#.into()),
+        ("submit_raw_tx", false) if body.contains("\"tx\":\"03\"") => (422, r#"{"status":"Failed","reason":"double spend","not_relayed":true}"#.into()),
+        ("submit_raw_tx", false) => (422, "not json".into()),
+        _ => (404, String::new()),
+    })
+    .await;
+    let client = LightClient::new(&url, false).unwrap();
+    let taken = client.submit_raw_tx(vec![1, 2]).await.unwrap();
+    assert_eq!((taken.status.as_str(), taken.not_relayed), ("OK", Some(false)));
+    let refused = client.submit_raw_tx(vec![3]).await.unwrap();
+    assert_eq!((refused.status.as_str(), refused.reason.as_deref()), ("Failed", Some("double spend")));
+    let unreadable = client.submit_raw_tx(vec![4]).await.unwrap();
+    assert_eq!((unreadable.status.as_str(), unreadable.reason), ("Failed", None));
+    assert_eq!(seen.lock().unwrap()[0].0, "submit_raw_tx");
+}

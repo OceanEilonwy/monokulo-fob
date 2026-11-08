@@ -163,6 +163,9 @@ impl Wallet {
     /// payment that times out while the device is being waited on is still
     /// sent once signed: what's recorded of it was taken before.
     pub async fn send_with_trezor(&self, id: u64, link: Arc<dyn trezor::Link>, prompts: Arc<dyn trezor::Prompts>) -> Result<String> {
+        if self.light_mode().await {
+            return Err(FobError::TrezorThroughServer);
+        }
         let (plan, out) = {
             let mut prepared = self.inner.prepared.lock().await;
             let Some(prepared) = prepared.get(id) else { return Err(FobError::Screen(ScreenError::NoSuchPayment)) };

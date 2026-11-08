@@ -73,36 +73,29 @@ impl LightClient {
     /// POSTs `body` to `/route` and reads the answer, mapping the API's
     /// statuses to [`Problem`]s.
     pub async fn post<T: Serialize, U: DeserializeOwned>(&self, route: &str, body: &T) -> Result<U, Problem> {
-        let body = serde_json::to_vec(body).map_err(|_| Problem::Unreadable)?;
-        let asked = tokio::time::timeout(REQUEST, self.transport.post_json(route, body, LIMIT)).await;
-        let (status, answer) = match asked {
-            Err(_) => return Err(Problem::Unreachable(format!("no answer in {} s", REQUEST.as_secs()))),
-            Ok(Ok(answered)) => answered,
-            Ok(Err(text)) => {
-                return Err(match self.certificate() {
-                    Some(Err(problem)) if !self.self_signed || !problem.acceptable() => Problem::Certificate(problem),
-                    _ => Problem::Unreachable(text),
-                });
-            }
-        };
-        // The server's own words, for the statuses that carry them: a line,
-        // not a page.
-        let said = || {
-            let text = String::from_utf8_lossy(&answer);
-            let text = serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|v| v.get("message").or_else(|| v.get("error")).and_then(|m| m.as_str()).map(str::to_owned))
-                .unwrap_or_else(|| text.trim().to_owned());
-            text.chars().take(200).collect::<String>()
-        };
+        let (status, answer) = self.exchange(route, body).await?;
         match status {
             200..=299 => serde_json::from_slice(&answer).map_err(|_| Problem::Unreadable),
-            400 => Err(Problem::BadRequest(said())),
+            400 => Err(Problem::BadRequest(said(&answer))),
             403 => Err(Problem::Forbidden),
-            409 => Err(Problem::Conflict(said())),
+            409 => Err(Problem::Conflict(said(&answer))),
             501 => Err(Problem::NotTaken),
             503 => Err(Problem::Unavailable),
             other => Err(Problem::Status(other)),
+        }
+    }
+
+    /// POSTs `body` to `/route`: the status and the answer as it came.
+    async fn exchange<T: Serialize>(&self, route: &str, body: &T) -> Result<(u16, Vec<u8>), Problem> {
+        let body = serde_json::to_vec(body).map_err(|_| Problem::Unreadable)?;
+        let asked = tokio::time::timeout(REQUEST, self.transport.post_json(route, body, LIMIT)).await;
+        match asked {
+            Err(_) => Err(Problem::Unreachable(format!("no answer in {} s", REQUEST.as_secs()))),
+            Ok(Ok(answered)) => Ok(answered),
+            Ok(Err(text)) => Err(match self.certificate() {
+                Some(Err(problem)) if !self.self_signed || !problem.acceptable() => Problem::Certificate(problem),
+                _ => Problem::Unreachable(text),
+            }),
         }
     }
 
@@ -128,14 +121,21 @@ impl LightClient {
         self.post("get_random_outs", &RandomOutsRequest { count, amounts: amounts.into_iter().map(Amount).collect() }).await
     }
 
-    /// Hands the server a signed transaction to broadcast. A refusal (422)
-    /// comes back as the answer, with its reason, not as a [`Problem`].
+    /// Hands the server a signed transaction to broadcast. A refusal (422,
+    /// monero-lws's and monokulo-lws's status for a transaction their node
+    /// turned down) comes back as the answer, with the server's reason, not
+    /// as a [`Problem`].
     pub async fn submit_raw_tx(&self, tx: Vec<u8>) -> Result<SubmitResponse, Problem> {
-        match self.post::<_, SubmitResponse>("submit_raw_tx", &SubmitRequest { tx: HexBytes(tx.clone()) }).await {
-            Err(Problem::Status(422)) => {
-                Ok(SubmitResponse { status: "Failed".into(), reason: None, not_relayed: Some(true) })
-            }
-            other => other,
+        let (status, answer) = self.exchange("submit_raw_tx", &SubmitRequest { tx: HexBytes(tx) }).await?;
+        match status {
+            422 => Ok(serde_json::from_slice::<SubmitResponse>(&answer)
+                .ok()
+                .filter(|answer| answer.status != "OK")
+                .unwrap_or(SubmitResponse { status: "Failed".into(), reason: None, not_relayed: Some(true) })),
+            200..=299 => serde_json::from_slice(&answer).map_err(|_| Problem::Unreadable),
+            400 => Err(Problem::BadRequest(said(&answer))),
+            503 => Err(Problem::Unavailable),
+            other => Err(Problem::Status(other)),
         }
     }
 
@@ -161,6 +161,17 @@ impl LightClient {
     pub async fn get_version(&self) -> Result<Version, Problem> {
         self.post("get_version", &serde_json::json!({})).await
     }
+}
+
+/// The server's own words in an answer, for the statuses that carry them:
+/// its `message` or `error`, or the text; a line, not a page.
+fn said(answer: &[u8]) -> String {
+    let text = String::from_utf8_lossy(answer);
+    let text = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("message").or_else(|| v.get("error")).and_then(|m| m.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| text.trim().to_owned());
+    text.chars().take(200).collect()
 }
 
 /// What the settings screen's Test found of a server.

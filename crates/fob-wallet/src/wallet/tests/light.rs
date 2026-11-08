@@ -772,8 +772,9 @@ async fn light_server(approved: Arc<AtomicBool>, upserts: Arc<AtomicU64>) -> Str
 }
 
 /// Choosing a server and switching to it: refused without a server, on
-/// another network or onion; on, ZMQ is off and Manual Sync moot, Send says
-/// it comes next; off, node scanning starts from the server's height less 30.
+/// another network or onion; on, ZMQ is off and Manual Sync moot, and Send
+/// open (with nothing to send here); off, node scanning starts from the
+/// server's height less 30.
 #[tokio::test]
 async fn switching_to_a_server_and_back() {
     let wallet = Wallet::create(&dir("light-switch"), [1; 32], Network::Stagenet).unwrap();
@@ -801,8 +802,8 @@ async fn switching_to_a_server_and_back() {
     assert!(status.synced, "{status:?}");
     assert_eq!(fob_words::catch_up::chip(status.chip()).text, "Synced · server");
     assert_eq!(wallet.light_line().await.unwrap(), format!("{} · synced", node::address(&url)));
-    assert!(matches!(wallet.prepare(&wallet.primary_address(), 1, None, None).await, Err(FobError::SendingThroughServerLater)));
-    assert_eq!(FobError::SendingThroughServerLater.to_string(), "Sending through a server comes next");
+    assert!(wallet.send_notice().await.is_none());
+    assert!(matches!(wallet.prepare(&wallet.primary_address(), 1, None, None).await, Err(FobError::Screen(ScreenError::NotEnoughFunds { .. }))));
 
     wallet.use_light_wallet(false).await.unwrap();
     let state = wallet.inner.state.lock().await;
@@ -1399,3 +1400,4 @@ async fn live_a_payment_through_monokulo_lws() {
     }
 }
 
+mod send;

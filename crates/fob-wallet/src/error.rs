@@ -35,9 +35,10 @@ pub enum FobError {
     TrezorNeeded,
     /// A light wallet server refused, failed or lied.
     Light(fob_chain::light::Problem),
-    /// Sending is asked for while syncing through a light wallet server:
-    /// phase 3 of the Light Wallet proposal.
-    SendingThroughServerLater,
+    /// A Trezor wallet's payment is asked for while syncing through a light
+    /// wallet server: the device's key images come from a node, so it sends
+    /// through one.
+    TrezorThroughServer,
 }
 
 impl FobError {
@@ -69,7 +70,7 @@ impl std::fmt::Display for FobError {
             FobError::TrezorCancelled => fob_words::errors::trezor_cancelled(),
             FobError::TrezorNeeded => fob_words::errors::trezor_needed(),
             FobError::Light(problem) => fob_words::light::problem(problem),
-            FobError::SendingThroughServerLater => fob_words::light::SEND_LATER.to_owned(),
+            FobError::TrezorThroughServer => fob_words::light::TREZOR_SENDS_THROUGH_NODE.to_owned(),
         })
     }
 }

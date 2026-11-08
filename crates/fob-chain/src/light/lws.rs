@@ -1,4 +1,4 @@
-//! Copied from monokulo-lws, `crates/lws-api/src/lib.rs` at 3bb52de
+//! Copied from monokulo-lws, `crates/lws-api/src/lib.rs` at db1d695
 //! (github.com/OceanEilonwy/monokulo-lws, private), as decision 44 copied
 //! Monokulo's ZMTP: Fob depends on no private repository CI can't fetch.
 //! Kept in sync by hand; only this header differs. When it changes there,
@@ -353,7 +353,9 @@ pub struct Transaction {
     pub mempool: bool,
     pub mixin: u32,
     /// Where the transaction is in the chain, for a client to check. Absent
-    /// in the pool and from servers that do not serve it.
+    /// in the pool and from servers that do not serve it; monokulo-lws also
+    /// leaves it out for a transaction that only (maybe) spends, and for one
+    /// it scanned before it kept proofs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof: Option<Proof>,
 }
