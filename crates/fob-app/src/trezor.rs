@@ -12,6 +12,14 @@ use zeroize::Zeroizing;
 /// What the device asks of the person.
 #[derive(Clone, Debug)]
 pub enum TrezorAsk {
+    /// No device has answered yet: Fob looks for one on USB until one does.
+    Looking,
+    /// The device answered the hello: its name, and whether it has a PIN
+    /// and passphrase protection, which decide the steps to count.
+    Hello { name: String, pin: bool, passphrase: bool },
+    /// The address the device is about to show, as Fob received it, for
+    /// the person to compare in full.
+    Address(String),
     /// Look at the device: it shows something to confirm, named `what` by
     /// its firmware (`confirm_tx`, `show_address`, …).
     Button(String),
@@ -52,20 +60,35 @@ pub struct Prompter {
     to: Box<dyn Fn(TrezorRequest) + Send + Sync>,
     /// The device being talked to, for the cancel to let go of.
     link: Arc<Mutex<Option<Arc<Usb>>>>,
+    /// The person gave up, perhaps before any device answered.
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Prompter {
     pub fn new(to: impl Fn(TrezorRequest) + Send + Sync + 'static) -> Arc<Prompter> {
-        Arc::new(Prompter { to: Box::new(to), link: Arc::new(Mutex::new(None)) })
+        Arc::new(Prompter { to: Box::new(to), link: Arc::new(Mutex::new(None)), cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)) })
     }
 
     fn cancel_handle(&self) -> Arc<dyn Fn() + Send + Sync> {
         let link = self.link.clone();
+        let cancelled = self.cancelled.clone();
         Arc::new(move || {
+            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some(link) = link.lock().expect("link lock").as_ref() {
                 link.close();
             }
         })
+    }
+
+    /// Whether the person gave up while Fob was still looking for a device.
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Fob is looking for a device on USB.
+    pub(crate) fn looking(&self) {
+        self.cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.send(TrezorAsk::Looking);
     }
 
     /// Gives up: the device is let go, so Fob's wait ends with an error.
@@ -95,6 +118,16 @@ impl Prompter {
 }
 
 impl TrezorPrompts for Prompter {
+    fn on_hello(&self, name: String, pin_protection: bool, passphrase_protection: bool) -> Result<(), FobError> {
+        self.send(TrezorAsk::Hello { name, pin: pin_protection, passphrase: passphrase_protection });
+        Ok(())
+    }
+
+    fn on_address(&self, address: String) -> Result<(), FobError> {
+        self.send(TrezorAsk::Address(address));
+        Ok(())
+    }
+
     fn on_button(&self, what: String) -> Result<(), FobError> {
         self.send(TrezorAsk::Button(what));
         Ok(())

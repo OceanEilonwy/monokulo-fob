@@ -3746,3 +3746,58 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      the server's pool after 20 s and mined at 2,246,012, found with its
      fee at the next poll. A real Trezor in light mode on stagenet is the
      owner's to try.
+
+398. **The Trezor card: the device drives, Fob mirrors.** Each of the device's
+     questions used to pop a dialog or sheet of its own, with no sense of where
+     in the flow one was; the passphrase dialog came up whenever the device
+     had passphrase protection, standard wallet or not, with Cancel, Use and
+     On the Trezor and no default; and nothing was known of the device before
+     its first question. Now one card, the same on both platforms, shows a
+     drawing of a Safe 3 with what its screen shows and says what to do there,
+     and counts the steps of connecting off at its top right (Unlock · Wallet ·
+     Allow · Address, the first two dropped when the hello says the device
+     has no PIN or no passphrase protection: `Prompts::hello`, new, carries
+     `Features` to the screens). Fob asks the one question of its own before
+     the device would: "Do you use a passphrase?", with No (the empty
+     passphrase, the standard wallet, and the device never shows its
+     keyboard) as the suggested answer, Yes on the Trezor, and Yes typed
+     here. With no device on the port Fob looks, once a second, instead of
+     failing (`Engine::with_trezor`, `WalletModel.withTrezor`); the card
+     says so. A failure is said on the card with Try again, except an
+     address that didn't match, which says Stop and offers nothing; a
+     cancel from Fob's side says nothing more. All the words are
+     `fob_words::trezor`, so the two apps say the same things; the firmware's
+     screen names (`pin_device`, `get_watchkey`, `show_address`,
+     `key_image_sync`) pick the step and the words. On the desktop the card
+     sits in Add a wallet's form while it talks (the form dims, the header
+     bar grows a close control, as GNOME keeps it, that gives the device up)
+     and in a dialog for Home's sync and Confirm's signing; on Android it is
+     a page of its own over whatever started it, the X in its top bar, every
+     action at the foot as Fob's are. Round buttons on the drawing read as
+     the wrong Trezor: a Safe 3 has two flat ones under its screen. No box
+     inside a box: the drawing and its words sit directly in the card.
+     Designed on the canvas first, four proposals and then every state of the
+     one chosen, with the owner's notes applied there before any code.
+
+399. **The pool's bookkeeping leaves a device's sync marks alone.** A Trezor
+     wallet's balance climbed to A as its restore scanned, fell to C when its
+     key image sync found coins the node said were spent (marked
+     `spent-before-sync`, decision 364), and climbed back to A eight minutes
+     later for no reason the person could see. The reason: the pool is only
+     looked at once the scan has caught up, and `pool_left`, which frees the
+     coins of a pool transaction that left unmined, took a mark that names
+     no transaction for such a transaction and freed the coins. Decision 364
+     had taught `rewind` and the light reconcile to keep the marks; this was
+     the one place that forgot. Spent coins were counted as spendable until
+     the next sync, and a payment built from them would have been refused
+     by the network. `pool_left` keeps the marks now. `pool_spends` also
+     gives a coin marked `spent-in-pool-at-sync` the name of the pool
+     transaction that spends it when the pool is read, so the pool's leaving
+     frees it as any other, instead of the mark waiting for the next sync.
+     Found by the owner watching the balance; the audit of everything that
+     reads or clears `spent_in` found nothing else of the kind. Noted, not
+     done: a rewind drops a device's re-found coins' key images and marks
+     with them, so until the next sync a reorganised stretch counts coins
+     the device knows are spent; carrying them over by coin id would close
+     that.
+

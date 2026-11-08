@@ -24,4 +24,4 @@ pub mod usb;
 
 pub use crypto::clear_torsion;
 pub use messages::Transfer;
-pub use session::{Link, Passphrase, Prompts, Session};
+pub use session::{Link, Passphrase, Prompts, Session, Hello};

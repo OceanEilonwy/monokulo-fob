@@ -164,8 +164,9 @@ impl Wallet {
 
     /// A wallet whose keys are on the Trezor reached over `link`: the
     /// device exports the view key (asking first) and keeps the spend key.
-    /// Without a `restore_height` it starts at the chain's tip, as a new
-    /// wallet does: right for a Trezor that hasn't held Monero before.
+    /// `restore_height` says where to start (block 0 if `None`): a wallet
+    /// brought over may have been paid at any time, and only a wallet made
+    /// here can be known to have nothing before it.
     pub fn restore_trezor(
         path: &Path,
         file_key: [u8; 32],
@@ -177,13 +178,15 @@ impl Wallet {
         let session = trezor::Session::open(link, prompts)?;
         let (view, address) = session.watch_key(network)?;
         // The cable could have changed the address on the way; the device
-        // shows it on its own screen, for the person to compare with
-        // Receive, and says it again: both have to agree.
+        // shows it on its own screen, for the person to compare with the
+        // one Fob received, shown in full beside it, and says it again:
+        // both have to agree.
+        prompts.address(&address);
         if session.address_shown(network)? != address {
             return Err(FobError::Trezor("the address the Trezor shows isn't the one it sent: don't use this cable or computer".into()));
         }
         let keys = Keys::trezor(network, &address, &view)?;
-        let wallet = Wallet::new(path, file_key, keys, restore_height)?;
+        let wallet = Wallet::new(path, file_key, keys, Some(restore_height.unwrap_or(0)))?;
         {
             // Nothing to write down here: the device has its own backup.
             let mut state = wallet.inner.state.try_lock().expect("a new wallet is not shared yet");

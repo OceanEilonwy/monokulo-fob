@@ -212,3 +212,30 @@ async fn coins_a_pool_transaction_spends_are_held_while_it_is_there() {
     assert!(pool_left(&mut state, &HashSet::new()));
     assert_eq!(spent(&state), [None, None, Some("mined".into())]);
 }
+
+/// What a device's key image sync found spent is marked without a
+/// transaction's name. The pool's bookkeeping must leave those marks be: it
+/// used to free them at the first look at the pool after catching up, and
+/// the balance climbed back to count spent coins.
+#[tokio::test]
+async fn the_pool_leaves_a_device_sync_s_marks_alone() {
+    let wallet = Wallet::create(&dir("pool-sync-marks"), [1; 32], Network::Stagenet).unwrap();
+    let image = |b: u8| [b; 32];
+    let mut state = wallet.inner.state.lock().await;
+    // Long since confirmed: what counts is the marks.
+    state.tip = 1_000;
+    state.outputs.push(Owned { key_image: Some(hex::encode(image(1))), spent_in: Some(SPENT_BEFORE_SYNC.into()), ..received("a", 1, XMR) });
+    state.outputs.push(Owned { key_image: Some(hex::encode(image(2))), spent_in: Some(SPENT_IN_POOL_AT_SYNC.into()), ..received("b", 1, XMR) });
+    state.outputs.push(Owned { key_image: Some(hex::encode(image(3))), ..received("c", 1, XMR) });
+    let spent = |state: &State| state.outputs.iter().map(|o| o.spent_in.clone()).collect::<Vec<_>>();
+    // An empty pool frees nothing the device found: the node said spent.
+    assert!(!pool_left(&mut state, &HashSet::new()));
+    assert_eq!(spent(&state), [Some(SPENT_BEFORE_SYNC.into()), Some(SPENT_IN_POOL_AT_SYNC.into()), None]);
+    assert_eq!(state.spendable(), XMR, "only the unmarked coin counts");
+    // The pool transaction spending the pool-marked coin turns up: the coin takes its name.
+    assert!(pool_spends(&mut state, &[("pooled".to_owned(), vec![image(2)])]));
+    assert_eq!(spent(&state), [Some(SPENT_BEFORE_SYNC.into()), Some("pooled".into()), None]);
+    // And when it leaves the pool unmined, that coin, and only that one, is free again.
+    assert!(pool_left(&mut state, &HashSet::new()));
+    assert_eq!(spent(&state), [Some(SPENT_BEFORE_SYNC.into()), None, None]);
+}

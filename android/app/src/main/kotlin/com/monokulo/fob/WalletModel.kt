@@ -871,13 +871,34 @@ class WalletModel(private val app: Application) {
      * device is let go after, whatever happened. Throws why it couldn't.
      */
     private suspend fun <T> withTrezor(block: suspend (TrezorLink, TrezorPrompts) -> T): T {
-        val link = TrezorUsb.open(app)
-        trezorAsks.begin(onCancel = link::close)
+        trezorAsks.begin()
         try {
-            return block(link, trezorAsks)
+            while (true) {
+                // Looking: once a second until a device is on the port, or the person gives up.
+                var device = TrezorUsb.find(app)
+                while (device == null) {
+                    if (trezorAsks.cancelled) throw FobException.TrezorCancelled("cancelled")
+                    kotlinx.coroutines.delay(1_000)
+                    device = TrezorUsb.find(app)
+                }
+                try {
+                    val link = TrezorUsb.open(app, device)
+                    trezorAsks.hold(onCancel = link::close)
+                    try {
+                        return block(link, trezorAsks)
+                    } finally {
+                        link.close()
+                    }
+                } catch (e: FobException) {
+                    // The X: the person chose this end, nothing to say.
+                    if (trezorAsks.cancelled) throw e
+                    // The card says what went wrong; Try again starts over from Looking.
+                    if (!trezorAsks.problem(e.reason(), e is FobException.TrezorCancelled)) throw e
+                    trezorAsks.looking()
+                }
+            }
         } finally {
             trezorAsks.end()
-            link.close()
         }
     }
 

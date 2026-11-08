@@ -20,15 +20,24 @@ pub enum Way {
     Trezor,
 }
 
+/// The Network row's choices, in its order.
+const NETWORKS: [(fob_app::views::Network, &str); 2] = [(fob_app::views::Network::Stagenet, "Stagenet, test coins"), (fob_app::views::Network::Mainnet, "Mainnet, real money")];
+
 #[derive(Debug)]
 pub enum Input {
     Phase(Phase),
     Adding,
     Way(u32),
-    /// Make this one on the other network.
-    SwitchNetwork,
+    /// The network row: 0 stagenet, 1 mainnet. Moves to the network picked.
+    Network(u32),
     Go,
     Failed(String),
+    /// A Trezor exchange failed: the card says so, with Try again.
+    TrezorFailed { reason: String, cancelled: bool },
+    /// A question from the Trezor, or the end of its exchange.
+    Trezor(fob_app::TrezorRequest),
+    /// What the person did on the Trezor card.
+    TrezorAct(crate::trezor::Action),
     Done,
     /// Add a wallet was left: what was typed goes.
     Left,
@@ -44,6 +53,9 @@ pub struct Start {
     words: adw::EntryRow,
     view_key: adw::PasswordEntryRow,
     restore_point: adw::EntryRow,
+    /// The Trezor's exchange, drawn in the form while one is on.
+    flow: crate::trezor::Flow,
+    card: crate::trezor::Card,
 }
 
 #[relm4::component(pub)]
@@ -54,7 +66,17 @@ impl SimpleComponent for Start {
 
     view! {
         adw::ToolbarView {
-            add_top_bar = &adw::HeaderBar {},
+            add_top_bar = &adw::HeaderBar {
+                // Gives the Trezor up, where GNOME keeps a close control.
+                pack_end = &gtk::Button {
+                    set_icon_name: "window-close-symbolic",
+                    set_tooltip_text: Some("Give up on the Trezor"),
+                    add_css_class: "flat",
+                    #[watch]
+                    set_visible: model.flow.live,
+                    connect_clicked => Input::TrezorAct(crate::trezor::Action::Cancel),
+                },
+            },
             #[wrap(Some)]
             set_content = &gtk::ScrolledWindow {
                 set_hscrollbar_policy: gtk::PolicyType::Never,
@@ -75,14 +97,19 @@ impl SimpleComponent for Start {
                             #[watch]
                             set_label: &model.lead(),
                         },
-                        gtk::Button {
-                            add_css_class: "flat",
-                            set_halign: gtk::Align::Center,
-                            #[watch]
-                            set_label: model.other_network_label(),
-                            connect_clicked => Input::SwitchNetwork,
-                        },
                         adw::PreferencesGroup {
+                            #[watch]
+                            set_sensitive: !model.flow.live,
+                            // A row with the choice showing, not a flat button:
+                            // "Use mainnet, with real money" read as a statement
+                            // of what was about to be made.
+                            add = &adw::ComboRow {
+                                set_title: "Network",
+                                set_model: Some(&gtk::StringList::new(&[NETWORKS[0].1, NETWORKS[1].1])),
+                                #[watch]
+                                set_selected: model.network_index(),
+                                connect_selected_notify[sender] => move |row| sender.input(Input::Network(row.selected())),
+                            },
                             add = &adw::ComboRow {
                                 set_title: "How",
                                 set_model: Some(&gtk::StringList::new(&["Make a new wallet", "Restore from seed words", "Restore from code", "Watch only", "Connect a Trezor (USB)"])),
@@ -124,12 +151,17 @@ impl SimpleComponent for Start {
                                 set_visible: model.way != Way::New,
                             },
                         },
+                        #[local_ref]
+                        trezor_card -> gtk::Box {
+                            #[watch]
+                            set_visible: model.flow.live,
+                        },
                         gtk::Label {
                             add_css_class: "dim-label",
                             set_wrap: true,
                             #[watch]
-                            set_visible: model.way == Way::Trezor,
-                            set_label: "Plug in a Trezor Model T, Safe 3 or Safe 5 and unlock it. It will ask to let Fob watch the wallet and show the wallet's address: the spend key never leaves it, and every payment is confirmed on its screen. Leave the restore height empty for a Trezor new to Monero. On Linux the device needs Trezor's udev rules (Trezor Suite installs them).",
+                            set_visible: model.way == Way::Trezor && !model.flow.live,
+                            set_label: "Plug in a Trezor Model T, Safe 3 or Safe 5 and unlock it. It will ask to let Fob watch the wallet and show the wallet's address: the spend key never leaves it, and every payment is confirmed on its screen. Without a restore height Fob scans from the first block, which takes a while: give the height or date of the first payment if you know it. On Linux the device needs Trezor's udev rules (Trezor Suite installs them).",
                         },
                         gtk::Label {
                             add_css_class: "error",
@@ -146,6 +178,8 @@ impl SimpleComponent for Start {
                             #[watch]
                             set_sensitive: !model.busy,
                             #[watch]
+                            set_visible: !model.flow.live,
+                            #[watch]
                             set_label: if model.busy { "Working…" } else if model.way == Way::New { "Make wallet" } else if model.way == Way::Trezor { "Connect" } else { "Restore" },
                             connect_clicked => Input::Go,
                         },
@@ -157,8 +191,13 @@ impl SimpleComponent for Start {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (name, words, view_key, restore_point) = (adw::EntryRow::new(), adw::EntryRow::new(), adw::PasswordEntryRow::new(), adw::EntryRow::new());
-        let model = Start { engine, way: Way::New, busy: false, adding: false, error: None, name: name.clone(), words: words.clone(), view_key: view_key.clone(), restore_point: restore_point.clone() };
-        let (name, words, view_key, restore_point) = (&name, &words, &view_key, &restore_point);
+        let card = crate::trezor::Card::new({
+            let sender = sender.clone();
+            move |action| sender.input(Input::TrezorAct(action))
+        });
+        let trezor_card = card.widget().clone();
+        let model = Start { engine, way: Way::New, busy: false, adding: false, error: None, name: name.clone(), words: words.clone(), view_key: view_key.clone(), restore_point: restore_point.clone(), flow: crate::trezor::Flow::default(), card };
+        let (name, words, view_key, restore_point, trezor_card) = (&name, &words, &view_key, &restore_point, &trezor_card);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -172,7 +211,28 @@ impl SimpleComponent for Start {
             Input::Phase(Phase::Locked | Phase::NoPassphrase) | Input::Left => {
                 self.error = None;
                 self.adding = false;
+                self.flow.done();
                 self.clear(true);
+            }
+            Input::Trezor(request) => {
+                self.flow.take(request);
+                if self.flow.live {
+                    self.card.show(&self.flow.view());
+                }
+            }
+            Input::TrezorAct(action) => {
+                if self.flow.act(action) == crate::trezor::Outcome::Retry {
+                    self.go(&sender);
+                } else if self.flow.live {
+                    self.card.show(&self.flow.view());
+                }
+            }
+            Input::TrezorFailed { reason, cancelled } => {
+                self.busy = false;
+                self.error = None;
+                if self.flow.fail(&reason, cancelled) {
+                    self.card.show(&self.flow.view());
+                }
             }
             Input::Phase(_) => {}
             Input::Adding => self.adding = true,
@@ -180,17 +240,17 @@ impl SimpleComponent for Start {
                 self.way = [Way::New, Way::Words, Way::Code, Way::ViewOnly, Way::Trezor][i.min(4) as usize];
                 self.error = None;
             }
-            Input::SwitchNetwork => {
-                let other = match self.engine.network() {
-                    fob_app::views::Network::Mainnet => fob_app::views::Network::Stagenet,
-                    fob_app::views::Network::Stagenet => fob_app::views::Network::Mainnet,
-                };
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    if let Err(e) = engine.switch_network(other).await {
-                        sender.input(Input::Failed(e.to_string()));
-                    }
-                });
+            Input::Network(index) => {
+                let wanted = NETWORKS[(index as usize).min(1)].0;
+                // The row is set from the engine too: only a change moves.
+                if wanted != self.engine.network() {
+                    let (engine, sender) = (self.engine.clone(), sender.clone());
+                    relm4::spawn(async move {
+                        if let Err(e) = engine.switch_network(wanted).await {
+                            sender.input(Input::Failed(e.to_string()));
+                        }
+                    });
+                }
             }
             Input::Go => self.go(&sender),
             Input::Failed(why) => {
@@ -203,6 +263,7 @@ impl SimpleComponent for Start {
             Input::Done => {
                 self.busy = false;
                 self.error = None;
+                self.flow.done();
                 self.clear(true);
                 if std::mem::take(&mut self.adding) {
                     let _ = sender.output(RootMsg::Go(Go::Back));
@@ -232,11 +293,9 @@ impl Start {
         }
     }
 
-    fn other_network_label(&self) -> &'static str {
-        match self.engine.network() {
-            fob_app::views::Network::Mainnet => "Use stagenet, with test coins",
-            fob_app::views::Network::Stagenet => "Use mainnet, with real money",
-        }
+    /// Which of [`NETWORKS`] the wallet is made on now.
+    fn network_index(&self) -> u32 {
+        NETWORKS.iter().position(|(network, _)| *network == self.engine.network()).unwrap_or(0) as u32
     }
 
     fn lead(&self) -> String {
@@ -267,6 +326,8 @@ impl Start {
             };
             sender.input(match result {
                 Ok(()) => Input::Done,
+                // The Trezor card says what went wrong, with Try again.
+                Err(e) if way == Way::Trezor => Input::TrezorFailed { cancelled: matches!(e, fob_app::FobError::TrezorCancelled { .. }), reason: e.to_string() },
                 Err(e) => Input::Failed(e.to_string()),
             });
         });
