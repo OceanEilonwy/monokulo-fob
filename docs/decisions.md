@@ -3676,3 +3676,73 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      the server's pool after 20 s and mined at 2,245,997 (found at 191 s),
      the spend with its fee, change 0.089878 XMR and the 0.01 XMR proved,
      balance 0.1997556 XMR.
+395. **A Trezor wallet syncs through the server, spends and all.** What
+     decision 393 lacked was the key images, and the device gives those
+     over USB whatever syncing is through: the server's `tx_pub_key` for
+     each output is kept as its `tx_key` (it's `r·D` for a payment to a
+     subaddress, or the additional key at the output's index; the device
+     tries the key it's handed as the transaction's own first, which then
+     makes the output, so `trezor::Transfer` and the signing `Source` carry
+     it with no extra key, and the node path's pair of keys and this one
+     key give the same key image, tested on a subaddress coin). In light
+     mode `trezor_sync` keeps the device's key images as before, then
+     polls the server at once (`light_step`) instead of asking a node's
+     `is_key_image_spent` (`mark_spent_by_node`, still the node path's):
+     `reconcile` holds every candidate spend the server lists to the key
+     images now known, as each poll does, so a coin spent before the sync
+     (the server lists spends from the account's start) is marked spent
+     by that transaction, with its fee and its Activity row, where a node
+     could only say `spent-before-sync`. For a device wallet `reconcile`
+     now also reads the server's pool: a coin whose key image a pool
+     transaction spends is marked `spent-in-pool-at-sync`, decided afresh
+     each poll, so it's let go once the pool forgets the spend, and named
+     by the transaction once it's mined (decision 364's rule, with the
+     server's pool for the node's). A `spent-before-sync` mark from a node
+     sync stays: the server may have started after the spend. Wallets with
+     their own spend key are unchanged (their own payments are recorded as
+     sent). What the server learns: nothing it didn't. The key images
+     never leave the phone; a server can name only spends it has seen,
+     and it already lists every candidate spend of the wallet's coins.
+     `trezor_waiting`, `trezor_unsynced` and Home's "Connect your Trezor"
+     count the same outputs as before.
+396. **And sends through it.** `prepare`'s Trezor plan took its rings and
+     fee from `send_source` already, so with the refusal gone a device
+     wallet's payment gets the server's fee (`/get_unspent_outs`, capped)
+     and its rings (`/get_random_outs`, checked) as a software wallet's
+     does, the tip being the server's; the plan keeps the 48 bytes of
+     weight (decision 363) and every check of decision 364. The signed
+     transaction is published by `Wallet::publishing`, which `send` and
+     `send_with_trezor` now share: `/submit_raw_tx` in light mode, with
+     `submitted`'s outcomes (OK recorded; `not_relayed` or no answer
+     recorded and offered again; 422 refused with the server's reason;
+     400 and 503 refused with nothing recorded), else the node, still
+     inside `publish_and_record`. The device protocol is untouched: the
+     device signs the same messages, and can't tell who broadcasts. Gone
+     with decision 393's refusal: `FobError::TrezorThroughServer`, "A Trezor
+     wallet sends through a node for now…" (`TREZOR_SENDS_THROUGH_NODE`),
+     `Wallet::send_notice`, the FFI's `Screens.send_notice` and
+     `send_notice()`, Android's `WalletModel.sendNotice` with Send's use of
+     it, and GTK Send's `Notice` input and `notice` field. Send is open in
+     light mode for every wallet.
+397. **The software Trezor signs now.** The tests' `Fake` answered key
+     images only; `trezor::fake_signer` (test builds only) answers Monero's
+     cold-signing protocol as trezor-core does, with the spend key: the
+     transaction key and one-time outputs (standard addresses), the
+     commitments and encrypted amounts, a Bulletproof+ with the last output,
+     the extra, the prefix and message hashes, and a CLSAG per input, sealed
+     until `Final`, each input's pseudo output given at `SignInput` with the
+     last one balancing the outputs. `sign`'s own checks (both hashes, the
+     range proof, the change, the balance, every signature) pass against it.
+     Tests through the fake server (`tests/light/trezor.rs`): spends found
+     after the device's sync (mined, pool only and tentative, somebody
+     else's key image, the pool forgetting, then mined), a payment signed by
+     the device, submitted, recorded with its fee, then pooled and mined, and
+     a 422 refused with nothing recorded. After the change to
+     `publishing`, the software-key `live_a_payment_from_light_mode` was
+     run again on stagenet against monokulo-lws's `sending` at `71e1ffd`
+     (the test wallet added from 2,244,400): 0.01 XMR to subaddress 1 at
+     80,000 a byte, fee 0.00012176 XMR,
+     `e96fca7ad14369a0b019b043bdffd7e6b3d22fad8872db4380068b197a1e1de3` in
+     the server's pool after 20 s and mined at 2,246,012, found with its
+     fee at the next poll. A real Trezor in light mode on stagenet is the
+     owner's to try.

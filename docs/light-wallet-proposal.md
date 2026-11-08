@@ -276,8 +276,12 @@ What changes is where the fee and each input's ring come from
   server's reason (one line, 120 characters). The payment is recorded as sent
   at once, as today (decision 14), and the next poll shows it in the pool
   (monokulo-lws), then mined, with the server's fee for the spend.
-- **Trezor.** Stays with the node: a device's key images are asked of a node
-  (decision 393).
+- **Trezor.** Through the server too (decisions 395, 396): the device gives
+  its coins' key images over USB as before, and the server's candidate
+  spends, mined or in its pool, are held to them on the phone, no node's
+  `is_key_image_spent` asked; a payment is prepared from the server's fee
+  and rings, signed on the device, and handed to `/submit_raw_tx`. The key
+  images never leave the phone, and the device's protocol is unchanged.
 
 The decoy cache file (`.decoys`) isn't used or updated in light mode.
 
@@ -323,6 +327,7 @@ lws.example.com". The screen:
 | Report a wrong network fee for sending. | Capped by `MAX_FEE_PER_WEIGHT`, and its rounding by `MAX_FEE_MASK` (decision 389). |
 | Report a wrong fee for a spend found. | Shown as given, or "Not known" without one (decision 379); it moves money between a history row's amount and its fee, never the balance. |
 | Time a time lock wrongly. | Judged by its block times, never one past the phone's clock: early only if the phone's clock is wrong too (decision 380). |
+| Mark a Trezor wallet's coin spent, or keep it looking unspent. | Marking needs the coin's key image, which only the device makes and Fob never sends: a server can name only spends that are real. One it hides leaves the coin looking spendable, and the payment that tries it is refused as a double spend; the same trade as hiding any spend (decision 395). |
 | Pick decoys that weaken a ring. | Checked for count, distinctness, being points and RingCT's; not for age (the API gives no heights); beyond that, the trade of the mode (decision 391). |
 | Not broadcast a transaction. | A refusal is shown and nothing recorded; no answer or `not_relayed` records the payment and offers it again each poll, and the day-old check marks one never mined (decision 392). |
 | Learn the phone's address and when it's on. | Said in the words. Tor is still future work (decision 73) and would cover this. |
@@ -362,7 +367,9 @@ the phone itself (decision 381). A request may take 120 s in all, an answer
 3. **Sending** (done, decisions 389–394): a `Source` for the node or the
    light client, rings from the server's members, the fee from
    `/get_unspent_outs` capped, `/submit_raw_tx`. Tested end to end on
-   stagenet. A Trezor wallet sends through its node.
+   stagenet. A Trezor wallet syncs and sends through the server too
+   (395–397), tested against the fake server and a Trezor in software;
+   a real device on stagenet is still to come.
 4. **Instant updates**: `/feed` on both sides (monero-lws's websocket
    protocol, msgpack), reported in the chip as ZMQ is. Webhooks from
    `monokulo-lws` for Monokular tills.
