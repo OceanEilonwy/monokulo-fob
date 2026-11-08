@@ -689,6 +689,13 @@ class WalletModel(private val app: Application) {
         return wallet.scanDrawer(seconds, offset, hours24)
     }
 
+    /** The Scan drawer from the chain as last seen, without asking the node: shown while [scanDrawer] asks. */
+    suspend fun scanDrawerKnown(): ScanDrawer? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.scanDrawerKnown(seconds, offset, hours24)
+    }
+
     suspend fun blockInfo(height: ULong): BlockInfo? {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
