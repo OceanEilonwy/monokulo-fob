@@ -1705,7 +1705,7 @@ impl FobWallet {
 
     /// A wallet whose keys are on the Trezor reached over `link`: the device
     /// exports the view key (asking first) and keeps the spend key. Without
-    /// a `restore_point` it starts at the chain's tip, as a new wallet does.
+    /// a `restore_point` it scans from the first block, as every restore does.
     #[uniffi::constructor]
     pub fn restore_trezor(
         path: String,

@@ -135,7 +135,7 @@ impl SimpleComponent for Start {
                             set_wrap: true,
                             #[watch]
                             set_visible: model.way == Way::Trezor,
-                            set_label: "Plug in a Trezor Model T, Safe 3 or Safe 5 and unlock it. It will ask to let Fob watch the wallet and show the wallet's address: the spend key never leaves it, and every payment is confirmed on its screen. Leave the restore height empty for a Trezor new to Monero. On Linux the device needs Trezor's udev rules (Trezor Suite installs them).",
+                            set_label: "Plug in a Trezor Model T, Safe 3 or Safe 5 and unlock it. It will ask to let Fob watch the wallet and show the wallet's address: the spend key never leaves it, and every payment is confirmed on its screen. Without a restore height Fob scans from the first block, which takes a while: give the height or date of the first payment if you know it. On Linux the device needs Trezor's udev rules (Trezor Suite installs them).",
                         },
                         gtk::Label {
                             add_css_class: "error",

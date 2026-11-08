@@ -95,6 +95,22 @@ pub(super) fn fake_trezor(full: &Keys) -> crate::trezor::session::fake::Fake {
     fake
 }
 
+/// Only a wallet made here is known to have nothing before it: one brought
+/// over from a device may have been paid at any time, so without a height
+/// it starts at block 0 rather than the tip, as the other restores do.
+#[tokio::test]
+async fn a_trezor_restored_without_a_height_scans_from_the_first_block() {
+    let full = Keys::generate(Network::Stagenet).keys;
+    let fake = fake_trezor(&full);
+    let person = crate::trezor::session::fake::Person::new();
+    let wallet = Wallet::restore_trezor(&dir("trezor-genesis"), [1; 32], Network::Stagenet, &fake, &person, None).unwrap();
+    let state = wallet.inner.state.lock().await;
+    assert_eq!(state.restore_height, Some(0));
+    assert_eq!(state.next_block, 0);
+    assert!(state.restored);
+    assert!(!state.backup_pending, "the device is the backup");
+}
+
 /// A wallet on a Trezor: the device gives the view key, the wallet opens
 /// again as a device's, and payments wait for the device.
 #[tokio::test]

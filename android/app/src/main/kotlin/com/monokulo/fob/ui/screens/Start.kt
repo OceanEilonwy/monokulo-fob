@@ -365,7 +365,7 @@ fun RestoreTrezorScreen(model: WalletModel, nav: Nav) {
                 "Plug the Trezor into this phone with a USB cable and unlock it. It will ask to let Fob watch the wallet; the spend key never leaves it, and every payment is confirmed on its screen.",
                 color = Fob.muted, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 4.dp),
             )
-            Field(start, { start = it }, "Start from (optional)", hint = "If this Trezor has held Monero before: $START_HINT Leave it empty for a Trezor new to Monero.")
+            Field(start, { start = it }, "Start from (optional)", hint = "$START_HINT Left empty, Fob scans from the first block, which takes a while.")
         }
     }
 }
