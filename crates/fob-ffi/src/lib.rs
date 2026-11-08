@@ -1975,6 +1975,12 @@ impl FobWallet {
     /// The Scan drawer's words, having asked the node where the chain is.
     pub async fn scan_drawer(&self, now: u64, utc_offset: i32, hours_24: bool) -> ScanDrawer {
         self.inner.refresh_tip().await;
+        self.scan_drawer_known(now, utc_offset, hours_24).await
+    }
+
+    /// The Scan drawer's words from where the chain was last seen, without
+    /// asking the node: something to show at once while `scan_drawer` asks.
+    pub async fn scan_drawer_known(&self, now: u64, utc_offset: i32, hours_24: bool) -> ScanDrawer {
         ScanDrawer {
             last_scan: fob_wallet::words::manual::last_scan(self.inner.last_scan(clock::Clock { now, utc_offset, hours_24 }).await.as_ref()),
             options: self

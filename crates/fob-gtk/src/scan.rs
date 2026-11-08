@@ -21,7 +21,8 @@ use crate::{
 #[derive(Debug)]
 pub enum Input {
     Opened,
-    Drawer(View<ScanDrawer>),
+    /// The drawer's words; `true` once the node has said where the chain is.
+    Drawer(View<ScanDrawer>, bool),
     Status(View<SyncStatus>),
     Quick(usize),
     Start,
@@ -39,6 +40,9 @@ pub enum Input {
 pub struct Scan {
     engine: Engine,
     drawer: Option<View<ScanDrawer>>,
+    /// The node hasn't said where the chain is since opening: the options show
+    /// a spinner for their counts.
+    loading: bool,
     running: Option<View<ScanView>>,
     /// A scan was seen running since opening: its end closes the page.
     seen_running: bool,
@@ -246,6 +250,7 @@ impl SimpleComponent for Scan {
         let model = Scan {
             engine,
             drawer: None,
+            loading: false,
             running: None,
             seen_running: false,
             picked: 1,
@@ -274,14 +279,32 @@ impl SimpleComponent for Scan {
                 self.busy = false;
                 self.seen_running = self.running.is_some();
                 self.picked = 1;
+                self.loading = true;
+                // The choices show at once, a spinner under each, while the node
+                // is asked where the chain is.
+                if let Some(View(drawer)) = &self.drawer {
+                    self.draw_options(drawer, &sender);
+                } else {
+                    let (engine, sender) = (self.engine.clone(), sender.clone());
+                    relm4::spawn(async move {
+                        if let Some(drawer) = engine.read(|wallet, clock| async move { wallet.scan_drawer_known(clock.now, clock.utc_offset, clock.hours_24).await }).await {
+                            sender.input(Input::Drawer(View(drawer.into()), false));
+                        }
+                    });
+                }
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     if let Some(drawer) = engine.read(|wallet, clock| async move { wallet.scan_drawer(clock.now, clock.utc_offset, clock.hours_24).await }).await {
-                        sender.input(Input::Drawer(View(drawer.into())));
+                        sender.input(Input::Drawer(View(drawer.into()), true));
                     }
                 });
             }
-            Input::Drawer(drawer) => {
+            Input::Drawer(drawer, fresh) => {
+                // What was known before asking, arriving after the answer, is stale.
+                if !fresh && !self.loading {
+                    return;
+                }
+                self.loading = !fresh;
                 self.draw_options(&drawer.0, &sender);
                 self.drawer = Some(drawer);
             }
@@ -345,6 +368,40 @@ impl SimpleComponent for Scan {
     }
 }
 
+/// An option's row while its count is asked for: a small spinner where the line
+/// under the title goes, so the row keeps its height when the words come.
+fn counting_row(title: &str) -> adw::ActionRow {
+    let row = widgets::row(title, "");
+    let spinner = gtk::Spinner::builder().spinning(true).halign(gtk::Align::Start).width_request(16).height_request(16).build();
+    spinner.add_css_class("dim-label");
+    spinner.update_property(&[gtk::accessible::Property::Label("Counting")]);
+    match subtitle_of(row.upcast_ref()) {
+        Some(subtitle) => {
+            if let Some(parent) = subtitle.parent().and_downcast::<gtk::Box>() {
+                parent.insert_child_after(&spinner, Some(&subtitle));
+            }
+        }
+        // Where the line goes is libadwaita's to arrange; without it, at the end.
+        None => row.add_suffix(&spinner),
+    }
+    row
+}
+
+/// The label an `ActionRow` writes its subtitle in.
+fn subtitle_of(widget: &gtk::Widget) -> Option<gtk::Label> {
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(label) = widget.downcast_ref::<gtk::Label>().filter(|label| label.has_css_class("subtitle")) {
+            return Some(label.clone());
+        }
+        if let Some(found) = subtitle_of(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 /// `ScanView` isn't `Clone`, as it crosses to other languages.
 fn scan_copy(scan: &ScanView) -> ScanView {
     ScanView {
@@ -377,7 +434,7 @@ impl Scan {
 
     fn cost(&self) -> String {
         match (self.tab().as_str(), &self.drawer) {
-            ("quick", Some(View(drawer))) => drawer.options.get(self.picked).map_or(String::new(), |option| option.cost.clone()),
+            ("quick", Some(View(drawer))) if !self.loading => drawer.options.get(self.picked).map_or(String::new(), |option| option.cost.clone()),
             _ => String::new(),
         }
     }
@@ -386,7 +443,7 @@ impl Scan {
         match (self.tab().as_str(), &self.drawer) {
             ("dates", _) => "Scan these dates".into(),
             ("block", _) => "Scan from this block".into(),
-            (_, Some(View(drawer))) => drawer.options.get(self.picked).map_or("Scan".into(), |option| option.action.clone()),
+            (_, Some(View(drawer))) if !self.loading => drawer.options.get(self.picked).map_or("Scan".into(), |option| option.action.clone()),
             _ => "Scan".into(),
         }
     }
@@ -395,7 +452,7 @@ impl Scan {
         match self.tab().as_str() {
             "dates" => true,
             "block" => self.typed_height().is_some_and(|block| self.tip == 0 || block < self.tip),
-            _ => self.drawer.is_some(),
+            _ => self.drawer.is_some() && !self.loading,
         }
     }
 
@@ -438,7 +495,7 @@ impl Scan {
             (0..drawer.options.len()).map(|index| gtk::Image::builder().icon_name("object-select-symbolic").visible(index == self.picked).build()).collect(),
         );
         for (index, option) in drawer.options.iter().enumerate() {
-            let row = widgets::row(&option.label, &option.note);
+            let row = if self.loading { counting_row(&option.label) } else { widgets::row(&option.label, &option.note) };
             row.add_suffix(&ticks[index]);
             row.set_activatable(true);
             let (then, ticks) = (sender.clone(), ticks.clone());
