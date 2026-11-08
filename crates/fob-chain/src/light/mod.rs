@@ -6,9 +6,14 @@
 //! - [`lws`]: the wire types, copied from monokulo-lws's `lws-api`.
 //! - [`client`]: [`LightClient`], one method per call, over the node's own
 //!   transport (certificate pinning, Basic auth, no redirects, no onion).
+//! - [`proof`]: a server's proof that a transaction is in a block, checked.
+//! - [`hashes`]: block hashes from a node, to hold those proofs to, asked
+//!   over stretches of the chain so the node can't tell the wallet's blocks.
 
 pub mod client;
+pub mod hashes;
 pub mod lws;
+pub mod proof;
 
 pub use client::{LightClient, Report, check};
 
@@ -78,6 +83,10 @@ pub enum Problem {
     /// output named twice with different keys, one place on the chain given
     /// to two outputs, a block past the chain's tip. Nothing of it was taken.
     Contradiction,
+    /// A transaction's proof that it's in a block doesn't hold, or the
+    /// block it names isn't the one a node has at that height: the server
+    /// named a payment the chain doesn't hold. Nothing of it was taken.
+    NotOnChain,
     /// Light mode was asked for with no server chosen.
     NoServerSet,
 }

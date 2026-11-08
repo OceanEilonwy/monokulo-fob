@@ -1,4 +1,4 @@
-//! Copied from monokulo-lws, `crates/lws-api/src/lib.rs` at 0fca96c
+//! Copied from monokulo-lws, `crates/lws-api/src/lib.rs` at 3bb52de
 //! (github.com/OceanEilonwy/monokulo-lws, private), as decision 44 copied
 //! Monokulo's ZMTP: Fob depends on no private repository CI can't fetch.
 //! Kept in sync by hand; only this header differs. When it changes there,
@@ -18,7 +18,15 @@
 //! response is a JSON object. Amounts travel as decimal strings
 //! ([`Amount`]), keys and hashes as lowercase hex ([`Hex32`], [`Hex8`]),
 //! timestamps as ISO 8601 text ([`Timestamp`]).
+//!
+//! `Debug` on the types that carry a private view key ([`Login`] and the
+//! admin requests) prints neither the key nor the address, and a type's
+//! deserialization errors never quote the value that failed, so neither
+//! ends up in a log by accident.
 
+#![forbid(unsafe_code)]
+
+use std::borrow::Cow;
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -45,7 +53,7 @@ impl<'de> Deserialize<'de> for Amount {
                 f.write_str("a decimal string or an unsigned integer")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Amount, E> {
-                v.parse().map(Amount).map_err(|_| E::custom(format!("not an unsigned decimal: {v:?}")))
+                v.parse().map(Amount).map_err(|_| E::custom("not an unsigned decimal"))
             }
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<Amount, E> {
                 Ok(Amount(v))
@@ -100,14 +108,41 @@ impl<const N: usize> Serialize for Hex<N> {
     }
 }
 
+/// A string, borrowed or not (a JSON string with an escape in it can't be
+/// borrowed, and `&str`'s error for it would quote the whole string).
+fn text<'de, D: Deserializer<'de>>(d: D) -> Result<Cow<'de, str>, D::Error> {
+    struct V;
+    impl<'de> de::Visitor<'de> for V {
+        type Value = Cow<'de, str>;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a hex string")
+        }
+        fn visit_borrowed_str<E: de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+            Ok(Cow::Borrowed(v))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Cow::Owned(v.to_owned()))
+        }
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Cow::Owned(v))
+        }
+    }
+    d.deserialize_str(V)
+}
+
 impl<'de, const N: usize> Deserialize<'de> for Hex<N> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = <&str>::deserialize(d)?;
+        let s = text(d)?;
         let mut out = [0u8; N];
         if s.len() != 2 * N {
-            return Err(de::Error::custom(format!("expected {} hex characters, got {}", 2 * N, s.len())));
+            return Err(de::Error::custom(format!(
+                "expected {} hex characters, got {}",
+                2 * N,
+                s.len()
+            )));
         }
-        hex::decode_to_slice(s, &mut out).map_err(de::Error::custom)?;
+        // Not the decoder's own error, which names the offending character.
+        hex::decode_to_slice(s.as_bytes(), &mut out).map_err(|_| de::Error::custom("not hex"))?;
         Ok(Hex(out))
     }
 }
@@ -130,8 +165,10 @@ impl Serialize for HexBytes {
 
 impl<'de> Deserialize<'de> for HexBytes {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = <&str>::deserialize(d)?;
-        hex::decode(s).map(HexBytes).map_err(de::Error::custom)
+        let s = text(d)?;
+        hex::decode(s.as_bytes())
+            .map(HexBytes)
+            .map_err(|_| de::Error::custom("not hex"))
     }
 }
 
@@ -147,7 +184,12 @@ impl Timestamp {
         let days = (secs / 86_400) as i64;
         let rem = secs % 86_400;
         let (y, m, d) = civil_from_days(days);
-        Timestamp(format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60))
+        Timestamp(format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            (rem % 3600) / 60,
+            rem % 60
+        ))
     }
 }
 
@@ -166,11 +208,24 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Every account-scoped request: the primary address and its private view
-/// key. The view key is the only credential the protocol has.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// key. The view key is the only credential the protocol has. `Debug`
+/// prints neither.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Login {
     pub address: String,
     pub view_key: Hex32,
+}
+
+/// What a secret or an address prints as in `Debug`.
+const REDACTED: &str = "<redacted>";
+
+impl fmt::Debug for Login {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Login")
+            .field("address", &REDACTED)
+            .field("view_key", &REDACTED)
+            .finish()
+    }
 }
 
 /// A subaddress index: major (account) and minor.
@@ -196,6 +251,32 @@ pub struct Spend {
     pub mixin: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<AddressMeta>,
+}
+
+/// Proof that a transaction is in a block: enough for a client to recompute
+/// the block's hash and the transaction's hash itself and check the block's
+/// hash against any node, so a server that knows the view key cannot invent
+/// an output the chain does not hold. An extension of the API; monero-lws
+/// does not serve it, and a transaction still in the pool has none.
+///
+/// `block` is the block as Monero serialises it (header, miner transaction,
+/// the hashes of the other transactions): its hash is the block hash, and
+/// the transaction's hash must be among the hashes it lists (or be the miner
+/// transaction's). For a transaction other than the miner's, `tx_prefix`,
+/// `rct_base` and `prunable_hash` are the pruned transaction: its hash is
+/// keccak(keccak(tx_prefix) ‖ keccak(rct_base) ‖ prunable_hash). For the
+/// miner transaction they are absent, as the block holds it whole. The
+/// prefix carries the transaction key (in extra) and the one-time keys; the
+/// RingCT base carries the commitments and the fee.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Proof {
+    pub block: HexBytes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_prefix: Option<HexBytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rct_base: Option<HexBytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prunable_hash: Option<Hex32>,
 }
 
 /// An output received, as `/get_unspent_outs` lists them.
@@ -254,8 +335,8 @@ pub struct Transaction {
     pub total_received: Amount,
     /// The sum of the candidate spends' amounts.
     pub total_sent: Amount,
-    /// The fee the transaction paid, as monero-lws serves it. Absent from
-    /// servers that do not serve it, and for a coinbase transaction.
+    /// The fee the transaction paid, as monero-lws serves it: `"0"` for a
+    /// coinbase transaction. Absent only from servers that do not serve it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee: Option<Amount>,
     pub unlock_time: u64,
@@ -271,6 +352,10 @@ pub struct Transaction {
     pub coinbase: bool,
     pub mempool: bool,
     pub mixin: u32,
+    /// Where the transaction is in the chain, for a client to check. Absent
+    /// in the pool and from servers that do not serve it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<Proof>,
 }
 
 /// Fiat rates, as the spec lists them. Omitted fields are unavailable.
@@ -507,7 +592,8 @@ pub struct NewSubaddrs {
 pub mod admin {
     use super::*;
 
-    #[derive(Clone, Debug, Serialize, Deserialize)]
+    /// `Debug` leaves out the key.
+    #[derive(Clone, Serialize, Deserialize)]
     #[serde(bound(deserialize = "P: Deserialize<'de> + Default"))]
     pub struct Request<P> {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -516,13 +602,32 @@ pub mod admin {
         pub params: P,
     }
 
+    impl<P: fmt::Debug> fmt::Debug for Request<P> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.debug_struct("Request")
+                .field("auth", &self.auth.as_ref().map(|_| REDACTED))
+                .field("params", &self.params)
+                .finish()
+        }
+    }
+
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     pub struct Empty {}
 
-    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// `Debug` prints neither the address nor the key.
+    #[derive(Clone, Default, Serialize, Deserialize)]
     pub struct AddAccount {
         pub address: String,
         pub key: Hex32,
+    }
+
+    impl fmt::Debug for AddAccount {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.debug_struct("AddAccount")
+                .field("address", &REDACTED)
+                .field("key", &REDACTED)
+                .finish()
+        }
     }
 
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -551,11 +656,22 @@ pub mod admin {
         pub addresses: Vec<String>,
     }
 
-    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// `Debug` leaves out the view key.
+    #[derive(Clone, Default, Serialize, Deserialize)]
     pub struct Validate {
         pub spend_public_hex: String,
         pub view_public_hex: String,
         pub view_key_hex: String,
+    }
+
+    impl fmt::Debug for Validate {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.debug_struct("Validate")
+                .field("spend_public_hex", &self.spend_public_hex)
+                .field("view_public_hex", &self.view_public_hex)
+                .field("view_key_hex", &REDACTED)
+                .finish()
+        }
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -601,7 +717,10 @@ mod tests {
 
     #[test]
     fn amounts_are_strings_but_read_numbers() {
-        assert_eq!(serde_json::to_string(&Amount(u64::MAX)).unwrap(), "\"18446744073709551615\"");
+        assert_eq!(
+            serde_json::to_string(&Amount(u64::MAX)).unwrap(),
+            "\"18446744073709551615\""
+        );
         assert_eq!(serde_json::from_str::<Amount>("\"12\"").unwrap(), Amount(12));
         assert_eq!(serde_json::from_str::<Amount>("12").unwrap(), Amount(12));
         assert!(serde_json::from_str::<Amount>("\"-1\"").is_err());
@@ -615,6 +734,62 @@ mod tests {
         assert_eq!(serde_json::from_str::<Hex32>(&s).unwrap(), h);
         assert!(serde_json::from_str::<Hex32>("\"0707\"").is_err());
         assert!(serde_json::from_str::<Hex32>(&s.to_uppercase()).is_ok());
+    }
+
+    #[test]
+    fn debug_hides_keys_and_addresses() {
+        let key = Hex([0xcd; 32]);
+        let login = Login {
+            address: "5SecretAddress".into(),
+            view_key: key,
+        };
+        let printed = format!(
+            "{login:?} {:?}",
+            UnspentOutsRequest {
+                login: login.clone(),
+                amount: Amount(1),
+                mixin: 15,
+                use_dust: false,
+                dust_threshold: None,
+            }
+        );
+        assert!(!printed.contains("5SecretAddress"), "{printed}");
+        assert!(!printed.contains(&key.to_string()), "{printed}");
+        let add = admin::AddAccount {
+            address: "5SecretAddress".into(),
+            key,
+        };
+        let req = admin::Request {
+            auth: Some(key),
+            params: add,
+        };
+        let printed = format!("{req:?}");
+        assert!(!printed.contains("5SecretAddress"), "{printed}");
+        assert!(!printed.contains(&key.to_string()), "{printed}");
+    }
+
+    #[test]
+    fn errors_never_quote_the_value() {
+        let key = "cd".repeat(31) + "zz";
+        let e = serde_json::from_str::<Hex32>(&format!("\"{key}\""))
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("cdcd"), "{e}");
+        assert!(!e.contains('z'), "{e}");
+        // An escaped string can't be borrowed: still read, still not quoted.
+        let escaped = format!("\"\\u0063{}\"", &"cd".repeat(32)[1..]);
+        assert_eq!(serde_json::from_str::<Hex32>(&escaped).unwrap(), Hex([0xcd; 32]));
+        let e = serde_json::from_str::<Login>(&format!(
+            "{{\"address\":\"5Secret\",\"view_key\":\"\\u0063{}\"}}",
+            "d".repeat(64)
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(!e.contains("ddd"), "{e}");
+        let e = serde_json::from_str::<Amount>("\"12x5Secret\"")
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("5Secret"), "{e}");
     }
 
     #[test]
@@ -639,6 +814,7 @@ mod tests {
     #[test]
     fn mempool_transaction_leaves_out_height_and_time() {
         let t = Transaction {
+            proof: None,
             fee: None,
             id: 1,
             hash: Hex([1; 32]),
