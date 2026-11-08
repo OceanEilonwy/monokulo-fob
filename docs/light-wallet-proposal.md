@@ -4,7 +4,8 @@ Status: proposal, 2026-11-07. Phase 2, read-only light mode, is built in Fob
 (decisions 371–376) and hardened (377–382: amounts held to the server's
 commitments, fees, time locks, the client's rules; 384–387: each payment
 proved to be in a block a node has); phase 3, sending through the server,
-is built (389–394); the server half (`monokulo-lws`) exists as a first
+is built (389–394), Trezor wallets through the server too (395–397); all of
+it is in Fob 0.1.16. The server half (`monokulo-lws`) exists as a first
 working version, in its own repository.
 
 ## What it is
