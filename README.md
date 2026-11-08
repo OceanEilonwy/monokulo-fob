@@ -1,117 +1,164 @@
-# Fob
+<p align="center">
+  <img src="docs/brand/fob-mark.svg" width="128" height="128" alt="Fob">
+</p>
 
-A small Monero wallet: fast to catch up, simple to pay with, and it keeps
-the [Open Receipt Format](https://github.com/openreceiptformat/orf-spec)
-receipts that payment codes can carry (as Monokular's tills add).
+<p align="center">
+  <img src="docs/readme/desktop-home.png" height="480" alt="Fob on the Linux desktop">
+  &nbsp;&nbsp;
+  <img src="docs/readme/android-home.png" height="480" alt="Fob on Android">
+</p>
 
-- `crates/fob-wallet`: the whole wallet, in Rust, on
-  [monero-oxide](https://github.com/monero-oxide/monero-oxide). Seeds and
-  keys, payment and wallet codes, receipts, the encrypted wallet file,
-  syncing and sending.
-- `crates/fob-screens`, `fob-codes`, `fob-vault`, `fob-price`, `fob-chain`,
-  `fob-scanner`, `fob-monero`, `fob-words`: the parts `fob-wallet` is built from
-  (`docs/decisions.md`, decision 339). `fob-scanner`'s prefilter is the
-  `monokulo-8ar` crate, in its own repo, shared with monokulo-lws (decision 366).
-  `fob-chain::light` is the light wallet server client (the MyMonero/monero-lws
-  REST API), for syncing through a server instead of scanning (decisions 371–376).
-- `crates/fob-ffi`: fob-wallet for Kotlin (later Swift) through UniFFI. Types
-  only.
-- `crates/fob-app`: what a client draws: unlocking, the open wallet, syncing.
-- `crates/fob-gtk`: the Linux desktop app, in Relm4 and libadwaita.
-- `android/`: the Android app, a thin Compose layer over fob-ffi.
-- `third_party/`: two vendored seed crates (see its README).
-- `docs/decisions.md`: why things are the way they are.
+<h1 align="center">Fob</h1>
 
-Designs: https://claude.ai/artifact/MK3rLvr8rcGa6WA5CZrXat
+<p align="center">
+  <strong>A small Monero wallet: fast to catch up, simple to pay with.</strong><br>
+  One Rust core, drawn natively: GTK 4 and libadwaita on the Linux desktop, Compose on Android.<br>
+  It keeps the <a href="https://github.com/openreceiptformat/orf-spec">Open Receipt Format</a> receipts that payment codes can carry.
+</p>
 
-## Trying it
+<p align="center">
+  <a href="https://github.com/OceanEilonwy/monokulo-fob/actions/workflows/rust.yml"><img src="https://github.com/OceanEilonwy/monokulo-fob/actions/workflows/rust.yml/badge.svg?branch=main" alt="Rust"></a>
+  <a href="https://github.com/OceanEilonwy/monokulo-fob/actions/workflows/android.yml"><img src="https://github.com/OceanEilonwy/monokulo-fob/actions/workflows/android.yml/badge.svg?branch=main" alt="Android"></a>
+  <a href="https://github.com/OceanEilonwy/monokulo-fob/releases/latest"><img src="https://img.shields.io/github/v/release/OceanEilonwy/monokulo-fob?color=ff6600&label=download" alt="Download the latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-informational" alt="GPL-3.0"></a>
+</p>
 
-`dist/fob-debug.apk` is a debug build. It starts on **stagenet** (test coins,
-nothing to lose); Settings › Use mainnet switches to a separate mainnet
-wallet. Stagenet coins come from a faucet, for example
-https://stagenet-faucet.xmr-tw.org.
+<p align="center">
+  <a href="#android"><b>Android</b></a> ·
+  <a href="#linux-desktop"><b>Linux desktop</b></a> ·
+  <a href="https://github.com/OceanEilonwy/monokulo-fob/releases/latest"><b>Downloads</b></a> ·
+  <a href="#build-from-source"><b>Build from source</b></a>
+</p>
 
-```sh
-adb install -r dist/fob-debug.apk
-```
+## Why Fob
+
+- **Scans on the GPU.** The [monokulo-8ar](https://github.com/OceanEilonwy/monokulo-8ar) prefilter works out 8·a·R for tens of thousands of transaction keys per Vulkan dispatch, at about half the energy per block of a phone's cores. Only flagged blocks go to monero-oxide's own scanner, and a GPU must pass test vectors, with each wallet's own view key too, before it's trusted; without one, the CPU does the work.
+- **Rich contacts.** Each contact has a name, a note, a photo and a send address, and keeps every address they've been paid at, so Activity says who a payment was for. A contact's card lists what you've paid them and what you've asked of them, and "Paid, not saved" offers to save any address you've paid as a contact. Scanning someone's profile code adds them.
+- **Hardware wallets.** Keep the spend key on a Trezor Model T, Safe 3 or Safe 5, over USB on the phone and the desktop. Fob watches with the view key, and every payment is confirmed on the device's own screen.
+- **Syncs through a server, if you want.** Settings can point a wallet at a [monokulo-lws](https://github.com/OceanEilonwy/monokulo-lws) light wallet server (or any MyMonero-style one) and catch up in one request. The server gets the view key and nothing more, and Fob takes nothing on its word: each payment's amount is held to the chain's commitment and its proof of inclusion to a node's block hashes, so a server can't invent or inflate a payment.
+- **Easy testing.** Fob starts on stagenet, with test coins and nothing to lose; mainnet is a separate wallet one switch away in Settings.
+- **Light and fast.** A native app on both platforms, with no web view and one small Rust core. Scan lets you pick how far back to look, from unsettled payments to the whole wallet, and says how long it will take.
+- **Receipts.** Payment codes from Monokular's tills carry [Open Receipt Format](https://github.com/openreceiptformat/orf-spec) receipts, and Fob keeps each one with the payment it was for.
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/readme/desktop-receive.png" alt="Receive on the desktop: a code, the address in groups, and an optional amount"></td>
+    <td width="33%"><img src="docs/readme/desktop-scan.png" alt="Scan on the desktop, choosing how far back to look"></td>
+    <td width="33%"><img src="docs/readme/android-receive.png" alt="Receive on Android, asking in Australian dollars"></td>
+  </tr>
+  <tr>
+    <td align="center">Receive, with the address grouped to check by eye</td>
+    <td align="center">Scan as far back as you need</td>
+    <td align="center">Ask in your own currency</td>
+  </tr>
+</table>
+
+## Install
+
+### Android
+
+Every `v*` tag publishes signed APKs on the
+[Releases](https://github.com/OceanEilonwy/monokulo-fob/releases/latest) page, with a `SHA256SUMS` file:
+
+| Your device | Download |
+|---|---|
+| Almost every phone | `fob-<version>-arm64-v8a.apk`, about half the size of the universal one |
+| The emulator and x86 Chromebooks | `fob-<version>-x86_64.apk` |
+| Not sure | `fob-<version>-universal.apk`, both in one |
+
+Every release is signed with the same key and the APKs share a version code, so any installs over another
+(package `com.monokulo.fob`).
+
+To get updates automatically, add `https://github.com/OceanEilonwy/monokulo-fob` to
+[Obtainium](https://obtainium.imranr.dev/), or open
+[obtainium://add/https://github.com/OceanEilonwy/monokulo-fob](obtainium://add/https://github.com/OceanEilonwy/monokulo-fob)
+on the phone. With three APKs on a release Obtainium asks which; set the APK filter to `arm64-v8a` in the app's
+settings to pick the phone one every time. The tag (`v0.1.4`) is the version, as the app's own is. A debug build
+you make yourself is a different package and sits beside it.
+
+### Linux desktop
+
+Every `v*` tag also puts two builds for x86_64 Linux on the
+[Releases](https://github.com/OceanEilonwy/monokulo-fob/releases/latest) page, in the same `SHA256SUMS`:
+
+| Your system | Download | Then |
+|---|---|---|
+| Any distribution with Flatpak | `fob-<version>-x86_64.flatpak` | `flatpak install --user fob-<version>-x86_64.flatpak` |
+| Debian 13, Ubuntu 25.04, Fedora 42 or later (glibc 2.41+) | `fob-<version>-x86_64.AppImage` | `chmod +x` it and run it |
+
+Flatpak fetches the GNOME runtime from Flathub. Being sandboxed, it keeps wallets in
+`~/.var/app/com.monokulo.Fob/data/fob`, so it won't see any you already have until you move them there. The
+AppImage needs FUSE and adds no menu entry of its own.
+
+Your wallets are sealed under a passphrase you choose, in `~/.local/share/fob`, and lock after 15 minutes left
+alone. A camera isn't used: a code is pasted or read from a picture.
+
+### Trying it out
+
+Fob starts on **stagenet** (test coins, nothing to lose); Settings › Use mainnet switches to a separate mainnet
+wallet. Stagenet coins come from a faucet, for example https://stagenet-faucet.xmr-tw.org.
 
 ### A wallet on a Trezor
 
-Restore › **Connect a Trezor** makes a wallet whose spend key stays on a
-Trezor Model T, Safe 3 or Safe 5 (Model One can't hold Monero), plugged into
-the phone over USB. The device hands Fob the view key, so Fob watches and
-catches up as usual; it asks the device for key images (Home says when) and
-for each payment's signatures, which the device confirms on its own screen.
-The PIN is typed on the phone by the positions the device shows. The desktop
-app does the same over USB (How › Connect a Trezor (USB)); on Linux the
-device needs Trezor's udev rules, which Trezor Suite installs, or
-[51-trezor.rules](https://data.trezor.io/udev/51-trezor.rules) put in
-`/etc/udev/rules.d/`. Tested so far against the protocol in software only:
-try it on stagenet first.
+Restore › **Connect a Trezor** makes a wallet whose spend key stays on a Trezor Model T, Safe 3 or Safe 5
+(Model One can't hold Monero), plugged into the phone over USB. The device hands Fob the view key, so Fob watches
+and catches up as usual; it asks the device for key images (Home says when) and for each payment's signatures,
+which the device confirms on its own screen. The PIN is typed on the phone by the positions the device shows.
 
-### Installing and updating with Obtainium
+The desktop app does the same over USB (How › Connect a Trezor (USB)); on Linux the device needs Trezor's udev
+rules, which Trezor Suite installs, or [51-trezor.rules](https://data.trezor.io/udev/51-trezor.rules) put in
+`/etc/udev/rules.d/`. Tested so far against the protocol in software only: try it on stagenet first.
 
-Every `v*` tag publishes signed APKs on the
-[Releases](https://github.com/OceanEilonwy/monokulo-fob/releases) page, with a
-`SHA256SUMS` file, so [Obtainium](https://obtainium.imranr.dev/) can install Fob
-and keep it up to date from there, with no store:
+## Build from source
 
-- `fob-<version>-arm64-v8a.apk`: for phones, about half the size of the
-  universal one. This is the one most people want.
-- `fob-<version>-x86_64.apk`: for the emulator and x86 Chromebooks.
-- `fob-<version>-universal.apk`: both in one, for when you don't know.
-
-In Obtainium, tap **Add App**, paste
-`https://github.com/OceanEilonwy/monokulo-fob` as the source, and add. Or open
-this link on the phone: [obtainium://add/https://github.com/OceanEilonwy/monokulo-fob](obtainium://add/https://github.com/OceanEilonwy/monokulo-fob).
-With three APKs on a release, Obtainium asks which; set the APK filter to
-`arm64-v8a` in the app's settings to pick the phone one every time. The tag
-(`v0.1.4`) is the version, as the app's own is. Every release is signed with the
-same key and the APKs share a version code, so any installs over another
-(package `com.monokulo.fob`). The debug build above is a different package and
-sits beside it.
-
-## On the desktop
-
-Every `v*` tag also puts two builds for x86_64 Linux on the
-[Releases](https://github.com/OceanEilonwy/monokulo-fob/releases) page, in the
-same `SHA256SUMS`:
-
-- `fob-<version>-x86_64.flatpak`: `flatpak install --user fob-<version>-x86_64.flatpak`.
-  It fetches the GNOME runtime from Flathub. Being sandboxed, it keeps wallets in
-  `~/.var/app/com.monokulo.Fob/data/fob`, so it won't see any you already have
-  until you move them there.
-- `fob-<version>-x86_64.AppImage`: `chmod +x` it and run it. It needs glibc 2.41
-  or newer (Debian 13, Ubuntu 25.04, Fedora 42 or later) and FUSE, and adds no
-  menu entry of its own.
-
-Or `crates/fob-gtk/install.sh` builds Fob and adds it to your menu; it needs Rust,
-GTK 4.18 and libadwaita 1.7 or newer. `crates/fob-gtk/appimage.sh` and
-`crates/fob-gtk/data/com.monokulo.Fob.yml` build the other two.
-
-It starts on stagenet, like the debug Android build. Your wallets are sealed under
-a passphrase you choose, in `~/.local/share/fob`, and lock after 15 minutes left
-alone. A camera isn't used: a code is pasted or read from a picture.
-`crates/fob-gtk/scenes.sh` checks the windows on a headless display, and its
-`walk` scene presses through the app.
-
-## Building
-
-You need Rust, `cargo-ndk`, the Android SDK (platform 37.2, NDK r27) and a
-JDK 21 (Android Studio's: `/opt/android-studio/jbr`).
+The desktop app needs Rust, GTK 4.18 and libadwaita 1.7 or newer:
 
 ```sh
-cargo nextest run --workspace       # or cargo test --workspace
+git clone https://github.com/OceanEilonwy/monokulo-fob.git
+cd monokulo-fob
+crates/fob-gtk/install.sh    # builds Fob and adds it to your applications menu
+```
+
+`crates/fob-gtk/appimage.sh` and `crates/fob-gtk/data/com.monokulo.Fob.yml` build the AppImage and the Flatpak.
+
+The Android app also needs `cargo-ndk`, the Android SDK (platform 37.2, NDK r27) and a JDK 21 (Android
+Studio's: `/opt/android-studio/jbr`):
+
+```sh
 cd android && echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 JAVA_HOME=/opt/android-studio/jbr ./gradlew :app:assembleDebug
 ```
 
-The Gradle build compiles fob-ffi for each ABI with cargo-ndk and generates
-the Kotlin bindings from it, so the app and the library can't drift.
+The Gradle build compiles fob-ffi for each ABI with cargo-ndk and generates the Kotlin bindings from it, so the
+app and the library can't drift.
 
-Tests against real stagenet nodes are ignored by default:
+For working on Fob:
 
 ```sh
-cargo test --release -p fob-wallet --test stagenet_over_http -- --ignored
+cargo nextest run --workspace                                   # or cargo test --workspace
+cargo build -p fob-gtk && crates/fob-gtk/scenes.sh              # the desktop windows on a headless display
+cargo test --release -p fob-wallet --test stagenet_over_http -- --ignored   # against real stagenet nodes
 cargo run --release -p fob-wallet --example fetch_speed [node] [blocks]
 ```
+
+`scenes.sh` takes one picture per window, and its `walk` scene presses through the app as someone would.
+
+### How it fits together
+
+- `crates/fob-wallet` is the whole wallet, in Rust, on monero-oxide: seeds and keys, payment and wallet codes,
+  receipts, the encrypted wallet file, syncing and sending.
+- `crates/fob-screens`, `fob-codes`, `fob-vault`, `fob-price`, `fob-chain`, `fob-scanner`, `fob-monero` and
+  `fob-words` are the parts `fob-wallet` is built from (`docs/decisions.md`, decision 339). `fob-scanner`'s
+  prefilter is the `monokulo-8ar` crate, in its own repo, shared with monokulo-lws (decision 366).
+  `fob-chain::light` is the light wallet server client (the MyMonero/monero-lws REST API), for syncing through
+  a server instead of scanning (decisions 371–388).
+- `crates/fob-app` is what a client draws: unlocking, the open wallet, syncing.
+- `crates/fob-gtk` is the Linux desktop app, in Relm4 and libadwaita.
+- `crates/fob-ffi` is fob-wallet for Kotlin (later Swift) through UniFFI, and `android/` the Android app, a thin
+  Compose layer over it.
+- `third_party/` holds two vendored seed crates (see its README), and `docs/decisions.md` says why things are the
+  way they are.
+
+Designs: https://claude.ai/artifact/MK3rLvr8rcGa6WA5CZrXat
+
+GPL-3.0.
