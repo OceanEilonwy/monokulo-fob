@@ -25,6 +25,8 @@ serde_json = "1"
 hex = "0.4"
 curve25519-dalek = "4"
 zeroize = "1"
+# Random sequences of events against the coin model's invariants (wallet/coin.rs).
+proptest = "1.6"
 rand_core = { version = "0.6", features = ["getrandom"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 sha3 = "0.10"
@@ -45,3 +47,5 @@ fob-chain = { path = "../fob-chain", features = ["test-support"] }
 fob-codes = { path = "../fob-codes", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
 zeroize = "1"
+# Random sequences of events against the coin model's invariants (wallet/coin.rs).
+proptest = "1.6"

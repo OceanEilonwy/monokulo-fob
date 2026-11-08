@@ -1,6 +1,9 @@
 //! A wallet: its keys, what it has found on the chain, syncing and sending.
 
 mod addresses;
+// Without callers yet: the wallet's state takes a `Coin` in the next step.
+#[allow(dead_code)]
+mod coin;
 mod connection;
 mod funds;
 mod hardware;
