@@ -67,7 +67,7 @@ impl SimpleComponent for Prices {
                                 set_title: "Default currency",
                                 set_activatable: true,
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(&model.currency),
+                                set_subtitle: &model.currency,
                                 connect_activated => Input::Currency,
                             },
                         },
