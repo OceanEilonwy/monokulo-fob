@@ -182,13 +182,6 @@ pub(super) fn refusal(reason: &str) -> String {
 }
 
 impl Wallet {
-    /// Why Send can't pay from this wallet as it's set up, or none: a
-    /// Trezor wallet syncing through a light wallet server sends through a
-    /// node, which its key images come from.
-    pub async fn send_notice(&self) -> Option<String> {
-        (self.inner.keys.device().is_some() && self.light_mode().await).then(|| fob_words::light::TREZOR_SENDS_THROUGH_NODE.to_owned())
-    }
-
     /// Asks the server the network fee (`/get_unspent_outs`, whose outputs
     /// aren't used: the coins spent are the wallet's own records), capped
     /// as [`light_fee_rate`] says, and keeps it for Split up's estimate.

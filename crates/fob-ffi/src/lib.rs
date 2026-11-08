@@ -64,7 +64,6 @@ impl From<fob_wallet::FobError> for FobError {
         let reason = e.to_string();
         match e {
             E::Node(_) | E::Light(_) => FobError::Node { reason },
-            E::TrezorThroughServer => FobError::Other { reason },
             E::Screen(ScreenError::NotEnoughFunds { .. }) => FobError::NotEnoughFunds { reason },
             E::Vault(VaultError::WrongKey) => FobError::WrongKey { reason },
             E::Vault(VaultError::ViewOnly) => FobError::ViewOnly { reason },
@@ -258,10 +257,6 @@ pub struct Screens {
     /// Syncing through a light wallet server: Settings greys the Node row
     /// and instant updates, and hides Manual Sync.
     pub light_mode: bool,
-    /// Why Send can't pay from this wallet as it's set up, where its errors
-    /// go, with Review off: a Trezor wallet syncing through a light wallet
-    /// server. None when it can.
-    pub send_notice: Option<String>,
     /// Settings' Light wallet server row: "lws.example:8443 · synced"; none
     /// before a server is chosen.
     pub light_line: Option<String>,
@@ -1849,7 +1844,6 @@ impl FobWallet {
             reminder: self.backup_reminder().await,
             node_line: self.inner.node_line().await,
             light_mode: self.inner.light_mode().await,
-            send_notice: self.inner.send_notice().await,
             light_line: self.inner.light_line().await,
             backup_line: self.inner.backup_hub(phone_lock).await.settings_line,
             receive: self.inner.shown_receive_address().await.map(|(address, index)| ReceiveAddress { address, index }),
@@ -1952,12 +1946,6 @@ impl FobWallet {
     /// Syncing through a light wallet server now.
     pub async fn light_mode(&self) -> bool {
         self.inner.light_mode().await
-    }
-
-    /// Why Send can't pay from this wallet as it's set up (a Trezor wallet
-    /// syncing through a light wallet server), or none.
-    pub async fn send_notice(&self) -> Option<String> {
-        self.inner.send_notice().await
     }
 
     /// The light wallet server chosen, in use or not.

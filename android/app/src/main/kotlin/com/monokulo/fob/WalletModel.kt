@@ -256,10 +256,6 @@ class WalletModel(private val app: Application) {
     private val _lightMode = MutableStateFlow(false)
     val lightMode: StateFlow<Boolean> = _lightMode
 
-    /** Why Send can't pay from this wallet as it's set up (a Trezor wallet through a light wallet server); null when it can. */
-    private val _sendNotice = MutableStateFlow<String?>(null)
-    val sendNotice: StateFlow<String?> = _sendNotice
-
     /** Settings' Light wallet server row: "lws.example:8443 · synced"; null before a server is chosen. */
     private val _lightLine = MutableStateFlow<String?>(null)
     val lightLine: StateFlow<String?> = _lightLine
@@ -455,7 +451,6 @@ class WalletModel(private val app: Application) {
         _reminder.value = s.reminder
         _nodeLine.value = s.nodeLine
         _lightMode.value = s.lightMode
-        _sendNotice.value = s.sendNotice
         _lightLine.value = s.lightLine
         _backupLine.value = s.backupLine
         _receive.value = s.receive
@@ -977,7 +972,6 @@ class WalletModel(private val app: Application) {
         _reminder.value = null
         _nodeLine.value = ""
         _lightMode.value = false
-        _sendNotice.value = null
         _lightLine.value = null
         _backupLine.value = ""
         _receive.value = null

@@ -29,9 +29,6 @@ pub const NOT_TESTED: &str = "Test the server first";
 /// The row before any server is chosen.
 pub const NONE_CHOSEN: &str = "None chosen";
 
-/// Send, for a Trezor wallet syncing through a server: the device's key
-/// images are asked of a node, so it sends through one.
-pub const TREZOR_SENDS_THROUGH_NODE: &str = "A Trezor wallet sends through a node for now. Switch Sync through to Node in Settings to send";
 /// The import row when the server has no scans from the start to offer.
 pub const IMPORT_NOT_OFFERED: &str = "Not offered by this server";
 

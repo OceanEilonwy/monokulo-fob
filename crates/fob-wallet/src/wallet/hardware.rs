@@ -41,8 +41,11 @@ impl Wallet {
     /// Asks the Trezor over `link` for the key images it hasn't given yet,
     /// keeps them, then asks the node which of this wallet's key images are
     /// spent (all of them, each time: an answer from before may have been
-    /// about the pool, or wrong). Returns how many outputs the device
-    /// covered. The device asks before it answers.
+    /// about the pool, or wrong). Through a light wallet server, the server
+    /// is polled instead: every spend it lists, mined or in its pool, is
+    /// held to the key images now known, as each poll does (`reconcile`),
+    /// and no key image leaves the phone. Returns how many outputs the
+    /// device covered. The device asks before it answers.
     pub async fn trezor_sync(&self, link: Arc<dyn trezor::Link>, prompts: Arc<dyn trezor::Prompts>) -> Result<u32> {
         if self.inner.keys.device() != Some(Device::Trezor) {
             return Err(FobError::Send("this wallet's keys aren't on a Trezor".into()));
@@ -86,7 +89,8 @@ impl Wallet {
             })
             .await
             .map_err(|e| FobError::Send(format!("{e}")))??;
-            // Kept at once: the device needn't be asked again if the node is away.
+            // Kept at once: the device needn't be asked again if the node
+            // (or the server) is away.
             let mut state = self.inner.state.lock().await;
             for (id, image) in ids.iter().zip(images) {
                 if let Some(output) = state.outputs.iter_mut().find(|o| o.id() == *id) {
@@ -95,7 +99,12 @@ impl Wallet {
             }
             self.save_state(&state)?;
         }
-        self.mark_spent_by_node().await?;
+        if self.light_mode().await {
+            // The server's spends, matched now rather than at the next poll.
+            self.light_step().await?;
+        } else {
+            self.mark_spent_by_node().await?;
+        }
         if asked == 0 && frozen > 0 {
             return Err(FobError::Trezor(fob_words::errors::trezor_frozen(frozen)));
         }
@@ -157,15 +166,13 @@ impl Wallet {
     }
 
     /// Signs a prepared payment on the Trezor over `link`, the device's
-    /// questions put through `prompts`, and broadcasts it. Returns its
+    /// questions put through `prompts`, and broadcasts it through the node,
+    /// or the light wallet server syncing is through. Returns its
     /// transaction hash. The device shows the payment and asks before it
     /// signs; saying no there cancels, with the payment kept prepared. A
     /// payment that times out while the device is being waited on is still
     /// sent once signed: what's recorded of it was taken before.
     pub async fn send_with_trezor(&self, id: u64, link: Arc<dyn trezor::Link>, prompts: Arc<dyn trezor::Prompts>) -> Result<String> {
-        if self.light_mode().await {
-            return Err(FobError::TrezorThroughServer);
-        }
         let (plan, out) = {
             let mut prepared = self.inner.prepared.lock().await;
             let Some(prepared) = prepared.get(id) else { return Err(FobError::Screen(ScreenError::NoSuchPayment)) };
@@ -183,12 +190,7 @@ impl Wallet {
         self.inner.prepared.lock().await.take(id);
         let hash = hex::encode(tx.hash());
         let signed = hex::encode(tx.serialize());
-        let wallet = self.clone();
-        let manual_sync = self.inner.state.lock().await.manual_sync;
-        let publish = async move {
-            let rpc = wallet.rpc().await.map_err(Unpublished::Refused)?;
-            rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
-        };
+        let publish = self.publishing(tx).await;
         self.publish_and_record(hash, fee, out, signed, publish).await
     }
 }

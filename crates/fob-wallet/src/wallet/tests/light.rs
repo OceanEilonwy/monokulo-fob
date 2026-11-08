@@ -802,7 +802,6 @@ async fn switching_to_a_server_and_back() {
     assert!(status.synced, "{status:?}");
     assert_eq!(fob_words::catch_up::chip(status.chip()).text, "Synced · server");
     assert_eq!(wallet.light_line().await.unwrap(), format!("{} · synced", node::address(&url)));
-    assert!(wallet.send_notice().await.is_none());
     assert!(matches!(wallet.prepare(&wallet.primary_address(), 1, None, None).await, Err(FobError::Screen(ScreenError::NotEnoughFunds { .. }))));
 
     wallet.use_light_wallet(false).await.unwrap();
@@ -1401,3 +1400,5 @@ async fn live_a_payment_through_monokulo_lws() {
 }
 
 mod send;
+
+mod trezor;

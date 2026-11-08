@@ -168,15 +168,15 @@ fn a_submission_is_taken_refused_or_unsure() {
 /// whatever `txs` holds then, `/get_unspent_outs` the fee in `fee`,
 /// `/get_random_outs` sixteen made-up members per ring asked, and
 /// `/submit_raw_tx` as `submit` says, keeping each transaction handed in.
-struct SendServer {
-    url: String,
-    txs: Arc<StdMutex<String>>,
-    fee: Arc<StdMutex<String>>,
-    submit: Arc<StdMutex<(u16, String)>>,
-    submitted: Arc<StdMutex<Vec<Vec<u8>>>>,
+pub(super) struct SendServer {
+    pub(super) url: String,
+    pub(super) txs: Arc<StdMutex<String>>,
+    pub(super) fee: Arc<StdMutex<String>>,
+    pub(super) submit: Arc<StdMutex<(u16, String)>>,
+    pub(super) submitted: Arc<StdMutex<Vec<Vec<u8>>>>,
 }
 
-async fn send_server() -> SendServer {
+pub(super) async fn send_server() -> SendServer {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -247,7 +247,7 @@ async fn send_server() -> SendServer {
 
 impl SendServer {
     /// `/get_address_txs` lists `transactions` from now on, scanned to `scanned`.
-    fn lists(&self, transactions: Vec<lws::Transaction>, scanned: u64) {
+    pub(super) fn lists(&self, transactions: Vec<lws::Transaction>, scanned: u64) {
         *self.txs.lock().unwrap() = serde_json::to_string(&answer(transactions, scanned)).unwrap();
     }
 }
@@ -276,7 +276,6 @@ async fn a_payment_through_the_server_is_built_submitted_and_recorded() {
     let server = send_server().await;
     let (wallet, paid) = light_wallet_with_a_coin("light-send", &server).await;
     let keys = &wallet.inner.keys;
-    assert!(wallet.send_notice().await.is_none(), "Send is open through a server");
     let to = keys.address(9);
     let prepared = wallet.prepare(&to, XMR / 10, Some("Lunch".into()), None).await.unwrap();
     assert!(prepared.fee > 0);
@@ -330,7 +329,7 @@ async fn a_payment_through_the_server_is_built_submitted_and_recorded() {
 }
 
 /// The transaction that paid the coin, as the server keeps listing it.
-fn wallet_coin_tx(paid: &Paid, server: &SendServer) -> lws::Transaction {
+pub(super) fn wallet_coin_tx(paid: &Paid, server: &SendServer) -> lws::Transaction {
     let first: lws::AddressTxs = serde_json::from_str(&server.txs.lock().unwrap()).unwrap();
     first.transactions.into_iter().find(|t| t.receives.iter().any(|r| r.public_key.0 == paid.key)).unwrap()
 }

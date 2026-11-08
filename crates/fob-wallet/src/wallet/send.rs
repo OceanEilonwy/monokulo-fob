@@ -130,11 +130,6 @@ impl Wallet {
     ) -> Result<Prepared> {
         let amount: u64 = payments.iter().map(|p| p.1).sum();
         let device = self.inner.keys.device();
-        // A device's key images come from a node (`sync_trezor`): through a
-        // server it has none to go on.
-        if device.is_some() && self.light_mode().await {
-            return Err(FobError::TrezorThroughServer);
-        }
         let (mut candidates, available, unsynced) = {
             let state = self.inner.state.lock().await;
             let ready = |o: &Owned| o.spent_in.is_none() && confirmations(&state, o.height) >= state.needed(o);
@@ -375,20 +370,26 @@ impl Wallet {
         let tx = prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
         let hash = hex::encode(tx.hash());
         let signed = hex::encode(tx.serialize());
+        let publish = self.publishing(tx).await;
+        self.publish_and_record(hash, fee, prepared.out, signed, publish).await
+    }
+
+    /// How a signed payment goes out, signed here or on a device: to the
+    /// light wallet server syncing is through (`/submit_raw_tx`), or to the
+    /// node. For [`publish_and_record`](Wallet::publish_and_record).
+    pub(super) async fn publishing(&self, tx: monero_wallet::transaction::Transaction) -> impl Future<Output = std::result::Result<(), Unpublished>> + Send + 'static {
         let wallet = self.clone();
         let (manual_sync, light) = {
             let state = self.inner.state.lock().await;
             (state.manual_sync, state.sync_mode == SyncMode::Light)
         };
-        let publish = async move {
-            // Through the light wallet server syncing is through, or the node.
+        async move {
             if light {
                 return wallet.submit_through_server(tx.serialize()).await;
             }
             let rpc = wallet.rpc().await.map_err(Unpublished::Refused)?;
             rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
-        };
-        self.publish_and_record(hash, fee, prepared.out, signed, publish).await
+        }
     }
 
     /// Publishes a signed payment with `publish`, then records it (its

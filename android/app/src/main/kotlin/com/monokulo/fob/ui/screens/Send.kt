@@ -170,8 +170,6 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     val network by model.network.collectAsState()
     val wallet by model.wallet.collectAsState()
     val balance by model.balance.collectAsState()
-    // Why this wallet can't pay as it's set up (a Trezor wallet syncing through a light wallet server): Rust's words where errors go, and Review off.
-    val sendNotice by model.sendNotice.collectAsState()
     val prices by model.prices.collectAsState()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
@@ -531,8 +529,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                         }
                         // The price toast rises above Review (and the sheet's 16 dp under it).
                         Column(Modifier.bottomSpace(16.dp).padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ErrorText(error ?: sendNotice)
-                            PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && sendNotice == null && toValid && current?.sendable == true, onClick = {
+                            ErrorText(error)
+                            PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
                                 val e = current ?: return@PrimaryButton
                                 review(to.trim(), amount, e.inFiat, note.trim().ifEmpty { null })
                             })
@@ -543,7 +541,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                             if (sheetTop - barBottom < 40.dp) ErrorText(notice)
                             PasteRow(::paste)
                             if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
-                            ErrorText(error ?: sendNotice)
+                            ErrorText(error)
                             // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
                             if (hasContacts) {
                                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {

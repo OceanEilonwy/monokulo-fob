@@ -66,19 +66,26 @@ fn block_paying(keys: &Keys, amount: u64, height: usize) -> (monero_wallet::inte
 }
 
 /// A Trezor in software holding `full`'s keys, answering as the device
-/// would: its view key, and key images made with the spend key.
-fn fake_trezor(full: &Keys) -> crate::trezor::session::fake::Fake {
+/// would: its view key, key images made with the spend key (for the main
+/// address or a subaddress, from the transaction key given), and payments
+/// signed with it.
+pub(super) fn fake_trezor(full: &Keys) -> crate::trezor::session::fake::Fake {
     let mut fake = crate::trezor::session::fake::Fake::new();
     fake.address = full.primary_address();
     fake.view_key = scalar(&full.view_key_hex()).to_bytes();
     let spend = scalar(&full.spend_key_hex().unwrap());
     let view = scalar(&full.view_key_hex());
+    fake.signer = Some(crate::trezor::fake_signer::Signer::new(spend, view));
     fake.key_image = Box::new(move |t: &crate::trezor::Transfer| {
         // The output's secret key from its transaction key, as the device makes it.
         let big_r = curve25519_dalek::edwards::CompressedEdwardsY(t.tx_pub_key).decompress().unwrap();
         let mut data = (big_r * view).mul_by_cofactor().compress().to_bytes().to_vec();
         data.extend_from_slice(&crate::trezor::proto::varint(t.index_in_tx));
-        let x: DScalar = Scalar::hash(&data).into() + spend;
+        let sub: DScalar = match t.subaddress_minor {
+            0 => DScalar::ZERO,
+            minor => Scalar::hash([b"SubAddr\0".as_slice(), view.as_bytes(), &0u32.to_le_bytes(), &minor.to_le_bytes()].concat()).into(),
+        };
+        let x: DScalar = Scalar::hash(&data).into() + spend + sub;
         assert_eq!((&x * ED25519_BASEPOINT_TABLE).compress().to_bytes(), t.out_key, "the transaction key given is the output's");
         let hashed: EdwardsPoint = monero_wallet::ed25519::Point::biased_hash(t.out_key).into();
         let image = (hashed * x).compress().to_bytes();
@@ -241,25 +248,4 @@ async fn a_pool_spend_from_the_node_is_asked_about_again() {
     let (fake, person) = (fake_trezor(&full), crate::trezor::session::fake::Person::new());
     wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
     assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in.as_deref(), Some(SPENT_BEFORE_SYNC));
-}
-
-/// A Trezor wallet syncing through a light wallet server sends through a
-/// node: its key images come from one. Send says so, and refuses.
-#[tokio::test]
-async fn a_trezor_wallet_sends_through_a_node_not_a_server() {
-    let full = Keys::generate(Network::Stagenet).keys;
-    let fake = fake_trezor(&full);
-    let person = crate::trezor::session::fake::Person::new();
-    let wallet = Wallet::restore_trezor(&dir("trezor-light"), [1; 32], Network::Stagenet, &fake, &person, Some(5)).unwrap();
-    assert!(wallet.send_notice().await.is_none(), "through its node it sends");
-    {
-        let mut state = wallet.inner.state.lock().await;
-        state.sync_mode = SyncMode::Light;
-        state.light_url = Some("https://lws.example:8443".into());
-    }
-    let notice = wallet.send_notice().await.unwrap();
-    assert_eq!(notice, "A Trezor wallet sends through a node for now. Switch Sync through to Node in Settings to send");
-    let refused = wallet.prepare(&full.address(3), 1, None, None).await.unwrap_err();
-    assert_eq!(refused, FobError::TrezorThroughServer);
-    assert_eq!(refused.to_string(), notice);
 }
