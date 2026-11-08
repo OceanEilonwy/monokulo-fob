@@ -55,7 +55,7 @@ impl SimpleComponent for Contacts {
         adw::ToolbarView {
             add_top_bar = &adw::HeaderBar {
                 pack_start = &gtk::Button {
-                    set_label: "Meet",
+                    set_child: Some(&widgets::icon_label(crate::icons::MEET, "Meet", false)),
                     set_tooltip_text: Some("Meet someone: both of you end up with each other"),
                     connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Meet)); },
                 },

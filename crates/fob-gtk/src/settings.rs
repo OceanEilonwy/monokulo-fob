@@ -19,11 +19,10 @@ use crate::{
     widgets,
 };
 
-/// Every wallet, the one open, and the network.
+/// Every wallet, and the one open.
 pub struct Wallets {
     pub all: Vec<WalletEntry>,
     pub current: Option<WalletEntry>,
-    pub network: Network,
 }
 
 #[derive(Debug)]
@@ -32,9 +31,10 @@ pub enum Input {
     Status(View<SyncStatus>),
     Wallets(View<Wallets>),
     Opened,
+    /// Scroll to Backup and keys and mark it for a moment.
+    Highlight,
     Hub(View<BackupHub>),
     Switch(String),
-    Network(u32),
     AddWallet,
     Rename(String, String),
     Forget,
@@ -62,11 +62,11 @@ pub struct Settings {
     engine: Engine,
     wallets_group: adw::PreferencesGroup,
     wallet_rows: Vec<gtk::Widget>,
-    network_row: adw::ComboRow,
     backup_group: adw::PreferencesGroup,
     backup_rows: Vec<adw::ActionRow>,
     node_line: String,
     backup_line: String,
+    hub_key: String,
     currency_line: String,
     zmq_line: String,
     zmq_on: bool,
@@ -116,7 +116,7 @@ impl SimpleComponent for Settings {
                             #[wrap(Some)]
                             set_header_suffix = &gtk::Button {
                                 add_css_class: "flat",
-                                set_label: "Add",
+                                set_child: Some(&widgets::icon_label(crate::icons::PLUS, "Add", false)),
                                 connect_clicked => Input::AddWallet,
                             },
                         },
@@ -129,12 +129,6 @@ impl SimpleComponent for Settings {
                                 set_subtitle: &gtk::glib::markup_escape_text(&model.profile_line),
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Profile)); },
-                            },
-                            #[local_ref]
-                            add = network_row -> adw::ComboRow {
-                                set_title: "Network",
-                                set_model: Some(&gtk::StringList::new(&["Stagenet, test coins", "Mainnet, real money"])),
-                                connect_selected_notify[sender] => move |row| sender.input(Input::Network(row.selected())),
                             },
                         },
                         #[local_ref]
@@ -254,18 +248,17 @@ impl SimpleComponent for Settings {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
-        let network_row = adw::ComboRow::new();
         let sync_through = adw::ComboRow::new();
         let scan_line = engine.scan_engine(false).line;
         let model = Settings {
             engine,
             wallets_group: wallets_group.clone(),
             wallet_rows: vec![],
-            network_row: network_row.clone(),
             backup_group: backup_group.clone(),
             backup_rows: vec![],
             node_line: String::new(),
             backup_line: String::new(),
+            hub_key: String::new(),
             currency_line: String::new(),
             zmq_line: String::new(),
             zmq_on: false,
@@ -279,7 +272,7 @@ impl SimpleComponent for Settings {
             scan_line,
             gpu_refused: false,
         };
-        let (wallets_group, backup_group, network_row, sync_through) = (&wallets_group, &backup_group, &network_row, &sync_through);
+        let (wallets_group, backup_group, sync_through) = (&wallets_group, &backup_group, &sync_through);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -288,8 +281,9 @@ impl SimpleComponent for Settings {
         match input {
             Input::Screens(View(screens)) => {
                 self.node_line = screens.node_line.clone();
-                self.backup_line = screens.backup_line.clone();
                 self.currency_line = screens.prices.currency_text.clone();
+                // Backup and keys is drawn whole before Settings opens, not on opening.
+                self.fetch_hub(&sender);
             }
             Input::Status(View(status)) => {
                 self.zmq_line = status.zmq_text.clone();
@@ -329,11 +323,9 @@ impl SimpleComponent for Settings {
             Input::LightServer => self.ask_light_server(&sender),
             Input::Wallets(View(wallets)) => self.draw_wallets(&wallets, &sender),
             Input::Opened => {
+                self.fetch_hub(&sender);
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
-                    if let Some(hub) = engine.read(|wallet, _| async move { wallet.backup_hub(false).await }).await {
-                        sender.input(Input::Hub(View(hub.into())));
-                    }
                     if let Some(row) = engine.read(|wallet, _| async move { wallet.profile_row().await }).await {
                         sender.input(Input::ProfileLine(row.name.unwrap_or(row.title)));
                     }
@@ -342,24 +334,38 @@ impl SimpleComponent for Settings {
                     }
                 });
             }
+            Input::Highlight => {
+                // The scrolled window brings its focused child into view, with
+                // the layout as it really is, so focus the first row once the
+                // page is showing and mark the group for a moment.
+                let group = self.backup_group.clone();
+                let first = self.backup_rows.first().cloned();
+                let mark = move || {
+                    if let Some(row) = &first {
+                        row.grab_focus();
+                    }
+                    group.add_css_class("marked");
+                    let group = group.clone();
+                    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(2500), move || group.remove_css_class("marked"));
+                };
+                // Already on screen (this runs after the page was pushed), or
+                // not yet: then when it is.
+                if self.backup_group.is_mapped() {
+                    mark();
+                } else {
+                    let mark = std::cell::RefCell::new(Some(mark));
+                    self.backup_group.connect_map(move |_| {
+                        if let Some(mark) = mark.take() {
+                            mark();
+                        }
+                    });
+                }
+            }
             Input::Hub(View(hub)) => self.draw_hub(&hub, &sender),
             Input::Switch(file) => {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
                     if let Err(e) = engine.switch_wallet(file).await {
-                        sender.input(Input::Say(e.to_string()));
-                    }
-                });
-            }
-            Input::Network(i) => {
-                let network = if i == 1 { Network::Mainnet } else { Network::Stagenet };
-                // The row following the engine, not someone choosing.
-                if network == self.engine.network() {
-                    return;
-                }
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    if let Err(e) = engine.switch_network(network).await {
                         sender.input(Input::Say(e.to_string()));
                     }
                 });
@@ -420,7 +426,6 @@ impl SimpleComponent for Settings {
 
 impl Settings {
     fn draw_wallets(&mut self, wallets: &Wallets, sender: &ComponentSender<Self>) {
-        self.network_row.set_selected(if wallets.network == Network::Mainnet { 1 } else { 0 });
         for row in self.wallet_rows.drain(..) {
             self.wallets_group.remove(&row);
         }
@@ -458,7 +463,22 @@ impl Settings {
         }
     }
 
+    fn fetch_hub(&self, sender: &ComponentSender<Self>) {
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        relm4::spawn(async move {
+            if let Some(hub) = engine.read(|wallet, _| async move { wallet.backup_hub(false).await }).await {
+                sender.input(Input::Hub(View(hub.into())));
+            }
+        });
+    }
+
     fn draw_hub(&mut self, hub: &BackupHub, sender: &ComponentSender<Self>) {
+        // The same hub again changes nothing, so nothing is redrawn.
+        let key = format!("{}\n{}", hub.warning, hub.backup.iter().chain(&hub.other).map(|i| format!("{}|{}", i.title, i.line)).collect::<Vec<_>>().join("\n"));
+        if key == self.hub_key {
+            return;
+        }
+        self.hub_key = key;
         for row in self.backup_rows.drain(..) {
             self.backup_group.remove(&row);
         }

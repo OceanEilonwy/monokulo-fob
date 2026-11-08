@@ -114,6 +114,7 @@ impl Wallet {
                 pieces: vec![],
                 note: None,
                 split: None,
+                to_self: false,
                 contact: None,
                 contact_id: None,
                 shared: None,
@@ -149,6 +150,7 @@ impl Wallet {
                 pieces: vec![],
                 note: None,
                 split: None,
+                to_self: false,
                 contact: None,
                 contact_id: None,
                 shared: None,
@@ -176,6 +178,7 @@ impl Wallet {
                 pieces: vec![],
                 note: None,
                 split: None,
+                to_self: false,
                 contact: None,
                 contact_id: None,
                 shared: None,
@@ -206,6 +209,7 @@ impl Wallet {
                     pieces: vec![],
                     note: None,
                     split: None,
+                    to_self: false,
                     contact: None,
                     contact_id: None,
                     shared: None,
@@ -241,6 +245,16 @@ impl Wallet {
                     let sent = state.sent.iter().find(|s| s.tx == row.tx);
                     row.note = sent.and_then(|s| s.note.clone());
                     row.split = sent.and_then(|s| s.pieces);
+                    // Sent to one of its own addresses: more came back than the change, in a block
+                    // or still in the pool. What came back is still this wallet's; only the fee left.
+                    if let Some(sent) = sent.filter(|s| s.pieces.is_none()) {
+                        let mined: u64 = state.outputs.iter().filter(|o| o.tx == row.tx).map(|o| o.amount).sum();
+                        let pooled = self.inner.pool.lock().expect("pool lock").get(&row.tx).map_or(0, Pooled::amount);
+                        if mined.max(pooled) > sent.change {
+                            row.to_self = true;
+                            row.amount = sent.fee;
+                        }
+                    }
                     if let Some(owner) = row.to.as_deref().and_then(|to| state.contacts.owner(to)).filter(|_| row.split.is_none()) {
                         row.contact = Some(owner.name.clone());
                         row.contact_id = Some(owner.id);

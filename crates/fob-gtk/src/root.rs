@@ -77,6 +77,8 @@ pub enum Go {
     Contacts,
     Coins,
     Settings,
+    /// Settings, scrolled to Backup and keys and with it marked.
+    SettingsBackup,
     /// Adding a wallet while one is open.
     AddWallet,
     Request(u64),
@@ -355,7 +357,7 @@ impl Root {
                 self.receive.emit(receive::Input::Screens(View(screens)));
             }
             Update::Status(status) => self.show_status(status),
-            Update::Wallets { all, current, network } => self.show_wallets(all, current, network),
+            Update::Wallets { all, current, .. } => self.show_wallets(all, current),
             Update::Toast(toast) => self.show_toast(toast, sender),
         }
     }
@@ -372,9 +374,9 @@ impl Root {
         self.settings.emit(settings::Input::Status(View(status)));
     }
 
-    fn show_wallets(&self, all: Vec<WalletEntry>, current: Option<WalletEntry>, network: fob_app::views::Network) {
+    fn show_wallets(&self, all: Vec<WalletEntry>, current: Option<WalletEntry>) {
         self.receive.emit(receive::Input::Wallet(current.as_ref().map(|c| c.file.clone())));
-        let wallets = Arc::new(settings::Wallets { all, current, network });
+        let wallets = Arc::new(settings::Wallets { all, current });
         self.home.emit(home::Input::Wallets(View(wallets.clone())));
         self.settings.emit(settings::Input::Wallets(View(wallets)));
     }
@@ -439,6 +441,11 @@ impl Root {
             Go::Settings => {
                 self.settings.emit(settings::Input::Opened);
                 self.push("settings", "Settings", self.settings.widget());
+            }
+            Go::SettingsBackup => {
+                self.settings.emit(settings::Input::Opened);
+                self.push("settings", "Settings", self.settings.widget());
+                self.settings.emit(settings::Input::Highlight);
             }
             Go::AddWallet => {
                 self.add_wallet.emit(start::Input::Adding);

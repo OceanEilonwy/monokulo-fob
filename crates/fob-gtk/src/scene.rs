@@ -60,7 +60,7 @@ async fn press(words: &str) -> Result<(), String> {
     let target = find(words, |widget| {
         if let Some(button) = widget.downcast_ref::<gtk::Button>()
             && button.is_sensitive()
-            && (button.label().is_some_and(|l| plain(&l) == words) || button.tooltip_text().is_some_and(|t| t == words) || (words == "Back" && button.action_name().is_some_and(|a| a == "navigation.pop")))
+            && (crate::widgets::button_words(button).is_some_and(|l| plain(&l) == words) || button.tooltip_text().is_some_and(|t| t == words) || (words == "Back" && button.action_name().is_some_and(|a| a == "navigation.pop")))
         {
             return Some(widget.clone());
         }

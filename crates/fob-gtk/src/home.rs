@@ -2,7 +2,7 @@
 
 use fob_app::{
     Engine,
-    views::{ChipLook, Screens, SyncDetails, SyncStatus},
+    views::{ChipLook, Network, Screens, SyncDetails, SyncStatus},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -22,11 +22,14 @@ pub enum Input {
     Screens(View<Screens>),
     Status(View<SyncStatus>),
     Wallets(View<Wallets>),
+    SwitchWallet(String),
     SwapBalance,
     ShowSync,
     SyncTick,
     SyncClosed,
     SyncNow,
+    /// The refresh is over.
+    Refreshed,
     ScanAgain,
     /// Ask the Trezor for the key images it hasn't given.
     TrezorSync,
@@ -40,9 +43,17 @@ pub struct Home {
     title: String,
     days: gtk::Box,
     sync_card: Option<SyncCard>,
+    refreshing: bool,
+    /// The wallets under the title, with a way to add one.
+    wallet_list: gtk::ListBox,
+    popover: gtk::Popover,
 }
 
 impl Home {
+    fn can_swap(&self) -> bool {
+        self.screens.as_ref().is_some_and(|View(s)| s.balance.can_swap)
+    }
+
     fn big(&self) -> String {
         let Some(View(s)) = &self.screens else { return "—".into() };
         match (&s.balance.fiat_text, s.balance.fiat_first) {
@@ -103,6 +114,37 @@ impl Home {
         }
     }
 
+    fn draw_wallets(&self, wallets: &Wallets, sender: &ComponentSender<Self>) {
+        widgets::clear(&self.wallet_list);
+        for wallet in &wallets.all {
+            let network = match wallet.network {
+                Network::Mainnet => "Mainnet",
+                Network::Stagenet => "Stagenet, test coins",
+            };
+            let row = widgets::row(&wallet.name, network);
+            if wallets.current.as_ref().is_some_and(|c| c.file == wallet.file) {
+                row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
+            } else {
+                row.set_activatable(true);
+                let (file, sender, popover) = (wallet.file.clone(), sender.clone(), self.popover.clone());
+                row.connect_activated(move |_| {
+                    popover.popdown();
+                    sender.input(Input::SwitchWallet(file.clone()));
+                });
+            }
+            self.wallet_list.append(&row);
+        }
+        let add = widgets::row("Add a wallet", "");
+        add.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+        add.set_activatable(true);
+        let (sender, popover) = (sender.clone(), self.popover.clone());
+        add.connect_activated(move |_| {
+            popover.popdown();
+            let _ = sender.output(RootMsg::Go(Go::AddWallet));
+        });
+        self.wallet_list.append(&add);
+    }
+
     fn draw_days(&self, screens: &Screens, sender: &ComponentSender<Self>) {
         widgets::empty(&self.days);
         if screens.activity.is_empty() {
@@ -134,10 +176,12 @@ impl SimpleComponent for Home {
             add_top_bar = &adw::HeaderBar {
                 #[local_ref]
                 #[wrap(Some)]
-                set_title_widget = window_title -> adw::WindowTitle {
-                    set_title: "Fob",
+                set_title_widget = wallet_button -> gtk::MenuButton {
+                    add_css_class: "flat",
+                    set_always_show_arrow: true,
+                    set_tooltip_text: Some("Wallets"),
                     #[watch]
-                    set_subtitle: &model.title,
+                    set_label: if model.title.is_empty() { "Fob" } else { &model.title },
                 },
                 pack_start = &gtk::Button {
                     set_icon_name: "system-users-symbolic",
@@ -152,6 +196,11 @@ impl SimpleComponent for Home {
                 pack_end = &gtk::Button {
                     set_icon_name: "view-refresh-symbolic",
                     set_tooltip_text: Some("Refresh"),
+                    // Turning while it checks, so a press shows it did something.
+                    #[watch]
+                    set_class_active: ("refreshing", model.refreshing),
+                    #[watch]
+                    set_sensitive: !model.refreshing,
                     connect_clicked => Input::SyncNow,
                 },
             },
@@ -182,6 +231,8 @@ impl SimpleComponent for Home {
                         gtk::Button {
                             add_css_class: "flat",
                             set_halign: gtk::Align::Center,
+                            #[watch]
+                            set_tooltip_text: if model.can_swap() { Some("Show the other currency first") } else { None },
                             connect_clicked => Input::SwapBalance,
                             #[wrap(Some)]
                             set_child = &gtk::Box {
@@ -191,12 +242,22 @@ impl SimpleComponent for Home {
                                     #[watch]
                                     set_label: &model.big(),
                                 },
-                                gtk::Label {
-                                    add_css_class: "dim-label",
-                                    #[watch]
-                                    set_label: &model.small(),
+                                gtk::Box {
+                                    set_halign: gtk::Align::Center,
+                                    set_spacing: 6,
                                     #[watch]
                                     set_visible: !model.small().is_empty(),
+                                    gtk::Label {
+                                        add_css_class: "dim-label",
+                                        #[watch]
+                                        set_label: &model.small(),
+                                    },
+                                    // Tapping the balance swaps them: the mark says so.
+                                    #[local_ref]
+                                    swap_mark -> gtk::DrawingArea {
+                                        #[watch]
+                                        set_visible: model.can_swap(),
+                                    },
                                 },
                             },
                         },
@@ -214,24 +275,63 @@ impl SimpleComponent for Home {
                             set_halign: gtk::Align::Center,
                             set_spacing: 12,
                             gtk::Button {
-                                set_label: "Receive",
                                 add_css_class: "pill",
                                 connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Receive)); },
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    set_spacing: 8,
+                                    set_halign: gtk::Align::Center,
+                                    #[local_ref]
+                                    receive_icon -> gtk::DrawingArea {},
+                                    gtk::Label { set_label: "Receive" },
+                                },
                             },
                             gtk::Button {
-                                set_label: "Send",
                                 add_css_class: "pill",
                                 add_css_class: "suggested-action",
                                 connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Send)); },
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    set_spacing: 8,
+                                    set_halign: gtk::Align::Center,
+                                    #[local_ref]
+                                    send_icon -> gtk::DrawingArea {},
+                                    gtk::Label { set_label: "Send" },
+                                },
                             },
                         },
-                        adw::Banner {
-                            set_button_label: Some("Back up"),
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 12,
+                            add_css_class: "warning-card",
+                            add_css_class: "activatable",
+                            set_cursor_from_name: Some("pointer"),
                             #[watch]
-                            set_title: &model.reminder().map_or(String::new(), |(title, line)| format!("{title}: {line}")),
-                            #[watch]
-                            set_revealed: model.reminder().is_some(),
-                            connect_button_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Settings)); },
+                            set_visible: model.reminder().is_some(),
+                            add_controller = gtk::GestureClick {
+                                connect_released[sender] => move |_, _, _, _| { let _ = sender.output(RootMsg::Go(Go::SettingsBackup)); },
+                            },
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 4,
+                                set_hexpand: true,
+                                gtk::Label {
+                                    set_xalign: 0.0,
+                                    add_css_class: "heading",
+                                    #[watch]
+                                    set_label: &model.reminder().map_or(String::new(), |(title, _)| title),
+                                },
+                                gtk::Label {
+                                    set_xalign: 0.0,
+                                    set_wrap: true,
+                                    #[watch]
+                                    set_label: &model.reminder().map_or(String::new(), |(_, line)| line),
+                                },
+                            },
+                            gtk::Image {
+                                set_icon_name: Some("go-next-symbolic"),
+                                set_valign: gtk::Align::Center,
+                            },
                         },
                         adw::Banner {
                             set_button_label: Some("Sync"),
@@ -239,6 +339,9 @@ impl SimpleComponent for Home {
                             set_title: &model.trezor_waiting().unwrap_or_default(),
                             #[watch]
                             set_revealed: model.trezor_waiting().is_some(),
+                            // Not there at all while hidden: a banner with no height still takes the box's gap.
+                            #[watch]
+                            set_visible: model.trezor_waiting().is_some(),
                             connect_button_clicked => Input::TrezorSync,
                         },
                         adw::Banner {
@@ -247,6 +350,8 @@ impl SimpleComponent for Home {
                             set_title: &model.trezor_frozen().unwrap_or_default(),
                             #[watch]
                             set_revealed: model.trezor_frozen().is_some(),
+                            #[watch]
+                            set_visible: model.trezor_frozen().is_some(),
                             connect_button_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Scan)); },
                         },
                         #[local_ref]
@@ -262,9 +367,16 @@ impl SimpleComponent for Home {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let days = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let window_title = adw::WindowTitle::new("Fob", "");
-        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None };
-        let (days, window_title) = (&days, &window_title);
+        let wallet_button = gtk::MenuButton::new();
+        let wallet_list = widgets::list();
+        let popover = gtk::Popover::new();
+        popover.set_child(Some(&wallet_list));
+        wallet_button.set_popover(Some(&popover));
+        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, refreshing: false, wallet_list, popover };
+        let swap_mark = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
+        // As on Android: the arrow in for Receive, out for Send.
+        let (receive_icon, send_icon) = (crate::icons::icon(crate::icons::DOWN, 18, 1.0), crate::icons::icon(crate::icons::UP, 18, 1.0));
+        let (days, wallet_button, swap_mark, receive_icon, send_icon) = (&days, &wallet_button, &swap_mark, &receive_icon, &send_icon);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -278,6 +390,15 @@ impl SimpleComponent for Home {
             Input::Status(view) => self.status = Some(view),
             Input::Wallets(View(wallets)) => {
                 self.title = wallets.current.as_ref().map_or(String::new(), |c| c.name.clone());
+                self.draw_wallets(&wallets, &sender);
+            }
+            Input::SwitchWallet(file) => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Err(e) = engine.switch_wallet(file).await {
+                        sender.input(Input::Say(e.to_string()));
+                    }
+                });
             }
             Input::SwapBalance => {
                 // Nothing to swap to: a balance stays readable, so it isn't greyed out.
@@ -305,15 +426,26 @@ impl SimpleComponent for Home {
                 }
             }
             Input::SyncNow => {
+                if self.refreshing {
+                    return;
+                }
+                self.refreshing = true;
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {
+                    let started = std::time::Instant::now();
                     match engine.sync_now().await {
                         Ok(Some(said)) => sender.input(Input::Say(format!("{} · {}", said.title, said.line))),
                         Ok(None) => {}
                         Err(e) => sender.input(Input::Say(format!("Couldn't check · {e}"))),
                     }
+                    // A check that's over at once still turns long enough to be seen.
+                    if let Some(left) = std::time::Duration::from_millis(800).checked_sub(started.elapsed()) {
+                        relm4::tokio::time::sleep(left).await;
+                    }
+                    sender.input(Input::Refreshed);
                 });
             }
+            Input::Refreshed => self.refreshing = false,
             Input::ScanAgain => {
                 let (engine, sender) = (self.engine.clone(), sender.clone());
                 relm4::spawn(async move {

@@ -51,6 +51,8 @@ pub struct Send {
     busy: bool,
     error: Option<String>,
     to: adw::EntryRow,
+    /// Before `to`: the address's pattern, once it is one.
+    to_mark: gtk::Box,
     amount_row: adw::EntryRow,
     note: adw::EntryRow,
     people: adw::PreferencesGroup,
@@ -89,8 +91,8 @@ impl SimpleComponent for Send {
                         gtk::Box {
                             set_halign: gtk::Align::Center,
                             set_spacing: 12,
-                            gtk::Button { set_label: "Paste a code", add_css_class: "pill", connect_clicked => Input::Paste },
-                            gtk::Button { set_label: "Open a picture", add_css_class: "pill", connect_clicked => Input::Picture },
+                            gtk::Button { set_child: Some(&widgets::icon_label(crate::icons::REQUEST, "Paste a code", false)), add_css_class: "pill", connect_clicked => Input::Paste },
+                            gtk::Button { set_child: Some(&widgets::icon_label(crate::icons::PICTURE, "Open a picture", false)), add_css_class: "pill", connect_clicked => Input::Picture },
                         },
                         adw::PreferencesGroup {
                             #[local_ref]
@@ -104,16 +106,29 @@ impl SimpleComponent for Send {
                                 connect_changed => Input::Typed,
                                 #[watch]
                                 set_title: model.entry.as_ref().map_or("Amount", |View(e)| e.label.as_str()),
+                                // The unit with the swap mark where it can swap: a flat button, as GTK has them.
                                 add_suffix = &gtk::Button {
                                     add_css_class: "flat",
                                     set_valign: gtk::Align::Center,
-                                    #[watch]
-                                    set_label: model.entry.as_ref().map_or("XMR", |View(e)| e.unit.as_str()),
                                     #[watch]
                                     set_sensitive: model.entry.as_ref().is_some_and(|View(e)| e.can_switch),
                                     #[watch]
                                     set_tooltip_text: model.entry.as_ref().and_then(|View(e)| e.switch_label.as_deref()),
                                     connect_clicked => Input::Switch,
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Box {
+                                        set_spacing: 8,
+                                        gtk::Label {
+                                            add_css_class: "heading",
+                                            #[watch]
+                                            set_label: model.entry.as_ref().map_or("XMR", |View(e)| e.unit.as_str()),
+                                        },
+                                        #[local_ref]
+                                        unit_swap -> gtk::DrawingArea {
+                                            #[watch]
+                                            set_visible: model.entry.as_ref().is_some_and(|View(e)| e.can_switch),
+                                        },
+                                    },
                                 },
                             },
                             #[local_ref]
@@ -137,7 +152,7 @@ impl SimpleComponent for Send {
                             add_css_class: "suggested-action",
                             add_css_class: "pill",
                             set_halign: gtk::Align::Center,
-                            set_label: "Review",
+                            set_child: Some(&widgets::icon_label(crate::icons::ARROW, "Review", true)),
                             #[watch]
                             set_sensitive: model.can_review(),
                             connect_clicked => Input::Review,
@@ -153,6 +168,8 @@ impl SimpleComponent for Send {
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (to, amount_row, note) = (adw::EntryRow::new(), adw::EntryRow::new(), adw::EntryRow::new());
         let people = adw::PreferencesGroup::new();
+        let to_mark = gtk::Box::builder().visible(false).valign(gtk::Align::Center).build();
+        to.add_prefix(&to_mark);
         let model = Send {
             engine,
             amount: Amount::default(),
@@ -161,6 +178,7 @@ impl SimpleComponent for Send {
             busy: false,
             error: None,
             to: to.clone(),
+            to_mark,
             amount_row: amount_row.clone(),
             note: note.clone(),
             people: people.clone(),
@@ -168,8 +186,10 @@ impl SimpleComponent for Send {
             filling: false,
             light: false,
         };
-        let (to, amount_row, note, people) = (&to, &amount_row, &note, &people);
+        let unit_swap = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
+        let (to, amount_row, note, people, unit_swap) = (&to, &amount_row, &note, &people, &unit_swap);
         let widgets = view_output!();
+        widgets::hide_pencil(amount_row);
         ComponentParts { model, widgets }
     }
 
@@ -202,6 +222,14 @@ impl SimpleComponent for Send {
                     self.code = None;
                 }
                 self.error = None;
+                // Its pattern shows once it's an address of this network, as on Android.
+                let text = self.to.text().trim().to_owned();
+                widgets::empty(&self.to_mark);
+                let valid = form::to_is_valid(network(&self.engine), text.clone());
+                if valid {
+                    self.to_mark.append(&widgets::pattern_sized(&text, 32));
+                }
+                self.to_mark.set_visible(valid);
             }
             Input::Typed => {
                 if !self.filling {

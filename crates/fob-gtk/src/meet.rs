@@ -87,29 +87,32 @@ impl SimpleComponent for Meet {
                             set_label: model.error.as_deref().unwrap_or(""),
                         },
                         gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
                             set_halign: gtk::Align::Center,
+                            // One width, so the stacked buttons line up.
+                            set_width_request: 280,
                             set_spacing: 12,
                             #[watch]
                             set_visible: model.stage == Stage::Show,
                             gtk::Button {
-                                set_label: "Copy my link",
+                                set_child: Some(&widgets::icon_label(crate::icons::LINK, "Copy my link", false)),
                                 add_css_class: "pill",
                                 connect_clicked => Input::CopyLink,
                             },
                             gtk::Button {
-                                set_label: "Paste their code",
+                                set_child: Some(&widgets::icon_label(crate::icons::REQUEST, "Paste their code", false)),
                                 add_css_class: "pill",
                                 add_css_class: "suggested-action",
                                 connect_clicked => Input::Paste,
                             },
                             gtk::Button {
-                                set_label: "From a picture",
+                                set_child: Some(&widgets::icon_label(crate::icons::PICTURE, "From a picture", false)),
                                 add_css_class: "pill",
                                 connect_clicked => Input::Picture,
                             },
                         },
                         gtk::Button {
-                            set_label: "Done",
+                            set_child: Some(&widgets::icon_label(crate::icons::CHECK, "Done", false)),
                             add_css_class: "pill",
                             add_css_class: "suggested-action",
                             set_halign: gtk::Align::Center,
