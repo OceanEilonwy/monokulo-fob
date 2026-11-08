@@ -3369,3 +3369,16 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      heights, a transaction's height and time, an output's global index (used
      only when spending, where the node checks it), the commitment itself, a
      fee, and whatever the server leaves out.
+383. **Tried on stagenet, 2026-11-08**, against monokulo-lws (branch
+     `close-gaps`) at 127.0.0.1:18443, which serves `commitment` on every
+     output (a mined reward's as `G + amount·H`) and `fee` on every transaction.
+     `live_a_fresh_wallet_through_monokulo_lws` passed as in decision 376 (the
+     server at 2,245,922). `live_an_existing_wallet_through_monokulo_lws`, the
+     test wallet the server knew from 2,244,400, synced in one poll: both 0.1 XMR
+     receives (2,245,514 and 2,245,517) taken with "Amounts · match the chain's
+     commitments", nothing refused, balance 0.2 XMR. The server also listed
+     three candidate spends (2,245,716, 2,245,858, 2,245,914); none had either
+     output's key image, and a node says both are unspent, so they are decoy
+     uses and Fob rightly recorded no spend. The server's fees and commitments
+     for all five transactions matched the node's `get_transactions`. A spend
+     with a fee wasn't tried live: the wallet has made none.
