@@ -49,18 +49,19 @@ async fn the_node_is_asked_about_a_quiet_payments_coins() {
     })
     .await;
     let wallet = a_used_wallet(&dir("quiet-coins")).await;
-    let tx = "out";
+    let tx = &tx_hex("out");
     let t = now();
     {
         let mut state = wallet.inner.state.lock().await;
         state.node = url;
+        state.sent[0].tx = tx.clone();
         state.sent[0].height = None;
         state.sent[0].time = t - NOT_CONFIRMED_AFTER;
         state.outputs.truncate(1);
-        state.outputs[0].spent_in = Some(tx.into());
+        state.outputs[0] = state.outputs[0].clone().with_coin(held_by_ours("out"));
     }
     let rpc = wallet.rpc().await.unwrap();
-    let missing = SentLookup { missing: vec![tx.into()], ..Default::default() };
+    let missing = SentLookup { missing: vec![tx.clone()], ..Default::default() };
     let cases = [
         (r#"{"spent_status":[0],"status":"OK"}"#, true, "unspent: it may not have gone through"),
         (r#"{"spent_status":[1],"status":"OK"}"#, true, "spent by something else: it never will"),
@@ -80,7 +81,8 @@ async fn the_node_is_asked_about_a_quiet_payments_coins() {
     {
         let mut state = wallet.inner.state.lock().await;
         state.sent[0].time = t - NOT_CONFIRMED_AFTER;
-        state.outputs[0].key_image = None;
+        let no_image = Coin::Held { ki: KeyImage::Unknown, hold: Hold::OurPayment { tx: tx_hash("out") } };
+        state.outputs[0] = state.outputs[0].clone().with_coin(no_image);
     }
     *said.lock().unwrap() = r#"{"spent_status":[],"status":"OK"}"#.into();
     assert!(!wallet.check_missing(&rpc, missing.clone()).await.missing.contains(&tx.to_owned()));
@@ -91,32 +93,33 @@ async fn the_node_is_asked_about_a_quiet_payments_coins() {
     {
         let mut state = wallet.inner.state.lock().await;
         state.sent[0].time = t - NOT_CONFIRMED_AFTER;
-        state.outputs[0].key_image = Some("aa".into());
+        state.outputs[0] = state.outputs[0].clone().with_coin(held_by_ours("out"));
     }
     *said.lock().unwrap() = r#"{"spent_status":[1],"status":"OK"}"#.into();
     let lookup = wallet.check_missing(&rpc, missing).await;
     wallet.note_missing(&lookup).await.unwrap();
     let state = wallet.inner.state.lock().await;
     assert!(state.sent[0].not_confirmed);
-    assert_eq!(state.outputs[0].spent_in.as_deref(), Some(tx));
+    assert!(state.outputs[0].spent_by(tx));
 }
 
 #[tokio::test]
 async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_released() {
     let wallet = a_used_wallet(&dir("dropped")).await;
     let t = now();
-    let tx = "out";
+    let tx = &tx_hex("out");
     let coin = {
         let mut state = wallet.inner.state.lock().await;
+        state.sent[0].tx = tx.clone();
         state.sent[0].height = None;
         state.sent[0].time = t - NOT_CONFIRMED_AFTER + 60;
         state.sent[0].change = 7;
         state.outputs.truncate(1);
         state.outputs[0].amount = 100;
-        state.outputs[0].spent_in = Some(tx.into());
+        state.outputs[0] = state.outputs[0].clone().with_coin(held_by_ours("out"));
         state.outputs[0].amount
     };
-    let missing = SentLookup { missing: vec![tx.into()], ..Default::default() };
+    let missing = SentLookup { missing: vec![tx.clone()], ..Default::default() };
     assert!(wallet.release_payment(tx).await.is_err(), "not until it's marked");
     wallet.note_missing(&missing).await.unwrap();
     assert!(!wallet.inner.state.lock().await.sent[0].not_confirmed, "under a day: it may yet arrive");
@@ -126,12 +129,12 @@ async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_rel
     {
         let state = wallet.inner.state.lock().await;
         assert!(state.sent[0].not_confirmed);
-        assert_eq!(state.outputs[0].spent_in.as_deref(), Some(tx), "nothing's released by itself");
+        assert!(state.outputs[0].spent_by(tx), "nothing's released by itself");
     }
-    assert_eq!(wallet.activity().await.iter().find(|a| a.tx == tx).map(|a| a.not_confirmed), Some(true));
+    assert_eq!(wallet.activity().await.iter().find(|a| a.tx == *tx).map(|a| a.not_confirmed), Some(true));
 
     // Heard of again: back to waiting.
-    wallet.note_missing(&SentLookup { in_pool: vec![tx.into()], ..Default::default() }).await.unwrap();
+    wallet.note_missing(&SentLookup { in_pool: vec![tx.clone()], ..Default::default() }).await.unwrap();
     assert!(!wallet.inner.state.lock().await.sent[0].not_confirmed);
     wallet.note_missing(&missing).await.unwrap();
 
@@ -140,11 +143,11 @@ async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_rel
     {
         let state = wallet.inner.state.lock().await;
         assert!(state.sent[0].released && !state.sent[0].not_confirmed);
-        assert_eq!(state.outputs[0].spent_in, None);
+        assert!(state.outputs[0].coin.is_free());
     }
     assert_eq!(wallet.balance().await.total, before + coin - 7, "the coin back, the change it was to bring gone");
     assert!(wallet.release_payment(tx).await.is_err(), "once");
-    let row = wallet.activity().await.into_iter().find(|a| a.tx == tx).unwrap();
+    let row = wallet.activity().await.into_iter().find(|a| a.tx == *tx).unwrap();
     assert!(row.released);
     // Not asked about any more.
     assert!(Wallet::unsettled_sent(&*wallet.inner.state.lock().await).iter().all(|(hash, _)| hash != tx));
@@ -224,7 +227,7 @@ async fn manual_sync_spends_at_settled_confirmations_and_says_what_is_waiting() 
     state.outputs.truncate(1);
     state.outputs[0].coinbase = false;
     state.outputs[0].unlock_block = 0;
-    state.outputs[0].spent_in = None;
+    state.outputs[0] = state.outputs[0].clone().with_coin(Coin::Free { ki: KeyImage::Known([0xaa; 32]) });
     state.outputs[0].height = 100;
     state.tip = 115;
     let amount = state.outputs[0].amount;

@@ -13,6 +13,7 @@ mod sync;
 use super::*;
 
 use crate::price_alert::Asked;
+use coin::{Coin, Hold, KeyImage, TxHash};
 
 /// The phone's clock now, at UTC.
 fn clock_now() -> Clock {
@@ -134,9 +135,10 @@ async fn a_used_wallet(path: &Path) -> Wallet {
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), note: Some("Neighbour".into()), photo: Some(fob_codes::names::test_webp(300, 96)), ..Default::default() }).await.unwrap();
     wallet.make_request(Some(sam.id), Some("0.5"), false, Some("Tickets")).await.unwrap();
     let mut state = wallet.inner.state.lock().await;
-    state.outputs.push(Owned { subaddress: 1, coinbase: true, unlock_block: 77, key_image: Some("aa".into()), spent_in: Some("bb".into()), ..received("in", 1_700_000_000, u64::MAX) });
+    let spent = Coin::Spent { ki: KeyImage::Known([0xaa; 32]), tx: tx_hash("bb"), height: 12 };
+    state.outputs.push(Owned { subaddress: 1, coinbase: true, unlock_block: 77, ..received("in", 1_700_000_000, u64::MAX) }.with_coin(spent));
     state.outputs.push(received("in2", 1_700_000_100, XMR));
-    state.spends.push(ChainSpend { tx: "bb".into(), height: 12, time: 1_700_000_200, fee: 30 });
+    state.spends.push(ChainSpend { tx: tx_hex("bb"), height: 12, time: 1_700_000_200, fee: 30 });
     state.sent.push(Sent {
         not_confirmed: false,
         released: false,
@@ -326,6 +328,24 @@ const XMR: u64 = amount::ATOMIC_PER_XMR;
 
 const DAY: u64 = 86_400;
 
+/// A transaction hash for a test, from a short name: the name's bytes,
+/// padded. What a coin's state names must be a hash, not a word.
+fn tx_hash(name: &str) -> TxHash {
+    let mut hash = [0u8; 32];
+    hash[..name.len()].copy_from_slice(name.as_bytes());
+    hash
+}
+
+/// [`tx_hash`] in hex, as the wallet's records name a transaction.
+fn tx_hex(name: &str) -> String {
+    hex::encode(tx_hash(name))
+}
+
+/// A coin held by a payment of this wallet's, named by [`tx_hash`].
+fn held_by_ours(name: &str) -> Coin {
+    Coin::Held { ki: KeyImage::Known([0xaa; 32]), hold: Hold::OurPayment { tx: tx_hash(name) } }
+}
+
 fn received(tx: &str, time: u64, amount: u64) -> Owned {
     Owned {
         output: String::new(),
@@ -337,6 +357,7 @@ fn received(tx: &str, time: u64, amount: u64) -> Owned {
         coinbase: false,
         unlock_block: 0,
         key: tx.into(),
+        coin: Coin::default(),
         key_image: None,
         spent_in: None,
         tx_key: None,

@@ -250,18 +250,10 @@ pub fn step(coin: Coin, event: &Event) -> Coin {
 /// Proof that a coin may be spent now: made only from a free coin with a
 /// known key image and enough confirmations, by [`Coin::spendable`]. A
 /// payment is built from these, so a device's coin the device hasn't been
-/// asked about can't be chosen.
+/// asked about can't be chosen. The field keeps it from being made
+/// anywhere else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Spendable {
-    ki: [u8; 32],
-}
-
-impl Spendable {
-    /// The coin's key image, which the proof was made from.
-    pub fn key_image(&self) -> [u8; 32] {
-        self.ki
-    }
-}
+pub struct Spendable(());
 
 impl Default for Coin {
     /// A coin just found, nothing known of it: free, its key image not yet
@@ -311,9 +303,7 @@ impl Coin {
     /// `needed`: only a free coin whose key image is known gives one.
     pub fn spendable(&self, confirmations: u64, needed: u64) -> Option<Spendable> {
         match self {
-            Coin::Free { ki: KeyImage::Known(ki) } if confirmations >= needed => {
-                Some(Spendable { ki: *ki })
-            }
+            Coin::Free { ki: KeyImage::Known(_) } if confirmations >= needed => Some(Spendable(())),
             _ => None,
         }
     }
@@ -613,7 +603,7 @@ mod tests {
 
     #[test]
     fn only_a_free_coin_with_a_known_key_image_is_spendable() {
-        assert_eq!(free().spendable(10, 10).map(|s| s.key_image()), Some(IMAGE));
+        assert!(free().spendable(10, 10).is_some());
         assert!(free().spendable(9, 10).is_none(), "not confirmed enough");
         assert!(Coin::Free { ki: KeyImage::Unknown }.spendable(100, 10).is_none());
         assert!(held(Hold::InPool { tx: T }).spendable(100, 10).is_none());
@@ -738,8 +728,8 @@ mod tests {
             confirmations in any::<u64>(),
             needed in any::<u64>(),
         ) {
-            if let Some(spendable) = coin.spendable(confirmations, needed) {
-                prop_assert_eq!(coin.key_image(), Some(spendable.key_image()));
+            if coin.spendable(confirmations, needed).is_some() {
+                prop_assert!(coin.key_image().is_some());
                 prop_assert!(coin.is_free() && confirmations >= needed);
             }
         }

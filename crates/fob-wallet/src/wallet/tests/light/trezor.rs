@@ -57,7 +57,7 @@ async fn a_trezor_wallet_finds_its_spends_through_the_server() {
         assert_eq!(state.outputs.len(), 3);
         for (output, p) in state.outputs.iter().zip(&paid) {
             assert_eq!(output.tx_key.as_deref(), Some(hex::encode(p.tx_key).as_str()), "the server's transaction key");
-            assert_eq!((output.key_image.as_ref(), output.spent_in.as_ref()), (None, None), "no spend key here to make it");
+            assert_eq!(output.coin, Coin::default(), "no spend key here to make it");
         }
         assert_eq!(state.outputs[1].subaddress, 3);
     }
@@ -81,11 +81,11 @@ async fn a_trezor_wallet_finds_its_spends_through_the_server() {
     let mined_hex = hex::encode(mined);
     {
         let state = wallet.inner.state.lock().await;
-        let given: Vec<_> = state.outputs.iter().map(|o| o.key_image.clone().unwrap()).collect();
-        assert_eq!(given, images.iter().map(hex::encode).collect::<Vec<_>>(), "the device's key images, the subaddress's too");
-        assert_eq!(state.outputs[0].spent_in.as_deref(), Some(mined_hex.as_str()), "spent in a block: by that transaction");
-        assert_eq!(state.outputs[1].spent_in.as_deref(), Some(SPENT_IN_POOL_AT_SYNC), "spent in the pool only: tentatively");
-        assert_eq!(state.outputs[2].spent_in, None, "somebody else's key image");
+        let given: Vec<_> = state.outputs.iter().map(|o| o.coin.key_image().unwrap()).collect();
+        assert_eq!(given, images, "the device's key images, the subaddress's too");
+        assert_eq!(state.outputs[0].coin, Coin::Spent { ki: KeyImage::Known(images[0]), tx: mined, height: 2_249_050 }, "spent in a block: by that transaction");
+        assert_eq!(state.outputs[1].coin, Coin::Held { ki: KeyImage::Known(images[1]), hold: Hold::InPool { tx: pooled } }, "spent in the pool only: held by that transaction");
+        assert!(state.outputs[2].coin.is_free(), "somebody else's key image");
         assert_eq!(state.spends.iter().map(|s| (s.tx.as_str(), s.fee)).collect::<Vec<_>>(), vec![(mined_hex.as_str(), 30_000_000)]);
     }
     let rows: Vec<_> = wallet.said_lists(clock_now()).await.days.into_iter().flat_map(|d| d.rows).filter(|r| r.activity.as_ref().is_some_and(|a| a.tx == mined_hex)).collect();
@@ -100,17 +100,18 @@ async fn a_trezor_wallet_finds_its_spends_through_the_server() {
     spends.retain(|t| t.hash.0 != pooled);
     server.lists(spends.clone(), 2_249_101);
     wallet.sync_step().await.unwrap();
-    assert_eq!(wallet.inner.state.lock().await.outputs[1].spent_in, None);
+    assert!(wallet.inner.state.lock().await.outputs[1].coin.is_free());
     // In the pool again, then mined: spent by that transaction for good.
     spends.push(listed(pooled, None, vec![], vec![spend_of(&paid[1], images[1])]));
     server.lists(spends.clone(), 2_249_102);
     wallet.sync_step().await.unwrap();
-    assert_eq!(wallet.inner.state.lock().await.outputs[1].spent_in.as_deref(), Some(SPENT_IN_POOL_AT_SYNC));
+    assert_eq!(wallet.inner.state.lock().await.outputs[1].coin.tx(), Some(pooled));
+    assert!(!wallet.inner.state.lock().await.outputs[1].coin.is_free());
     spends.pop();
     spends.push(listed(pooled, Some(2_249_102), vec![], vec![spend_of(&paid[1], images[1])]));
     server.lists(spends, 2_249_103);
     wallet.sync_step().await.unwrap();
-    assert_eq!(wallet.inner.state.lock().await.outputs[1].spent_in.as_deref(), Some(hex::encode(pooled).as_str()));
+    assert_eq!(wallet.inner.state.lock().await.outputs[1].coin, Coin::Spent { ki: KeyImage::Known(images[1]), tx: pooled, height: 2_249_102 });
     assert_eq!(wallet.inner.state.lock().await.spendable(), XMR / 4, "only the third coin is left");
 }
 
@@ -149,7 +150,7 @@ async fn a_trezor_payment_through_the_server_is_signed_submitted_and_recorded() 
 
     {
         let state = wallet.inner.state.lock().await;
-        assert_eq!(state.outputs[0].spent_in.as_deref(), Some(hash.as_str()));
+        assert!(state.outputs[0].spent_by(&hash));
         let sent = state.sent.iter().find(|s| s.tx == hash).unwrap();
         assert_eq!((sent.amount, sent.fee, sent.to.as_str(), sent.note.as_deref()), (XMR / 10, prepared.fee, to.as_str(), Some("Lunch")));
         assert_eq!(sent.change, XMR - XMR / 10 - prepared.fee);
@@ -161,7 +162,7 @@ async fn a_trezor_payment_through_the_server_is_signed_submitted_and_recorded() 
     server.lists(vec![wallet_coin_tx(&paid[0], &server), listed(hash_bytes, None, vec![], vec![spend_of(&paid[0], image_of(&full, &paid[0]))])], 2_249_101);
     wallet.sync_step().await.unwrap();
     assert!(wallet.inner.pool.lock().unwrap().is_empty(), "its own payment, not money coming in");
-    assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in.as_deref(), Some(hash.as_str()), "still spent by it, not marked");
+    assert!(wallet.inner.state.lock().await.outputs[0].spent_by(&hash), "still held by it, our payment");
     let mut mined = listed(hash_bytes, Some(2_249_102), vec![], vec![spend_of(&paid[0], image_of(&full, &paid[0]))]);
     mined.fee = Some(lws::Amount(prepared.fee));
     server.lists(vec![wallet_coin_tx(&paid[0], &server), mined], 2_249_103);
@@ -190,7 +191,7 @@ async fn a_trezor_payment_the_server_refuses_is_not_recorded() {
     assert_eq!(server.submitted.lock().unwrap().len(), 1, "it was handed over");
     let state = wallet.inner.state.lock().await;
     assert!(state.sent.is_empty());
-    assert!(state.outputs[0].spent_in.is_none());
+    assert!(state.outputs[0].coin.is_free());
     drop(state);
     // Prepared again, it goes.
     *server.submit.lock().unwrap() = (200, r#"{"status":"OK"}"#.into());

@@ -6,7 +6,7 @@ impl Wallet {
     pub async fn balance(&self) -> Balance {
         let state = self.inner.state.lock().await;
         let mut balance = Balance::default();
-        for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
+        for output in state.outputs.iter().filter(|o| o.coin.is_free()) {
             balance.total += output.amount;
             if confirmations(&state, output.height) >= state.needed(output) {
                 balance.unlocked += output.amount;
@@ -36,7 +36,7 @@ impl Wallet {
             None => Source::Change(Some(short_title(&sent.to))),
         };
         let (mut ready, mut waiting) = (vec![], vec![]);
-        for output in state.outputs.iter().filter(|o| o.spent_in.is_none()) {
+        for output in state.outputs.iter().filter(|o| o.coin.is_free()) {
             let needed = state.needed(output);
             let confirmations = confirmations(&state, output.height);
             let source = match state.sent.iter().find(|s| s.tx == output.tx) {
@@ -129,7 +129,7 @@ impl Wallet {
             if !outgoing.insert(&spend.tx) {
                 continue;
             }
-            let spent: u64 = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&spend.tx)).map(|o| o.amount).sum();
+            let spent: u64 = state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount).sum();
             let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
             rows.push(Activity {
                 not_confirmed: false,
@@ -241,7 +241,7 @@ impl Wallet {
                     row.shared = row.subaddress.and_then(|s| state.profile.at(s)).map(|s| s.created);
                 }
                 Direction::Out => {
-                    row.pieces = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(row.tx.as_str())).map(|o| o.amount).collect();
+                    row.pieces = state.outputs.iter().filter(|o| o.spent_by(&row.tx)).map(|o| o.amount).collect();
                     let sent = state.sent.iter().find(|s| s.tx == row.tx);
                     row.note = sent.and_then(|s| s.note.clone());
                     row.split = sent.and_then(|s| s.pieces);

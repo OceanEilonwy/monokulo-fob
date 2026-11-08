@@ -13,6 +13,7 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
         coinbase,
         unlock_block: if coinbase { height + 60 } else { 0 },
         key: tx.into(),
+        coin: Coin::default(),
         key_image: None,
         spent_in: None,
         tx_key: None,
@@ -170,11 +171,12 @@ async fn a_payment_the_node_gave_no_answer_for_says_so_until_it_is_mined() {
         state.outputs.push(received("coin-2", 1, XMR));
     }
     let to = wallet.inner.keys.address(9);
-    wallet.publish_and_record("unsure".into(), 30, outgoing(&to, &["coin"]), "0200".into(), async { Err(Unpublished::Unsure) }).await.unwrap();
-    wallet.publish_and_record("taken".into(), 30, outgoing(&to, &["coin-2"]), "0300".into(), async { Ok(()) }).await.unwrap();
-    assert!(wallet.unanswered("unsure").await);
-    assert!(!wallet.unanswered("taken").await, "the node answered");
+    let (unsure, taken) = (tx_hex("unsure"), tx_hex("taken"));
+    wallet.publish_and_record(tx_hash("unsure"), 30, outgoing(&to, &["coin"]), "0200".into(), async { Err(Unpublished::Unsure) }).await.unwrap();
+    wallet.publish_and_record(tx_hash("taken"), 30, outgoing(&to, &["coin-2"]), "0300".into(), async { Ok(()) }).await.unwrap();
+    assert!(wallet.unanswered(&unsure).await);
+    assert!(!wallet.unanswered(&taken).await, "the node answered");
     assert!(!wallet.unanswered("no such payment").await);
-    wallet.inner.state.lock().await.sent.iter_mut().find(|s| s.tx == "unsure").unwrap().height = Some(10);
-    assert!(!wallet.unanswered("unsure").await, "mined: nothing left to offer");
+    wallet.inner.state.lock().await.sent.iter_mut().find(|s| s.tx == unsure).unwrap().height = Some(10);
+    assert!(!wallet.unanswered(&unsure).await, "mined: nothing left to offer");
 }

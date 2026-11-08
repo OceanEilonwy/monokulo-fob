@@ -36,6 +36,7 @@ impl Wallet {
             receive_index: 0,
             receive_own: None,
             outputs: vec![],
+            transitions: std::collections::VecDeque::new(),
             spends: vec![],
             sent: vec![],
             prices: price::Settings::default(),
@@ -211,6 +212,7 @@ impl Wallet {
         let keys = db.keys()?;
         let saved = db.load()?;
         let mut state: State = serde_json::from_value(saved).map_err(|e| FobError::storage(e.to_string()))?;
+        state.coins_from_marks();
         db.loaded(Self::state_value(&state)?)?;
         let dropped = state.contacts.drop_bad_photos() | state.profile.drop_bad_photo();
         let wallet = Wallet::from_parts(&path, db, keys.into_keys()?, state);

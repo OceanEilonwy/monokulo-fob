@@ -1,6 +1,7 @@
 //! Following the chain: the sync loop, scanning, the pool and the GPU check.
 
 use super::*;
+use coin::{Coin, Event, Hold, KeyImage, TxHash};
 
 /// How long leaving waits for the loop to let go of the wallet. An aborted
 /// task drops what it holds on the runtime's thread, and when that is the
@@ -299,8 +300,26 @@ impl Wallet {
         self.inner.pool.lock().expect("pool lock").retain(|tx, _| in_pool.contains(tx));
         self.inner.pool_seen.lock().expect("pool lock").retain(|tx| in_pool.contains(tx));
         {
+            // A coin a pool transaction held, and the pool no longer has the
+            // transaction: it left unmined (one mined in a block not yet
+            // scanned is spent again when the scan gets there). What a
+            // device's sync found names no transaction, and `step` leaves
+            // it be (decisions 364 and 399).
             let mut state = self.inner.state.lock().await;
-            if pool_left(&mut state, &in_pool) {
+            let gone: Vec<(usize, TxHash)> = state
+                .outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, o)| match o.coin {
+                    Coin::Held { hold: Hold::InPool { tx }, .. } if !in_pool.contains(&hex::encode(tx)) => Some((i, tx)),
+                    _ => None,
+                })
+                .collect();
+            let mut changed = false;
+            for (i, tx) in gone {
+                changed |= state.apply_at(i, Event::PoolLeft { tx });
+            }
+            if changed {
                 self.save_state(&state)?;
             }
         }
@@ -330,11 +349,21 @@ impl Wallet {
         };
         let txs = rpc.transactions(&new).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
         // Spending this wallet's coins, however it got there: a payment the
-        // node gave Fob no answer for, or one from another wallet with these keys.
-        let spending: Vec<(String, Vec<[u8; 32]>)> = new.iter().zip(&txs).map(|(hash, tx)| (hex::encode(hash), spent_images(tx))).collect();
+        // node gave Fob no answer for, or one from another wallet with these
+        // keys. As wallet2 does, a payment in the pool holds its coins until
+        // it's mined or leaves.
         {
             let mut state = self.inner.state.lock().await;
-            if pool_spends(&mut state, &spending) {
+            let images = Self::key_images(&state);
+            let mut changed = false;
+            for (hash, tx) in new.iter().zip(&txs) {
+                for image in spent_images(tx) {
+                    if let Some(&i) = images.get(&image) {
+                        changed |= state.apply_at(i, Event::PoolSpend { tx: *hash });
+                    }
+                }
+            }
+            if changed {
                 self.save_state(&state)?;
             }
         }
@@ -422,13 +451,21 @@ impl Wallet {
         let mut state = self.inner.state.lock().await;
         state.outputs.retain(|o| o.height < from);
         state.spends.retain(|s| s.height < from);
-        let spends: HashSet<String> = state.spends.iter().map(|s| s.tx.clone()).collect();
-        let pending: HashSet<String> = state.sent.iter().filter(|s| !s.released && (s.height.is_none() || s.height >= Some(from))).map(|s| s.tx.clone()).collect();
-        for output in &mut state.outputs {
-            // What a device's key image sync found spent names no transaction;
-            // it stays until the next sync asks the node again.
-            if output.spent_in.as_ref().is_some_and(|t| !hardware::is_sync_mark(t) && !spends.contains(t) && !pending.contains(t)) {
-                output.spent_in = None;
+        // A payment of ours in the forgotten blocks, or not yet mined, still
+        // stands as sent: a coin its spend had made spent is held by it again.
+        let pending: HashSet<TxHash> = state
+            .sent
+            .iter()
+            .filter(|s| !s.released && s.height.is_none_or(|h| h >= from))
+            .filter_map(|s| hash_bytes(&s.tx))
+            .collect();
+        for i in 0..state.outputs.len() {
+            let was = state.outputs[i].coin;
+            if state.apply_at(i, Event::Rewind { from })
+                && let Coin::Spent { tx, .. } = was
+                && pending.contains(&tx)
+            {
+                state.apply_at(i, Event::SentByUs { tx });
             }
         }
         for sent in &mut state.sent {
@@ -618,7 +655,7 @@ impl Wallet {
     pub(super) fn key_images(state: &State) -> HashMap<[u8; 32], usize> {
         let mut images = HashMap::with_capacity(state.outputs.len());
         for (i, output) in state.outputs.iter().enumerate() {
-            if let Some(image) = output.key_image.as_deref().and_then(hash_bytes) {
+            if let Some(image) = output.coin.key_image() {
                 images.entry(image).or_insert(i);
             }
         }
@@ -653,10 +690,10 @@ impl Wallet {
                 if let Some(&i) = images.get(image) {
                     let tx = hex::encode(seen.hash);
                     if !state.spends.iter().any(|s| s.tx == tx) {
-                        state.spends.push(ChainSpend { tx: tx.clone(), height, time, fee: seen.fee });
+                        state.spends.push(ChainSpend { tx, height, time, fee: seen.fee });
+                        changed = true;
                     }
-                    state.outputs[i].spent_in = Some(tx);
-                    changed = true;
+                    changed |= state.apply_at(i, Event::MinedSpend { tx: seen.hash, height });
                     ours = true;
                 }
             }
@@ -700,10 +737,15 @@ impl Wallet {
             if Some(subaddress) != state.split_index {
                 state.receive_index = state.receive_index.max(subaddress);
             }
-            let key_image = keys.key_image(output.key(), output.key_offset()).map(hex::encode);
-            if let Some(image) = key_image.as_deref().and_then(hash_bytes) {
-                images.entry(image).or_insert(state.outputs.len());
-            }
+            // A view-only wallet can't work the key image out, nor can a
+            // device's until the device is asked.
+            let ki = match keys.key_image(output.key(), output.key_offset()) {
+                Some(image) => {
+                    images.entry(image).or_insert(state.outputs.len());
+                    KeyImage::Known(image)
+                }
+                None => KeyImage::Unknown,
+            };
             let (tx_key, extra_key) = scanned
                 .tx_keys
                 .get(&tx)
@@ -711,7 +753,7 @@ impl Wallet {
                 .map_or((None, None), |(tx_key, extra)| (Some(hex::encode(tx_key)), extra.map(hex::encode)));
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
-            state.outputs.push(Owned {
+            let found = Owned {
                 output: hex::encode(output.serialize()),
                 coinbase: tx == scanned.miner_tx,
                 unlock_block,
@@ -721,11 +763,13 @@ impl Wallet {
                 time,
                 amount: output.commitment().amount,
                 subaddress,
-                key_image,
+                coin: Coin::default(),
+                key_image: None,
                 spent_in: None,
                 tx_key,
                 extra_key,
-            });
+            };
+            state.outputs.push(found.with_coin(Coin::Free { ki }));
             changed = true;
         }
         if incoming || !outgoing.is_empty() {
@@ -767,12 +811,6 @@ impl Wallet {
     }
 }
 
-/// A hash or key image as the wallet's file keeps it, in bytes. Anything else
-/// can't match what's on the chain.
-fn hash_bytes(text: &str) -> Option<[u8; 32]> {
-    hex::decode(text).ok()?.try_into().ok()
-}
-
 /// The key images of the coins `tx` spends.
 fn spent_images(tx: &monero_wallet::transaction::Transaction) -> Vec<[u8; 32]> {
     use monero_wallet::transaction::Input;
@@ -784,46 +822,6 @@ fn spent_images(tx: &monero_wallet::transaction::Transaction) -> Vec<[u8; 32]> {
             Input::Gen(_) => None,
         })
         .collect()
-}
-
-/// Marks the coins pool transactions spend, from each transaction's hash and
-/// the key images it spends, as wallet2 does: a payment in the pool holds its
-/// coins until it's mined or leaves. A coin a device's sync found spent in
-/// the pool, marked without the transaction's name, takes the name now, so
-/// the pool's leaving can free it. Whether any was marked.
-pub(super) fn pool_spends(state: &mut State, spending: &[(String, Vec<[u8; 32]>)]) -> bool {
-    let mut changed = false;
-    for output in state.outputs.iter_mut().filter(|o| o.spent_in.as_deref().is_none_or(|s| s == SPENT_IN_POOL_AT_SYNC)) {
-        let Some(image) = output.key_image.as_deref().and_then(hash_bytes) else { continue };
-        if let Some((tx, _)) = spending.iter().find(|(_, images)| images.contains(&image)) {
-            output.spent_in = Some(tx.clone());
-            changed = true;
-        }
-    }
-    changed
-}
-
-/// Frees the coins [`pool_spends`] marked for a transaction no longer in the
-/// pool (`in_pool`) that the wallet hasn't seen mined or sent: it left without
-/// being mined. One mined in a block not yet scanned is marked again when the
-/// scan gets there. What a device's key image sync found spent names no
-/// transaction and isn't the pool's to free: it stays until the next sync
-/// asks the node again (decision 364; this was the one place that forgot,
-/// and freed spent coins at the first look at the pool after catching up).
-/// Whether any was freed.
-pub(super) fn pool_left(state: &mut State, in_pool: &HashSet<String>) -> bool {
-    let known: HashSet<&str> = state.spends.iter().map(|s| s.tx.as_str()).chain(state.sent.iter().map(|s| s.tx.as_str())).collect();
-    let left: Vec<usize> = state
-        .outputs
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| o.spent_in.as_deref().is_some_and(|tx| !hardware::is_sync_mark(tx) && !known.contains(tx) && !in_pool.contains(tx)))
-        .map(|(i, _)| i)
-        .collect();
-    for &i in &left {
-        state.outputs[i].spent_in = None;
-    }
-    !left.is_empty()
 }
 
 /// How far back a reorganisation reaches, against the hashes kept.
