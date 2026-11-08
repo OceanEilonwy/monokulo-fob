@@ -25,5 +25,9 @@ cargo build --release --locked -p fob-gtk
 install -Dm755 target/release/fob "$BIN"
 sed "s|^Exec=fob|Exec=$BIN|" crates/fob-gtk/data/$ID.desktop | install -Dm644 /dev/stdin "$DESKTOP"
 install -Dm644 crates/fob-gtk/data/$ID.svg "$ICON"
+# KDE remembers icons it failed to find (say Fob ran from target/ before it was
+# installed) and only looks again when an icon folder's own date changes. The
+# icon lands three folders down, so nudge the folders it checks.
+touch "$PREFIX/share/icons" "$PREFIX/share/icons/hicolor"
 command -v update-desktop-database >/dev/null && update-desktop-database "$PREFIX/share/applications" || true
 echo "Installed $BIN."
