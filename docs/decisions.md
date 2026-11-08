@@ -3854,3 +3854,19 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      transaction naming it, as the table says; and the hash classification
      is done in Rust inside the upgrade, not SQL, so one function serves
      the database and the sealed file.
+
+401. **The seed crates come from their repository, not a copy of it.**
+     `third_party/` held `monero-seed` and `polyseed` copied from
+     kayabaNerve/monero-wallet-util at `797fe70` (decision 1), because
+     crates.io had an empty `monero-seed` and an unrelated `polyseed`, and
+     upstream took `std-shims` from serai's git branch, unpinned. A copy
+     drifts and hides its origin; `fob-vault` now depends on the two crates
+     by git at that same commit, and Cargo.lock pins what they pull in:
+     serai's `std-shims` at a fixed commit, a second copy beside
+     monero-wallet's from crates.io, which is fine, as nothing of it crosses
+     the seed crates' interfaces. The only edits the copy had made were to
+     the manifests (crates.io `std-shims`, no workspace lints), so nothing of
+     Fob's behaviour changes; the tests that generate and restore seeds pass
+     as before. `--locked` in every workflow keeps the resolution fixed. The
+     upstream branch has not moved since the copy was taken.
+

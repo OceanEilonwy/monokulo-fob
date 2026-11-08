@@ -96,7 +96,6 @@ val cargoHost = tasks.register<Exec>("cargoHost") {
     workingDir = repo
     commandLine("cargo", "build", "--release", "--locked", "-p", "fob-ffi")
     inputs.dir(File(repo, "crates"))
-    inputs.dir(File(repo, "third_party"))
     inputs.files(File(repo, "Cargo.lock"), File(repo, "Cargo.toml"))
     outputs.file(hostLibrary)
 }
@@ -120,7 +119,6 @@ val cargoNdk = tasks.register<CargoTask>("cargoNdk") {
     workingDir = repo
     outDir.set(layout.buildDirectory.dir("rust/jniLibs"))
     inputs.dir(File(repo, "crates"))
-    inputs.dir(File(repo, "third_party"))
     inputs.files(File(repo, "Cargo.lock"), File(repo, "Cargo.toml"))
     // This module's NDK, whatever the environment says.
     val ndk = androidComponents.sdkComponents.ndkDirectory.map { it.asFile.absolutePath }
