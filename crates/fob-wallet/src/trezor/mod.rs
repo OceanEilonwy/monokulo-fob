@@ -12,6 +12,8 @@
 //! together.
 
 pub(crate) mod crypto;
+#[cfg(test)]
+pub(crate) mod fake_signer;
 pub mod messages;
 pub mod proto;
 pub(crate) mod session;

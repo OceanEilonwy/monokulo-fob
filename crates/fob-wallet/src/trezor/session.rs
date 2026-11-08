@@ -248,6 +248,9 @@ pub mod fake {
         pub log: Mutex<Vec<u16>>,
         /// Answers this type with a Failure of this code instead.
         pub fail: Mutex<Option<(u16, u64)>>,
+        /// Signs payments, holding the spend key: none, and the fake
+        /// can't sign.
+        pub signer: Option<crate::trezor::fake_signer::Signer>,
     }
 
     impl Fake {
@@ -266,6 +269,7 @@ pub mod fake {
                 enc_key: [5; 32],
                 log: Mutex::new(vec![]),
                 fail: Mutex::new(None),
+                signer: None,
             }
         }
 
@@ -335,7 +339,10 @@ pub mod fake {
                     w.bytes(1, &self.enc_key);
                     (m::MONERO_KEY_IMAGE_SYNC_FINAL_ACK, w.finish())
                 }
-                _ => Self::failure(1, "unexpected message"),
+                _ => match self.signer.as_ref().and_then(|signer| signer.answer(msg_type, data)) {
+                    Some(answer) => answer,
+                    None => Self::failure(1, "unexpected message"),
+                },
             }
         }
 
