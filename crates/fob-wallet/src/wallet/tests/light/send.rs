@@ -8,7 +8,7 @@ use crate::wallet::light_send::{light_fee_rate, refusal, ring, rings, submitted}
 use std::sync::Mutex as StdMutex;
 
 fn unspent(per_byte_fee: u64, fee_mask: u64, fees: Vec<u64>) -> lws::UnspentOuts {
-    lws::UnspentOuts { per_byte_fee: lws::Amount(per_byte_fee), fee_mask: lws::Amount(fee_mask), amount: lws::Amount(0), outputs: vec![], fees }
+    lws::UnspentOuts { per_byte_fee: lws::Amount(per_byte_fee), fee_mask: lws::Amount(fee_mask), amount: lws::Amount(0), lookahead_fail: None, outputs: vec![], fees }
 }
 
 /// The node path's priority from `fees` (Normal, the second), the plain
@@ -151,7 +151,8 @@ fn a_submission_is_taken_refused_or_unsure() {
     let said = |status: &str, reason: Option<&str>, not_relayed: Option<bool>| Ok(lws::SubmitResponse { status: status.into(), reason: reason.map(str::to_owned), not_relayed });
     assert!(submitted(said("OK", None, Some(false))).is_ok());
     assert!(submitted(said("OK", None, None)).is_ok());
-    assert!(matches!(submitted(said("OK", None, Some(true))), Err(Unpublished::Unsure)), "its node holds it, the network may not");
+    assert!(matches!(submitted(said("OK", Some("Not relayed"), Some(true))), Err(Unpublished::Unsure)), "its node holds it, the network may not");
+    assert!(matches!(submitted(Err(Problem::Unavailable)), Err(Unpublished::Refused(_))), "503: its node wasn't reached, so it wasn't sent");
     match submitted(said("Failed", Some("double spend"), Some(true))) {
         Err(Unpublished::Refused(e)) => assert_eq!(e.to_string(), "The light server's node turned the payment down: double spend"),
         other => panic!("{other:?}"),
@@ -182,7 +183,7 @@ async fn send_server() -> SendServer {
     let server = SendServer {
         url,
         txs: Arc::new(StdMutex::new(serde_json::to_string(&answer(vec![], 2_249_100)).unwrap())),
-        fee: Arc::new(StdMutex::new(r#"{"per_byte_fee":"20000","fee_mask":"10000","amount":"0","outputs":[],"fees":[20000,80000,320000,4000000]}"#.into())),
+        fee: Arc::new(StdMutex::new(r#"{"per_byte_fee":20000,"fee_mask":10000,"amount":"0","fees":[20000,80000,320000,4000000]}"#.into())),
         submit: Arc::new(StdMutex::new((200, r#"{"status":"OK","not_relayed":false}"#.into()))),
         submitted: Arc::default(),
     };
@@ -219,7 +220,14 @@ async fn send_server() -> SendServer {
                         assert_eq!(body["count"], u64::from(RING_LEN), "a ring's worth each");
                         let asked = body["amounts"].as_array().unwrap();
                         assert!(asked.iter().all(|a| a == "0"), "RingCT's amount, as a string");
-                        let rings = (0..asked.len()).map(|_| members()).collect();
+                        // As monero-lws sends them: `rct` the commitment and 64 zero bytes.
+                        let rings = (0..asked.len())
+                            .map(|_| {
+                                let mut ring = members();
+                                ring.outputs.iter_mut().for_each(|m| m.rct.0.extend_from_slice(&[0; 64]));
+                                ring
+                            })
+                            .collect();
                         (200, serde_json::to_string(&lws::RandomOuts { amount_outs: rings }).unwrap())
                     }
                     "submit_raw_tx" => {
@@ -342,20 +350,21 @@ async fn a_payment_the_server_refuses_is_not_recorded() {
     assert!(state.outputs[0].spent_in.is_none());
     drop(state);
 
-    *server.fee.lock().unwrap() = r#"{"per_byte_fee":"20000","fee_mask":"10000","amount":"0","outputs":[],"fees":[20000,8000000,32000000,400000000]}"#.into();
+    *server.fee.lock().unwrap() = r#"{"per_byte_fee":20000,"fee_mask":10000,"amount":"0","fees":[20000,8000000,32000000,400000000]}"#.into();
     let too_dear = wallet.prepare(&wallet.inner.keys.address(9), XMR / 10, None, None).await.unwrap_err();
     assert_eq!(too_dear, FobError::Light(Problem::FeeTooHigh));
     assert_eq!(too_dear.to_string(), "The light server asked a network fee far above the usual, so nothing was sent");
 }
 
-/// A server that gives no answer to the submission may have taken it: the
-/// payment is recorded with the signed transaction kept, and offered again
-/// at the next poll until the server takes it.
+/// A server whose node kept the payment without passing it on (or that
+/// gave no answer) may have it out yet: the payment is recorded with the
+/// signed transaction kept, and offered again at the next poll until the
+/// server takes it.
 #[tokio::test]
 async fn a_payment_the_server_gave_no_answer_for_is_offered_again() {
     let server = send_server().await;
     let (wallet, _) = light_wallet_with_a_coin("light-send-unsure", &server).await;
-    *server.submit.lock().unwrap() = (502, String::new());
+    *server.submit.lock().unwrap() = (200, r#"{"status":"OK","reason":"Not relayed","not_relayed":true}"#.into());
     let prepared = wallet.prepare(&wallet.inner.keys.address(9), XMR / 10, None, None).await.unwrap();
     let hash = wallet.send(prepared.id).await.unwrap();
     assert!(wallet.inner.state.lock().await.sent[0].signed.is_some(), "kept to offer again");

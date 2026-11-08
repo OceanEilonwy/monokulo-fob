@@ -58,8 +58,8 @@ struct Member {
 }
 
 /// Reads one member: its key and commitment (the first 32 bytes of `rct`,
-/// which is 32 bytes or, for old clients, 96 with the rest zero) must be
-/// points.
+/// which monero-lws and monokulo-lws send as 96, the rest zero, and some
+/// servers as 32) must be points.
 fn member(given: &lws::RandomOutput) -> std::result::Result<Member, Problem> {
     let point = |bytes: &[u8]| -> Option<Point> { CompressedPoint::from(<[u8; 32]>::try_from(bytes).ok()?).decompress() };
     if given.rct.0.len() != 32 && given.rct.0.len() != 96 {
@@ -153,15 +153,17 @@ pub(super) fn rings(reals: &[WalletOutput], answer: &lws::RandomOuts, rng: &mut 
 /// (`not_relayed`): its node holds it but the network may never see it,
 /// so it's recorded and offered again, like a payment the node gave no
 /// answer for. Any other status is the node turning it down, in the
-/// server's words ([`refusal`]). No answer, or one that can't be read, may
-/// still have been taken, unless the request never reached the server.
+/// server's words ([`refusal`]). No answer, one that can't be read, or a
+/// 5xx other than 503 may still have been taken, unless the request never
+/// reached the server; a 503 is the server's node unreachable, so the
+/// payment wasn't sent and can be tried again.
 pub(super) fn submitted(answer: std::result::Result<lws::SubmitResponse, Problem>) -> std::result::Result<(), Unpublished> {
     match answer {
         Ok(answer) if answer.status == "OK" && answer.not_relayed != Some(true) => Ok(()),
         Ok(answer) if answer.status == "OK" => Err(Unpublished::Unsure),
         Ok(answer) => Err(Unpublished::Refused(FobError::Light(Problem::TxRefused(refusal(answer.reason.as_deref().unwrap_or("")))))),
         Err(Problem::Unreachable(text)) if transport::never_reached(&text) => Err(Unpublished::Refused(FobError::Light(Problem::Unreachable(text)))),
-        Err(Problem::Unreachable(_) | Problem::Unreadable | Problem::Unavailable | Problem::Status(500..)) => Err(Unpublished::Unsure),
+        Err(Problem::Unreachable(_) | Problem::Unreadable | Problem::Status(500..)) => Err(Unpublished::Unsure),
         Err(problem) => Err(Unpublished::Refused(FobError::Light(problem))),
     }
 }

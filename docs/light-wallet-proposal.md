@@ -265,13 +265,14 @@ What changes is where the fee and each input's ring come from
   Given monero-oxide's own picks, the ring is its byte for byte (a test).
   Not checked: the members' age, as the API gives no heights. A server
   already knows which output is ours, and learns which is spent when the
-  ring is formed; decoys hide the spend from the chain, not from it
+  ring is formed (the member it didn't hand out); decoys hide the spend
+  from the chain, not from it
   (decision 391).
 - **Tip.** `blockchain_height` from the last poll.
 - **Submit.** `/submit_raw_tx { tx: hex(tx.serialize()) }`. "OK" is
-  published; "OK" with `not_relayed`, no answer, or a 5xx is recorded and
+  published; "OK" with `not_relayed`, no answer, or a 5xx but 503 is recorded and
   offered again at each poll, as the node path does with a payment its node
-  didn't answer for; a 422 or another status is a refusal, said with the
+  didn't answer for; a 422, 400, 503 or another status is a refusal, said with the
   server's reason (one line, 120 characters). The payment is recorded as sent
   at once, as today (decision 14), and the next poll shows it in the pool
   (monokulo-lws), then mined, with the server's fee for the spend.

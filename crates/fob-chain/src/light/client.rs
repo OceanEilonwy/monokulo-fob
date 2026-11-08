@@ -124,7 +124,8 @@ impl LightClient {
     /// Hands the server a signed transaction to broadcast. A refusal (422,
     /// monero-lws's and monokulo-lws's status for a transaction their node
     /// turned down) comes back as the answer, with the server's reason, not
-    /// as a [`Problem`].
+    /// as a [`Problem`]; a 503 (its node unreachable, so not sent) is
+    /// [`Problem::Unavailable`].
     pub async fn submit_raw_tx(&self, tx: Vec<u8>) -> Result<SubmitResponse, Problem> {
         let (status, answer) = self.exchange("submit_raw_tx", &SubmitRequest { tx: HexBytes(tx) }).await?;
         match status {

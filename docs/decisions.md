@@ -3551,7 +3551,10 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      fee_mask)`, refused, with "The light server asked a network fee far
      above the usual, so nothing was sent", above `MAX_FEE_PER_WEIGHT`
      (400,000, about twenty times an honest mainnet node's, decision 12's
-     cap) or with a mask above `MAX_FEE_MASK`. That second cap is new, and
+     cap) or with a mask above `MAX_FEE_MASK`. monero-lws sends the two fee
+     fields as JSON numbers, not the spec's strings; the wire types read
+     either (decision 374's copy, now at monokulo-lws's `71e1ffd`, branch
+     `sending`, whose sending endpoints answer as monero-lws's do). That second cap is new, and
      the node path has it too: a fee is rounded up to a multiple of the
      mask, and a mask of a whole XMR (which nothing checked) would round
      every fee up to one; monerod's is 10,000, the cap 100,000, ten times
@@ -3579,8 +3582,8 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      the member that is the real coin, if the server happened to pick it,
      is the one dropped, and otherwise one at random. Each answer must be
      RingCT's, exactly 16 members, no global index twice, every key and
-     commitment (the first 32 bytes of `rct`, which is 32 bytes or, for old
-     clients, 96) a point, and a member at the coin's own index must be the
+     commitment (the first 32 bytes of `rct`, which monero-lws and
+     monokulo-lws send as 96, the rest zero, and others as 32) a point, and a member at the coin's own index must be the
      coin, key and commitment, as monero-oxide holds a node to it; members
      with torsion or the identity key are dropped, as monero-oxide's picker
      skips them, and too few left refuses the payment with "The light
@@ -3596,8 +3599,8 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      can't be), or that a member exists at its index (the node refuses the
      transaction if not). What the server learns: it already knows every
      output of the wallet's (it holds the view key), and when the ring is
-     formed, it knows which member is the spend: the one that is the
-     wallet's, among members it picked itself. So decoys from the server
+     formed, it knows which member is the spend: the one it didn't hand
+     out, which is the wallet's. So decoys from the server
      hide the spend from the chain and from everyone else, never from the
      server. That is inherent to the light wallet model, which the
      switch's words already say; a server that picks poor decoys weakens
@@ -3609,7 +3612,7 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      change, note, receipt), all in one task that runs to the end however
      the screen goes. "OK" is published. "OK" with `not_relayed` (its node
      holds it but didn't pass it on), no answer, an answer that can't be
-     read, a 503 or another 5xx are what the node path calls unsure: the
+     read, or a 5xx other than 503 are what the node path calls unsure: the
      payment is recorded with its signed transaction kept, and each poll
      offers it to the server again until taken or turned down
      (`publish_unanswered_through`, the node path's rule). A 422 is the
@@ -3617,7 +3620,9 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      payment down: double spend", with the server's reason made one line of
      printable characters, 120 at most (it's the server's words about the
      transaction, nothing of the wallet's), and nothing recorded; so is a
-     request that never reached the server, or a 400. `LightClient` now
+     request that never reached the server, a 400 (it didn't parse), or a
+     503 (monokulo-lws's word that its node was unreachable, so nothing
+     went out and Send can be tried again). `LightClient` now
      reads a 422's body for that reason (it had dropped it). The next poll
      sees the payment in the pool (monokulo-lws lists it, `mempool: true`;
      it's left out of the pool rows as this wallet's own), then mined: the
@@ -3660,4 +3665,14 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      (40 s), its spend found by key image with the fee 0.0001224 XMR, the
      change (0.0898776 XMR) and the 0.01 XMR found as new coins with
      proofs the node vouched for, balance 0.1998776 XMR. Activity: "Sent to
-     yourself · Confirming · 1 of 10", −0.0001 XMR (the fee).
+     yourself · Confirming · 1 of 10", −0.0001 XMR (the fee). Run again
+     the same way against monokulo-lws's `sending` branch at `71e1ffd`
+     (its sending endpoints made to answer as monero-lws's: fee fields as
+     numbers, 96-byte `rct`, `{"status":"OK"}`), on a fresh database: in
+     sync at 2,245,996 (the node a block behind at first, "not checked
+     yet", then "match the chain"), 0.01 XMR to subaddress 1 again at
+     80,000 a byte, fee 0.000122 XMR,
+     `11bc74f9938bf78bb144de4cdd6d341e6b7e5944c44bcf421dc54d577361908d` in
+     the server's pool after 20 s and mined at 2,245,997 (found at 191 s),
+     the spend with its fee, change 0.089878 XMR and the 0.01 XMR proved,
+     balance 0.1997556 XMR.
