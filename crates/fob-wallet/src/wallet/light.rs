@@ -3,11 +3,18 @@
 //! the view key and scans; each poll Fob asks it for every transaction that
 //! touched the wallet and [`reconcile`]s its own state with the answer. The
 //! spend key stays here: key images are worked out on this device, and an
-//! output the server names is checked against the view key before it counts.
+//! output the server names is checked against the view key before it counts,
+//! and, when the server proves its transaction is in a block, against the
+//! block a node has there.
 
 use super::*;
-use crate::light::{self, Backend, LightClient, Problem, lws};
+use crate::light::{
+    self, Backend, LightClient, Problem,
+    hashes::{Known, NodeHashes},
+    lws, proof,
+};
 use catch_up::Amounts;
+use std::collections::BTreeMap;
 use monero_wallet::{ed25519::Scalar, extra::PaymentId};
 use state::{SyncMode, TIME_LOCK_FROM};
 
@@ -68,11 +75,11 @@ impl Wallet {
             state.light_pin.as_deref().filter(|_| state.light_self_signed).and_then(|p| hex::decode(p).ok()?.try_into().ok())
         };
         let status = self.status();
-        let (amounts, failed) = match &status.light {
-            Some(light) => (light.amounts, status.error.clone()),
-            None => (Amounts::NotYet, None),
+        let (light, failed) = match &status.light {
+            Some(light) => (light.clone(), status.error.clone()),
+            None => (catch_up::Light::default(), None),
         };
-        fob_words::light::standing(pin.as_ref(), amounts, failed.as_deref())
+        fob_words::light::standing(pin.as_ref(), &light, failed.as_deref())
     }
 
     /// The Light server screen's Test: `/get_version`, which sends nothing
@@ -336,6 +343,8 @@ impl Wallet {
             Err(Problem::Forbidden) => return self.waiting_for_approval().await,
             Err(e) => return Err(refused(e)),
         };
+        // 3b. The blocks its proofs name, as a node has them.
+        let vouched = self.vouch(&answer).await?;
         let pool_before = self.inner.pool.lock().expect("pool lock").clone();
         let done = {
             let mut state = self.inner.state.lock().await;
@@ -343,7 +352,7 @@ impl Wallet {
                 // Switched back while asking.
                 return Ok(false);
             }
-            match reconcile(&self.inner.keys, &mut state, &answer, &pool_before, now()) {
+            match reconcile_proven(&self.inner.keys, &mut state, &answer, &pool_before, now(), &vouched.known) {
                 Ok(mut done) => {
                     *self.inner.pool.lock().expect("pool lock") = std::mem::take(&mut done.pool);
                     // 5. Prices for payments newly seen, as the node's step records them.
@@ -359,7 +368,8 @@ impl Wallet {
                         s.connected = true;
                         let light = s.light.get_or_insert_with(light_view_default);
                         light.refused = true;
-                        if untrue == Problem::AmountMismatch {
+                        vouched.say(light);
+                        if matches!(untrue, Problem::AmountMismatch | Problem::NotOnChain) {
                             light.amounts = Amounts::Mismatch;
                         }
                     });
@@ -378,11 +388,15 @@ impl Wallet {
             let light = s.light.get_or_insert_with(light_view_default);
             light.waiting_approval = false;
             light.refused = false;
-            light.amounts = match (done.checked, done.unchecked, light.amounts) {
-                (_, 1.., _) => Amounts::ServersWord,
-                (1.., 0, _) => Amounts::Checked,
-                (0, 0, Amounts::Mismatch) => Amounts::NotYet,
-                (0, 0, before) => before,
+            vouched.say(light);
+            // The weakest of this wallet's outputs says it for them all.
+            light.amounts = match (done.unchecked, done.checked, done.pending, done.proven, light.amounts) {
+                (1.., ..) => Amounts::ServersWord,
+                (0, 1.., ..) => Amounts::Checked,
+                (0, 0, 1.., ..) => Amounts::ChainPending,
+                (0, 0, 0, 1.., _) => Amounts::Chain,
+                (0, 0, 0, 0, Amounts::Mismatch) => Amounts::NotYet,
+                (0, 0, 0, 0, before) => before,
             };
         });
         self.refresh_status().await;
@@ -391,6 +405,93 @@ impl Wallet {
         }
         Ok(false)
     }
+}
+
+impl Wallet {
+    /// The node a light server's proofs are checked with: the wallet's
+    /// own, or, for a wallet with none, Fob's default for its network
+    /// (`true`), with the key a self-signed one is held to.
+    pub(super) async fn proof_node(&self) -> (node::Setting, Option<[u8; 32]>, bool) {
+        let state = self.inner.state.lock().await;
+        if state.node.trim().is_empty() {
+            let url = node::normalize(self.network().default_nodes()[0]);
+            return (node::Setting { url, self_signed: false }, None, true);
+        }
+        let pin = state.node_pin.as_deref().and_then(|p| hex::decode(p).ok()?.try_into().ok());
+        (node::Setting { url: state.node.clone(), self_signed: state.node_self_signed }, pin, false)
+    }
+
+    /// Asks a node for the blocks the server's proofs name (each proof that
+    /// holds: one that doesn't refuses the answer in [`vet`]), over stretches
+    /// of the chain (`fob_chain::light::hashes`), from what's kept: a poll
+    /// after one that checked them asks nothing. A node that can't be
+    /// reached isn't the server's fault: its outputs are taken as not
+    /// checked yet, and asked about again at the next poll.
+    async fn vouch(&self, answer: &lws::AddressTxs) -> Result<Vouched> {
+        let mut wanted: BTreeMap<u64, [u8; 32]> = BTreeMap::new();
+        for tx in answer.transactions.iter().filter(|t| !t.mempool) {
+            if let Ok(Some(proven)) = proof::check(tx) {
+                wanted.entry(proven.height).or_insert(proven.block);
+            }
+        }
+        let (setting, pin, default) = self.proof_node().await;
+        let mut known = known_of(&*self.inner.state.lock().await);
+        let before = known.clone();
+        let mut reached = None;
+        if !wanted.is_empty() {
+            let first = self.inner.state.lock().await.restore_height.unwrap_or(answer.start_height);
+            let tip = answer.blockchain_height;
+            reached = Some(match Transport::pinned(&setting.url, setting.self_signed, pin) {
+                Err(_) => false,
+                Ok(transport) => {
+                    let source = NodeHashes { transport: transport.clone(), network: self.network() };
+                    let learnt = known.learn(&source, &wanted, first, tip).await.is_ok();
+                    if learnt && pin.is_none() && !default {
+                        self.keep_pin(&setting, &transport).await?;
+                    }
+                    learnt
+                }
+            });
+            // Only what this answer's payments need is kept.
+            known.blocks.retain(|h, _| wanted.contains_key(h));
+        }
+        if known != before {
+            let mut state = self.inner.state.lock().await;
+            keep_known(&mut state, &known);
+            self.save_state(&state)?;
+        }
+        Ok(Vouched { known, host: node::address(&setting.url), default, reached })
+    }
+}
+
+/// What a node said of the blocks a server's proofs name, and of itself.
+pub(super) struct Vouched {
+    pub(super) known: Known,
+    host: String,
+    default: bool,
+    /// Whether the node answered, if it was asked.
+    reached: Option<bool>,
+}
+
+impl Vouched {
+    /// Says on the Light server screen which node checks the proofs.
+    fn say(&self, light: &mut catch_up::Light) {
+        light.proof_node = Some(self.host.clone());
+        light.proof_node_default = self.default;
+        light.proof_node_unreached = self.reached == Some(false);
+    }
+}
+
+/// The block hashes kept in `state`, as `hashes` works with them.
+pub(super) fn known_of(state: &State) -> Known {
+    let read = |list: &[(u64, String)]| -> Vec<(u64, [u8; 32])> { list.iter().filter_map(|(h, hash)| Some((*h, hex::decode(hash).ok()?.try_into().ok()?))).collect() };
+    Known { blocks: read(&state.light_blocks).into_iter().collect(), history: read(&state.light_history) }
+}
+
+/// Keeps `known` in `state`, in hex.
+pub(super) fn keep_known(state: &mut State, known: &Known) {
+    state.light_blocks = known.blocks.iter().map(|(h, hash)| (*h, hex::encode(hash))).collect();
+    state.light_history = known.history.iter().map(|(h, hash)| (*h, hex::encode(hash))).collect();
 }
 
 /// What the chip knows of a server before it has answered.
@@ -407,11 +508,15 @@ pub(super) struct Reconciled {
     pub(super) pool: HashMap<String, Pooled>,
     /// Outputs the server named that failed the checks: not counted.
     pub(super) refused: usize,
-    /// Outputs of this wallet's listed with the chain's commitment, which
-    /// their amount opens, and listed without one (their amount is the
-    /// server's word).
+    /// Outputs of this wallet's in blocks, listed with the chain's
+    /// commitment, which their amount opens, but no proof; and listed
+    /// without either (their amount is the server's word).
     pub(super) checked: usize,
     pub(super) unchecked: usize,
+    /// Outputs of this wallet's in blocks with a proof that holds: whose
+    /// block a node has (`proven`), or that no node has vouched for yet.
+    pub(super) proven: usize,
+    pub(super) pending: usize,
 }
 
 /// How far past the chain's tip, as the server gives it, a transaction's
@@ -448,8 +553,17 @@ const TIP_SLACK: u64 = 10;
 ///   for moves the chain's clock on (it judges time locks), unless it's
 ///   past `now`, the phone's: a server can't make a time lock pass early
 ///   unless the phone's clock is wrong too. It never moves back here.
+#[cfg(test)]
 pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs, pool_before: &HashMap<String, Pooled>, now: u64) -> std::result::Result<Reconciled, Problem> {
-    let (checked, unchecked) = vet(keys, answer)?;
+    reconcile_proven(keys, state, answer, pool_before, now, &Known::default())
+}
+
+/// `reconcile`, with the blocks a node vouched for: each proof the server
+/// gives must name the block `chain` has at its height, or the answer is
+/// refused; a proof whose block `chain` doesn't have is taken, but not
+/// counted as checked.
+pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::AddressTxs, pool_before: &HashMap<String, Pooled>, now: u64, chain: &Known) -> std::result::Result<Reconciled, Problem> {
+    let Tally { checked, unchecked, proven, pending } = vet(keys, answer, chain)?;
     let mut changed = false;
     let mut refused = 0;
     let mut mined: Vec<&lws::Transaction> = answer.transactions.iter().filter(|t| !t.mempool && t.height.is_some()).collect();
@@ -594,27 +708,61 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
         state.tip = answer.blockchain_height;
         changed = true;
     }
-    Ok(Reconciled { changed, pool, refused, checked, unchecked })
+    Ok(Reconciled { changed, pool, refused, checked, unchecked, proven, pending })
+}
+
+/// How this wallet's outputs in blocks were checked, in an answer [`vet`]
+/// took: see [`Reconciled`].
+#[derive(Debug, Default)]
+pub(super) struct Tally {
+    pub(super) checked: usize,
+    pub(super) unchecked: usize,
+    pub(super) proven: usize,
+    pub(super) pending: usize,
 }
 
 /// Checks the whole answer before any of it is taken. Refuses it all when
-/// an amount doesn't open the commitment the server gives for that output
-/// ([`Problem::AmountMismatch`]: the server lied or is broken), or when it
+/// a transaction's proof doesn't hold or names a block other than the one
+/// `chain` (a node's word) has at its height ([`Problem::NotOnChain`]: the
+/// server made up a payment, or is broken), when an amount doesn't open the
+/// commitment the chain holds for that output, from the proof, or else the
+/// one the server gives ([`Problem::AmountMismatch`]), or when it
 /// contradicts itself ([`Problem::Contradiction`]): an output named twice
 /// with different one-time keys, two outputs given one place on the chain,
-/// or a transaction in a block well past the chain's tip as the server
-/// gives it. Otherwise counts this wallet's outputs listed with a
-/// commitment and without.
-pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs) -> std::result::Result<(usize, usize), Problem> {
-    let (mut checked, mut unchecked) = (0, 0);
+/// two blocks at one height, or a transaction in a block well past the
+/// chain's tip as the server gives it. Otherwise counts how this wallet's
+/// outputs in blocks were checked.
+pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs, chain: &Known) -> std::result::Result<Tally, Problem> {
+    let mut tally = Tally::default();
     let mut places: HashMap<([u8; 32], u16), [u8; 32]> = HashMap::new();
     let mut global: HashMap<u64, [u8; 32]> = HashMap::new();
+    let mut blocks: HashMap<u64, [u8; 32]> = HashMap::new();
     for tx in &answer.transactions {
         let mined = (!tx.mempool).then_some(tx.height).flatten();
         if mined.is_some_and(|h| h > answer.blockchain_height.saturating_add(TIP_SLACK)) {
             return Err(Problem::Contradiction);
         }
-        for received in &tx.receives {
+        // Its proof, if it has one and is in a block: it holds, and names
+        // the block the node has there (`Some(true)`) or one no node has
+        // vouched for yet (`Some(false)`).
+        let proven = match mined {
+            Some(_) => proof::check(tx).map_err(|_| Problem::NotOnChain)?,
+            None => None,
+        };
+        let on_chain = match &proven {
+            None => None,
+            Some(p) => {
+                if *blocks.entry(p.height).or_insert(p.block) != p.block {
+                    return Err(Problem::Contradiction);
+                }
+                match chain.at(p.height) {
+                    Some(block) if block == p.block => Some(true),
+                    Some(_) => return Err(Problem::NotOnChain),
+                    None => Some(false),
+                }
+            }
+        };
+        for (i, received) in tx.receives.iter().enumerate() {
             let key = received.public_key.0;
             if *places.entry((tx.hash.0, received.index)).or_insert(key) != key {
                 return Err(Problem::Contradiction);
@@ -622,15 +770,30 @@ pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs) -> std::result::Result<
             if mined.is_some() && *global.entry(received.global_index).or_insert(key) != key {
                 return Err(Problem::Contradiction);
             }
-            match opened(keys, tx, received, mined) {
+            // With a proof, the amount is held to the chain's commitment.
+            let chain_commitment = proven.as_ref().and_then(|p| p.commitments.get(i).copied().flatten());
+            let opened = match chain_commitment {
+                Some(commitment) => opened(keys, tx, &lws::ReceivedOutput { commitment: Some(lws::Hex(commitment)), ..received.clone() }, mined),
+                None => opened(keys, tx, received, mined),
+            };
+            let checked = match opened {
                 Opened::Mismatch => return Err(Problem::AmountMismatch),
-                Opened::Ours { checked: true, .. } => checked += 1,
-                Opened::Ours { checked: false, .. } => unchecked += 1,
-                Opened::NotOurs => {}
+                Opened::NotOurs => continue,
+                Opened::Ours { checked, .. } => checked,
+            };
+            if mined.is_none() {
+                // In the pool: not this wallet's until mined, and proved then.
+                continue;
+            }
+            match (on_chain, checked) {
+                (Some(true), _) => tally.proven += 1,
+                (Some(false), _) => tally.pending += 1,
+                (None, true) => tally.checked += 1,
+                (None, false) => tally.unchecked += 1,
             }
         }
     }
-    Ok((checked, unchecked))
+    Ok(tally)
 }
 
 /// An output the server says this wallet received, as far as Fob can check it.
@@ -780,22 +943,4 @@ pub(super) fn wallet_output_bytes(parts: &WalletOutputParts) -> Vec<u8> {
 }
 
 /// Seconds since the epoch from `YYYY-MM-DDTHH:MM:SSZ`, as the API writes times.
-pub(super) fn unix_time(text: &str) -> Option<u64> {
-    let (date, time) = text.trim().trim_end_matches('Z').split_once('T')?;
-    let mut d = date.split('-').map(|p| p.parse::<i64>());
-    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
-    let mut t = time.split(':').map(|p| p.split('.').next().unwrap_or("").parse::<i64>());
-    let (h, min, s) = (t.next()?.ok()?, t.next()?.ok()?, t.next().and_then(|s| s.ok()).unwrap_or(0));
-    if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
-        return None;
-    }
-    // Days from the civil date (Howard Hinnant's algorithm).
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(days * 86_400 + h * 3600 + min * 60 + s).ok()
-}
+pub(super) use crate::light::proof::unix_time;

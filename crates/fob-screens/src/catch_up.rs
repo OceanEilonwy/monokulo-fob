@@ -213,7 +213,8 @@ pub enum SyncState {
     /// Syncing through a light wallet server: its last round failed.
     ServerFailed { local: bool },
     /// The server's last answer was refused: an amount that doesn't match
-    /// its commitment, or an answer that contradicts itself.
+    /// its commitment, a proof that doesn't match the chain, or an answer
+    /// that contradicts itself.
     ServerRefused,
     /// The server hasn't approved this wallet yet.
     ServerWaiting,
@@ -250,6 +251,14 @@ pub struct Light {
     pub amounts: Amounts,
     /// Its last answer was refused as untrue (see [`SyncState::ServerRefused`]).
     pub refused: bool,
+    /// The node the server's proofs are held to: host and port, once asked.
+    pub proof_node: Option<String>,
+    /// That node is Fob's default for the network: the wallet has none of
+    /// its own.
+    pub proof_node_default: bool,
+    /// The node couldn't be reached at the last poll (see
+    /// [`Amounts::ChainPending`]).
+    pub proof_node_unreached: bool,
 }
 
 /// How far the amounts a light wallet server reports are checked.
@@ -258,12 +267,23 @@ pub enum Amounts {
     /// No answer yet with an output in it: nothing to say.
     #[default]
     NotYet,
-    /// Every output came with the chain's commitment, and its amount opens it.
+    /// Every output came with a proof that its transaction is in a block,
+    /// the proof holds (key, commitment, amount), and a node has that block
+    /// at that height: they match the chain.
+    Chain,
+    /// Every output came with a proof that holds, but some block wasn't
+    /// checked with a node: it couldn't be reached, or hasn't the block yet.
+    /// Until it is, they're held to the commitments in the proofs, which the
+    /// server could have made up. Asked again at the next poll.
+    ChainPending,
+    /// Every output came with the chain's commitment, and its amount opens
+    /// it, but not all with a proof: commitments only.
     Checked,
     /// Some came without a commitment (monero-lws serves none): their
     /// amounts are the server's word.
     ServersWord,
-    /// An amount didn't open the commitment the server gave for it.
+    /// An amount didn't open the commitment the server gave for it, or a
+    /// proof didn't match the chain.
     Mismatch,
 }
 

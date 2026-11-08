@@ -157,6 +157,13 @@ pub(super) struct State {
     /// The last block the server had scanned at the last poll.
     #[serde(default)]
     pub(super) light_scanned_height: u64,
+    /// Block hashes a node vouched for, to hold a light server's proofs to
+    /// (`fob_chain::light::hashes::Known`): at each height a payment came
+    /// in, and a few near where Fob last asked, oldest first. Hex.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) light_blocks: Vec<(u64, String)>,
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) light_history: Vec<(u64, String)>,
     /// First block to scan. `None` until the first sync of a new wallet,
     /// which starts at the chain's tip.
     pub(super) restore_height: Option<u64>,
@@ -318,4 +325,9 @@ impl State {
             self.restore_height = Some(from);
         }
     }
+}
+
+/// A list that may be kept as nothing (a column added later) read as empty.
+fn null_is_empty<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> std::result::Result<Vec<T>, D::Error> {
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
 }

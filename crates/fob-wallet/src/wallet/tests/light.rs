@@ -6,7 +6,8 @@ use super::*;
 
 use crate::light::lws;
 use curve25519_dalek::{EdwardsPoint, Scalar as DScalar, constants::ED25519_BASEPOINT_TABLE};
-use crate::wallet::light::{WalletOutputParts, reconcile, unix_time, wallet_output_bytes};
+use crate::wallet::light::{WalletOutputParts, reconcile, reconcile_proven, unix_time, wallet_output_bytes};
+use crate::light::{hashes::{self, Known}, proof};
 use crate::light::Problem;
 use monero_wallet::{
     block::{Block, BlockHeader},
@@ -165,6 +166,7 @@ fn listed(hash: [u8; 32], height: Option<u64>, receives: Vec<lws::ReceivedOutput
         coinbase: false,
         mempool: height.is_none(),
         mixin: 15,
+        proof: None,
     }
 }
 
@@ -686,7 +688,7 @@ async fn a_version_7_database_opens_as_a_node_wallet() {
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     old.execute_batch(&format!(
-        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; PRAGMA user_version = 7;",
+        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; PRAGMA user_version = 7;",
         hex::encode([1u8; 32])
     ))
     .unwrap();
@@ -876,6 +878,341 @@ async fn a_server_that_refuses_says_why() {
     assert_eq!(said, "This server won't watch this wallet's addresses: subaddresses are off on this server");
 }
 
+/// `chain`'s transactions as a server that proves them lists them: each
+/// with the block it's in and its pruned parts (the reward with its block's
+/// miner transaction alone).
+fn with_proofs(chain: &Chain) -> Vec<lws::Transaction> {
+    let mut listed = chain.listed.clone();
+    let block = |i: usize| &chain.blocks[i].0;
+    listed[0].proof = Some(proof::make(&block(0).block, None));
+    listed[1].proof = Some(proof::make(&block(0).block, Some((&block(0).transactions[0], [0; 32]))));
+    listed[2].proof = Some(proof::make(&block(1).block, Some((&block(1).transactions[0], [0; 32]))));
+    listed[3].proof = Some(proof::make(&block(2).block, Some((&block(2).transactions[0], [0; 32]))));
+    listed
+}
+
+/// What a node vouches for of `chain`: each block's hash at its height.
+fn node_knows(chain: &Chain) -> Known {
+    Known { blocks: chain.blocks.iter().map(|(b, hash)| (b.block.number() as u64, *hash)).collect(), history: vec![] }
+}
+
+/// A server that holds the view key makes up a payment to this wallet
+/// whose one-time key, mask and commitment all fit, in a block of its own
+/// making, with a proof that holds as far as it goes: `(transaction, its
+/// listing)`. The block isn't the chain's.
+fn made_up(keys: &Keys, height: usize) -> lws::Transaction {
+    let (tx, hash, paid) = transaction(keys, Some((100 * XMR, 0)), &[]);
+    let (block, _, _) = block(keys, height, None, vec![(tx.clone(), hash)]);
+    let mut listed = listed(hash, Some(height as u64), vec![received(&paid.unwrap(), height as u64 * 10 + 1)], vec![]);
+    listed.fee = Some(lws::Amount(1000));
+    listed.proof = Some(proof::make(&block.block, Some((&tx, [0; 32]))));
+    listed
+}
+
+/// Proofs whose blocks a node has: every output, the reward included
+/// (proved by its block's miner transaction), counted as matching the
+/// chain; the same facts found as the node path finds them.
+#[test]
+fn proofs_whose_blocks_the_node_has_match_the_chain() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let proved = with_proofs(&chain);
+    let done = reconcile_proven(keys, &mut state, &answer(proved.clone(), 400_000), &HashMap::new(), 5, &node_knows(&chain)).unwrap();
+    assert_eq!((done.proven, done.pending, done.checked, done.unchecked, done.refused), (3, 0, 0, 0, 0));
+    let mut plain = fresh().1;
+    reconcile(keys, &mut plain, &answer(chain.listed.clone(), 400_000), &HashMap::new(), 5).unwrap();
+    assert_eq!(found(&state), found(&plain), "a proof changes what's checked, not what's found");
+
+    // The reward alone, proved by its block's miner transaction.
+    let reward = vec![proved[0].clone()];
+    let done = reconcile_proven(keys, &mut fresh().1, &answer(reward, 400_000), &HashMap::new(), 5, &node_knows(&chain)).unwrap();
+    assert_eq!((done.proven, done.pending), (1, 0));
+
+    // No node's word yet: taken, but pending.
+    let done = reconcile_proven(keys, &mut fresh().1, &answer(proved, 400_000), &HashMap::new(), 5, &Known::default()).unwrap();
+    assert_eq!((done.proven, done.pending), (0, 3));
+}
+
+/// A made-up payment whose key, mask and commitment fit, in a block the
+/// node doesn't have at that height: refused whole, the honest outputs
+/// beside it too.
+#[test]
+fn a_made_up_payment_in_a_block_the_node_hasn_t_is_refused() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let mut txs = with_proofs(&chain);
+    txs.push(made_up(keys, 300_102));
+    let before = serde_json::to_value(&state).unwrap();
+    let refused = reconcile_proven(keys, &mut state, &answer(txs.clone(), 400_000), &HashMap::new(), 5, &node_knows(&chain));
+    assert!(matches!(refused, Err(Problem::Contradiction)), "two blocks at 300,102 in one answer");
+    // In a block of its own at a height of its own: the key, mask,
+    // commitment and proof checks all pass, and only the chain tells.
+    txs.pop();
+    txs.push(made_up(keys, 300_150));
+    assert_eq!(reconcile(keys, &mut state.clone(), &answer(txs.clone(), 400_000), &HashMap::new(), 5).map(|d| d.pending).ok(), Some(4));
+    let mut node = node_knows(&chain);
+    node.blocks.insert(300_150, [7; 32]);
+    let refused = reconcile_proven(keys, &mut state, &answer(txs, 400_000), &HashMap::new(), 5, &node);
+    assert!(matches!(refused, Err(Problem::NotOnChain)));
+    assert_eq!(serde_json::to_value(&state).unwrap(), before, "nothing of the answer taken");
+}
+
+/// A proof with a byte of its transaction's prefix changed (another
+/// one-time key), or one that names another output: refused whole.
+#[test]
+fn a_tampered_proof_is_refused() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let node = node_knows(&chain);
+    let mut tampered = with_proofs(&chain);
+    let key = tampered[2].receives[0].public_key.0;
+    let proof = tampered[2].proof.as_mut().unwrap();
+    let prefix = proof.tx_prefix.as_mut().unwrap();
+    let at = prefix.0.windows(32).position(|w| w == key).unwrap();
+    prefix.0[at] ^= 1;
+    assert!(matches!(reconcile_proven(keys, &mut state, &answer(tampered, 400_000), &HashMap::new(), 5, &node), Err(Problem::NotOnChain)));
+    // The proof of another transaction in the same block.
+    let mut swapped = with_proofs(&chain);
+    swapped[1].proof = swapped[0].proof.clone();
+    assert!(matches!(reconcile_proven(keys, &mut state, &answer(swapped, 400_000), &HashMap::new(), 5, &node), Err(Problem::NotOnChain)));
+    assert!(state.outputs.is_empty());
+}
+
+/// A node on 127.0.0.1 holding a stagenet chain of `chain` (block 0 the
+/// stagenet's first, the rest made up but for what a test puts in): it
+/// answers `/get_hashes.bin` as monerod does and `on_get_block_hash`,
+/// counting requests and keeping the heights asked by themselves.
+struct HashNode {
+    url: String,
+    chain: Arc<std::sync::Mutex<Vec<[u8; 32]>>>,
+    requests: Arc<AtomicU64>,
+    asked: Arc<std::sync::Mutex<Vec<u64>>>,
+}
+
+async fn hash_node(height: u64, blocks: &[(u64, [u8; 32])]) -> HashNode {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut hashes: Vec<[u8; 32]> = (0..height).map(|h| { let mut x = [0xee; 32]; x[..8].copy_from_slice(&h.to_le_bytes()); x }).collect();
+    hashes[0] = hashes::genesis(Network::Stagenet);
+    for (h, hash) in blocks {
+        hashes[*h as usize] = *hash;
+    }
+    let chain = Arc::new(std::sync::Mutex::new(hashes));
+    let (requests, asked) = (Arc::new(AtomicU64::new(0)), Arc::new(std::sync::Mutex::new(vec![])));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let node = HashNode { url, chain: chain.clone(), requests: requests.clone(), asked: asked.clone() };
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let (chain, requests, asked) = (chain.clone(), requests.clone(), asked.clone());
+            tokio::spawn(async move {
+                let mut request = vec![];
+                let mut buf = [0; 4096];
+                let body_at = loop {
+                    let Ok(n) = stream.read(&mut buf).await else { return };
+                    if n == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                    let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+                    if request.len() >= end + 4 + len {
+                        break end + 4;
+                    }
+                };
+                requests.fetch_add(1, Ordering::Relaxed);
+                let head = String::from_utf8_lossy(&request[..body_at]).into_owned();
+                let body = &request[body_at..];
+                let answer: Vec<u8> = if head.starts_with("POST /get_hashes.bin") {
+                    let chain = chain.lock().unwrap();
+                    hashes::response(&hashes::answer(&chain, &hashes::known_in(body)))
+                } else {
+                    let asked_for: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+                    let height = asked_for["params"][0].as_u64().unwrap_or(u64::MAX);
+                    asked.lock().unwrap().push(height);
+                    let hash = chain.lock().unwrap().get(height as usize).map(hex::encode);
+                    serde_json::json!({"jsonrpc": "2.0", "id": "0", "result": hash}).to_string().into_bytes()
+                };
+                let mut response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", answer.len()).into_bytes();
+                response.extend(answer);
+                let _ = stream.write_all(&response).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    node
+}
+
+/// A server listing `txs` (scanned to `scanned`), for `wallet` to sync
+/// through, with `node` its node.
+async fn through(wallet: &Wallet, txs: Vec<lws::Transaction>, scanned: u64, node: &str) {
+    let txs = serde_json::to_string(&answer(txs, scanned)).unwrap();
+    let url = scripted_node(move |text| {
+        let txs = txs.clone();
+        async move {
+            if text.starts_with("POST /login") {
+                r#"{"new_address":true,"start_height":300100}"#.to_owned()
+            } else if text.starts_with("POST /get_address_txs") {
+                txs
+            } else {
+                r#"{"new_subaddrs":[]}"#.to_owned()
+            }
+        }
+    })
+    .await;
+    let mut state = wallet.inner.state.lock().await;
+    state.light_url = Some(url);
+    state.sync_mode = SyncMode::Light;
+    state.node = node.to_owned();
+}
+
+/// Through a server that proves its payments and a node that has their
+/// blocks: they match the chain, the node was asked one stretch from the
+/// wallet's first block (no payment's block by itself), and the next poll
+/// asks it nothing.
+#[tokio::test]
+async fn a_poll_checks_proofs_with_the_node_once() {
+    let wallet = Wallet::create(&dir("light-proofs"), [1; 32], Network::Stagenet).unwrap();
+    let chain = chain(&wallet.inner.keys);
+    let node = hash_node(300_300, &chain.blocks.iter().map(|(b, h)| (b.block.number() as u64, *h)).collect::<Vec<_>>()).await;
+    through(&wallet, with_proofs(&chain), 300_299, &node.url).await;
+    wallet.sync_step().await.unwrap();
+    let light = wallet.status().light.unwrap();
+    assert_eq!(light.amounts, catch_up::Amounts::Chain);
+    assert!(!light.proof_node_unreached && !light.proof_node_default);
+    assert_eq!(*node.asked.lock().unwrap(), vec![300_100], "only where the stretch starts: the wallet's first block");
+    assert_eq!(wallet.inner.state.lock().await.outputs.len(), 3);
+    let standing = wallet.light_standing().await;
+    assert!(standing.rows.iter().any(|r| r.label == "Amounts" && r.value == "match the chain"));
+    assert!(standing.rows.iter().any(|r| r.label == fob_words::light::NODE_LABEL && r.value == node::address(&node.url)));
+    // Kept: the next poll, and one after reopening, ask the node nothing.
+    let requests = node.requests.load(Ordering::Relaxed);
+    wallet.sync_step().await.unwrap();
+    assert_eq!(node.requests.load(Ordering::Relaxed), requests, "nothing asked again");
+    assert_eq!(wallet.status().light.unwrap().amounts, catch_up::Amounts::Chain);
+    let saved = saved(&wallet).await;
+    assert_eq!(saved["light_blocks"].as_array().unwrap().len(), 3, "kept in the file");
+    assert!(!saved["light_history"].as_array().unwrap().is_empty());
+
+    // One transaction without its proof: commitments only, for them all.
+    let mut one_bare = with_proofs(&chain);
+    one_bare[2].proof = None;
+    through(&wallet, one_bare, 300_299, &node.url).await;
+    wallet.sync_step().await.unwrap();
+    assert_eq!(wallet.status().light.unwrap().amounts, catch_up::Amounts::Checked);
+    assert!(wallet.light_standing().await.rows.iter().any(|r| r.label == "Amounts" && r.value == "commitments only"));
+}
+
+/// A made-up payment through a server, in a block the node hasn't got:
+/// the poll fails with words, nothing is taken, and the chip and the Light
+/// server screen say so.
+#[tokio::test]
+async fn a_lying_server_s_answer_is_refused_with_words() {
+    let wallet = Wallet::create(&dir("light-lying"), [1; 32], Network::Stagenet).unwrap();
+    let chain = chain(&wallet.inner.keys);
+    let node = hash_node(300_300, &chain.blocks.iter().map(|(b, h)| (b.block.number() as u64, *h)).collect::<Vec<_>>()).await;
+    let mut txs = with_proofs(&chain);
+    txs.push(made_up(&wallet.inner.keys, 300_150));
+    through(&wallet, txs, 300_299, &node.url).await;
+    let said = wallet.sync_step().await.unwrap_err().to_string();
+    assert_eq!(said, fob_words::light::NOT_ON_CHAIN);
+    assert!(wallet.inner.state.lock().await.outputs.is_empty(), "nothing taken, the honest outputs neither");
+    let light = wallet.status().light.unwrap();
+    assert!(light.refused);
+    assert_eq!(light.amounts, catch_up::Amounts::Mismatch);
+    wallet.set_status(|s| s.error = Some(said.clone()));
+    assert_eq!(fob_words::catch_up::chip(wallet.status().chip()).text, "Server answer refused");
+    let standing = wallet.light_standing().await;
+    assert!(standing.rows.iter().any(|r| r.label == "Amounts" && r.value == "don't match the chain" && r.bad));
+    assert!(*node.asked.lock().unwrap() == vec![300_100], "the made-up block's height wasn't asked by itself");
+}
+
+/// A node that can't be reached isn't the server's fault: the payments are
+/// taken, not yet checked, and the screen says the node couldn't be
+/// reached; the next poll with the node back checks them.
+#[tokio::test]
+async fn an_unreachable_node_leaves_proofs_pending_and_refuses_nothing() {
+    let wallet = Wallet::create(&dir("light-no-node"), [1; 32], Network::Stagenet).unwrap();
+    let chain = chain(&wallet.inner.keys);
+    // Nothing listens on port 1.
+    through(&wallet, with_proofs(&chain), 300_299, "http://127.0.0.1:1").await;
+    wallet.sync_step().await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.outputs.len(), 3, "taken");
+    let light = wallet.status().light.unwrap();
+    assert!(!light.refused && light.proof_node_unreached);
+    assert_eq!(light.amounts, catch_up::Amounts::ChainPending);
+    assert!(wallet.status().error.is_none());
+    let standing = wallet.light_standing().await;
+    assert!(standing.rows.iter().any(|r| r.label == "Amounts" && r.value == "not checked yet: can't reach the node"));
+    assert!(standing.notes.iter().any(|n| n.as_str() == fob_words::light::NODE_UNREACHED));
+
+    let node = hash_node(300_300, &chain.blocks.iter().map(|(b, h)| (b.block.number() as u64, *h)).collect::<Vec<_>>()).await;
+    wallet.inner.state.lock().await.node = node.url.clone();
+    wallet.sync_step().await.unwrap();
+    let light = wallet.status().light.unwrap();
+    assert_eq!(light.amounts, catch_up::Amounts::Chain);
+    assert!(!light.proof_node_unreached);
+}
+
+/// A wallet with no node of its own checks proofs with Fob's default for
+/// its network, and says so.
+#[tokio::test]
+async fn without_a_node_the_default_checks_proofs() {
+    let wallet = Wallet::create(&dir("light-default-node"), [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.node = String::new();
+    let (setting, pin, default) = wallet.proof_node().await;
+    assert_eq!((setting.url.as_str(), pin, default), (node::normalize(Network::Stagenet.default_nodes()[0]).as_str(), None, true));
+    wallet.inner.state.lock().await.node = "http://node.example:38081".into();
+    assert!(!wallet.proof_node().await.2);
+}
+
+/// A reorganisation after a payment was checked: the server lists it in
+/// the new block at that height, and the node, asked on from where Fob
+/// stopped, has the new chain: checked again, and it matches.
+#[tokio::test]
+async fn a_reorganised_block_is_checked_again() {
+    let wallet = Wallet::create(&dir("light-reorg"), [1; 32], Network::Stagenet).unwrap();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let blocks: Vec<(u64, [u8; 32])> = chain.blocks.iter().map(|(b, h)| (b.block.number() as u64, *h)).collect();
+    let node = hash_node(300_110, &blocks).await;
+    through(&wallet, with_proofs(&chain), 300_109, &node.url).await;
+    wallet.sync_step().await.unwrap();
+    assert_eq!(wallet.status().light.unwrap().amounts, catch_up::Amounts::Chain);
+    // Block 300,102 and those after it replaced, the chain grown; the
+    // payment to subaddress 3 is now in another block at 300,102.
+    let p2 = chain.listed[2].receives[0].clone();
+    let (t2, h2) = (chain.blocks[1].0.transactions[0].clone(), chain.listed[2].hash.0);
+    let (b2, _, _) = block(keys, 300_102, None, vec![(t2.clone(), h2)]);
+    let mut b2 = b2;
+    b2.block.header.nonce = 77;
+    {
+        let mut hashes = node.chain.lock().unwrap();
+        for h in 300_102..300_110 {
+            hashes[h] = [0xdd; 32];
+        }
+        hashes[300_102] = b2.block.hash();
+        hashes.extend((300_110..300_120).map(|_| [0xcc; 32]));
+    }
+    let mut txs = with_proofs(&chain);
+    txs.truncate(2);
+    let mut moved = listed(h2, Some(300_102), vec![p2], vec![]);
+    moved.fee = Some(lws::Amount(1000));
+    moved.proof = Some(proof::make(&b2.block, Some((&t2, [0; 32]))));
+    txs.push(moved);
+    let asked_before = node.asked.lock().unwrap().len();
+    through(&wallet, txs, 300_119, &node.url).await;
+    wallet.sync_step().await.unwrap();
+    assert_eq!(wallet.status().light.unwrap().amounts, catch_up::Amounts::Chain, "checked again on the new chain");
+    assert_eq!(node.asked.lock().unwrap().len(), asked_before, "on from the blocks kept near the tip: no height asked by itself");
+    let saved = saved(&wallet).await;
+    assert!(saved["light_blocks"].as_array().unwrap().contains(&serde_json::json!([300_102, hex::encode(b2.block.hash())])));
+}
+
 /// What a live run prints of the wallet at each step.
 async fn live_report(wallet: &Wallet, step: &str) {
     let status = wallet.status();
@@ -961,8 +1298,10 @@ async fn live_a_fresh_wallet_through_monokulo_lws() {
 
 /// The wallet in `LIVE_SPEND`/`LIVE_VIEW` (a stagenet test wallet, already
 /// known to the server at `LWS_URL`), synced through the server alone from
-/// `LIVE_FROM`: every output it lists comes with a commitment its amount
-/// opens, every spend with a fee, and nothing is refused.
+/// `LIVE_FROM`, its proofs checked with the node at `LIVE_NODE` (Fob's
+/// default otherwise): every output it lists comes with a proof whose
+/// block the node has, so they match the chain, every spend with a fee, and
+/// nothing is refused.
 #[tokio::test]
 #[ignore = "needs monokulo-lws on stagenet at LWS_URL, a test wallet's keys, and the network"]
 async fn live_an_existing_wallet_through_monokulo_lws() {
@@ -972,6 +1311,9 @@ async fn live_an_existing_wallet_through_monokulo_lws() {
     let from: u64 = std::env::var("LIVE_FROM").ok().and_then(|f| f.parse().ok()).expect("LIVE_FROM");
     let keys = Keys::from_spend_key(Network::Stagenet, &spend, Some(&view)).unwrap();
     let wallet = Wallet::new(&dir("light-live-existing"), [1; 32], keys, Some(from)).unwrap();
+    if let Ok(node) = std::env::var("LIVE_NODE") {
+        wallet.inner.state.lock().await.node = node;
+    }
     println!("address {}", wallet.primary_address());
     wallet.set_light_server(&url, false).await.unwrap();
     wallet.use_light_wallet(true).await.unwrap();
@@ -986,7 +1328,12 @@ async fn live_an_existing_wallet_through_monokulo_lws() {
     }
     let status = wallet.status();
     assert!(status.synced);
-    assert_eq!(status.light.as_ref().unwrap().amounts, catch_up::Amounts::Checked, "every amount opened the chain's commitment");
+    println!("light server screen: {:?}", wallet.light_standing().await);
+    {
+        let state = wallet.inner.state.lock().await;
+        println!("node vouched for {:?}, kept near the tip {:?}", state.light_blocks, state.light_history.last());
+    }
+    assert_eq!(status.light.as_ref().unwrap().amounts, catch_up::Amounts::Chain, "every output proved, in a block the node has");
     let state = wallet.inner.state.lock().await;
     assert!(!state.outputs.is_empty());
     assert!(state.spends.iter().all(|s| s.fee > 0), "every spend with its fee");

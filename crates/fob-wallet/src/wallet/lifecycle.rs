@@ -26,6 +26,8 @@ impl Wallet {
             light_registered: false,
             light_subaddrs_sent: 0,
             light_scanned_height: 0,
+            light_blocks: vec![],
+            light_history: vec![],
             restore_height,
             next_block: restore_height.unwrap_or(0),
             tip: 0,

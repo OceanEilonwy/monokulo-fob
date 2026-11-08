@@ -3,7 +3,7 @@
 
 use fob_chain::light::{Problem, Report};
 use fob_monero::amount::grouped;
-use fob_screens::catch_up::{Amounts, SyncState};
+use fob_screens::catch_up::{Amounts, Light, SyncState};
 
 use crate::{device, node::certificate};
 
@@ -72,6 +72,7 @@ pub fn problem(problem: &Problem) -> String {
         Problem::BadOutputs(n) => format!("The server named {n} payments that aren't this wallet's: they weren't counted"),
         Problem::AmountMismatch => "The light server reported an amount that doesn't match the chain. Nothing from its answer was taken".into(),
         Problem::Contradiction => "The light server's answer contradicts itself. Nothing from it was taken".into(),
+        Problem::NotOnChain => NOT_ON_CHAIN.into(),
         Problem::NoServerSet => "Choose a light wallet server first".into(),
     }
 }
@@ -165,6 +166,18 @@ pub const KEY_NOTE: &str = "The SHA3-256 of the server's public key. Fob talks t
 /// When amounts can't be checked.
 pub const SERVERS_WORD: &str =
     "This server doesn't send the chain's commitments, so Fob can't check the amounts it reports against the chain. They're the server's word.";
+/// When amounts are held to commitments but payments aren't proved.
+pub const COMMITMENTS_ONLY: &str = "This server doesn't prove where its payments are on the chain, so Fob holds their amounts only to the commitments it sends. A server could make up a payment whose commitment fits.";
+/// When proofs came but the node couldn't be asked.
+pub const NODE_UNREACHED: &str = "Fob couldn't reach the node to check this server's proofs against the chain. Until it can, its payments are held only to the commitments the proofs carry. It tries again at the next poll.";
+/// When proofs came but the node hasn't those blocks yet.
+pub const NODE_BEHIND: &str = "The node hasn't got the blocks this server's proofs name yet. Until it has, its payments are held only to the commitments the proofs carry. It tries again at the next poll.";
+/// When the node checking proofs is Fob's default, the wallet having none.
+pub const DEFAULT_NODE: &str = "This wallet has no node of its own, so Fob checks the server's proofs with its default node for the network.";
+/// A proof that doesn't hold, or names a block the node hasn't got.
+pub const NOT_ON_CHAIN: &str = "The light server named a payment that doesn't match the chain. Nothing from its answer was taken";
+/// The row of the node proofs are checked with.
+pub const NODE_LABEL: &str = "Checked with";
 /// A history row's fee when the server didn't give one: the amount then
 /// includes it.
 pub const FEE_NOT_KNOWN: &str = "Not known · counted in the amount";
@@ -186,23 +199,43 @@ pub struct Standing {
 }
 
 /// The server in use, as the Light server screen shows it: `pin` (for a
-/// server whose own certificate is accepted), what its amounts are worth,
-/// and why its last answer failed, if it did.
-pub fn standing(pin: Option<&[u8; 32]>, amounts: Amounts, failed: Option<&str>) -> Standing {
+/// server whose own certificate is accepted), what its payments and amounts
+/// are worth and the node that checks its proofs, from its last answer
+/// (`light`), and why that failed, if it did.
+pub fn standing(pin: Option<&[u8; 32]>, light: &Light, failed: Option<&str>) -> Standing {
     let row = |label: &str, value: String, bad: bool| ReportRow { label: label.into(), value, bad };
     let mut said = Standing::default();
     if let Some(pin) = pin {
         said.rows.push(row(KEY_LABEL, key(pin), false));
         said.notes.push(KEY_NOTE.into());
     }
-    match amounts {
+    match light.amounts {
         Amounts::NotYet => {}
-        Amounts::Checked => said.rows.push(row("Amounts", "match the chain's commitments".into(), false)),
+        Amounts::Chain => said.rows.push(row("Amounts", "match the chain".into(), false)),
+        Amounts::ChainPending if light.proof_node_unreached => {
+            said.rows.push(row("Amounts", "not checked yet: can't reach the node".into(), false));
+            said.notes.push(NODE_UNREACHED.into());
+        }
+        Amounts::ChainPending => {
+            said.rows.push(row("Amounts", "not checked yet: the node is behind".into(), false));
+            said.notes.push(NODE_BEHIND.into());
+        }
+        Amounts::Checked => {
+            said.rows.push(row("Amounts", "commitments only".into(), false));
+            said.notes.push(COMMITMENTS_ONLY.into());
+        }
         Amounts::ServersWord => {
             said.rows.push(row("Amounts", "the server's word".into(), false));
             said.notes.push(SERVERS_WORD.into());
         }
         Amounts::Mismatch => said.rows.push(row("Amounts", "don't match the chain".into(), true)),
+    }
+    if let Some(node) = &light.proof_node {
+        let value = if light.proof_node_default { format!("{node} · Fob's default") } else { node.clone() };
+        said.rows.push(row(NODE_LABEL, value, light.proof_node_unreached));
+        if light.proof_node_default {
+            said.notes.push(DEFAULT_NODE.into());
+        }
     }
     if let Some(failed) = failed {
         said.rows.push(row("Last answer", failed.into(), true));
@@ -244,15 +277,34 @@ mod tests {
     /// groups of four, what amounts are worth, a failure.
     #[test]
     fn standing_says_the_key_and_the_amounts() {
-        assert_eq!(standing(None, Amounts::NotYet, None), Standing::default());
-        let said = standing(Some(&[0xab; 32]), Amounts::ServersWord, Some("Can't reach the server: refused"));
+        let light = |amounts| Light { amounts, ..Light::default() };
+        assert_eq!(standing(None, &light(Amounts::NotYet), None), Standing::default());
+        let said = standing(Some(&[0xab; 32]), &light(Amounts::ServersWord), Some("Can't reach the server: refused"));
         assert_eq!(said.rows[0].value, ["abab"; 16].join(" "));
         assert_eq!((said.rows[1].label.as_str(), said.rows[1].value.as_str(), said.rows[1].bad), ("Amounts", "the server's word", false));
         assert!(said.rows[2].bad);
         assert_eq!(said.notes, vec![KEY_NOTE.to_owned(), SERVERS_WORD.to_owned()]);
-        assert!(standing(None, Amounts::Mismatch, None).rows[0].bad);
+        assert!(standing(None, &light(Amounts::Mismatch), None).rows[0].bad);
         assert_eq!(problem(&Problem::AmountMismatch), "The light server reported an amount that doesn't match the chain. Nothing from its answer was taken");
         assert!(problem(&Problem::PlainHttp).starts_with("A light wallet server needs https"));
+    }
+
+    /// The three ways a server's payments stand: proved and matching a
+    /// node's chain, held to commitments only, or its word; a proof the
+    /// node couldn't check yet; and the node it's checked with.
+    #[test]
+    fn standing_says_how_payments_are_checked() {
+        let value = |light: &Light| standing(None, light, None).rows.iter().find(|r| r.label == "Amounts").map(|r| r.value.clone()).unwrap();
+        let node = |amounts, default, unreached| Light { amounts, proof_node: Some("stagenet.xmr-tw.org:38081".into()), proof_node_default: default, proof_node_unreached: unreached, ..Light::default() };
+        assert_eq!(value(&node(Amounts::Chain, false, false)), "match the chain");
+        assert_eq!(value(&node(Amounts::Checked, false, false)), "commitments only");
+        assert_eq!(value(&node(Amounts::ServersWord, false, false)), "the server's word");
+        let pending = standing(None, &node(Amounts::ChainPending, true, true), None);
+        assert_eq!(pending.rows[0].value, "not checked yet: can't reach the node");
+        assert_eq!((pending.rows[1].label.as_str(), pending.rows[1].value.as_str(), pending.rows[1].bad), (NODE_LABEL, "stagenet.xmr-tw.org:38081 · Fob's default", true));
+        assert_eq!(pending.notes, vec![NODE_UNREACHED.to_owned(), DEFAULT_NODE.to_owned()]);
+        assert_eq!(value(&node(Amounts::ChainPending, false, false)), "not checked yet: the node is behind");
+        assert_eq!(problem(&Problem::NotOnChain), "The light server named a payment that doesn't match the chain. Nothing from its answer was taken");
     }
 
     #[test]
