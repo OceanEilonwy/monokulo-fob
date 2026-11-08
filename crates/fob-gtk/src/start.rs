@@ -20,13 +20,16 @@ pub enum Way {
     Trezor,
 }
 
+/// The Network row's choices, in its order.
+const NETWORKS: [(fob_app::views::Network, &str); 2] = [(fob_app::views::Network::Stagenet, "Stagenet, test coins"), (fob_app::views::Network::Mainnet, "Mainnet, real money")];
+
 #[derive(Debug)]
 pub enum Input {
     Phase(Phase),
     Adding,
     Way(u32),
-    /// Make this one on the other network.
-    SwitchNetwork,
+    /// The network row: 0 stagenet, 1 mainnet. Moves to the network picked.
+    Network(u32),
     Go,
     Failed(String),
     Done,
@@ -75,14 +78,17 @@ impl SimpleComponent for Start {
                             #[watch]
                             set_label: &model.lead(),
                         },
-                        gtk::Button {
-                            add_css_class: "flat",
-                            set_halign: gtk::Align::Center,
-                            #[watch]
-                            set_label: model.other_network_label(),
-                            connect_clicked => Input::SwitchNetwork,
-                        },
                         adw::PreferencesGroup {
+                            // A row with the choice showing, not a flat button:
+                            // "Use mainnet, with real money" read as a statement
+                            // of what was about to be made.
+                            add = &adw::ComboRow {
+                                set_title: "Network",
+                                set_model: Some(&gtk::StringList::new(&[NETWORKS[0].1, NETWORKS[1].1])),
+                                #[watch]
+                                set_selected: model.network_index(),
+                                connect_selected_notify[sender] => move |row| sender.input(Input::Network(row.selected())),
+                            },
                             add = &adw::ComboRow {
                                 set_title: "How",
                                 set_model: Some(&gtk::StringList::new(&["Make a new wallet", "Restore from seed words", "Restore from code", "Watch only", "Connect a Trezor (USB)"])),
@@ -180,17 +186,17 @@ impl SimpleComponent for Start {
                 self.way = [Way::New, Way::Words, Way::Code, Way::ViewOnly, Way::Trezor][i.min(4) as usize];
                 self.error = None;
             }
-            Input::SwitchNetwork => {
-                let other = match self.engine.network() {
-                    fob_app::views::Network::Mainnet => fob_app::views::Network::Stagenet,
-                    fob_app::views::Network::Stagenet => fob_app::views::Network::Mainnet,
-                };
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    if let Err(e) = engine.switch_network(other).await {
-                        sender.input(Input::Failed(e.to_string()));
-                    }
-                });
+            Input::Network(index) => {
+                let wanted = NETWORKS[(index as usize).min(1)].0;
+                // The row is set from the engine too: only a change moves.
+                if wanted != self.engine.network() {
+                    let (engine, sender) = (self.engine.clone(), sender.clone());
+                    relm4::spawn(async move {
+                        if let Err(e) = engine.switch_network(wanted).await {
+                            sender.input(Input::Failed(e.to_string()));
+                        }
+                    });
+                }
             }
             Input::Go => self.go(&sender),
             Input::Failed(why) => {
@@ -232,11 +238,9 @@ impl Start {
         }
     }
 
-    fn other_network_label(&self) -> &'static str {
-        match self.engine.network() {
-            fob_app::views::Network::Mainnet => "Use stagenet, with test coins",
-            fob_app::views::Network::Stagenet => "Use mainnet, with real money",
-        }
+    /// Which of [`NETWORKS`] the wallet is made on now.
+    fn network_index(&self) -> u32 {
+        NETWORKS.iter().position(|(network, _)| *network == self.engine.network()).unwrap_or(0) as u32
     }
 
     fn lead(&self) -> String {
