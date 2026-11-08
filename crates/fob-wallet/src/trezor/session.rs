@@ -49,6 +49,36 @@ fn device(text: impl Into<String>) -> FobError {
     FobError::Trezor(text.into())
 }
 
+/// What a `Failure` of `code` means, in Fob's words. Each code the Monero
+/// app can send is listed with the codes in [`m`].
+fn refused(code: u64) -> FobError {
+    match code {
+        m::FAILURE_ACTION_CANCELLED | m::FAILURE_PIN_CANCELLED => FobError::TrezorCancelled,
+        m::FAILURE_PIN_INVALID => device("the PIN was wrong"),
+        m::FAILURE_PIN_MISMATCH => device("the PINs didn't match"),
+        m::FAILURE_WIPE_CODE_MISMATCH => device("the wipe codes didn't match"),
+        m::FAILURE_UNEXPECTED_MESSAGE | m::FAILURE_BUTTON_EXPECTED | m::FAILURE_PIN_EXPECTED => {
+            device("the Trezor wasn't expecting that: unplug it, plug it in again and try again")
+        }
+        m::FAILURE_DATA_ERROR | m::FAILURE_PROCESS_ERROR => {
+            device("the Trezor found a fault in what Fob sent. Update Fob and the Trezor's firmware, then try again")
+        }
+        m::FAILURE_FIRMWARE_ERROR => {
+            device("the Trezor's firmware hit an error while working on this. Update Fob and the Trezor's firmware, then unplug it, plug it in again and try again")
+        }
+        m::FAILURE_INVALID_SIGNATURE => device("the Trezor says a signature doesn't check out"),
+        m::FAILURE_NOT_ENOUGH_FUNDS => device("the Trezor says the amounts don't add up"),
+        m::FAILURE_NOT_INITIALIZED => device("the Trezor isn't set up yet: give it a seed first"),
+        m::FAILURE_INVALID_SESSION => device("the Trezor forgot this session: try again"),
+        m::FAILURE_BUSY => device("the Trezor is busy with another app: close Trezor Suite or the other wallet and try again"),
+        m::FAILURE_IN_PROGRESS => device("the Trezor is in the middle of something else: finish or cancel it on the device and try again"),
+        m::FAILURE_THP_UNALLOCATED_SESSION | m::FAILURE_INVALID_PROTOCOL => {
+            device("the Trezor wants a newer way of talking than Fob knows: update Fob")
+        }
+        _ => device(format!("the Trezor refused: {}", m::failure_name(code))),
+    }
+}
+
 /// Firmware older than this doesn't know client version 4 of the Monero
 /// protocol.
 const MIN_VERSION: (u64, u64, u64) = (2, 5, 2);
@@ -133,16 +163,7 @@ impl<'a> Session<'a> {
                     // Fob's own words for each code: the device's text isn't
                     // shown, as a hostile one could say anything there.
                     let (code, _) = m::failure(&data);
-                    return Err(match code {
-                        m::FAILURE_ACTION_CANCELLED | m::FAILURE_PIN_CANCELLED => FobError::TrezorCancelled,
-                        m::FAILURE_PIN_INVALID => device("the PIN was wrong"),
-                        m::FAILURE_UNEXPECTED_MESSAGE => device("the Trezor wasn't expecting that: unplug it and try again"),
-                        m::FAILURE_DATA_ERROR | m::FAILURE_PROCESS_ERROR => device("the Trezor refused what Fob sent (its firmware may be older than Fob knows)"),
-                        m::FAILURE_NOT_ENOUGH_FUNDS => device("the Trezor says the amounts don't add up"),
-                        m::FAILURE_NOT_INITIALIZED => device("the Trezor isn't set up yet"),
-                        m::FAILURE_BUSY => device("the Trezor is busy with another app"),
-                        _ => device(format!("the Trezor refused (code {code})")),
-                    });
+                    return Err(refused(code));
                 }
                 _ => return Ok((reply, data)),
             }
@@ -547,7 +568,30 @@ mod tests {
         *fake.fail.lock().unwrap() = Some((m::MONERO_GET_WATCH_KEY, m::FAILURE_BUSY));
         assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t.contains("busy") && !t.contains("refused")));
         *fake.fail.lock().unwrap() = Some((m::MONERO_GET_WATCH_KEY, 77));
-        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t == "the Trezor refused (code 77)"));
+        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t == "the Trezor refused: code 77"));
+    }
+
+    #[test]
+    fn every_failure_code_of_the_protocol_has_words() {
+        // Every FailureType of messages-common.proto, as the firmware's main
+        // branch has it; 18 is reserved there.
+        let codes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 99];
+        for code in codes {
+            let said = match refused(code) {
+                FobError::TrezorCancelled => continue,
+                FobError::Trezor(text) => text,
+                other => panic!("{other:?}"),
+            };
+            assert!(!said.contains(&format!("code {code}")), "{code} has words of its own, not its number: {said}");
+            assert!(said.starts_with("the Trezor") || said.starts_with("the PIN") || said.starts_with("the wipe"), "{said}");
+        }
+        assert!(matches!(refused(4), FobError::TrezorCancelled));
+        assert!(matches!(refused(6), FobError::TrezorCancelled));
+        assert!(matches!(refused(99), FobError::Trezor(t) if t.contains("firmware")));
+        assert!(matches!(refused(3), FobError::Trezor(t) if t.contains("Update Fob")));
+        assert!(matches!(refused(14), FobError::Trezor(t) if t.contains("try again")));
+        assert_eq!(m::failure_name(18), "code 18");
+        assert_eq!(m::failure_name(99), "FirmwareError (code 99)");
     }
 
     #[test]

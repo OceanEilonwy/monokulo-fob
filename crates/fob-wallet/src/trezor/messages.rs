@@ -46,16 +46,78 @@ pub const MONERO_ADDRESS: u16 = 541;
 pub const MONERO_GET_WATCH_KEY: u16 = 542;
 pub const MONERO_WATCH_KEY: u16 = 543;
 
-/// `Failure.code` for the person saying no, on the device or to a PIN.
+// `Failure.code`: every `FailureType` of Trezor's protocol (messages-common.proto,
+// firmware 2.8 and the current main branch). What the Monero app can send Fob:
+//
+// - `UnexpectedMessage` (1): a message with no handler, or one out of step
+//   with the workflow running (an ack with nothing to ack).
+// - `DataError` (3): what Fob sent fails the app's checks: input or output
+//   counts, the change address, a subaddress that can't be integrated, an
+//   unknown signing message.
+// - `ActionCancelled` (4): the person said no, or the workflow was closed
+//   (another message came, or the device locked itself with a workflow on).
+// - `PinCancelled` (6), `PinInvalid` (7): the PIN, on the device or typed here.
+// - `ProcessError` (9): a subaddress index the app won't take.
+// - `NotInitialized` (11): no seed (Fob reads it off `Features` first).
+// - `InvalidSession` (14): the session the device cached is gone.
+// - `Busy` (15): `SetBusy` from another host (newer firmware).
+// - `FirmwareError` (99): any other exception in the app, with "Firmware
+//   error" for its text on a release build: an unsupported client version or
+//   hard fork, an HMAC that doesn't check, a state transition out of order.
+//
+// The others belong to other flows: `ButtonExpected` (2) and `PinExpected`
+// (5) to the legacy firmware (Trezor Model One, refused earlier), `InvalidSignature`
+// (8) to Bitcoin, `NotEnoughFunds` (10) to coins that count funds on the
+// device, `PinMismatch` (12) and `WipeCodeMismatch` (13) to changing the PIN,
+// `ThpUnallocatedSession` (16), `InvalidProtocol` (17) and `InProgress` (19)
+// to the new transport protocol.
+pub const FAILURE_UNEXPECTED_MESSAGE: u64 = 1;
+pub const FAILURE_BUTTON_EXPECTED: u64 = 2;
+pub const FAILURE_DATA_ERROR: u64 = 3;
 pub const FAILURE_ACTION_CANCELLED: u64 = 4;
+pub const FAILURE_PIN_EXPECTED: u64 = 5;
 pub const FAILURE_PIN_CANCELLED: u64 = 6;
 pub const FAILURE_PIN_INVALID: u64 = 7;
-pub const FAILURE_UNEXPECTED_MESSAGE: u64 = 1;
-pub const FAILURE_DATA_ERROR: u64 = 3;
+pub const FAILURE_INVALID_SIGNATURE: u64 = 8;
 pub const FAILURE_PROCESS_ERROR: u64 = 9;
 pub const FAILURE_NOT_ENOUGH_FUNDS: u64 = 10;
 pub const FAILURE_NOT_INITIALIZED: u64 = 11;
+pub const FAILURE_PIN_MISMATCH: u64 = 12;
+pub const FAILURE_WIPE_CODE_MISMATCH: u64 = 13;
+pub const FAILURE_INVALID_SESSION: u64 = 14;
 pub const FAILURE_BUSY: u64 = 15;
+pub const FAILURE_THP_UNALLOCATED_SESSION: u64 = 16;
+pub const FAILURE_INVALID_PROTOCOL: u64 = 17;
+pub const FAILURE_IN_PROGRESS: u64 = 19;
+pub const FAILURE_FIRMWARE_ERROR: u64 = 99;
+
+/// A failure code by its name in Trezor's protocol, for the codes Fob has no
+/// words of its own for.
+pub fn failure_name(code: u64) -> String {
+    let known = match code {
+        FAILURE_UNEXPECTED_MESSAGE => "UnexpectedMessage",
+        FAILURE_BUTTON_EXPECTED => "ButtonExpected",
+        FAILURE_DATA_ERROR => "DataError",
+        FAILURE_ACTION_CANCELLED => "ActionCancelled",
+        FAILURE_PIN_EXPECTED => "PinExpected",
+        FAILURE_PIN_CANCELLED => "PinCancelled",
+        FAILURE_PIN_INVALID => "PinInvalid",
+        FAILURE_INVALID_SIGNATURE => "InvalidSignature",
+        FAILURE_PROCESS_ERROR => "ProcessError",
+        FAILURE_NOT_ENOUGH_FUNDS => "NotEnoughFunds",
+        FAILURE_NOT_INITIALIZED => "NotInitialized",
+        FAILURE_PIN_MISMATCH => "PinMismatch",
+        FAILURE_WIPE_CODE_MISMATCH => "WipeCodeMismatch",
+        FAILURE_INVALID_SESSION => "InvalidSession",
+        FAILURE_BUSY => "Busy",
+        FAILURE_THP_UNALLOCATED_SESSION => "ThpUnallocatedSession",
+        FAILURE_INVALID_PROTOCOL => "InvalidProtocol",
+        FAILURE_IN_PROGRESS => "InProgress",
+        FAILURE_FIRMWARE_ERROR => "FirmwareError",
+        _ => return format!("code {code}"),
+    };
+    format!("{known} (code {code})")
+}
 
 /// `Features.capabilities` values.
 pub const CAPABILITY_MONERO: u64 = 9;
