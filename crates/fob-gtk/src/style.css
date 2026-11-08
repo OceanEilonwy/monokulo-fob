@@ -96,3 +96,25 @@ button.refreshing image {
 .incoming {
 	color: #1f7a45;
 }
+
+/* The Trezor card: the device drawn beside what to do on it. */
+.trezor-card {
+	padding: 16px 20px 14px;
+	border-radius: 12px;
+}
+
+.trezor-eyebrow {
+	font-size: 0.75em;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	color: #f0a070;
+}
+
+.trezor-eyebrow.problem,
+.trezor-eyebrow.stop {
+	color: @error_color;
+}
+
+.trezor-eyebrow.done {
+	color: @success_color;
+}

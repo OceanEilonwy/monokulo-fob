@@ -1169,6 +1169,9 @@ pub enum TrezorPassphrase {
 /// back as an error, not a panic (see [`SyncObserver`]).
 #[uniffi::export(with_foreign)]
 pub trait TrezorPrompts: Send + Sync {
+    /// The device answered the hello: its name, and whether it has a PIN
+    /// and passphrase protection, which decide the steps the screen counts.
+    fn on_hello(&self, name: String, pin_protection: bool, passphrase_protection: bool) -> Result<()>;
     /// The device shows something to confirm; `what` names its screen.
     fn on_button(&self, what: String) -> Result<()>;
     /// The device wants its PIN: the positions (1 to 9) of the digits on
@@ -1194,6 +1197,9 @@ impl fob_wallet::trezor::Link for Link {
 struct Prompts(Arc<dyn TrezorPrompts>);
 
 impl fob_wallet::trezor::Prompts for Prompts {
+    fn hello(&self, device: &fob_wallet::trezor::Hello) {
+        let _ = self.0.on_hello(device.name.clone(), device.pin_protection, device.passphrase_protection);
+    }
     fn button(&self, what: &str) {
         let _ = self.0.on_button(what.to_owned());
     }
@@ -3538,6 +3544,153 @@ pub struct LightWords {
     pub privacy: String,
     /// Before light mode turns off.
     pub turning_off: String,
+}
+
+/// A step of connecting a Trezor wallet, counted off at the card's corner.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrezorStep {
+    Unlock,
+    Wallet,
+    Allow,
+    Address,
+}
+
+impl From<fob_wallet::words::trezor::Step> for TrezorStep {
+    fn from(step: fob_wallet::words::trezor::Step) -> Self {
+        use fob_wallet::words::trezor::Step as S;
+        match step {
+            S::Unlock => TrezorStep::Unlock,
+            S::Wallet => TrezorStep::Wallet,
+            S::Allow => TrezorStep::Allow,
+            S::Address => TrezorStep::Address,
+        }
+    }
+}
+
+/// The Trezor card: an eyebrow, a line, the words under it.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TrezorCard {
+    pub eyebrow: String,
+    pub title: String,
+    pub body: String,
+}
+
+impl From<fob_wallet::words::trezor::Card> for TrezorCard {
+    fn from(c: fob_wallet::words::trezor::Card) -> Self {
+        TrezorCard { eyebrow: c.eyebrow, title: c.title, body: c.body }
+    }
+}
+
+/// A failed exchange's card, and whether Try again is offered.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TrezorProblem {
+    pub card: TrezorCard,
+    pub retry: bool,
+    /// The address differed: the one red state.
+    pub stop: bool,
+}
+
+/// The fixed words of the Trezor screen.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TrezorWords {
+    pub your_trezor: String,
+    pub looking_hint: String,
+    pub try_again: String,
+    pub open_wallet: String,
+    pub no_passphrase: String,
+    pub on_the_trezor: String,
+    pub type_here: String,
+    pub enter_on_trezor_instead: String,
+    pub passphrase_field: String,
+    pub close: String,
+    pub pin_enter: String,
+    pub pin_delete: String,
+    pub kept_if_cancelled: String,
+}
+
+#[uniffi::export]
+pub fn trezor_words() -> TrezorWords {
+    use fob_wallet::words::trezor as w;
+    TrezorWords {
+        your_trezor: w::YOUR_TREZOR.into(),
+        looking_hint: w::LOOKING_HINT.into(),
+        try_again: w::TRY_AGAIN.into(),
+        open_wallet: w::OPEN_WALLET.into(),
+        no_passphrase: w::NO_PASSPHRASE.into(),
+        on_the_trezor: w::ON_THE_TREZOR.into(),
+        type_here: w::TYPE_HERE.into(),
+        enter_on_trezor_instead: w::ENTER_ON_TREZOR_INSTEAD.into(),
+        passphrase_field: w::PASSPHRASE_FIELD.into(),
+        close: w::CLOSE.into(),
+        pin_enter: w::PIN_ENTER.into(),
+        pin_delete: w::PIN_DELETE.into(),
+        kept_if_cancelled: w::KEPT_IF_CANCELLED.into(),
+    }
+}
+
+/// The steps a device with these protections takes a person through.
+#[uniffi::export]
+pub fn trezor_steps(pin_protection: bool, passphrase_protection: bool) -> Vec<TrezorStep> {
+    fob_wallet::words::trezor::Device { pin: pin_protection, passphrase: passphrase_protection }.steps().into_iter().map(Into::into).collect()
+}
+
+/// The step a device screen belongs to, by the name its firmware gives it;
+/// none for a screen outside connecting (a sync, a payment).
+#[uniffi::export]
+pub fn trezor_step_for(what: String) -> Option<TrezorStep> {
+    fob_wallet::words::trezor::step_for(&what).map(Into::into)
+}
+
+#[uniffi::export]
+pub fn trezor_step_name(step: TrezorStep) -> String {
+    use fob_wallet::words::trezor::Step as S;
+    match step {
+        TrezorStep::Unlock => S::Unlock,
+        TrezorStep::Wallet => S::Wallet,
+        TrezorStep::Allow => S::Allow,
+        TrezorStep::Address => S::Address,
+    }
+    .name()
+    .into()
+}
+
+#[uniffi::export]
+pub fn trezor_card_looking() -> TrezorCard {
+    fob_wallet::words::trezor::looking().into()
+}
+
+#[uniffi::export]
+pub fn trezor_card_button(what: String) -> TrezorCard {
+    fob_wallet::words::trezor::button(&what).into()
+}
+
+/// The passphrase question; `typed` once the field is open.
+#[uniffi::export]
+pub fn trezor_card_passphrase(typed: bool) -> TrezorCard {
+    if typed { fob_wallet::words::trezor::passphrase_typed().into() } else { fob_wallet::words::trezor::passphrase().into() }
+}
+
+#[uniffi::export]
+pub fn trezor_card_pin() -> TrezorCard {
+    fob_wallet::words::trezor::pin().into()
+}
+
+#[uniffi::export]
+pub fn trezor_card_progress(done: u32, total: u32) -> TrezorCard {
+    fob_wallet::words::trezor::progress(done, total).into()
+}
+
+/// What a failed exchange says: `reason` as Fob worded it, `cancelled`
+/// whether the person said no.
+#[uniffi::export]
+pub fn trezor_problem(reason: String, cancelled: bool) -> TrezorProblem {
+    let p = fob_wallet::words::trezor::problem(&reason, cancelled);
+    TrezorProblem { card: p.card.into(), retry: p.retry, stop: p.stop }
+}
+
+#[uniffi::export]
+pub fn trezor_card_connected(name: String) -> TrezorCard {
+    fob_wallet::words::trezor::connected(&name).into()
 }
 
 /// The words of Settings' Node card and the Light server screen.

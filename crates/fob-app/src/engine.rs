@@ -534,16 +534,28 @@ impl Engine {
 
     /// Opens the Trezor on the USB port and runs `with` on it, the device's
     /// questions going through `prompter`; the device is let go after, and
-    /// the prompter told the exchange is over, whatever happened.
+    /// the prompter told the exchange is over, whatever happened. With no
+    /// device plugged in it keeps looking, once a second, until one is or
+    /// the person gives up: the screen says so meanwhile.
     async fn with_trezor<T: Send + 'static>(
         prompter: Arc<crate::trezor::Prompter>,
         with: impl FnOnce(Arc<crate::trezor::Usb>, Arc<crate::trezor::Prompter>) -> std::pin::Pin<Box<dyn Future<Output = Result<T, FobError>> + Send>> + Send + 'static,
     ) -> Result<T, FobError> {
-        let link = match crate::trezor::Usb::open() {
-            Ok(link) => link,
-            Err(e) => {
-                prompter.over();
-                return Err(e);
+        prompter.looking();
+        let link = loop {
+            match crate::trezor::Usb::open() {
+                Ok(link) => break link,
+                Err(FobError::Trezor { reason }) if reason.starts_with("No Trezor is plugged in") => {
+                    if prompter.cancelled() {
+                        prompter.over();
+                        return Err(FobError::TrezorCancelled { reason: fob_wallet::words::errors::trezor_cancelled() });
+                    }
+                    let _ = fob_wallet::runtime().spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(1))).await;
+                }
+                Err(e) => {
+                    prompter.over();
+                    return Err(e);
+                }
             }
         };
         prompter.hold(link.clone());

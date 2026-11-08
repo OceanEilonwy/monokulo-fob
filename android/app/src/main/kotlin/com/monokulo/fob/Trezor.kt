@@ -64,7 +64,12 @@ object TrezorUsb {
     /** Opens the Trezor plugged in, or throws why not in words for the screen. */
     suspend fun open(context: Context): Link {
         val device = find(context) ?: throw FobException.Trezor("No Trezor is plugged in. Connect it with a USB cable (an adapter from the phone's port, if it needs one) and unlock it.")
-        if (!permitted(context, device)) throw FobException.Trezor("Fob wasn't allowed to use the Trezor.")
+        return open(context, device)
+    }
+
+    /** Opens [device], asking Android (which asks the person) first. */
+    suspend fun open(context: Context, device: UsbDevice): Link {
+        if (!permitted(context, device)) throw FobException.Trezor("Android didn't let Fob use the Trezor. When it asks whether Fob may, allow it; then unplug the device, plug it in again and try again.")
         return Link(context, manager(context), device)
     }
 
@@ -137,8 +142,17 @@ object TrezorUsb {
     }
 }
 
+/** What the device's hello said: its name, and what it will ask for. */
+data class TrezorHello(val name: String, val pinProtection: Boolean, val passphraseProtection: Boolean)
+
 /** What the Trezor is asking of the person right now, for the screen to show. */
 sealed interface TrezorAsk {
+    /** No device has answered yet: Fob looks for one on USB until one does. */
+    data object Looking : TrezorAsk
+    /** The device answered the hello. */
+    data class Hello(val hello: TrezorHello) : TrezorAsk
+    /** The exchange failed; [problem] says how, and whether Try again is offered. */
+    data class Problem(val problem: uniffi.fob.TrezorProblem) : TrezorAsk
     /** Look at the device: it shows [what] to confirm. */
     data class Button(val what: String) : TrezorAsk
     /** Its PIN, by the positions on the keypad the device shows. */
@@ -158,35 +172,89 @@ class TrezorAsks : TrezorPrompts {
     private val _ask = MutableStateFlow<TrezorAsk?>(null)
     val ask: StateFlow<TrezorAsk?> = _ask
 
-    /** Whether a device exchange is under way at all, for the overlay to show. */
+    /** Whether a device exchange is under way at all, for the screen to show. */
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
 
+    /** What the device's hello said, once it has: the steps are counted off it. */
+    private val _hello = MutableStateFlow<TrezorHello?>(null)
+    val hello: StateFlow<TrezorHello?> = _hello
+
     private var pinAnswer: CompletableDeferred<String?>? = null
     private var passphraseAnswer: CompletableDeferred<TrezorPassphrase>? = null
+    private var retryAnswer: CompletableDeferred<Boolean>? = null
+
+    /** The person gave up while Fob was still looking for a device. */
+    @Volatile var cancelled = false
+        private set
 
     /** Ends the exchange from the phone's side: closes the link, so Rust's wait ends. Set while one is on. */
     @Volatile var onCancel: (() -> Unit)? = null
 
-    fun begin(onCancel: () -> Unit) {
-        this.onCancel = onCancel
+    /** An exchange begins: the screen shows, looking for a device. */
+    fun begin() {
+        onCancel = null
+        cancelled = false
+        _hello.value = null
         _busy.value = true
-        _ask.value = null
+        _ask.value = TrezorAsk.Looking
+    }
+
+    /** A device is open: the cancel lets go of it. */
+    fun hold(onCancel: () -> Unit) {
+        this.onCancel = onCancel
     }
 
     fun end() {
         _busy.value = false
         _ask.value = null
+        _hello.value = null
         onCancel = null
         pinAnswer?.cancel()
         passphraseAnswer?.cancel()
+        retryAnswer?.cancel()
     }
 
     /** The person gives up: any question is answered no, and the device is let go. */
     fun cancel() {
+        cancelled = true
         pinAnswer?.complete(null)
         passphraseAnswer?.complete(TrezorPassphrase.Cancelled)
+        retryAnswer?.complete(false)
         onCancel?.invoke()
+    }
+
+    /** Fob is looking for a device again (after Try again). */
+    fun looking() {
+        cancelled = false
+        _hello.value = null
+        _ask.value = TrezorAsk.Looking
+    }
+
+    /**
+     * The exchange failed: the card says how, with Try again where it
+     * makes sense. Waits for the person: true to start over, false to stop.
+     */
+    suspend fun problem(reason: String, cancelledOnDevice: Boolean): Boolean {
+        val shown = uniffi.fob.trezorProblem(reason, cancelledOnDevice)
+        val answer = CompletableDeferred<Boolean>()
+        retryAnswer = answer
+        _ask.value = TrezorAsk.Problem(shown)
+        return try {
+            answer.await()
+        } catch (cancelled: Exception) {
+            false
+        } finally {
+            retryAnswer = null
+        }
+    }
+
+    fun retry() {
+        retryAnswer?.complete(true)
+    }
+
+    override fun onHello(name: String, pinProtection: Boolean, passphraseProtection: Boolean) {
+        _hello.value = TrezorHello(name, pinProtection, passphraseProtection)
     }
 
     override fun onButton(what: String) {

@@ -313,7 +313,8 @@ private fun Restoring(model: WalletModel, nav: Nav, label: String, enabled: Bool
             error = null
             scope.launch {
                 // A restored wallet is offered a profile too, as its last step.
-                runCatching { model.action() }.onSuccess { nav.reset(Screen.Home); nav.go(Screen.ProfileEdit(RESTORED_STEP)) }.onFailure { error = it.reason() }
+                // A Trezor exchange the person closed has said its piece on its own screen.
+                runCatching { model.action() }.onSuccess { nav.reset(Screen.Home); nav.go(Screen.ProfileEdit(RESTORED_STEP)) }.onFailure { if (it !is uniffi.fob.FobException.TrezorCancelled) error = it.reason() }
                 busy = false
             }
         })
@@ -362,7 +363,7 @@ fun RestoreTrezorScreen(model: WalletModel, nav: Nav) {
         TopBar("Connect a Trezor", onBack = { nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(
-                "Plug the Trezor into this phone with a USB cable and unlock it. It will ask to let Fob watch the wallet; the spend key never leaves it, and every payment is confirmed on its screen.",
+                "Trezor Model T, Safe 3 or Safe 5. It will ask you to unlock it, to let Fob watch this wallet, and to check the address it shows. The spend key never leaves it, and every payment is confirmed on its screen.",
                 color = Fob.muted, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 4.dp),
             )
             Field(start, { start = it }, "Start from (optional)", hint = "$START_HINT Left empty, Fob scans from the first block, which takes a while.")

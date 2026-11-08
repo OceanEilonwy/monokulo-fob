@@ -24,9 +24,20 @@ pub enum Passphrase {
     Cancelled,
 }
 
+/// What the device's hello said: its name, and what it will ask for. The
+/// screens count the steps off it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hello {
+    pub name: String,
+    pub pin_protection: bool,
+    pub passphrase_protection: bool,
+}
+
 /// The device's questions, put to the person by the app. Called on the
 /// thread talking to the device, which waits for the answer.
 pub trait Prompts: Send + Sync {
+    /// The device answered the hello: what it is and what it will ask.
+    fn hello(&self, _device: &Hello) {}
     /// The device shows something to confirm; `what` names the screen.
     fn button(&self, what: &str);
     /// The device wants its PIN, typed against the scrambled keypad it
@@ -110,6 +121,7 @@ impl<'a> Session<'a> {
         if features.version < MIN_VERSION {
             return Err(device(format!("{} needs firmware {}.{}.{} or newer", features.name(), MIN_VERSION.0, MIN_VERSION.1, MIN_VERSION.2)));
         }
+        prompts.hello(&Hello { name: features.name(), pin_protection: features.pin_protection, passphrase_protection: features.passphrase_protection });
         session.features = features;
         Ok(session)
     }
@@ -486,6 +498,7 @@ pub mod fake {
 
     /// Answers every prompt the same way, counting them.
     pub struct Person {
+        pub hello: Mutex<Option<Hello>>,
         pub pin: Option<String>,
         pub passphrase: Passphrase,
         pub buttons: Mutex<Vec<String>>,
@@ -495,11 +508,14 @@ pub mod fake {
 
     impl Person {
         pub fn new() -> Person {
-            Person { pin: Some("1234".into()), passphrase: Passphrase::Typed(Zeroizing::new(String::new())), buttons: Mutex::new(vec![]), pins_asked: Mutex::new(0), progress: Mutex::new(vec![]) }
+            Person { hello: Mutex::new(None), pin: Some("1234".into()), passphrase: Passphrase::Typed(Zeroizing::new(String::new())), buttons: Mutex::new(vec![]), pins_asked: Mutex::new(0), progress: Mutex::new(vec![]) }
         }
     }
 
     impl Prompts for Person {
+        fn hello(&self, device: &Hello) {
+            *self.hello.lock().unwrap() = Some(device.clone());
+        }
         fn button(&self, what: &str) {
             self.buttons.lock().unwrap().push(what.to_owned());
         }
@@ -537,6 +553,7 @@ mod tests {
         let person = Person::new();
         let session = Session::open(&fake, &person).unwrap();
         assert_eq!(session.features.name(), "Trezor Safe 3");
+        assert_eq!(person.hello.lock().unwrap().as_ref().map(|h| h.name.as_str()), Some("Trezor Safe 3"), "the hello reaches the screens");
         let (key, address) = session.watch_key(Network::Mainnet).unwrap();
         assert_eq!((*key, address.as_str()), ([7; 32], "4abc"));
         assert_eq!(*person.pins_asked.lock().unwrap(), 1);

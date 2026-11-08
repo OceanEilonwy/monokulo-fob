@@ -150,7 +150,7 @@ pub struct Root {
     manual: Controller<Manual>,
     toasts: adw::ToastOverlay,
     /// The Trezor's question on screen, while one is.
-    trezor: crate::trezor::Dialogs,
+    trezor: crate::trezor::Host,
     nav: adw::NavigationView,
     screens: Option<Arc<Screens>>,
     /// A code opened before a wallet was: taken once one is.
@@ -243,7 +243,7 @@ impl SimpleComponent for Root {
         links_go_to(sender.input_sender().clone());
         let toasts = adw::ToastOverlay::new();
         let phase = engine.phase();
-        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, scan, manual, toasts: toasts.clone(), trezor: crate::trezor::Dialogs::default(), nav: nav.clone(), screens: None, pending: None, toast: None };
+        let model = Root { engine, phase, passphrase, start, add_wallet, home, receive, send, confirm, payment, contacts, coins, settings, request, split, profile, meet, node, prices, scan, manual, toasts: toasts.clone(), trezor: crate::trezor::Host::default(), nav: nav.clone(), screens: None, pending: None, toast: None };
         let toasts = &toasts;
         let nav = &nav;
         let widgets = view_output!();
@@ -260,8 +260,17 @@ impl SimpleComponent for Root {
             Msg::Open(code) => self.pending = Some(code),
             Msg::Say(text) => self.toasts.add_toast(adw::Toast::new(&text)),
             Msg::Trezor(request) => {
-                let window = self.nav.root().and_downcast::<adw::ApplicationWindow>();
-                self.trezor.show(window.as_ref().map(|w| w.upcast_ref()), request);
+                // The form that started the exchange draws its card; a sync
+                // or a payment, with no form, gets a dialog.
+                let on_add_wallet = self.nav.visible_page().and_then(|page| page.tag()).as_deref() == Some("add-wallet");
+                if matches!(self.phase, Phase::NoWallet | Phase::Failed(_)) {
+                    self.start.emit(start::Input::Trezor(request));
+                } else if on_add_wallet {
+                    self.add_wallet.emit(start::Input::Trezor(request));
+                } else {
+                    let window = self.nav.root().and_downcast::<adw::ApplicationWindow>();
+                    self.trezor.show(window.as_ref().map(|w| w.upcast_ref()), request);
+                }
             }
             Msg::ToastDismissed => {
                 if let Some((id, _)) = self.toast.take() {

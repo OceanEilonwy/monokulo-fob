@@ -79,7 +79,7 @@ import com.monokulo.fob.ui.screens.RestoreScanScreen
 import com.monokulo.fob.ui.screens.RestoreSeedScreen
 import com.monokulo.fob.ui.screens.RestoreTrezorScreen
 import com.monokulo.fob.ui.screens.RestoreViewOnlyScreen
-import com.monokulo.fob.ui.TrezorOverlay
+import com.monokulo.fob.ui.TrezorScreen
 import com.monokulo.fob.ui.screens.SendScreen
 import com.monokulo.fob.ui.screens.SettingsScreen
 import com.monokulo.fob.ui.screens.SplitScreen
@@ -314,8 +314,8 @@ class MainActivity : FragmentActivity() {
                             // Confirm cancels its payment as it goes, sending or not: no Price from over it.
                             settingsEnabled = nav.current !is Screen.Confirm,
                         )
-                        // The Trezor's questions, over whatever is talking to it.
-                        TrezorOverlay(model)
+                        // The Trezor's exchange, a page over whatever is talking to it.
+                        TrezorScreen(model)
                     }
                 }
             }

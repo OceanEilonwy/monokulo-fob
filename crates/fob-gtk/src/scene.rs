@@ -385,6 +385,34 @@ async fn play(engine: &Engine, to: &Sender<Msg>, scene: &str) -> Result<(), Stri
         "coins" => Some(Go::Coins),
         "settings" => Some(Go::Settings),
         "add-wallet" => Some(Go::AddWallet),
+        // The Trezor card in Add a wallet, fed the device's questions by hand:
+        // no device is touched. One picture per state.
+        "trezor" => {
+            let png = std::env::var("FOB_SCENE_PNG").unwrap_or_else(|_| "fob-scene.png".into());
+            let _ = to.send(Msg::Go(Go::AddWallet));
+            settle().await;
+            let ask = |ask: fob_app::TrezorAsk| {
+                let (reply, keep) = std::sync::mpsc::channel();
+                std::mem::forget(keep);
+                fob_app::TrezorRequest { ask, reply: Some(reply), cancel: std::sync::Arc::new(|| {}) }
+            };
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Looking)));
+            settle().await;
+            snap(&format!("{png}.looking.png"));
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Hello { name: "Henry's".into(), pin: true, passphrase: true })));
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Button("pin_device".into()))));
+            settle().await;
+            snap(&format!("{png}.unlock.png"));
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Passphrase { on_device: true })));
+            settle().await;
+            snap(&format!("{png}.passphrase.png"));
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Button("show_address".into()))));
+            settle().await;
+            snap(&format!("{png}.address.png"));
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Progress { done: 20, total: 46 })));
+            settle().await;
+            None
+        }
         "profile" => Some(Go::Profile),
         "node" => Some(Go::Node),
         "prices" => Some(Go::Prices),

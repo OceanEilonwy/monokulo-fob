@@ -32,6 +32,12 @@ pub enum Input {
     Network(u32),
     Go,
     Failed(String),
+    /// A Trezor exchange failed: the card says so, with Try again.
+    TrezorFailed { reason: String, cancelled: bool },
+    /// A question from the Trezor, or the end of its exchange.
+    Trezor(fob_app::TrezorRequest),
+    /// What the person did on the Trezor card.
+    TrezorAct(crate::trezor::Action),
     Done,
     /// Add a wallet was left: what was typed goes.
     Left,
@@ -47,6 +53,9 @@ pub struct Start {
     words: adw::EntryRow,
     view_key: adw::PasswordEntryRow,
     restore_point: adw::EntryRow,
+    /// The Trezor's exchange, drawn in the form while one is on.
+    flow: crate::trezor::Flow,
+    card: crate::trezor::Card,
 }
 
 #[relm4::component(pub)]
@@ -57,7 +66,17 @@ impl SimpleComponent for Start {
 
     view! {
         adw::ToolbarView {
-            add_top_bar = &adw::HeaderBar {},
+            add_top_bar = &adw::HeaderBar {
+                // Gives the Trezor up, where GNOME keeps a close control.
+                pack_end = &gtk::Button {
+                    set_icon_name: "window-close-symbolic",
+                    set_tooltip_text: Some("Give up on the Trezor"),
+                    add_css_class: "flat",
+                    #[watch]
+                    set_visible: model.flow.live,
+                    connect_clicked => Input::TrezorAct(crate::trezor::Action::Cancel),
+                },
+            },
             #[wrap(Some)]
             set_content = &gtk::ScrolledWindow {
                 set_hscrollbar_policy: gtk::PolicyType::Never,
@@ -79,6 +98,8 @@ impl SimpleComponent for Start {
                             set_label: &model.lead(),
                         },
                         adw::PreferencesGroup {
+                            #[watch]
+                            set_sensitive: !model.flow.live,
                             // A row with the choice showing, not a flat button:
                             // "Use mainnet, with real money" read as a statement
                             // of what was about to be made.
@@ -130,11 +151,16 @@ impl SimpleComponent for Start {
                                 set_visible: model.way != Way::New,
                             },
                         },
+                        #[local_ref]
+                        trezor_card -> gtk::Box {
+                            #[watch]
+                            set_visible: model.flow.live,
+                        },
                         gtk::Label {
                             add_css_class: "dim-label",
                             set_wrap: true,
                             #[watch]
-                            set_visible: model.way == Way::Trezor,
+                            set_visible: model.way == Way::Trezor && !model.flow.live,
                             set_label: "Plug in a Trezor Model T, Safe 3 or Safe 5 and unlock it. It will ask to let Fob watch the wallet and show the wallet's address: the spend key never leaves it, and every payment is confirmed on its screen. Without a restore height Fob scans from the first block, which takes a while: give the height or date of the first payment if you know it. On Linux the device needs Trezor's udev rules (Trezor Suite installs them).",
                         },
                         gtk::Label {
@@ -152,6 +178,8 @@ impl SimpleComponent for Start {
                             #[watch]
                             set_sensitive: !model.busy,
                             #[watch]
+                            set_visible: !model.flow.live,
+                            #[watch]
                             set_label: if model.busy { "Working…" } else if model.way == Way::New { "Make wallet" } else if model.way == Way::Trezor { "Connect" } else { "Restore" },
                             connect_clicked => Input::Go,
                         },
@@ -163,8 +191,13 @@ impl SimpleComponent for Start {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (name, words, view_key, restore_point) = (adw::EntryRow::new(), adw::EntryRow::new(), adw::PasswordEntryRow::new(), adw::EntryRow::new());
-        let model = Start { engine, way: Way::New, busy: false, adding: false, error: None, name: name.clone(), words: words.clone(), view_key: view_key.clone(), restore_point: restore_point.clone() };
-        let (name, words, view_key, restore_point) = (&name, &words, &view_key, &restore_point);
+        let card = crate::trezor::Card::new({
+            let sender = sender.clone();
+            move |action| sender.input(Input::TrezorAct(action))
+        });
+        let trezor_card = card.widget().clone();
+        let model = Start { engine, way: Way::New, busy: false, adding: false, error: None, name: name.clone(), words: words.clone(), view_key: view_key.clone(), restore_point: restore_point.clone(), flow: crate::trezor::Flow::default(), card };
+        let (name, words, view_key, restore_point, trezor_card) = (&name, &words, &view_key, &restore_point, &trezor_card);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -178,7 +211,28 @@ impl SimpleComponent for Start {
             Input::Phase(Phase::Locked | Phase::NoPassphrase) | Input::Left => {
                 self.error = None;
                 self.adding = false;
+                self.flow.done();
                 self.clear(true);
+            }
+            Input::Trezor(request) => {
+                self.flow.take(request);
+                if self.flow.live {
+                    self.card.show(&self.flow.view());
+                }
+            }
+            Input::TrezorAct(action) => {
+                if self.flow.act(action) == crate::trezor::Outcome::Retry {
+                    self.go(&sender);
+                } else if self.flow.live {
+                    self.card.show(&self.flow.view());
+                }
+            }
+            Input::TrezorFailed { reason, cancelled } => {
+                self.busy = false;
+                self.error = None;
+                if self.flow.fail(&reason, cancelled) {
+                    self.card.show(&self.flow.view());
+                }
             }
             Input::Phase(_) => {}
             Input::Adding => self.adding = true,
@@ -209,6 +263,7 @@ impl SimpleComponent for Start {
             Input::Done => {
                 self.busy = false;
                 self.error = None;
+                self.flow.done();
                 self.clear(true);
                 if std::mem::take(&mut self.adding) {
                     let _ = sender.output(RootMsg::Go(Go::Back));
@@ -271,6 +326,8 @@ impl Start {
             };
             sender.input(match result {
                 Ok(()) => Input::Done,
+                // The Trezor card says what went wrong, with Try again.
+                Err(e) if way == Way::Trezor => Input::TrezorFailed { cancelled: matches!(e, fob_app::FobError::TrezorCancelled { .. }), reason: e.to_string() },
                 Err(e) => Input::Failed(e.to_string()),
             });
         });
