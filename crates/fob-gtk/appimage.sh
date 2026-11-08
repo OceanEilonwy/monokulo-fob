@@ -18,8 +18,12 @@ TARGET=${CARGO_TARGET_DIR:-target}
 WORK=$TARGET/appimage
 APPDIR=$PWD/$WORK/AppDir
 
+# A release's tools come from GitHub's release assets, which have answered
+# 503 and 504 for an hour at a time: each fetch is tried for up to ten
+# minutes before the script gives up. The hash check after is what makes
+# the download trustworthy, not where it came from.
 fetch() { # url sha256 file
-	[ -f "$WORK/$3" ] || curl -fsSL -o "$WORK/$3" "$1"
+	[ -f "$WORK/$3" ] || curl -fsSL --retry 10 --retry-delay 30 --retry-all-errors --retry-max-time 600 -o "$WORK/$3" "$1"
 	echo "$2  $WORK/$3" | sha256sum -c --quiet -
 	chmod +x "$WORK/$3"
 }
