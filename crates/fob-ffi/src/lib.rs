@@ -63,7 +63,8 @@ impl From<fob_wallet::FobError> for FobError {
         };
         let reason = e.to_string();
         match e {
-            E::Node(_) => FobError::Node { reason },
+            E::Node(_) | E::Light(_) => FobError::Node { reason },
+            E::SendingThroughServerLater => FobError::Other { reason },
             E::Screen(ScreenError::NotEnoughFunds { .. }) => FobError::NotEnoughFunds { reason },
             E::Vault(VaultError::WrongKey) => FobError::WrongKey { reason },
             E::Vault(VaultError::ViewOnly) => FobError::ViewOnly { reason },
@@ -254,6 +255,12 @@ pub struct Screens {
     pub reminder: Option<BackupReminder>,
     /// Settings' Node line: "Working · node.example:38081".
     pub node_line: String,
+    /// Syncing through a light wallet server: Settings greys the Node row
+    /// and instant updates, hides Manual Sync, and Send says it comes next.
+    pub light_mode: bool,
+    /// Settings' Light wallet server row: "lws.example:8443 · synced"; none
+    /// before a server is chosen.
+    pub light_line: Option<String>,
     /// Settings' Backup and keys line: "Seed phrase, wallet code, keys".
     pub backup_line: String,
     /// Receive's own address, while it has one to show; none while one is
@@ -1837,6 +1844,8 @@ impl FobWallet {
             not_ready: self.not_ready(now, utc_offset, hours_24).await,
             reminder: self.backup_reminder().await,
             node_line: self.inner.node_line().await,
+            light_mode: self.inner.light_mode().await,
+            light_line: self.inner.light_line().await,
             backup_line: self.inner.backup_hub(phone_lock).await.settings_line,
             receive: self.inner.shown_receive_address().await.map(|(address, index)| ReceiveAddress { address, index }),
             contacts: lists.contacts.into_iter().map(Into::into).collect(),
@@ -1933,6 +1942,53 @@ impl FobWallet {
     /// one set (it must be on the node's own host).
     pub async fn set_zmq(&self, on: bool, endpoint: Option<String>) -> Result<()> {
         Ok(self.inner.set_zmq(on, endpoint.as_deref()).await?)
+    }
+
+    /// Syncing through a light wallet server now.
+    pub async fn light_mode(&self) -> bool {
+        self.inner.light_mode().await
+    }
+
+    /// The light wallet server chosen, in use or not.
+    pub async fn light_server(&self) -> Option<LightSetting> {
+        self.inner.light_server().await.map(|s| LightSetting { url: s.url, self_signed: s.self_signed })
+    }
+
+    /// Settings' Light wallet server row: "lws.example:8443 · synced", or
+    /// None before a server is chosen.
+    pub async fn light_line(&self) -> Option<String> {
+        self.inner.light_line().await
+    }
+
+    /// The Light server screen's Test: asks the server about itself, sending
+    /// nothing of the wallet's.
+    pub async fn check_light_server(&self, url: String, self_signed: bool) -> LightReport {
+        let said = fob_wallet::words::light::report(&self.inner.check_light_server(&url, self_signed).await);
+        LightReport {
+            address: said.address,
+            verdict: said.verdict,
+            usable: said.usable,
+            rows: said.rows.into_iter().map(|r| LightReportRow { label: r.label, value: r.value, bad: r.bad }).collect(),
+        }
+    }
+
+    /// What the Light server screen shows of the server in use before any
+    /// Test: the key it's held to, what its amounts are worth, its last
+    /// failure. Every word from Rust.
+    pub async fn light_standing(&self) -> LightStanding {
+        let said = self.inner.light_standing().await;
+        LightStanding { rows: said.rows.into_iter().map(|r| LightReportRow { label: r.label, value: r.value, bad: r.bad }).collect(), notes: said.notes }
+    }
+
+    /// Chooses the light wallet server, refused with words when it doesn't
+    /// answer, is on another network or has subaddresses off.
+    pub async fn set_light_server(&self, url: String, self_signed: bool) -> Result<()> {
+        Ok(self.inner.set_light_server(&url, self_signed).await?)
+    }
+
+    /// Syncs through the chosen server, or through the node again.
+    pub async fn use_light_wallet(&self, on: bool) -> Result<()> {
+        Ok(self.inner.use_light_wallet(on).await?)
     }
 
     pub fn status(&self) -> SyncStatus {
@@ -3418,6 +3474,96 @@ impl From<fob_wallet::node::Setting> for NodeSetting {
 impl From<NodeSetting> for fob_wallet::node::Setting {
     fn from(s: NodeSetting) -> Self {
         fob_wallet::node::Setting { url: s.url, self_signed: s.self_signed }
+    }
+}
+
+/// A light wallet server, and whether its own certificate is accepted.
+#[derive(uniffi::Record)]
+pub struct LightSetting {
+    pub url: String,
+    pub self_signed: bool,
+}
+
+/// One line of a light wallet server's Test: "Network" · "stagenet".
+#[derive(uniffi::Record)]
+pub struct LightReportRow {
+    pub label: String,
+    pub value: String,
+    /// This line is why the server can't be used.
+    pub bad: bool,
+}
+
+/// What the Light server screen's Test found, every word from Rust.
+#[derive(uniffi::Record)]
+pub struct LightReport {
+    /// "lws.example:8443".
+    pub address: String,
+    /// "Ready to use", or why it can't be.
+    pub verdict: String,
+    /// "Sync through this server" can go ahead.
+    pub usable: bool,
+    pub rows: Vec<LightReportRow>,
+}
+
+/// The server in use, on the Light server screen before any Test: "Certificate
+/// key" · "ab12 cd34 …", "Amounts" · "the server's word", and the sentences
+/// that go under them.
+#[derive(uniffi::Record)]
+pub struct LightStanding {
+    pub rows: Vec<LightReportRow>,
+    pub notes: Vec<String>,
+}
+
+/// The words of Settings' Node card and the Light server screen.
+#[derive(uniffi::Record)]
+pub struct LightWords {
+    /// "Sync through", and its two choices.
+    pub sync_through: String,
+    pub through_node: String,
+    pub through_server: String,
+    /// Under the Node row in light mode: "used again when you switch back".
+    pub node_unused: String,
+    /// Under Instant updates in light mode.
+    pub zmq_unused: String,
+    /// "Light wallet server": the row and the screen's title.
+    pub server_title: String,
+    pub none_chosen: String,
+    pub url_label: String,
+    pub url_hint: String,
+    pub self_signed: String,
+    pub test: String,
+    pub not_tested: String,
+    /// The orange button.
+    pub use_server: String,
+    /// On the screen, and before light mode turns on.
+    pub privacy: String,
+    /// Before light mode turns off.
+    pub turning_off: String,
+    /// Send's notice in light mode.
+    pub send_later: String,
+}
+
+/// The words of Settings' Node card and the Light server screen.
+#[uniffi::export]
+pub fn light_words() -> LightWords {
+    use fob_wallet::words::light as w;
+    LightWords {
+        sync_through: w::SYNC_THROUGH.into(),
+        through_node: w::THROUGH_NODE.into(),
+        through_server: w::THROUGH_SERVER.into(),
+        node_unused: w::NODE_UNUSED.into(),
+        zmq_unused: w::ZMQ_UNUSED.into(),
+        server_title: w::SERVER_TITLE.into(),
+        none_chosen: w::NONE_CHOSEN.into(),
+        url_label: w::URL_LABEL.into(),
+        url_hint: w::URL_HINT.into(),
+        self_signed: w::SELF_SIGNED.into(),
+        test: w::TEST.into(),
+        not_tested: w::NOT_TESTED.into(),
+        use_server: w::USE.into(),
+        privacy: w::PRIVACY.into(),
+        turning_off: w::turning_off(),
+        send_later: w::SEND_LATER.into(),
     }
 }
 

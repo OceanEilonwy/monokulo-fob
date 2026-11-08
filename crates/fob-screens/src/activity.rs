@@ -173,6 +173,9 @@ pub struct Detail {
     pub pieces: Option<Pieces>,
     /// The network fee of a payment out: "0.00003 XMR".
     pub fee: Option<String>,
+    /// A payment out whose fee isn't known (found through a light wallet
+    /// server that gives none): its amount includes the fee.
+    pub fee_unknown: bool,
     /// The transaction id cut to its ends: "a1b2c3 … d4e5f6".
     pub tx_short: String,
     /// Who prices come from, when a price shows.
@@ -249,6 +252,7 @@ pub fn detail(activity: &Activity, now: Option<(&fiat::Currency, u64)>, priced: 
         party,
         pieces: pieces(&activity.pieces),
         fee: activity.fee.filter(|_| out).map(|f| format!("{} XMR", amount::format(f))),
+        fee_unknown: out && activity.fee.is_none(),
         tx_short: if tx.len() > 12 { format!("{} … {}", &tx[..6], &tx[tx.len() - 6..]) } else { tx.clone() },
         can_release: activity.not_confirmed,
         prices_from: shown.then(|| provider.to_owned()),

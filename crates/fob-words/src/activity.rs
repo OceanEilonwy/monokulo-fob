@@ -183,7 +183,7 @@ pub fn detail(d: activity::Detail) -> Detail {
         party: d.party.as_ref().map(party),
         pieces_label: if d.out { "Coins spent" } else { "Coins" }.into(),
         pieces: d.pieces.as_ref().map(pieces),
-        fee: d.fee,
+        fee: d.fee.or_else(|| d.fee_unknown.then(|| crate::light::FEE_NOT_KNOWN.to_owned())),
         tx_short: d.tx_short,
         footer: d.prices_from.map(|provider| format!("Prices from {provider}.")),
         can_release: d.can_release,

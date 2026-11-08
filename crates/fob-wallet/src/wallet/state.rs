@@ -43,6 +43,8 @@ pub(super) struct ChainSpend {
     pub(super) tx: String,
     pub(super) height: u64,
     pub(super) time: u64,
+    /// 0 when not known: found through a light wallet server that gives no
+    /// fees. Every transaction that spends pays one.
     pub(super) fee: u64,
 }
 
@@ -133,6 +135,35 @@ pub(super) struct State {
     /// Instant updates on. Off by default.
     #[serde(default)]
     pub(super) zmq_on: bool,
+    /// Where syncing comes from: the node, or a light wallet server.
+    #[serde(default)]
+    pub(super) sync_mode: SyncMode,
+    /// The light wallet server, as last chosen; kept while syncing through
+    /// the node, so switching back uses it.
+    #[serde(default)]
+    pub(super) light_url: Option<String>,
+    #[serde(default)]
+    pub(super) light_self_signed: bool,
+    /// For a server whose self-signed certificate is accepted: its key's
+    /// fingerprint from the first answer, as `node_pin` is for the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) light_pin: Option<String>,
+    /// The server has taken this wallet (`/login` answered).
+    #[serde(default)]
+    pub(super) light_registered: bool,
+    /// The highest minor of account 0 the server has been told to watch.
+    #[serde(default)]
+    pub(super) light_subaddrs_sent: u32,
+    /// The last block the server had scanned at the last poll.
+    #[serde(default)]
+    pub(super) light_scanned_height: u64,
+    /// Block hashes a node vouched for, to hold a light server's proofs to
+    /// (`fob_chain::light::hashes::Known`): at each height a payment came
+    /// in, and a few near where Fob last asked, oldest first. Hex.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) light_blocks: Vec<(u64, String)>,
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) light_history: Vec<(u64, String)>,
     /// First block to scan. `None` until the first sync of a new wallet,
     /// which starts at the chain's tip.
     pub(super) restore_height: Option<u64>,
@@ -190,6 +221,15 @@ pub(super) struct State {
     /// reminds until it is, even if Fob was closed during the backup step.
     #[serde(default)]
     pub(super) backup_pending: bool,
+}
+
+/// Where a wallet's syncing comes from, as the wallet file says it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum SyncMode {
+    #[default]
+    Node,
+    Light,
 }
 
 /// An unlock time from here on is a Unix time, not a block (Monero's
@@ -268,6 +308,12 @@ impl State {
         manual::needed(rules, self.manual())
     }
 
+    /// Manual Sync holds scanning until asked: on, and syncing from the node.
+    /// Through a light wallet server there's no scanning to hold, so it's moot.
+    pub(super) fn manual_scanning(&self) -> bool {
+        self.manual_sync && self.sync_mode == SyncMode::Node
+    }
+
     /// What can be spent now.
     pub(super) fn spendable(&self) -> u64 {
         self.outputs.iter().filter(|o| o.spent_in.is_none() && confirmations(self, o.height) >= self.needed(o)).map(|o| o.amount).sum()
@@ -279,4 +325,9 @@ impl State {
             self.restore_height = Some(from);
         }
     }
+}
+
+/// A list that may be kept as nothing (a column added later) read as empty.
+fn null_is_empty<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> std::result::Result<Vec<T>, D::Error> {
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
 }

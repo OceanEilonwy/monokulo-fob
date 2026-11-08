@@ -381,6 +381,25 @@ fun Card(modifier: Modifier = Modifier, padding: PaddingValues = PaddingValues(v
     Column(modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Fob.card).padding(padding), content = content)
 }
 
+/** One of a few choices side by side, the chosen one filled: "Node | Light wallet server". */
+@Composable
+fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Fob.sunken).padding(4.dp)) {
+        options.forEachIndexed { i, option ->
+            val chosen = i == selected
+            Box(
+                Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(16.dp))
+                    .background(if (chosen) Fob.card else Fob.sunken)
+                    .clickable(role = Role.Tab, onClick = { onSelect(i) })
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(option, fontSize = 14.sp, fontWeight = if (chosen) FontWeight.SemiBold else FontWeight.Normal, color = if (chosen) Fob.ink else Fob.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
 @Composable
 fun Divider() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Fob.line))

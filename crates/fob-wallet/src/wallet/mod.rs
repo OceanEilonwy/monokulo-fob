@@ -5,6 +5,7 @@ mod connection;
 mod funds;
 mod hardware;
 mod lifecycle;
+mod light;
 mod manual_sync;
 mod people;
 mod prices;
@@ -20,7 +21,7 @@ pub use crate::catch_up::{ScanProgress, SyncStatus};
 use manual_sync::{CoinsSaid,SentLookup, key_images_spent, sent_lookup, still_missing};
 #[cfg(test)]
 use send::turned_down;
-use state::{ChainSpend, Owned, Sent, State, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
+use state::{ChainSpend, Owned, Sent, State, SyncMode, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
 use sync::{Unpublished, publish_failure};
 #[cfg(test)]
 use sync::{ReorgReach, pool_left, pool_spends, reorg_reach};
@@ -362,6 +363,8 @@ struct Inner {
     /// The last full check of the node in use, while it stays in use:
     /// Settings' "Working · node.example:38081".
     node_verdict: std::sync::Mutex<Option<(crate::node::Setting, node::Verdict)>>,
+    /// The light wallet server's client, for the server chosen.
+    light: std::sync::Mutex<Option<(crate::light::Setting, crate::light::LightClient)>>,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
 }

@@ -19,6 +19,15 @@ impl Wallet {
             pull_mark_hash: None,
             zmq_endpoint: None,
             zmq_on: false,
+            sync_mode: SyncMode::Node,
+            light_url: None,
+            light_self_signed: false,
+            light_pin: None,
+            light_registered: false,
+            light_subaddrs_sent: 0,
+            light_scanned_height: 0,
+            light_blocks: vec![],
+            light_history: vec![],
             restore_height,
             next_block: restore_height.unwrap_or(0),
             tip: 0,
@@ -49,14 +58,16 @@ impl Wallet {
     }
 
     pub(super) fn from_parts(path: &Path, db: Db, keys: Keys, state: State) -> Wallet {
-        let zmq = if state.zmq_on { ZmqStatus::Connecting } else { ZmqStatus::Off };
+        let light = state.sync_mode == SyncMode::Light;
+        let zmq = if state.zmq_on && !light { ZmqStatus::Connecting } else { ZmqStatus::Off };
         let status = SyncStatus {
             scanned: state.next_block,
             tip: state.tip,
             start: state.restore_height.unwrap_or(state.next_block),
             up_to: state.last_block_time,
-            manual_sync: state.manual_sync,
-            synced: state.manual_sync,
+            manual_sync: state.manual_scanning(),
+            light: light.then(|| catch_up::Light { host: node::address(state.light_url.as_deref().unwrap_or("")), ..Default::default() }),
+            synced: state.manual_scanning(),
             zmq_endpoint: state.zmq_endpoint.clone(),
             zmq,
             ..SyncStatus::default()
@@ -103,6 +114,7 @@ impl Wallet {
                 send_context: SendContext::new(),
                 fresh_share: std::sync::Mutex::new(None),
                 node_verdict: std::sync::Mutex::new(None),
+                light: std::sync::Mutex::new(None),
                 live_swap: std::sync::Mutex::new(std::sync::Weak::new()),
             }),
         }

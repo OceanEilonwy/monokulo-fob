@@ -39,6 +39,11 @@ pub enum Input {
     Rename(String, String),
     Forget,
     Zmq,
+    /// Whether syncing goes through a light wallet server, and its row.
+    Light(bool, Option<String>),
+    /// "Sync through" chosen: 0 the node, 1 a light wallet server.
+    SyncThrough(u32),
+    LightServer,
     LockAfter(u32),
     ProfileLine(String),
     GpuFailed(bool),
@@ -66,6 +71,13 @@ pub struct Settings {
     zmq_line: String,
     zmq_on: bool,
     manual_on: bool,
+    /// Syncing through a light wallet server.
+    light_on: bool,
+    /// The Light wallet server row: "lws.example:8443 · synced".
+    light_line: Option<String>,
+    sync_through: adw::ComboRow,
+    /// The Node card's and the Light server screen's words.
+    words: fob_app::views::LightWords,
     zmq_problem: Option<String>,
     profile_line: String,
     /// The Scanning row: what's scanning, read-only.
@@ -127,36 +139,64 @@ impl SimpleComponent for Settings {
                         },
                         adw::PreferencesGroup {
                             set_title: "Connection",
+                            #[local_ref]
+                            add = sync_through -> adw::ComboRow {
+                                set_title: &model.words.sync_through,
+                                set_model: Some(&gtk::StringList::new(&[model.words.through_node.as_str(), model.words.through_server.as_str()])),
+                                #[watch]
+                                set_selected: u32::from(model.light_on),
+                                connect_selected_notify[sender] => move |row| sender.input(Input::SyncThrough(row.selected())),
+                            },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Node",
+                                // Kept for switching back, unused meanwhile.
+                                #[watch]
+                                set_sensitive: !model.light_on,
                                 set_activatable: true,
                                 #[watch]
-                                set_subtitle: &model.node_line,
+                                set_subtitle: if model.light_on { model.words.node_unused.as_str() } else { model.node_line.as_str() },
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Node)); },
+                            },
+                            add = &adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: &model.words.server_title,
+                                set_activatable: true,
+                                #[watch]
+                                set_subtitle: model.light_line.as_deref().unwrap_or(model.words.none_chosen.as_str()),
+                                add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
+                                connect_activated => Input::LightServer,
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Instant updates (ZMQ)",
                                 // Manual Sync listens for nothing.
                                 #[watch]
-                                set_visible: !model.manual_on,
+                                set_visible: !model.manual_on || model.light_on,
+                                #[watch]
+                                set_sensitive: !model.light_on,
                                 set_activatable: true,
                                 connect_activated => Input::Zmq,
                                 #[watch]
-                                set_subtitle: &model.zmq_line,
+                                set_subtitle: if model.light_on { model.words.zmq_unused.as_str() } else { model.zmq_line.as_str() },
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Rescan",
                                 set_subtitle: "Look through past blocks again",
+                                // The server scans: nothing here to scan again.
+                                #[watch]
+                                set_visible: !model.light_on,
                                 set_activatable: true,
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Scan)); },
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
+                                // Moot through a server, which scans regardless.
+                                #[watch]
+                                set_visible: !model.light_on,
                                 set_title: "Manual Sync",
                                 set_activatable: true,
                                 #[watch]
@@ -208,6 +248,7 @@ impl SimpleComponent for Settings {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
+        let sync_through = adw::ComboRow::new();
         let scan_line = engine.scan_engine(false).line;
         let model = Settings {
             engine,
@@ -222,12 +263,16 @@ impl SimpleComponent for Settings {
             zmq_line: String::new(),
             zmq_on: false,
             manual_on: false,
+            light_on: false,
+            light_line: None,
+            sync_through: sync_through.clone(),
+            words: fob_app::views::light_words(),
             zmq_problem: None,
             profile_line: String::new(),
             scan_line,
             gpu_refused: false,
         };
-        let (wallets_group, backup_group) = (&wallets_group, &backup_group);
+        let (wallets_group, backup_group, sync_through) = (&wallets_group, &backup_group, &sync_through);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -250,7 +295,32 @@ impl SimpleComponent for Settings {
                 };
                 // The GPU may have finished starting, or failed, since.
                 self.scan_line = self.engine.scan_engine(self.gpu_refused).line;
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Some((on, line)) = engine.read(|wallet, _| async move { (wallet.light_mode().await, wallet.light_line().await) }).await {
+                        sender.input(Input::Light(on, line));
+                    }
+                });
             }
+            Input::Light(on, line) => {
+                self.light_on = on;
+                self.light_line = line;
+            }
+            Input::SyncThrough(i) => {
+                let through_server = i == 1;
+                // The row following the wallet, not someone choosing.
+                if through_server == self.light_on {
+                    return;
+                }
+                // Put back until the switch is confirmed.
+                self.sync_through.set_selected(u32::from(self.light_on));
+                if through_server && self.light_line.is_none() {
+                    self.ask_light_server(&sender);
+                } else {
+                    self.confirm_switch(through_server, &sender);
+                }
+            }
+            Input::LightServer => self.ask_light_server(&sender),
             Input::Wallets(View(wallets)) => self.draw_wallets(&wallets, &sender),
             Input::Opened => {
                 self.fetch_hub(&sender);
@@ -530,6 +600,102 @@ impl Settings {
                 let endpoint = Some(typed).filter(|t| !t.is_empty());
                 if let Err(e) = engine.change(move |wallet| async move { wallet.set_zmq(on, endpoint).await }).await {
                     sender.input(Input::Say(e.to_string()));
+                }
+            });
+        });
+        dialog.present(Some(&self.backup_group));
+    }
+
+    /// Asks before syncing through the server (its privacy words) or
+    /// through the node again (where scanning picks up).
+    fn confirm_switch(&self, on: bool, sender: &ComponentSender<Self>) {
+        let (heading, body, yes) = if on {
+            (self.words.server_title.as_str(), self.words.privacy.as_str(), self.words.use_server.as_str())
+        } else {
+            (self.words.through_node.as_str(), self.words.turning_off.as_str(), self.words.through_node.as_str())
+        };
+        let dialog = adw::AlertDialog::builder().heading(heading).body(body).build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("switch", yes)]);
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("switch", adw::ResponseAppearance::Suggested);
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        dialog.connect_response(Some("switch"), move |_, _| {
+            let (engine, sender) = (engine.clone(), sender.clone());
+            relm4::spawn(async move {
+                if let Err(e) = engine.change(move |wallet| async move { wallet.use_light_wallet(on).await }).await {
+                    sender.input(Input::Say(e.to_string()));
+                }
+                if let Some((on, line)) = engine.read(|wallet, _| async move { (wallet.light_mode().await, wallet.light_line().await) }).await {
+                    sender.input(Input::Light(on, line));
+                }
+            });
+        });
+        dialog.present(Some(&self.backup_group));
+    }
+
+    /// The Light server screen, as a dialog: the address, the certificate
+    /// switch, Test with what it found, the privacy words, and "Sync through
+    /// this server", which Rust refuses with words when the server won't do.
+    fn ask_light_server(&self, sender: &ComponentSender<Self>) {
+        let url = adw::EntryRow::builder().title(&self.words.url_label).build();
+        let self_signed = adw::SwitchRow::builder().title(&self.words.self_signed).build();
+        let test = adw::ButtonRow::builder().title(&self.words.test).build();
+        let found = widgets::dim(&self.words.not_tested);
+        found.set_wrap(true);
+        let form = widgets::list();
+        form.append(&url);
+        form.append(&self_signed);
+        form.append(&test);
+        // The server in use as it stands: the key it's held to, whether its
+        // amounts are checked, its last failure.
+        let standing = widgets::dim("");
+        standing.set_wrap(true);
+        standing.set_selectable(true);
+        standing.set_visible(false);
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        column.append(&form);
+        column.append(&standing);
+        column.append(&found);
+        let dialog = adw::AlertDialog::builder().heading(&self.words.server_title).body(&self.words.privacy).extra_child(&column).build();
+        dialog.add_responses(&[("cancel", "_Cancel"), ("use", self.words.use_server.as_str())]);
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("use", adw::ResponseAppearance::Suggested);
+        let (engine, shown, switch, stands) = (self.engine.clone(), url.clone(), self_signed.clone(), standing.clone());
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(Some((Some(now), said))) = relm4::spawn(async move { engine.read(|wallet, _| async move { (wallet.light_server().await, wallet.light_standing().await) }).await }).await {
+                shown.set_text(&now.url);
+                switch.set_active(now.self_signed);
+                let mut lines: Vec<String> = said.rows.iter().map(|r| format!("{}: {}{}", r.label, r.value, if r.bad { " ✗" } else { "" })).collect();
+                lines.extend(said.notes);
+                stands.set_text(&lines.join("\n"));
+                stands.set_visible(!said.rows.is_empty());
+            }
+        });
+        let (engine, typed, ss, label) = (self.engine.clone(), url.clone(), self_signed.clone(), found.clone());
+        test.connect_activated(move |_| {
+            let (engine, text, ss, label) = (engine.clone(), typed.text().trim().to_owned(), ss.is_active(), label.clone());
+            gtk::glib::spawn_future_local(async move {
+                let report = relm4::spawn(async move { engine.read(move |wallet, _| async move { wallet.check_light_server(text, ss).await }).await }).await;
+                if let Ok(Some(report)) = report {
+                    let mut lines = vec![format!("{} · {}", report.address, report.verdict)];
+                    lines.extend(report.rows.iter().map(|r| format!("{}: {}{}", r.label, r.value, if r.bad { " ✗" } else { "" })));
+                    label.set_text(&lines.join("\n"));
+                }
+            });
+        });
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        dialog.connect_response(Some("use"), move |_, _| {
+            let (engine, sender, text, ss) = (engine.clone(), sender.clone(), url.text().trim().to_owned(), self_signed.is_active());
+            relm4::spawn(async move {
+                let chosen = engine.change(move |wallet| async move {
+                    wallet.set_light_server(text, ss).await?;
+                    wallet.use_light_wallet(true).await
+                });
+                if let Err(e) = chosen.await {
+                    sender.input(Input::Say(e.to_string()));
+                }
+                if let Some((on, line)) = engine.read(|wallet, _| async move { (wallet.light_mode().await, wallet.light_line().await) }).await {
+                    sender.input(Input::Light(on, line));
                 }
             });
         });

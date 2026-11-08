@@ -545,6 +545,7 @@ name = "fob-chain"
 version = "0.1.15"
 dependencies = [
  "fob-monero",
+ "hex",
  "monero-daemon-rpc",
  "monero-epee",
  "monero-wallet",
@@ -554,6 +555,7 @@ dependencies = [
  "serde_json",
  "sha3",
  "socket2",
+ "subtle",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
@@ -692,6 +694,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
+ "subtle",
  "tokio",
  "zeroize",
 ]

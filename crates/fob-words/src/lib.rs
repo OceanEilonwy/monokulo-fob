@@ -11,6 +11,7 @@ pub mod catch_up;
 pub mod clock;
 pub mod contacts;
 pub mod errors;
+pub mod light;
 pub mod manual;
 pub mod node;
 pub mod not_ready;

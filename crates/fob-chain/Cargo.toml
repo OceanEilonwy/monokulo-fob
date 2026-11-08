@@ -12,6 +12,7 @@ test-support = ["dep:tokio-rustls"]
 
 [dependencies]
 fob-monero = { path = "../fob-monero" }
+hex = "0.4"
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 monero-wallet = "0.2"
@@ -24,6 +25,8 @@ serde_json = "1"
 # The fingerprint a self-signed node's key is remembered by.
 sha3 = "0.10"
 socket2 = "0.6"
+# Comparing a pinned key, and a light server's commitments, in constant time.
+subtle = "2.6"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
 webpki-roots = "1"

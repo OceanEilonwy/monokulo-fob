@@ -122,7 +122,9 @@ impl Wallet {
             });
         }
         // Spends found on the chain that this wallet didn't send (a restored
-        // wallet): what left is the spent inputs less change and fee.
+        // wallet): what left is the spent inputs less change and fee. A fee
+        // of 0 is one a light wallet server didn't give: not known, so the
+        // row claims none and the amount includes it.
         for spend in &state.spends {
             if !outgoing.insert(&spend.tx) {
                 continue;
@@ -135,7 +137,7 @@ impl Wallet {
                 tx: spend.tx.clone(),
                 direction: Direction::Out,
                 amount: spent.saturating_sub(change).saturating_sub(spend.fee),
-                fee: Some(spend.fee),
+                fee: (spend.fee > 0).then_some(spend.fee),
                 to: None,
                 height: Some(spend.height),
                 time: spend.time,

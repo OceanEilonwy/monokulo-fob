@@ -54,6 +54,9 @@ import uniffi.fob.Prepared
 import uniffi.fob.TrezorLink
 import uniffi.fob.TrezorPrompts
 import uniffi.fob.ReceiveAddress
+import uniffi.fob.LightReport
+import uniffi.fob.LightSetting
+import uniffi.fob.LightStanding
 import uniffi.fob.Profile
 import uniffi.fob.ProfileRow
 import uniffi.fob.ProfileShare
@@ -122,7 +125,7 @@ class WalletModel(private val app: Application) {
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice
 
-    private fun say(text: String?) {
+    fun say(text: String?) {
         text ?: return
         _notice.value = text
         scope.launch {
@@ -248,6 +251,14 @@ class WalletModel(private val app: Application) {
     /** Settings' Node line: "Working · node.example:38081". */
     private val _nodeLine = MutableStateFlow("")
     val nodeLine: StateFlow<String> = _nodeLine
+
+    /** Syncing through a light wallet server: the Node row and instant updates grey out, Manual Sync hides, Send waits. */
+    private val _lightMode = MutableStateFlow(false)
+    val lightMode: StateFlow<Boolean> = _lightMode
+
+    /** Settings' Light wallet server row: "lws.example:8443 · synced"; null before a server is chosen. */
+    private val _lightLine = MutableStateFlow<String?>(null)
+    val lightLine: StateFlow<String?> = _lightLine
 
     /** Settings' line for Backup and keys: "Seed phrase, wallet code, keys". */
     private val _backupLine = MutableStateFlow("")
@@ -439,6 +450,8 @@ class WalletModel(private val app: Application) {
         _notReady.value = s.notReady
         _reminder.value = s.reminder
         _nodeLine.value = s.nodeLine
+        _lightMode.value = s.lightMode
+        _lightLine.value = s.lightLine
         _backupLine.value = s.backupLine
         _receive.value = s.receive
         _contactList.value = s.contacts
@@ -766,6 +779,38 @@ class WalletModel(private val app: Application) {
         _status.value = wallet.status()
     }
 
+    /** The Light server screen's Test: Rust asks the server about itself, sending nothing of the wallet's. */
+    suspend fun checkLightServer(url: String, selfSigned: Boolean): LightReport? =
+        _wallet.value?.let { withContext(Dispatchers.Default) { it.checkLightServer(url, selfSigned) } }
+
+    /** The light wallet server chosen, in use or not. */
+    suspend fun lightServer(): LightSetting? = _wallet.value?.lightServer()
+
+    /** The server in use, for its screen: the key it's held to, what its amounts are worth, its last failure. */
+    suspend fun lightStanding(): LightStanding? = _wallet.value?.let { withContext(Dispatchers.Default) { it.lightStanding() } }
+
+    /**
+     * Chooses the server and syncs through it: Rust refuses one that doesn't answer, is on another network or has
+     * subaddresses off, with words. Throws what Rust refused.
+     */
+    suspend fun syncThroughServer(url: String, selfSigned: Boolean) {
+        val wallet = _wallet.value ?: return
+        withContext(Dispatchers.Default) {
+            wallet.setLightServer(url, selfSigned)
+            wallet.useLightWallet(true)
+        }
+        _status.value = wallet.status()
+        refresh()
+    }
+
+    /** Syncs through the chosen server ([on]) or the node again. Throws what Rust refused. */
+    suspend fun useLightWallet(on: Boolean) {
+        val wallet = _wallet.value ?: return
+        withContext(Dispatchers.Default) { wallet.useLightWallet(on) }
+        _status.value = wallet.status()
+        refresh()
+    }
+
     /**
      * Fob came on screen or went off it. On screen it syncs; off screen it
      * keeps going only while catching up, which [SyncService] holds open.
@@ -926,6 +971,8 @@ class WalletModel(private val app: Application) {
     private fun clearScreens() {
         _reminder.value = null
         _nodeLine.value = ""
+        _lightMode.value = false
+        _lightLine.value = null
         _backupLine.value = ""
         _receive.value = null
         _contactList.value = null
