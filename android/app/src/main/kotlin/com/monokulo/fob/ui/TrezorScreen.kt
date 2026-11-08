@@ -75,6 +75,7 @@ fun TrezorScreen(model: WalletModel) {
     val busy by asks.busy.collectAsState()
     val ask by asks.ask.collectAsState()
     val hello by asks.hello.collectAsState()
+    val address by asks.address.collectAsState()
     if (!busy) return
     val words = remember { trezorWords() }
     var typed by remember { mutableStateOf(false) }
@@ -87,7 +88,7 @@ fun TrezorScreen(model: WalletModel) {
         Column(Modifier.weight(1f).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             val (card, step, screen, problem) = when (a) {
                 null, TrezorAsk.Looking, is TrezorAsk.Hello -> Shown(trezorCardLooking(), null, Screen.Dark, null)
-                is TrezorAsk.Button -> Shown(trezorCardButton(a.what), trezorStepFor(a.what), screenFor(a.what), null)
+                is TrezorAsk.Button -> Shown(trezorCardButton(a.what), trezorStepFor(a.what), screenFor(a.what, address), null)
                 TrezorAsk.Pin -> Shown(trezorCardPin(), TrezorStep.UNLOCK, Screen.Pin, null)
                 is TrezorAsk.Passphrase -> Shown(trezorCardPassphrase(typed), TrezorStep.WALLET, Screen.Passphrase, null)
                 is TrezorAsk.Progress -> Shown(trezorCardProgress(a.done, a.total), null, Screen.Syncing(if (a.total == 0u) 0f else a.done.toFloat() / a.total.toFloat()), null)
@@ -115,7 +116,7 @@ fun TrezorScreen(model: WalletModel) {
                     if (problem == null) DeviceArt(screen) else ProblemMark(problem.stop)
                     Text(card.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, lineHeight = 24.sp)
                     if (a is TrezorAsk.Button && a.what.contains("address", ignoreCase = true)) {
-                        model.wallet.value?.let { AddressBlock(it.primaryAddress()) }
+                        address?.let { AddressBlock(it) }
                     }
                     Text(card.body, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, lineHeight = 20.sp)
                     when (a) {
@@ -163,15 +164,16 @@ private sealed interface Screen {
     data object Pin : Screen
     data object Passphrase : Screen
     data class Confirm(val lines: List<String>) : Screen
-    data object Address : Screen
+    /** The first page of the address, as the device shows it. */
+    data class Address(val address: String) : Screen
     data class Syncing(val fraction: Float) : Screen
 }
 
-private fun screenFor(what: String): Screen {
+private fun screenFor(what: String, address: String?): Screen {
     val w = what.lowercase()
     return when {
         w.contains("pin") -> Screen.Pin
-        w.contains("address") -> Screen.Address
+        w.contains("address") -> Screen.Address(address.orEmpty())
         w.contains("watch") || w.contains("export") -> Screen.Confirm(listOf("Export watch-only", "credentials?"))
         w.contains("key_image") || w.contains("sync") -> Screen.Confirm(listOf("Sync key images?"))
         else -> Screen.Confirm(listOf("Confirm"))
@@ -226,11 +228,14 @@ private fun DeviceArt(screen: Screen) {
                 for (line in screen.lines) { centred(line, y, 10.sp, white); y += 14.dp.toPx() }
                 centred("Confirm", sy + sh - 20.dp.toPx(), 10.sp, green)
             }
-            Screen.Address -> {
+            is Screen.Address -> {
                 centred("Address 1/3", sy + 6.dp.toPx(), 7.sp, grey)
-                centred("5A3kR 9wqM2", sy + 22.dp.toPx(), 9.sp, white, mono = true)
-                centred("xT7Pb Vn4Lc", sy + 38.dp.toPx(), 9.sp, white, mono = true)
-                centred("8sYe2 hQjDm", sy + 54.dp.toPx(), 9.sp, white, mono = true)
+                // The device's first page: its first characters, in its groups.
+                val chunks = screen.address.chunked(10).take(3)
+                chunks.forEachIndexed { i, chunk ->
+                    val text = if (chunk.length > 5) chunk.substring(0, 5) + " " + chunk.substring(5) else chunk
+                    centred(text, sy + (22 + 16 * i).dp.toPx(), 9.sp, white, mono = true)
+                }
             }
             is Screen.Syncing -> {
                 centred("Syncing…", sy + 14.dp.toPx(), 11.sp, white)

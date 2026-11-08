@@ -1172,6 +1172,9 @@ pub trait TrezorPrompts: Send + Sync {
     /// The device answered the hello: its name, and whether it has a PIN
     /// and passphrase protection, which decide the steps the screen counts.
     fn on_hello(&self, name: String, pin_protection: bool, passphrase_protection: bool) -> Result<()>;
+    /// The device is about to show this address for the person to compare
+    /// with the one Fob received: show it in full.
+    fn on_address(&self, address: String) -> Result<()>;
     /// The device shows something to confirm; `what` names its screen.
     fn on_button(&self, what: String) -> Result<()>;
     /// The device wants its PIN: the positions (1 to 9) of the digits on
@@ -1199,6 +1202,9 @@ struct Prompts(Arc<dyn TrezorPrompts>);
 impl fob_wallet::trezor::Prompts for Prompts {
     fn hello(&self, device: &fob_wallet::trezor::Hello) {
         let _ = self.0.on_hello(device.name.clone(), device.pin_protection, device.passphrase_protection);
+    }
+    fn address(&self, address: &str) {
+        let _ = self.0.on_address(address.to_owned());
     }
     fn button(&self, what: &str) {
         let _ = self.0.on_button(what.to_owned());

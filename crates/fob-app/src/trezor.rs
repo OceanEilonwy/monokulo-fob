@@ -17,6 +17,9 @@ pub enum TrezorAsk {
     /// The device answered the hello: its name, and whether it has a PIN
     /// and passphrase protection, which decide the steps to count.
     Hello { name: String, pin: bool, passphrase: bool },
+    /// The address the device is about to show, as Fob received it, for
+    /// the person to compare in full.
+    Address(String),
     /// Look at the device: it shows something to confirm, named `what` by
     /// its firmware (`confirm_tx`, `show_address`, …).
     Button(String),
@@ -117,6 +120,11 @@ impl Prompter {
 impl TrezorPrompts for Prompter {
     fn on_hello(&self, name: String, pin_protection: bool, passphrase_protection: bool) -> Result<(), FobError> {
         self.send(TrezorAsk::Hello { name, pin: pin_protection, passphrase: passphrase_protection });
+        Ok(())
+    }
+
+    fn on_address(&self, address: String) -> Result<(), FobError> {
+        self.send(TrezorAsk::Address(address));
         Ok(())
     }
 

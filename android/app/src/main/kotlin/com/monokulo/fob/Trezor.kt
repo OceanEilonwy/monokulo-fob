@@ -180,6 +180,10 @@ class TrezorAsks : TrezorPrompts {
     private val _hello = MutableStateFlow<TrezorHello?>(null)
     val hello: StateFlow<TrezorHello?> = _hello
 
+    /** The address the device is about to show, as Fob received it, for the screen to show in full. */
+    private val _address = MutableStateFlow<String?>(null)
+    val address: StateFlow<String?> = _address
+
     private var pinAnswer: CompletableDeferred<String?>? = null
     private var passphraseAnswer: CompletableDeferred<TrezorPassphrase>? = null
     private var retryAnswer: CompletableDeferred<Boolean>? = null
@@ -196,6 +200,7 @@ class TrezorAsks : TrezorPrompts {
         onCancel = null
         cancelled = false
         _hello.value = null
+        _address.value = null
         _busy.value = true
         _ask.value = TrezorAsk.Looking
     }
@@ -209,6 +214,7 @@ class TrezorAsks : TrezorPrompts {
         _busy.value = false
         _ask.value = null
         _hello.value = null
+        _address.value = null
         onCancel = null
         pinAnswer?.cancel()
         passphraseAnswer?.cancel()
@@ -228,6 +234,7 @@ class TrezorAsks : TrezorPrompts {
     fun looking() {
         cancelled = false
         _hello.value = null
+        _address.value = null
         _ask.value = TrezorAsk.Looking
     }
 
@@ -255,6 +262,10 @@ class TrezorAsks : TrezorPrompts {
 
     override fun onHello(name: String, pinProtection: Boolean, passphraseProtection: Boolean) {
         _hello.value = TrezorHello(name, pinProtection, passphraseProtection)
+    }
+
+    override fun onAddress(address: String) {
+        _address.value = address
     }
 
     override fun onButton(what: String) {

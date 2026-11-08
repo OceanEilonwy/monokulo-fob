@@ -120,6 +120,7 @@ async fn a_trezor_wallet_keeps_its_keys_on_the_device() {
     let person = crate::trezor::session::fake::Person::new();
     let path = dir("trezor");
     let wallet = Wallet::restore_trezor(&path, [1; 32], Network::Stagenet, &fake, &person, Some(5)).unwrap();
+    assert_eq!(person.address.lock().unwrap().as_deref(), Some(full.primary_address().as_str()), "the address to compare reaches the screen");
     assert!(wallet.can_spend() && wallet.is_trezor());
     assert_eq!(wallet.primary_address(), full.primary_address());
     assert_eq!(wallet.inner.keys.device(), Some(Device::Trezor));

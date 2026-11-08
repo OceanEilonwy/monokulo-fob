@@ -406,6 +406,7 @@ async fn play(engine: &Engine, to: &Sender<Msg>, scene: &str) -> Result<(), Stri
             let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Passphrase { on_device: true })));
             settle().await;
             snap(&format!("{png}.passphrase.png"));
+            let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Address(engine.wallet().map(|w| w.primary_address()).unwrap_or_default()))));
             let _ = to.send(Msg::Trezor(ask(fob_app::TrezorAsk::Button("show_address".into()))));
             settle().await;
             snap(&format!("{png}.address.png"));

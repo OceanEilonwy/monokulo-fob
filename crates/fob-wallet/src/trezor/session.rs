@@ -38,6 +38,9 @@ pub struct Hello {
 pub trait Prompts: Send + Sync {
     /// The device answered the hello: what it is and what it will ask.
     fn hello(&self, _device: &Hello) {}
+    /// The device is about to show this address for the person to compare:
+    /// the screen shows the same one, in full, beside it.
+    fn address(&self, _address: &str) {}
     /// The device shows something to confirm; `what` names the screen.
     fn button(&self, what: &str);
     /// The device wants its PIN, typed against the scrambled keypad it
@@ -499,6 +502,7 @@ pub mod fake {
     /// Answers every prompt the same way, counting them.
     pub struct Person {
         pub hello: Mutex<Option<Hello>>,
+        pub address: Mutex<Option<String>>,
         pub pin: Option<String>,
         pub passphrase: Passphrase,
         pub buttons: Mutex<Vec<String>>,
@@ -508,13 +512,16 @@ pub mod fake {
 
     impl Person {
         pub fn new() -> Person {
-            Person { hello: Mutex::new(None), pin: Some("1234".into()), passphrase: Passphrase::Typed(Zeroizing::new(String::new())), buttons: Mutex::new(vec![]), pins_asked: Mutex::new(0), progress: Mutex::new(vec![]) }
+            Person { hello: Mutex::new(None), address: Mutex::new(None), pin: Some("1234".into()), passphrase: Passphrase::Typed(Zeroizing::new(String::new())), buttons: Mutex::new(vec![]), pins_asked: Mutex::new(0), progress: Mutex::new(vec![]) }
         }
     }
 
     impl Prompts for Person {
         fn hello(&self, device: &Hello) {
             *self.hello.lock().unwrap() = Some(device.clone());
+        }
+        fn address(&self, address: &str) {
+            *self.address.lock().unwrap() = Some(address.to_owned());
         }
         fn button(&self, what: &str) {
             self.buttons.lock().unwrap().push(what.to_owned());

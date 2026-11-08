@@ -63,7 +63,8 @@ pub enum Screen {
     Pin,
     Passphrase,
     Confirm(&'static str),
-    Address,
+    /// The first page of the address, as the device shows it.
+    Address(String),
     Syncing(f64),
 }
 
@@ -83,6 +84,8 @@ pub enum Extra {
     PassphraseQuestion { on_device: bool },
     PassphraseField,
     PinPad,
+    /// The address Fob received, in full, in its marked groups.
+    Address(String),
     Actions(Vec<(String, Action, bool)>),
 }
 
@@ -109,6 +112,8 @@ pub enum Tone {
 pub struct Flow {
     device: words::Device,
     name: String,
+    /// The address the device is about to show, once Fob has it.
+    address: Option<String>,
     ask: Option<TrezorAsk>,
     reply: Option<mpsc::Sender<TrezorAnswer>>,
     cancel: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -137,11 +142,16 @@ impl Flow {
                 self.device = words::Device { pin, passphrase };
                 self.cancel = Some(cancel);
             }
+            TrezorAsk::Address(address) => {
+                self.address = Some(address);
+                self.cancel = Some(cancel);
+            }
             TrezorAsk::Looking => {
                 // A fresh exchange: what went before is forgotten.
                 self.problem = None;
                 self.dismissed = false;
                 self.device = words::Device::default();
+                self.address = None;
                 self.typed = false;
                 self.ask = Some(TrezorAsk::Looking);
                 self.reply = None;
@@ -241,15 +251,16 @@ impl Flow {
         }
         let place = |step| self.device.place_text(step);
         match &self.ask {
-            None | Some(TrezorAsk::Looking) | Some(TrezorAsk::Over) | Some(TrezorAsk::Hello { .. }) => {
+            None | Some(TrezorAsk::Looking) | Some(TrezorAsk::Over) | Some(TrezorAsk::Hello { .. }) | Some(TrezorAsk::Address(_)) => {
                 View { card: words::looking(), step: None, art: Art::Device(Screen::Dark), extra: Extra::Spinner(words::LOOKING_HINT.into()), tone: Tone::Look }
             }
             Some(TrezorAsk::Button(what)) => {
                 let w = what.to_ascii_lowercase();
+                let address = w.contains("address").then(|| self.address.clone()).flatten();
                 let screen = if w.contains("pin") {
                     Screen::Pin
                 } else if w.contains("address") {
-                    Screen::Address
+                    Screen::Address(address.clone().unwrap_or_default())
                 } else if w.contains("watch") || w.contains("export") {
                     Screen::Confirm("Export watch-only\ncredentials?")
                 } else if w.contains("key_image") || w.contains("sync") {
@@ -260,7 +271,11 @@ impl Flow {
                     Screen::Confirm("Confirm")
                 };
                 let card = if w.is_empty() { words::Card { eyebrow: words::LOOK.into(), title: "The Trezor is working.".into(), body: "Leave it plugged in.".into() } } else { words::button(what) };
-                View { card, step: words::step_for(what).and_then(place), art: Art::Device(screen), extra: Extra::None, tone: Tone::Look }
+                let extra = match address {
+                    Some(address) => Extra::Address(address),
+                    None => Extra::None,
+                };
+                View { card, step: words::step_for(what).and_then(place), art: Art::Device(screen), extra, tone: Tone::Look }
             }
             Some(TrezorAsk::Pin) => View { card: words::pin(), step: place(words::Step::Unlock), art: Art::Device(Screen::Pin), extra: Extra::PinPad, tone: Tone::Look },
             Some(TrezorAsk::Passphrase { on_device }) => {
@@ -393,6 +408,13 @@ impl Card {
                 self.extra.append(&buttons);
             }
             Extra::PinPad => self.extra.append(&pin_pad(on)),
+            Extra::Address(address) => {
+                let label = crate::widgets::address(address);
+                label.set_halign(gtk::Align::Start);
+                label.set_xalign(0.0);
+                label.set_justify(gtk::Justification::Left);
+                self.extra.append(&label);
+            }
             Extra::Actions(actions) => {
                 if actions.is_empty() {
                     return;
@@ -543,12 +565,21 @@ fn draw(cr: &gtk::cairo::Context, width: i32, height: i32, art: &Art) {
             }
             centred("Confirm", sy + sh - 8.0, 8.0, (0.5, 0.83, 0.6));
         }
-        Art::Device(Screen::Address) => {
+        Art::Device(Screen::Address(address)) => {
+            // The device's first page: its first characters, in its groups.
             centred("Address 1/3", sy + 14.0, 7.0, grey);
             cr.select_font_face("Monospace", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-            centred("5A3kR 9wqM2", sy + 30.0, 8.0, white);
-            centred("xT7Pb Vn4Lc", sy + 42.0, 8.0, white);
-            centred("8sYe2 hQjDm", sy + 54.0, 8.0, white);
+            let chars: Vec<char> = address.chars().collect();
+            for (line, y) in (0..3).zip([30.0, 42.0, 54.0]) {
+                let start = line * 10;
+                if start >= chars.len() {
+                    break;
+                }
+                let end = (start + 10).min(chars.len());
+                let text: String = chars[start..end].iter().collect();
+                let (a, b) = text.split_at(text.len().min(5));
+                centred(&format!("{a} {b}"), sy + y, 8.0, white);
+            }
         }
         Art::Device(Screen::Syncing(fraction)) => {
             centred("Syncing…", sy + 22.0, 9.0, white);
