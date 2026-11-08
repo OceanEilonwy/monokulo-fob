@@ -126,7 +126,7 @@ impl SimpleComponent for Settings {
                                 set_title: "Your profile",
                                 set_activatable: true,
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(&model.profile_line),
+                                set_subtitle: &model.profile_line,
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Profile)); },
                             },
@@ -155,7 +155,7 @@ impl SimpleComponent for Settings {
                                 set_sensitive: !model.light_on,
                                 set_activatable: true,
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(if model.light_on { model.words.node_unused.as_str() } else { model.node_line.as_str() }),
+                                set_subtitle: if model.light_on { model.words.node_unused.as_str() } else { model.node_line.as_str() },
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Node)); },
                             },
@@ -164,7 +164,7 @@ impl SimpleComponent for Settings {
                                 set_title: &model.words.server_title,
                                 set_activatable: true,
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(model.light_line.as_deref().unwrap_or(model.words.none_chosen.as_str())),
+                                set_subtitle: model.light_line.as_deref().unwrap_or(model.words.none_chosen.as_str()),
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated => Input::LightServer,
                             },
@@ -179,7 +179,7 @@ impl SimpleComponent for Settings {
                                 set_activatable: true,
                                 connect_activated => Input::Zmq,
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(if model.light_on { model.words.zmq_unused.as_str() } else { model.zmq_line.as_str() }),
+                                set_subtitle: if model.light_on { model.words.zmq_unused.as_str() } else { model.zmq_line.as_str() },
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
@@ -209,7 +209,7 @@ impl SimpleComponent for Settings {
                                 set_use_markup: false,
                                 set_title: "Scanning",
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(&model.scan_line),
+                                set_subtitle: &model.scan_line,
                             },
                         },
                         adw::PreferencesGroup {
@@ -220,7 +220,7 @@ impl SimpleComponent for Settings {
                                 set_activatable: true,
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 #[watch]
-                                set_subtitle: &gtk::glib::markup_escape_text(&model.currency_line),
+                                set_subtitle: &model.currency_line,
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Prices)); },
                             },
                         },

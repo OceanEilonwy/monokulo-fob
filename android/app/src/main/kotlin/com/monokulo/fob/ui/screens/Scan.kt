@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -162,7 +163,15 @@ private fun PillTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Uni
 private fun ScanDrawerSheet(model: WalletModel) {
     val scope = rememberCoroutineScope()
     val status by model.status.collectAsState()
-    val drawer by produceState<uniffi.fob.ScanDrawer?>(null) { value = model.scanDrawer() }
+    // The choices show at once, from the chain as last seen, with a spinner for
+    // each count until the node has said where the chain is.
+    var drawer by remember { mutableStateOf<uniffi.fob.ScanDrawer?>(null) }
+    var counting by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        launch { model.scanDrawerKnown()?.let { known -> if (counting) drawer = known } }
+        model.scanDrawer()?.let { drawer = it }
+        counting = false
+    }
     var tab by remember { mutableStateOf(0) }
     // The second choice: it's what Sync is usually for.
     var picked by remember { mutableStateOf(1) }
@@ -203,7 +212,14 @@ private fun ScanDrawerSheet(model: WalletModel) {
                             )
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(option.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                                Text(option.note, fontSize = 13.sp, color = Fob.muted)
+                                if (counting) {
+                                    // Where the line goes, so the row keeps its height when it comes.
+                                    Box(Modifier.height(18.dp), contentAlignment = Alignment.CenterStart) {
+                                        CircularProgressIndicator(Modifier.size(13.dp).semantics { contentDescription = "Counting" }, color = Fob.muted, strokeWidth = 1.6.dp)
+                                    }
+                                } else {
+                                    Text(option.note, fontSize = 13.sp, color = Fob.muted)
+                                }
                             }
                         }
                     }
@@ -213,7 +229,9 @@ private fun ScanDrawerSheet(model: WalletModel) {
             }
             ErrorText(error)
             when (tab) {
-                0 -> drawer?.options?.getOrNull(picked)?.let { option ->
+                0 -> if (counting) {
+                    PrimaryButton("Scan", {}, enabled = false)
+                } else drawer?.options?.getOrNull(picked)?.let { option ->
                     Text(option.cost, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                     PrimaryButton(option.action, { start(option.request) }, enabled = !busy)
                 }
