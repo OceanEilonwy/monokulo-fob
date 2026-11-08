@@ -374,11 +374,11 @@ pub fn button_words(button: &gtk::Button) -> Option<String> {
 /// with its own button beside it doesn't need said.
 pub fn hide_pencil(row: &adw::EntryRow) {
     fn walk(widget: &gtk::Widget) {
-        if let Some(image) = widget.downcast_ref::<gtk::Image>() {
-            if image.icon_name().as_deref() == Some("document-edit-symbolic") {
-                image.set_icon_name(None);
-                image.set_visible(false);
-            }
+        if let Some(image) = widget.downcast_ref::<gtk::Image>()
+            && image.icon_name().as_deref() == Some("document-edit-symbolic")
+        {
+            image.set_icon_name(None);
+            image.set_visible(false);
         }
         let mut child = widget.first_child();
         while let Some(c) = child {
