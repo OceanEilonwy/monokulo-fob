@@ -788,10 +788,12 @@ fn spent_images(tx: &monero_wallet::transaction::Transaction) -> Vec<[u8; 32]> {
 
 /// Marks the coins pool transactions spend, from each transaction's hash and
 /// the key images it spends, as wallet2 does: a payment in the pool holds its
-/// coins until it's mined or leaves. Whether any was marked.
+/// coins until it's mined or leaves. A coin a device's sync found spent in
+/// the pool, marked without the transaction's name, takes the name now, so
+/// the pool's leaving can free it. Whether any was marked.
 pub(super) fn pool_spends(state: &mut State, spending: &[(String, Vec<[u8; 32]>)]) -> bool {
     let mut changed = false;
-    for output in state.outputs.iter_mut().filter(|o| o.spent_in.is_none()) {
+    for output in state.outputs.iter_mut().filter(|o| o.spent_in.as_deref().is_none_or(|s| s == SPENT_IN_POOL_AT_SYNC)) {
         let Some(image) = output.key_image.as_deref().and_then(hash_bytes) else { continue };
         if let Some((tx, _)) = spending.iter().find(|(_, images)| images.contains(&image)) {
             output.spent_in = Some(tx.clone());
@@ -804,14 +806,18 @@ pub(super) fn pool_spends(state: &mut State, spending: &[(String, Vec<[u8; 32]>)
 /// Frees the coins [`pool_spends`] marked for a transaction no longer in the
 /// pool (`in_pool`) that the wallet hasn't seen mined or sent: it left without
 /// being mined. One mined in a block not yet scanned is marked again when the
-/// scan gets there. Whether any was freed.
+/// scan gets there. What a device's key image sync found spent names no
+/// transaction and isn't the pool's to free: it stays until the next sync
+/// asks the node again (decision 364; this was the one place that forgot,
+/// and freed spent coins at the first look at the pool after catching up).
+/// Whether any was freed.
 pub(super) fn pool_left(state: &mut State, in_pool: &HashSet<String>) -> bool {
     let known: HashSet<&str> = state.spends.iter().map(|s| s.tx.as_str()).chain(state.sent.iter().map(|s| s.tx.as_str())).collect();
     let left: Vec<usize> = state
         .outputs
         .iter()
         .enumerate()
-        .filter(|(_, o)| o.spent_in.as_deref().is_some_and(|tx| !known.contains(tx) && !in_pool.contains(tx)))
+        .filter(|(_, o)| o.spent_in.as_deref().is_some_and(|tx| !hardware::is_sync_mark(tx) && !known.contains(tx) && !in_pool.contains(tx)))
         .map(|(i, _)| i)
         .collect();
     for &i in &left {
