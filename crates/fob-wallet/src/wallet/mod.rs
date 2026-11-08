@@ -6,6 +6,7 @@ mod funds;
 mod hardware;
 mod lifecycle;
 mod light;
+mod light_send;
 mod manual_sync;
 mod people;
 mod prices;
@@ -110,6 +111,10 @@ pub(crate) const SPENT_IN_POOL_AT_SYNC: &str = "spent-in-pool-at-sync";
 /// times before Fob refuses, where a node used to be able to ask for a
 /// hundred times that.
 const MAX_FEE_PER_WEIGHT: u64 = 400_000;
+/// The most a fee is rounded up to a multiple of, whatever a node or a
+/// light wallet server says: monerod's `quantization_mask` is 10,000, and a
+/// mask of a whole XMR would round every fee up to one.
+const MAX_FEE_MASK: u64 = 100_000;
 /// How often an up-to-date wallet looks for new blocks.
 const POLL: Duration = Duration::from_secs(20);
 /// A sent payment the node has never heard of for this long, in seconds, is marked not confirmed.

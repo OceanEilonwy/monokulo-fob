@@ -214,7 +214,7 @@ impl Wallet {
     }
 
     /// The server's client, made once per server.
-    async fn light_client(&self) -> Result<LightClient> {
+    pub(super) async fn light_client(&self) -> Result<LightClient> {
         let (setting, pin) = {
             let state = self.inner.state.lock().await;
             let Some(url) = state.light_url.clone() else { return Err(FobError::Light(Problem::NoServerSet)) };
@@ -243,7 +243,7 @@ impl Wallet {
     }
 
     /// The protocol's only credential: the address and its private view key.
-    fn light_login(&self) -> lws::Login {
+    pub(super) fn light_login(&self) -> lws::Login {
         lws::Login { address: self.inner.keys.primary_address(), view_key: lws::Hex(*self.inner.keys.view_bytes()) }
     }
 
@@ -378,6 +378,8 @@ impl Wallet {
             }
         };
         let rejected = done.refused;
+        // Payments the server gave no answer for, offered again.
+        self.publish_unanswered_through(&client).await;
 
         // 4. Status.
         self.set_status(|s| {
@@ -547,8 +549,13 @@ const TIP_SLACK: u64 = 10;
 ///   output, with the fee the server gives (0, not known, from a server
 ///   that gives none).
 /// - **Sent**: a payment of this wallet's that's listed gets its height.
+/// - **Not confirmed**: a payment of this wallet's neither mined nor in the
+///   pool a day after it was sent is marked so, as the node path marks one
+///   its node never heard of; its coins can then be released.
 /// - **Pool**: transactions listed with `mempool: true` are the pool, kept
-///   in memory; their outputs aren't owned until mined.
+///   in memory; their outputs aren't owned until mined. A device wallet's
+///   coin whose key image a pool transaction spends is marked
+///   `spent-in-pool-at-sync` (tentative), and let go when it's gone.
 /// - **Clock**: the latest block time among the transactions it vouches
 ///   for moves the chain's clock on (it judges time locks), unless it's
 ///   past `now`, the phone's: a server can't make a time lock pass early
@@ -675,6 +682,17 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
         }
     }
 
+    // Not confirmed: a payment of this wallet's the server has neither
+    // mined nor in its pool a day after it was sent, as the node path marks
+    // one its node has never heard of. Mined later, it's taken back above.
+    let pooled: HashSet<String> = answer.transactions.iter().filter(|t| t.mempool).map(|t| hex::encode(t.hash.0)).collect();
+    for sent in &mut state.sent {
+        if sent.height.is_none() && !sent.not_confirmed && !sent.released && now.saturating_sub(sent.time) >= NOT_CONFIRMED_AFTER && !pooled.contains(&sent.tx) {
+            sent.not_confirmed = true;
+            changed = true;
+        }
+    }
+
     // The pool.
     let mut pool: HashMap<String, Pooled> = HashMap::new();
     for tx in answer.transactions.iter().filter(|t| t.mempool) {
@@ -691,6 +709,27 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
             let seen = pool_before.get(&hash).map_or(now, |p| p.seen);
             let pooled = pool.entry(hash.clone()).or_insert(Pooled { seen, parts: vec![] });
             add_part(&mut pooled.parts, received.recipient.min_i, received.amount.0);
+        }
+    }
+
+    // A device's coins spent in the pool only: a tentative mark, as its
+    // node sync makes one (decision 364), let go once the pool has
+    // forgotten the spend; mined, the spend above names it instead. A
+    // device's key images are the ones it gave (`trezor_sync`), so this is
+    // decided afresh at every poll. A wallet with its own spend key sees
+    // its own payments' spends recorded already, as it sent them.
+    if keys.device().is_some() {
+        let spending: HashSet<[u8; 32]> = answer.transactions.iter().filter(|t| t.mempool).flat_map(|t| t.spent_outputs.iter().map(|s| s.key_image.0)).collect();
+        for output in &mut state.outputs {
+            let Some(image) = output.key_image.as_deref().and_then(|k| <[u8; 32]>::try_from(hex::decode(k).ok()?).ok()) else { continue };
+            if output.spent_in.as_deref().is_some_and(|s| s != SPENT_IN_POOL_AT_SYNC) {
+                continue;
+            }
+            let mark = spending.contains(&image).then(|| SPENT_IN_POOL_AT_SYNC.to_owned());
+            if output.spent_in != mark {
+                output.spent_in = mark;
+                changed = true;
+            }
         }
     }
 

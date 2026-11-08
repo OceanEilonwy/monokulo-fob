@@ -64,7 +64,6 @@ impl From<fob_wallet::FobError> for FobError {
         let reason = e.to_string();
         match e {
             E::Node(_) | E::Light(_) => FobError::Node { reason },
-            E::SendingThroughServerLater => FobError::Other { reason },
             E::Screen(ScreenError::NotEnoughFunds { .. }) => FobError::NotEnoughFunds { reason },
             E::Vault(VaultError::WrongKey) => FobError::WrongKey { reason },
             E::Vault(VaultError::ViewOnly) => FobError::ViewOnly { reason },
@@ -256,7 +255,7 @@ pub struct Screens {
     /// Settings' Node line: "Working · node.example:38081".
     pub node_line: String,
     /// Syncing through a light wallet server: Settings greys the Node row
-    /// and instant updates, hides Manual Sync, and Send says it comes next.
+    /// and instant updates, and hides Manual Sync.
     pub light_mode: bool,
     /// Settings' Light wallet server row: "lws.example:8443 · synced"; none
     /// before a server is chosen.
@@ -3539,8 +3538,6 @@ pub struct LightWords {
     pub privacy: String,
     /// Before light mode turns off.
     pub turning_off: String,
-    /// Send's notice in light mode.
-    pub send_later: String,
 }
 
 /// The words of Settings' Node card and the Light server screen.
@@ -3563,7 +3560,6 @@ pub fn light_words() -> LightWords {
         use_server: w::USE.into(),
         privacy: w::PRIVACY.into(),
         turning_off: w::turning_off(),
-        send_later: w::SEND_LATER.into(),
     }
 }
 

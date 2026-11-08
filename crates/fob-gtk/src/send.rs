@@ -39,8 +39,6 @@ pub enum Input {
     Review,
     Reviewed(View<fob_app::views::PaymentPreview>, Filled),
     Failed(String),
-    /// Whether the wallet syncs through a light wallet server.
-    Light(bool),
 }
 
 pub struct Send {
@@ -59,8 +57,6 @@ pub struct Send {
     people_rows: Vec<adw::ActionRow>,
     /// Set while code writes to a field, so its own change isn't taken for typing.
     filling: bool,
-    /// Syncing through a light wallet server: nothing can be sent yet.
-    light: bool,
 }
 
 fn network(engine: &Engine) -> Network {
@@ -184,7 +180,6 @@ impl SimpleComponent for Send {
             people: people.clone(),
             people_rows: vec![],
             filling: false,
-            light: false,
         };
         let unit_swap = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
         let (to, amount_row, note, people, unit_swap) = (&to, &amount_row, &note, &people, &unit_swap);
@@ -205,11 +200,8 @@ impl SimpleComponent for Send {
                 self.clear();
                 self.ask_entry(&sender);
                 // So Confirm's first fee doesn't wait on this.
-                let (engine, then) = (self.engine.clone(), sender.clone());
+                let engine = self.engine.clone();
                 relm4::spawn(async move {
-                    if let Some(light) = engine.read(|wallet, _| async move { wallet.light_mode().await }).await {
-                        then.input(Input::Light(light));
-                    }
                     engine.read(|wallet, _| async move { wallet.warm_up_send().await }).await;
                 });
                 if let Some(code) = code {
@@ -299,13 +291,6 @@ impl SimpleComponent for Send {
                 self.busy = false;
                 self.error = Some(why);
             }
-            // A notice where an error goes, and Review off: phase 3 sends.
-            Input::Light(light) => {
-                self.light = light;
-                if light {
-                    self.error = Some(fob_app::views::light_words().send_later);
-                }
-            }
         }
     }
 }
@@ -323,7 +308,7 @@ impl Send {
     }
 
     fn can_review(&self) -> bool {
-        !self.busy && !self.light && form::address_is_valid(network(&self.engine), &self.to.text()) && self.entry.as_ref().is_some_and(|View(e)| e.sendable && e.for_text == self.amount.text && e.for_in_fiat == self.amount.in_fiat)
+        !self.busy && form::address_is_valid(network(&self.engine), &self.to.text()) && self.entry.as_ref().is_some_and(|View(e)| e.sendable && e.for_text == self.amount.text && e.for_in_fiat == self.amount.in_fiat)
     }
 
     fn set_amount_field(&mut self) {

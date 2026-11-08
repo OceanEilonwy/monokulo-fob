@@ -109,7 +109,6 @@ import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import uniffi.fob.ContactRow
-import uniffi.fob.lightWords
 import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentPreview
 import com.monokulo.fob.ui.NfcMark
@@ -171,9 +170,6 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     val network by model.network.collectAsState()
     val wallet by model.wallet.collectAsState()
     val balance by model.balance.collectAsState()
-    // Through a light wallet server nothing can be sent yet: Rust's notice where errors go, and Review off.
-    val lightMode by model.lightMode.collectAsState()
-    val sendLater = remember { lightWords().sendLater }
     val prices by model.prices.collectAsState()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
@@ -533,8 +529,8 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                         }
                         // The price toast rises above Review (and the sheet's 16 dp under it).
                         Column(Modifier.bottomSpace(16.dp).padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ErrorText(error ?: sendLater.takeIf { lightMode })
-                            PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && !lightMode && toValid && current?.sendable == true, onClick = {
+                            ErrorText(error)
+                            PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
                                 val e = current ?: return@PrimaryButton
                                 review(to.trim(), amount, e.inFiat, note.trim().ifEmpty { null })
                             })
@@ -545,7 +541,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                             if (sheetTop - barBottom < 40.dp) ErrorText(notice)
                             PasteRow(::paste)
                             if (busy) Text("Getting the fee…", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
-                            ErrorText(error ?: sendLater.takeIf { lightMode })
+                            ErrorText(error)
                             // Decision 95's spot: CONTACTS once there are any, "All" opening the Contacts screen; PAID BEFORE until then.
                             if (hasContacts) {
                                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {

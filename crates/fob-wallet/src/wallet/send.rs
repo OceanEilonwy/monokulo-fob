@@ -36,11 +36,16 @@ impl Wallet {
     }
 
     /// Asks the node its fee rate, keeping it for Split up's estimate.
+    /// Refused above [`MAX_FEE_PER_WEIGHT`], or rounded to more than
+    /// [`MAX_FEE_MASK`].
     pub(super) async fn fee_rate(&self, rpc: &Daemon) -> Result<FeeRate> {
         let fee_rate = rpc.fee_rate(FeePriority::Normal, MAX_FEE_PER_WEIGHT).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
         // The mask has no getter; it's the second half of the serialization.
         let bytes = fee_rate.serialize();
         let mask = bytes.get(8..16).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes).unwrap_or(1);
+        if mask > MAX_FEE_MASK {
+            return Err(FobError::Node(format!("{:?}", monero_wallet::interface::FeeError::InvalidFee)));
+        }
         *self.inner.fee_rate.lock().expect("fee lock") = Some((fee_rate.per_weight(), mask));
         Ok(fee_rate)
     }
@@ -87,8 +92,9 @@ impl Wallet {
     /// opens. It changes nothing, fails quietly, and is cheap to call again:
     /// what it fetched is kept for twenty seconds.
     pub async fn warm_up_send(&self) {
-        // Nothing to warm up through a server, and no node to ask.
+        // Through a server, only the fee is asked ahead.
         if self.light_mode().await {
+            self.refresh_fee_rate().await;
             return;
         }
         if let Ok((_, rpc, decoys, _)) = self.connection().await {
@@ -96,10 +102,14 @@ impl Wallet {
         }
     }
 
-    /// Asks the node its fee rate now, so Split up's fee estimate is the
-    /// node's, not Monero's usual. Quietly keeps the last one on failure.
+    /// Asks the node (or the light wallet server) its fee rate now, so Split
+    /// up's fee estimate is its, not Monero's usual. Quietly keeps the last
+    /// one on failure.
     pub async fn refresh_fee_rate(&self) {
         if self.light_mode().await {
+            if let Ok(client) = self.light_client().await {
+                let _ = self.light_fee(&client).await;
+            }
             return;
         }
         if let Ok((_, rpc, _, _)) = self.connection().await {
@@ -118,10 +128,6 @@ impl Wallet {
         recipient_name: Option<String>,
         pieces: Option<u32>,
     ) -> Result<Prepared> {
-        // Read-only for now: phase 3 of the Light Wallet proposal sends through the server.
-        if self.light_mode().await {
-            return Err(FobError::SendingThroughServerLater);
-        }
         let amount: u64 = payments.iter().map(|p| p.1).sum();
         let device = self.inner.keys.device();
         let (mut candidates, available, unsynced) = {
@@ -153,8 +159,8 @@ impl Wallet {
         if available < amount {
             return Err(not_enough(amount));
         }
-        let (_, rpc, decoys, _) = self.connection().await?;
-        let (fee_rate, latest) = self.send_ready(&rpc, &decoys).await?;
+        // The node's fee and decoys, or the light wallet server's.
+        let (fee_rate, source) = self.send_source().await?;
 
         // Start with the inputs that cover the amount and a generous fee guess,
         // then add one at a time while the real fee needs more.
@@ -167,18 +173,8 @@ impl Wallet {
             total += c.1;
             chosen.push(c);
         }
-        // Every input's ring at once: each is a round trip to the node.
-        let mut rings = tokio::task::JoinSet::new();
-        for (i, c) in chosen.iter().enumerate() {
-            let (decoys, output) = (decoys.clone(), c.2.clone());
-            rings.spawn(async move { (i, OutputWithDecoys::new(&mut OsRng, &decoys, RING_LEN, latest, output).await) });
-        }
-        let mut with_decoys: Vec<Option<OutputWithDecoys>> = vec![None; chosen.len()];
-        while let Some(done) = rings.join_next().await {
-            let (i, ring) = done.map_err(|e| FobError::Node(format!("{e}")))?;
-            with_decoys[i] = Some(ring.map_err(|e| FobError::Node(format!("{e:?}")))?);
-        }
-        let mut with_decoys: Vec<OutputWithDecoys> = with_decoys.into_iter().flatten().collect();
+        // Every input's ring at once.
+        let mut with_decoys = self.rings(&source, chosen.iter().map(|c| c.2.clone()).collect()).await?;
         let change = Change::new(self.inner.keys.view_pair(), None);
         let signable = loop {
             let mut outgoing_view = Zeroizing::new([0u8; 32]);
@@ -199,7 +195,7 @@ impl Wallet {
                     }
                     let c = candidates.remove(0);
                     total += c.1;
-                    with_decoys.push(OutputWithDecoys::new(&mut OsRng, &decoys, RING_LEN, latest, c.2.clone()).await.map_err(|e| FobError::Node(format!("{e:?}")))?);
+                    with_decoys.extend(self.rings(&source, vec![c.2.clone()]).await?);
                     chosen.push(c);
                 }
                 Err(e) => return Err(FobError::Send(format!("{e:?}"))),
@@ -365,9 +361,6 @@ impl Wallet {
     /// A wallet whose keys are on a device signs with
     /// [`send_with_trezor`](Wallet::send_with_trezor) instead.
     pub async fn send(&self, id: u64) -> Result<String> {
-        if self.light_mode().await {
-            return Err(FobError::SendingThroughServerLater);
-        }
         if self.inner.keys.device().is_some() {
             return Err(FobError::TrezorNeeded);
         }
@@ -377,13 +370,26 @@ impl Wallet {
         let tx = prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
         let hash = hex::encode(tx.hash());
         let signed = hex::encode(tx.serialize());
+        let publish = self.publishing(tx).await;
+        self.publish_and_record(hash, fee, prepared.out, signed, publish).await
+    }
+
+    /// How a signed payment goes out, signed here or on a device: to the
+    /// light wallet server syncing is through (`/submit_raw_tx`), or to the
+    /// node. For [`publish_and_record`](Wallet::publish_and_record).
+    pub(super) async fn publishing(&self, tx: monero_wallet::transaction::Transaction) -> impl Future<Output = std::result::Result<(), Unpublished>> + Send + 'static {
         let wallet = self.clone();
-        let manual_sync = self.inner.state.lock().await.manual_sync;
-        let publish = async move {
+        let (manual_sync, light) = {
+            let state = self.inner.state.lock().await;
+            (state.manual_sync, state.sync_mode == SyncMode::Light)
+        };
+        async move {
+            if light {
+                return wallet.submit_through_server(tx.serialize()).await;
+            }
             let rpc = wallet.rpc().await.map_err(Unpublished::Refused)?;
             rpc.publish_transaction(&tx).await.map_err(|e| publish_failure(e, manual_sync))
-        };
-        self.publish_and_record(hash, fee, prepared.out, signed, publish).await
+        }
     }
 
     /// Publishes a signed payment with `publish`, then records it (its
@@ -460,6 +466,9 @@ impl Wallet {
         });
         self.record_prices(&mut state);
         self.save_state(&state)?;
+        // Seen in the pool before it was recorded: it's this wallet's own
+        // payment, not money on its way in.
+        self.inner.pool.lock().expect("pool lock").remove(&hash);
         Ok(hash)
     }
 

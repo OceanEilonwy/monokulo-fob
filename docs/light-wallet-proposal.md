@@ -3,8 +3,9 @@
 Status: proposal, 2026-11-07. Phase 2, read-only light mode, is built in Fob
 (decisions 371–376) and hardened (377–382: amounts held to the server's
 commitments, fees, time locks, the client's rules; 384–387: each payment
-proved to be in a block a node has); the server half (`monokulo-lws`)
-exists as a first working version, in its own repository.
+proved to be in a block a node has); phase 3, sending through the server,
+is built (389–394); the server half (`monokulo-lws`) exists as a first
+working version, in its own repository.
 
 ## What it is
 
@@ -231,30 +232,56 @@ light_step():
 
 ## Sending
 
-`prepare_payments` keeps its shape: pick coins largest first, build a
-`SignableTransaction`, retry on `NotEnoughFunds`. What changes is where the
-inputs' decoys, the fee and the tip come from:
+Built (decisions 389–394). `prepare_payments` keeps its shape: pick coins
+largest first, build a `SignableTransaction`, retry on `NotEnoughFunds`.
+What changes is where the fee and each input's ring come from
+(`wallet/light_send.rs`: a `Source` that is the node's or the server's):
 
-- **Fee.** `/get_unspent_outs` gives `per_byte_fee` and `fee_mask` →
-  `FeeRate::new(per_byte_fee, fee_mask)`, capped by `MAX_FEE_PER_WEIGHT` as
-  today (decision 12), so a hostile server can't take a large fee.
-- **Decoys.** One `/get_random_outs { count: 15, amounts: ["0"] × inputs }`.
-  monero-oxide's `OutputWithDecoys::new` picks its own decoys from the
-  distribution, which the API lacks; but `OutputWithDecoys::read` is public
-  and its format is `OutputData ‖ Decoys` (`key ‖ key offset ‖ mask ‖ amount`
-  then `monero_clsag::Decoys`, whose `Decoys::new(offsets, signer_index,
-  ring)` is public). So Fob builds each input from the server's 15 members
-  plus its own output: sort the 16 by global index, take the real one's
-  position as `signer_index`, offsets as differences, ring as `[key,
-  commitment]` pairs. Checks: 15 distinct members, none of them the wallet's
-  own outputs, all older than 10 blocks per the server's own heights. A
-  server that chooses decoys badly weakens the ring's privacy; it already
-  knows which output is ours, so this is no new leak, and it is the trade
-  every light wallet makes.
+- **Coins.** The wallet's own records, found and checked by light syncing
+  (key, mask, commitment, proof; key images worked out here), ready by the
+  same count of confirmations against the server's tip from the last poll.
+  `/get_unspent_outs`' outputs aren't used: only its fee is.
+- **Fee.** `/get_unspent_outs` gives `per_byte_fee`, `fee_mask` and the four
+  priorities' `fees`. Fob pays the second, Normal, as monero-daemon-rpc picks
+  it from a node's estimate for the node path; a server without `fees`
+  (older monero-lws) gives `per_byte_fee`, the lowest. Refused above
+  `MAX_FEE_PER_WEIGHT` (decision 12's cap), or with a mask above
+  `MAX_FEE_MASK` (100,000; monerod's is 10,000), a cap the node path gains
+  too, so a hostile server can't take a large fee (decision 389).
+- **Decoys.** One `/get_random_outs { count: 16, amounts: ["0"] × inputs }`
+  (150 rings a request at most, monero-lws's limit). monero-oxide's
+  `OutputWithDecoys::new` picks its own decoys from the distribution, which
+  the API lacks; but `OutputWithDecoys::read` is public and its format is
+  `OutputData ‖ Decoys` (`key ‖ key offset ‖ mask ‖ amount` then
+  `monero_clsag::Decoys`, whose `Decoys::new(offsets, signer_index, ring)` is
+  public). So Fob builds each input from 15 of the server's 16 members plus
+  its own output: the member that is the real output (if the server
+  happened to pick it), or one at random, goes; sort by global index, the
+  real one's position as `signer_index`, offsets as differences, ring as
+  `[key, commitment]` pairs, the commitment the first 32 bytes of `rct`.
+  Checks: RingCT's amount, exactly 16 members, distinct, every key and
+  commitment a point, a member at the real output's index the real output;
+  members with torsion or the identity dropped as monero-oxide drops them.
+  Given monero-oxide's own picks, the ring is its byte for byte (a test).
+  Not checked: the members' age, as the API gives no heights. A server
+  already knows which output is ours, and learns which is spent when the
+  ring is formed (the member it didn't hand out); decoys hide the spend
+  from the chain, not from it
+  (decision 391).
 - **Tip.** `blockchain_height` from the last poll.
-- **Submit.** `/submit_raw_tx { tx: hex(tx.serialize()) }`. `not_relayed`
-  or a 422 become `publish_failure` words. The payment is recorded as sent
-  at once, as today (decision 14), and the next poll shows it in the pool.
+- **Submit.** `/submit_raw_tx { tx: hex(tx.serialize()) }`. "OK" is
+  published; "OK" with `not_relayed`, no answer, or a 5xx but 503 is recorded and
+  offered again at each poll, as the node path does with a payment its node
+  didn't answer for; a 422, 400, 503 or another status is a refusal, said with the
+  server's reason (one line, 120 characters). The payment is recorded as sent
+  at once, as today (decision 14), and the next poll shows it in the pool
+  (monokulo-lws), then mined, with the server's fee for the spend.
+- **Trezor.** Through the server too (decisions 395, 396): the device gives
+  its coins' key images over USB as before, and the server's candidate
+  spends, mined or in its pool, are held to them on the phone, no node's
+  `is_key_image_spent` asked; a payment is prepared from the server's fee
+  and rings, signed on the device, and handed to `/submit_raw_tx`. The key
+  images never leave the phone, and the device's protocol is unchanged.
 
 The decoy cache file (`.decoys`) isn't used or updated in light mode.
 
@@ -297,11 +324,12 @@ lws.example.com". The screen:
 | Contradict itself (one output with two keys, two outputs at one global index, a block past the tip). | The whole answer is refused (decision 378). |
 | Misstate the tip, or a height or global index it doesn't prove. | Not checked: confirmations count from the server's tip, and a global index is used only when spending, where the node checks it. A block far past the tip is refused (378). |
 | Learn, through the node, which blocks are the wallet's. | It isn't the server's to learn, and the node isn't told: it's asked for stretches from where Fob last stopped, and only past 20,000 blocks for each payment's 1,000-block window, which leaks the week at most, not the block (decision 385). |
-| Report a wrong network fee for sending. | Capped by `MAX_FEE_PER_WEIGHT`. |
+| Report a wrong network fee for sending. | Capped by `MAX_FEE_PER_WEIGHT`, and its rounding by `MAX_FEE_MASK` (decision 389). |
 | Report a wrong fee for a spend found. | Shown as given, or "Not known" without one (decision 379); it moves money between a history row's amount and its fee, never the balance. |
 | Time a time lock wrongly. | Judged by its block times, never one past the phone's clock: early only if the phone's clock is wrong too (decision 380). |
-| Pick decoys that weaken a ring. | Checked for count, distinctness, age and not being ours; beyond that, the trade of the mode. |
-| Not broadcast a transaction. | `not_relayed` and failures shown; the payment is still recorded, and the next poll shows it absent from the pool. |
+| Mark a Trezor wallet's coin spent, or keep it looking unspent. | Marking needs the coin's key image, which only the device makes and Fob never sends: a server can name only spends that are real. One it hides leaves the coin looking spendable, and the payment that tries it is refused as a double spend; the same trade as hiding any spend (decision 395). |
+| Pick decoys that weaken a ring. | Checked for count, distinctness, being points and RingCT's; not for age (the API gives no heights); beyond that, the trade of the mode (decision 391). |
+| Not broadcast a transaction. | A refusal is shown and nothing recorded; no answer or `not_relayed` records the payment and offers it again each poll, and the day-old check marks one never mined (decision 392). |
 | Learn the phone's address and when it's on. | Said in the words. Tor is still future work (decision 73) and would cover this. |
 
 Transport: TLS as for nodes, including a pinned self-signed certificate,
@@ -319,7 +347,7 @@ the phone itself (decision 381). A request may take 120 s in all, an answer
    section after it).
 2. **Fob, read-only light mode** (done, decisions 371–376): `fob-chain::light`,
    the `Backend` setting and schema migration (version 8, from 7), `light_step`
-   with `reconcile`, the Node screen and words, the chip. Sending in light mode
+   with `reconcile`, the Node screen and words, the chip. Sending in light mode (until phase 3)
    disabled with "Sending through a server comes next". Tested against
    `monokulo-lws` on stagenet, a faucet payment seen in the pool and then
    mined; not yet against monero-lws in Docker. Where it differs from this
@@ -336,8 +364,12 @@ the phone itself (decision 381). A request may take 120 s in all, an answer
    poll asks nothing twice, and checked again after a reorganisation; the
    Light server screen says whether payments match the chain, are held to
    commitments only, or are the server's word.
-3. **Sending**: `SendSource` for the light client, inputs from server
-   decoys, submit. Tested end to end on stagenet.
+3. **Sending** (done, decisions 389–394): a `Source` for the node or the
+   light client, rings from the server's members, the fee from
+   `/get_unspent_outs` capped, `/submit_raw_tx`. Tested end to end on
+   stagenet. A Trezor wallet syncs and sends through the server too
+   (395–397), tested against the fake server and a Trezor in software;
+   a real device on stagenet is still to come.
 4. **Instant updates**: `/feed` on both sides (monero-lws's websocket
    protocol, msgpack), reported in the chip as ZMQ is. Webhooks from
    `monokulo-lws` for Monokular tills.

@@ -66,19 +66,26 @@ fn block_paying(keys: &Keys, amount: u64, height: usize) -> (monero_wallet::inte
 }
 
 /// A Trezor in software holding `full`'s keys, answering as the device
-/// would: its view key, and key images made with the spend key.
-fn fake_trezor(full: &Keys) -> crate::trezor::session::fake::Fake {
+/// would: its view key, key images made with the spend key (for the main
+/// address or a subaddress, from the transaction key given), and payments
+/// signed with it.
+pub(super) fn fake_trezor(full: &Keys) -> crate::trezor::session::fake::Fake {
     let mut fake = crate::trezor::session::fake::Fake::new();
     fake.address = full.primary_address();
     fake.view_key = scalar(&full.view_key_hex()).to_bytes();
     let spend = scalar(&full.spend_key_hex().unwrap());
     let view = scalar(&full.view_key_hex());
+    fake.signer = Some(crate::trezor::fake_signer::Signer::new(spend, view));
     fake.key_image = Box::new(move |t: &crate::trezor::Transfer| {
         // The output's secret key from its transaction key, as the device makes it.
         let big_r = curve25519_dalek::edwards::CompressedEdwardsY(t.tx_pub_key).decompress().unwrap();
         let mut data = (big_r * view).mul_by_cofactor().compress().to_bytes().to_vec();
         data.extend_from_slice(&crate::trezor::proto::varint(t.index_in_tx));
-        let x: DScalar = Scalar::hash(&data).into() + spend;
+        let sub: DScalar = match t.subaddress_minor {
+            0 => DScalar::ZERO,
+            minor => Scalar::hash([b"SubAddr\0".as_slice(), view.as_bytes(), &0u32.to_le_bytes(), &minor.to_le_bytes()].concat()).into(),
+        };
+        let x: DScalar = Scalar::hash(&data).into() + spend + sub;
         assert_eq!((&x * ED25519_BASEPOINT_TABLE).compress().to_bytes(), t.out_key, "the transaction key given is the output's");
         let hashed: EdwardsPoint = monero_wallet::ed25519::Point::biased_hash(t.out_key).into();
         let image = (hashed * x).compress().to_bytes();

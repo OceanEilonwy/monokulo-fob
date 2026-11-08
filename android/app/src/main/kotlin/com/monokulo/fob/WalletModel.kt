@@ -252,7 +252,7 @@ class WalletModel(private val app: Application) {
     private val _nodeLine = MutableStateFlow("")
     val nodeLine: StateFlow<String> = _nodeLine
 
-    /** Syncing through a light wallet server: the Node row and instant updates grey out, Manual Sync hides, Send waits. */
+    /** Syncing through a light wallet server: the Node row and instant updates grey out, Manual Sync hides. */
     private val _lightMode = MutableStateFlow(false)
     val lightMode: StateFlow<Boolean> = _lightMode
 
