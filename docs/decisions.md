@@ -3241,3 +3241,131 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      Switched back, the node scanned from the server's 2,245,520 less 30, both
      outputs kept. Not tried: monero-lws in Docker, an `approve` server, a
      restore that needs an import (all covered by tests against fake servers).
+377. **Amounts are held to the commitment the server gives, when it gives one.**
+     monokulo-lws's wire types gained (at `0fca96c`) a `commitment` on each
+     output received, the Pedersen commitment as the chain's RingCT base holds
+     it, and Fob's copy of them now has it (decision 374's file, same header,
+     new rev). For every output of this wallet's that comes with one, `opened`
+     computes `Commitment { mask, amount }.commit()` with the mask Fob already
+     uses (the view key's from hard fork 10 on, 1 for a mined reward, the
+     server's before) and compares it with the server's in constant time
+     (`subtle`). A mismatch is `light::Problem::AmountMismatch`: the server
+     lied or is broken, nothing of that answer is taken (decision 378), the
+     poll fails with "The light server reported an amount that doesn't match
+     the chain. Nothing from its answer was taken", the chip says "Server
+     answer refused" and the Light server screen "Amounts · don't match the
+     chain". An output without a commitment (monero-lws serves none, and the wire
+     types leave it out for a plain amount such as a mined reward's) is still
+     taken, as
+     before, and the poll counts it: while any is listed the wallet's light
+     state (`catch_up::Light::amounts`) is `ServersWord`, and the Light server
+     screen says "Amounts · the server's word" with "This server doesn't send
+     the chain's commitments, so Fob can't check the amounts it reports against
+     the chain. They're the server's word." With every output committed it's
+     `Checked` ("match the chain's commitments"). It's worked out afresh each
+     poll from the whole list, so it says what the server does now, and isn't
+     kept in the file. Before hard fork 10 the mask is the server's, and the
+     commitment now holds it too. `/get_unspent_outs` isn't used by Fob (its
+     96-byte `rct` would get the same check if it were; monokulo-lws works
+     that blob's commitment out from the mask and amount, so it proves
+     nothing there). What this does and doesn't buy, corrected from decision
+     373 and the proposal: the commitment is the server's word for what the
+     chain holds. The check binds the amount to it, so a server that misstates
+     an amount has to misstate the commitment as well, and a buggy server is
+     caught. A server that lies on purpose can make both agree, and can even
+     invent an output whole: it holds the view key, so it can make a one-time
+     key that `Keys::light_output` accepts from a transaction key of its own
+     choosing, which decision 373 said it couldn't. Only the chain itself can
+     catch that, a node's `get_outs` by global index (key, commitment and
+     transaction compared), which light mode doesn't ask, as asking would
+     tell the node which outputs are this wallet's. An invented or misstated
+     coin still can't be spent: the node refuses the transaction.
+378. **An answer that's untrue is refused whole.** `reconcile` first `vet`s
+     the whole of `/get_address_txs`: an amount that doesn't open its
+     commitment, one output (transaction and index) named twice with different
+     one-time keys, two outputs given one global index, or a transaction in a
+     block more than 10 past the tip the server reports (its scanner can be a
+     block or two ahead of the height it says) refuses all of it, and the
+     wallet's file doesn't change: an honest-looking output beside a lie isn't
+     taken either. `Problem::Contradiction` says "The light server's answer
+     contradicts itself. Nothing from it was taken". The Light server screen's
+     rows for the server in use (decision 381) show the failure as "Last
+     answer". A transaction above the server's scanned height but below the
+     tip isn't refused: a rescan races the read. Outputs that only fail the key
+     or mask check are still counted out one by one, as before ("The server
+     named N payments that aren't this wallet's").
+379. **A spend's fee is the server's, or not known.** `/get_address_txs`
+     gained a `fee` per transaction (monero-lws serves it; monokulo-lws will).
+     A spend found through the server takes it; one found before the server
+     gave fees takes it at the next poll. Without one, `ChainSpend.fee` stays 0,
+     which now means not known (every transaction that spends pays a fee, so
+     no real fee is 0, and spends found before this read right too): Activity
+     gives no fee for that row (`fee: None`), the amount shown is the spent
+     coins less change, the fee inside it, and the payment's screen says "Fee ·
+     Not known · counted in the amount" (`fob_words::light::FEE_NOT_KNOWN`,
+     via `Detail::fee_unknown`). The node path always knows the fee (the RingCT
+     base's) and says "0.00003 XMR" as before, and a test holds the two paths
+     equal, fee included, when the server gives it. The fee isn't checked: Fob
+     doesn't have the transaction. A wrong one moves money between the row's
+     amount and its fee, never the balance.
+380. **Time-locked outputs are kept through a server too.** Decision 373
+     dropped outputs locked to a time, as decision 48 first had it, while the
+     node path had since kept them (Monero's unlock time in `unlock_block`,
+     judged by the chain's clock). `reconcile` now keeps them the same way:
+     `unlock_block` is the transaction's `unlock_time` as Monero writes it, and
+     the `WalletOutput` carries `Timelock::Time` (or `Block`), so a test finds a
+     time-locked and a block-locked output byte for byte alike both ways. The
+     clock that judges them is `last_block_time`, which light mode didn't
+     move: it now moves on to the latest block time among the transactions the
+     server vouches for, never back, and not to a time past the phone's own,
+     so a server can't have a time lock pass early unless the phone's clock is
+     wrong too. With no new transactions it stands still, and a time-locked
+     coin shows not ready for longer than it is: late, never early. Node
+     scanning, switched back, sets it from each block as before.
+381. **A server's address, certificate and answers are held tighter than a
+     node's.** Every request carries the view key, so `light::allowed` takes
+     `https://` only, but for this device (`localhost`, 127.0.0.0/8, `::1`):
+     plain `http://` to anything else, the local network included, is
+     `Problem::PlainHttp` ("A light wallet server needs https, as the view key
+     goes with every request. Plain http is only for a server on this
+     device"), where the proposal and decision 374 let it through for the
+     local network; a server there can use its own certificate, pinned. A
+     bare `host:port` is taken as `https://` (`light::normalize`), not
+     `http://` as for a node. An `.i2p` host is refused like an onion one, with
+     "Fob can't reach .onion or .i2p servers yet": there's no I2P either, and
+     looking its name up would leak it. A whole request may take 120 s
+     (`client::REQUEST`), on top of the transport's 15 s to connect and 30 s
+     between pieces, so a server can't hold a poll open by trickling; an answer
+     past 32 MB is refused by its stated length or as it comes. The pin is the
+     SHA3-256 of the certificate's SubjectPublicKeyInfo (the node's, decision
+     73's transport), now compared in constant time. It's taken when the server
+     is chosen, from the check `set_light_server` makes before anything of the
+     wallet's is sent, rather than at the first `/login`, so the view key's
+     first journey is held to the key that check saw; a changed key fails the
+     handshake, and each poll, closed, with "The server's certificate is changed
+     since you accepted it, not accepted". Choosing the same server again
+     accepts a new key, as choosing a node again does. Test shows the key as
+     "Certificate key · abab abab …" (groups of four) for a server whose own
+     certificate is accepted, and the Light server screen now shows the server
+     in use as it stands before any Test (`Wallet::light_standing`, the FFI's
+     `light_standing`): its key with "The SHA3-256 of the server's public key.
+     Fob talks to this server only while it answers with this key.", what its
+     amounts are worth (decision 377), and its last failure.
+382. **What the light path was checked for, and what it trusts.** Nothing on
+     it logs: `fob-chain::light`, `light_step`, `reconcile` and the FFI calls
+     have no `log`, `tracing`, `println!` or `eprintln!`; a failure says the
+     status or the transport's words (reqwest's, with the URL and so any
+     user:pass@ taken out), never a request. `lws::Login` derives `Debug` and
+     would print the view key if anything formatted it; nothing does, and the
+     file stays monokulo-lws's (decision 374), so that's for `lws-api` to
+     change. Checked by Fob: each output's one-time key, re-derived from the
+     transaction key, the view key, the index and the subaddress
+     (`Keys::light_output`), so a server can't hand Fob an output of another
+     wallet's; its mask from hard fork 10 on; its amount against the
+     commitment given (377); the answer's own consistency (378); a candidate
+     spend by its key image, which binds the output. Taken on the server's word,
+     as nothing on the phone can check them without a node: the tip
+     (`blockchain_height`, which counts confirmations), scanned and start
+     heights, a transaction's height and time, an output's global index (used
+     only when spending, where the node checks it), the commitment itself, a
+     fee, and whatever the server leaves out.
