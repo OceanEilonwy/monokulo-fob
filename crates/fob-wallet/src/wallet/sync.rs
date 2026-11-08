@@ -753,7 +753,7 @@ impl Wallet {
                 .map_or((None, None), |(tx_key, extra)| (Some(hex::encode(tx_key)), extra.map(hex::encode)));
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
-            let found = Owned {
+            state.outputs.push(Owned {
                 output: hex::encode(output.serialize()),
                 coinbase: tx == scanned.miner_tx,
                 unlock_block,
@@ -763,13 +763,10 @@ impl Wallet {
                 time,
                 amount: output.commitment().amount,
                 subaddress,
-                coin: Coin::default(),
-                key_image: None,
-                spent_in: None,
+                coin: Coin::Free { ki },
                 tx_key,
                 extra_key,
-            };
-            state.outputs.push(found.with_coin(Coin::Free { ki }));
+            });
             changed = true;
         }
         if incoming || !outgoing.is_empty() {

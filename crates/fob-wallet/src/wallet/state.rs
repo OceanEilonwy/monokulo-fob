@@ -1,7 +1,7 @@
 //! What a wallet keeps in its database, and what it found on the chain.
 
 use super::*;
-use coin::{Coin, Event, Hold, KeyImage, Spendable, step};
+use coin::{Coin, Event, Spendable, step};
 use std::collections::VecDeque;
 
 /// An output the wallet owns.
@@ -25,18 +25,12 @@ pub(super) struct Owned {
     /// is the burning bug and isn't counted.
     #[serde(default)]
     pub(super) key: String,
-    /// Where the coin stands: free, held or spent, with its key image. The
-    /// truth about the coin; changed only through [`State::apply`].
-    #[serde(skip)]
+    /// Where the coin stands: free, held or spent, with its key image
+    /// (unknown in a view-only wallet, and in a device's until the device
+    /// has been asked). Changed only through [`State::apply`]. Version 10
+    /// of the database keeps it whole; before that it was two columns,
+    /// which [`fob_vault::db::legacy_coin`] reads into this.
     pub(super) coin: Coin,
-    /// The file's form of `coin`, as version 9 of the database keeps it:
-    /// the key image in hex (`None` in a view-only wallet, and in a
-    /// device's until the device has been asked), and the spending
-    /// transaction, a word standing for a device sync's finding, or
-    /// nothing. Written from `coin` by [`State::apply`] and read back into
-    /// it by [`State::coins_from_marks`] when the file opens.
-    pub(super) key_image: Option<String>,
-    pub(super) spent_in: Option<String>,
     /// The transaction key the output was made with, and the extra key at
     /// its index if its transaction carried those: what a device needs to
     /// make its key image and spend it. In hex; `None` before Fob kept
@@ -292,12 +286,11 @@ impl Owned {
         hash_bytes(tx).is_some_and(|hash| self.coin.names(&hash))
     }
 
-    /// This coin in state `coin`, the file's form of it in step. For a coin
-    /// made by hand; the scan and the server's listing make theirs free.
+    /// This coin in state `coin`: for one made by hand in a test. The scan
+    /// and the server's listing make theirs free.
+    #[cfg(test)]
     pub(super) fn with_coin(mut self, coin: Coin) -> Owned {
         self.coin = coin;
-        self.key_image = coin.key_image().map(hex::encode);
-        self.spent_in = legacy_mark(&coin);
         self
     }
 }
@@ -310,51 +303,6 @@ pub(super) type CoinId = (String, String);
 /// else can't match what's on the chain.
 pub(super) fn hash_bytes(text: &str) -> Option<[u8; 32]> {
     hex::decode(text).ok()?.try_into().ok()
-}
-
-/// `coin` as version 9 of the file writes `spent_in`: the transaction named,
-/// in hex; a word for a device sync's finding, which names none; or
-/// nothing for a free coin.
-fn legacy_mark(coin: &Coin) -> Option<String> {
-    match coin {
-        Coin::Free { .. } => None,
-        Coin::Held { hold: Hold::DeviceChain { .. }, .. } => Some(SPENT_BEFORE_SYNC.to_owned()),
-        Coin::Held { hold: Hold::DevicePool { .. }, .. } => Some(SPENT_IN_POOL_AT_SYNC.to_owned()),
-        Coin::Held { hold: Hold::InPool { tx } | Hold::OurPayment { tx }, .. } | Coin::Spent { tx, .. } => {
-            Some(hex::encode(tx))
-        }
-    }
-}
-
-/// A coin's state from what version 9 of the file says of it: the key image
-/// in hex, if any, and `spent_in`. A hash in `spends` is a spend on the
-/// chain, at that spend's height; in `sent`, a payment of ours holding it;
-/// any other hash, a pool transaction's hold (the next look at the pool
-/// frees it if the pool doesn't have it); the two words, the device holds
-/// (asked at height 0, as the file didn't say); nothing, free. A mark that
-/// is none of those names a spend whose transaction can't be read: the coin
-/// is held as a device sync's chain finding, which no payment can pick,
-/// rather than counted as free.
-fn coin_from_marks(key_image: Option<&str>, spent_in: Option<&str>, spends: &[ChainSpend], sent: &[Sent]) -> Coin {
-    let ki = match key_image.and_then(hash_bytes) {
-        Some(image) => KeyImage::Known(image),
-        None => KeyImage::Unknown,
-    };
-    let Some(mark) = spent_in else { return Coin::Free { ki } };
-    if mark == SPENT_BEFORE_SYNC {
-        return Coin::Held { ki, hold: Hold::DeviceChain { asked: 0 } };
-    }
-    if mark == SPENT_IN_POOL_AT_SYNC {
-        return Coin::Held { ki, hold: Hold::DevicePool { asked: 0 } };
-    }
-    let Some(tx) = hash_bytes(mark) else { return Coin::Held { ki, hold: Hold::DeviceChain { asked: 0 } } };
-    if let Some(spend) = spends.iter().find(|s| s.tx == mark) {
-        return Coin::Spent { ki, tx, height: spend.height };
-    }
-    if sent.iter().any(|s| s.tx == mark) {
-        return Coin::Held { ki, hold: Hold::OurPayment { tx } };
-    }
-    Coin::Held { ki, hold: Hold::InPool { tx } }
 }
 
 /// One change to a coin, as [`State::apply`] made it: for the log.
@@ -440,9 +388,8 @@ impl State {
     }
 
     /// `event` happened to the coin at `i`: the one door through which a
-    /// coin's state changes. [`coin::step`] decides what it comes to; the
-    /// file's form is written in step, and the change logged. Whether the
-    /// state changed.
+    /// coin's state changes. [`coin::step`] decides what it comes to, and
+    /// the change is logged. Whether the state changed.
     pub(super) fn apply_at(&mut self, i: usize, event: Event) -> bool {
         let before = self.outputs[i].coin;
         let after = step(before, &event);
@@ -451,8 +398,6 @@ impl State {
         }
         let output = &mut self.outputs[i];
         output.coin = after;
-        output.key_image = after.key_image().map(hex::encode);
-        output.spent_in = legacy_mark(&after);
         let id = output.id();
         self.transitions.push_back(Transition { id, before, event, after });
         while self.transitions.len() > TRANSITIONS_KEPT {
@@ -467,15 +412,6 @@ impl State {
         match self.outputs.iter().position(|o| o.is(id)) {
             Some(i) => self.apply_at(i, event),
             None => false,
-        }
-    }
-
-    /// Reads every coin's state from the file's form of it, as the file
-    /// opens: see [`coin_from_marks`].
-    pub(super) fn coins_from_marks(&mut self) {
-        let (spends, sent) = (&self.spends, &self.sent);
-        for output in &mut self.outputs {
-            output.coin = coin_from_marks(output.key_image.as_deref(), output.spent_in.as_deref(), spends, sent);
         }
     }
 

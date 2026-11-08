@@ -688,7 +688,7 @@ async fn a_version_7_database_opens_as_a_node_wallet() {
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     old.execute_batch(&format!(
-        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; PRAGMA user_version = 7;",
+        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; {BACK_TO_VERSION_9} PRAGMA user_version = 7;",
         hex::encode([1u8; 32])
     ))
     .unwrap();

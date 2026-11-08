@@ -14,8 +14,6 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
         unlock_block: if coinbase { height + 60 } else { 0 },
         key: tx.into(),
         coin: Coin::default(),
-        key_image: None,
-        spent_in: None,
         tx_key: None,
         extra_key: None,
     };

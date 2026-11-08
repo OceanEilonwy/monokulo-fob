@@ -18,8 +18,6 @@ async fn a_view_only_wallet_refuses_to_prepare_payments() {
         unlock_block: 0,
         key: "in".into(),
         coin: Coin::default(),
-        key_image: None,
-        spent_in: None,
         tx_key: None,
         extra_key: None,
     }];

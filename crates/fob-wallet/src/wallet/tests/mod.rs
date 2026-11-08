@@ -328,6 +328,12 @@ const XMR: u64 = amount::ATOMIC_PER_XMR;
 
 const DAY: u64 = 86_400;
 
+/// Takes a database's outputs back to version 9, for a test of the upgrade
+/// from it: the two columns that held a coin's state in pieces filled from
+/// `coin`, and `coin` dropped. Goes before `PRAGMA user_version` in the
+/// batch that takes the rest of the file back.
+const BACK_TO_VERSION_9: &str = "UPDATE outputs SET key_image = COALESCE(json_extract(coin, '$.Free.ki.Known'), json_extract(coin, '$.Held.ki.Known'), json_extract(coin, '$.Spent.ki.Known')), spent_in = COALESCE(json_extract(coin, '$.Spent.tx'), json_extract(coin, '$.Held.hold.InPool.tx'), json_extract(coin, '$.Held.hold.OurPayment.tx'), CASE WHEN json_type(coin, '$.Held.hold.DeviceChain') IS NOT NULL THEN 'spent-before-sync' WHEN json_type(coin, '$.Held.hold.DevicePool') IS NOT NULL THEN 'spent-in-pool-at-sync' END); ALTER TABLE outputs DROP COLUMN coin;";
+
 /// A transaction hash for a test, from a short name: the name's bytes,
 /// padded. What a coin's state names must be a hash, not a word.
 fn tx_hash(name: &str) -> TxHash {
@@ -358,8 +364,6 @@ fn received(tx: &str, time: u64, amount: u64) -> Owned {
         unlock_block: 0,
         key: tx.into(),
         coin: Coin::default(),
-        key_image: None,
-        spent_in: None,
         tx_key: None,
         extra_key: None,
     }

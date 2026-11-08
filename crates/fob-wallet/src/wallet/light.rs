@@ -634,7 +634,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
                 Some(image) => KeyImage::Known(image),
                 None => KeyImage::Unknown,
             };
-            let found = Owned {
+            state.outputs.push(Owned {
                 output: hex::encode(output.serialize()),
                 tx: hash.clone(),
                 height,
@@ -644,15 +644,12 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
                 coinbase: tx.coinbase,
                 unlock_block,
                 key,
-                coin: Coin::default(),
-                key_image: None,
-                spent_in: None,
+                coin: Coin::Free { ki },
                 // The key it was derived from: the transaction's own, or the
                 // extra one at its index; a device takes either.
                 tx_key: Some(hex::encode(received.tx_pub_key.0)),
                 extra_key: None,
-            };
-            state.outputs.push(found.with_coin(Coin::Free { ki }));
+            });
             changed = true;
         }
     }

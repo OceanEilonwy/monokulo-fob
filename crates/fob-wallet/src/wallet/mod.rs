@@ -100,13 +100,6 @@ const RESTORE_SKIP: u32 = 50;
 const RING_LEN: u8 = 16;
 /// The hard fork a hardware wallet is told it signs for: v16, Bulletproofs+.
 const HARD_FORK: u32 = 16;
-/// What version 9 of the file writes for a coin's `spent_in` when a
-/// device's key image sync found it spent on the chain before the key
-/// image was known: the spending transaction isn't. In memory the coin is
-/// `Held` by `Hold::DeviceChain` (`coin.rs`).
-pub(crate) const SPENT_BEFORE_SYNC: &str = "spent-before-sync";
-/// As above, but the node saw the spend in its pool only (`Hold::DevicePool`).
-pub(crate) const SPENT_IN_POOL_AT_SYNC: &str = "spent-in-pool-at-sync";
 /// The most Fob pays per unit of weight, whatever a node asks. With the tail
 /// emission an honest mainnet node's normal fee is about 20,000 per byte
 /// (less with larger blocks), so this leaves it room to rise about twenty
