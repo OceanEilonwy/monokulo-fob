@@ -34,7 +34,7 @@
 
 - **Scans on the GPU.** The [monokulo-8ar](https://github.com/OceanEilonwy/monokulo-8ar) prefilter works out 8·a·R for tens of thousands of transaction keys per Vulkan dispatch, at about half the energy per block of a phone's cores. Only flagged blocks go to monero-oxide's own scanner, and a GPU must pass test vectors, with each wallet's own view key too, before it's trusted; without one, the CPU does the work.
 - **Rich contacts.** Each contact has a name, a note, a photo and a send address, and keeps every address they've been paid at, so Activity says who a payment was for. A contact's card lists what you've paid them and what you've asked of them, and "Paid, not saved" offers to save any address you've paid as a contact. Scanning someone's profile code adds them.
-- **Hardware wallets.** Keep the spend key on a Trezor Model T, Safe 3 or Safe 5, over USB on the phone and the desktop. Fob watches with the view key, and every payment is confirmed on the device's own screen.
+- **Hardware wallets.** Keep the spend key on a Trezor Model T, Safe 3 or Safe 5, over USB on the phone and the desktop. One screen walks you through connecting: it draws what the device is showing and says what to do there, and asks the one question Fob has (passphrase or not) before the device would. Fob watches with the view key, and every payment is confirmed on the device's own screen.
 - **Syncs and sends through a server, if you want.** Settings can point a wallet at a [monokulo-lws](https://github.com/OceanEilonwy/monokulo-lws) light wallet server (or any MyMonero-style one) and catch up in one request. The server gets the view key and nothing more, and Fob takes nothing on its word: each payment's amount is held to the chain's commitment and its proof of inclusion to a node's block hashes, so a server can't invent or inflate a payment. Payments are built and signed on the phone (or on a Trezor) from the coins it checked; the server gives the fee (capped) and the ring members, and broadcasts the finished transaction.
 - **Easy testing.** Fob starts on stagenet, with test coins and nothing to lose; mainnet is a separate wallet one switch away in Settings.
 - **Light and fast.** A native app on both platforms, with no web view and one small Rust core. Scan lets you pick how far back to look, from unsettled payments to the whole wallet, and says how long it will take.
@@ -93,6 +93,10 @@ AppImage needs FUSE and adds no menu entry of its own.
 Your wallets are sealed under a passphrase you choose, in `~/.local/share/fob`, and lock after 15 minutes left
 alone. A camera isn't used: a code is pasted or read from a picture.
 
+0.1.16 changes how a wallet file keeps each coin's spent state (decision 400) and upgrades a file the first time
+it opens it; an older Fob can't open it afterwards. Back up `~/.local/share/fob` (on Android, the app's data)
+before the first start.
+
 ### Trying it out
 
 Fob starts on **stagenet** (test coins, nothing to lose); Settings › Use mainnet switches to a separate mainnet
@@ -100,14 +104,22 @@ wallet. Stagenet coins come from a faucet, for example https://stagenet-faucet.x
 
 ### A wallet on a Trezor
 
-Restore › **Connect a Trezor** makes a wallet whose spend key stays on a Trezor Model T, Safe 3 or Safe 5
-(Model One can't hold Monero), plugged into the phone over USB. The device hands Fob the view key, so Fob watches
-and catches up as usual; it asks the device for key images (Home says when) and for each payment's signatures,
-which the device confirms on its own screen. The PIN is typed on the phone by the positions the device shows.
+Restore › **Connect a Trezor** (on the desktop, How › Connect a Trezor (USB)) makes a wallet whose spend key
+stays on a Trezor Model T, Safe 3 or Safe 5 (Model One can't hold Monero), plugged in over USB. One screen
+walks you through it: Fob looks for the device until it's plugged in, then draws what the device is showing and
+says what to do there, counting the steps off at the corner (Unlock, Wallet, Allow, Address; the first two only
+when the device has a PIN or passphrase protection). The PIN is entered on the device. Fob asks the one
+question of its own before the device would, "Do you use a passphrase?", and No opens the standard wallet with
+nothing to type. The device exports the view key, so Fob watches and catches up as usual, and Fob shows the
+wallet's address in full for you to check against the device's screen before anything is kept. Without a
+restore height Fob scans from the first block, so give the height or date of the wallet's first payment if you
+know it. Home says when the device has to be asked for key images, and every payment is confirmed on the
+device's own screen.
 
-The desktop app does the same over USB (How › Connect a Trezor (USB)); on Linux the device needs Trezor's udev
-rules, which Trezor Suite installs, or [51-trezor.rules](https://data.trezor.io/udev/51-trezor.rules) put in
-`/etc/udev/rules.d/`. Tested so far against the protocol in software only: try it on stagenet first.
+On Linux the device needs Trezor's udev rules, which Trezor Suite installs, or
+[51-trezor.rules](https://data.trezor.io/udev/51-trezor.rules) put in `/etc/udev/rules.d/`. Tried on a real
+Safe 3 on the desktop up to the address check, and against the protocol in software for the rest; the Android
+screen hasn't been tried on a phone yet. Try it on stagenet first.
 
 ## Build from source
 
@@ -151,7 +163,9 @@ cargo run --release -p fob-wallet --example fetch_speed [node] [blocks]
   `fob-words` are the parts `fob-wallet` is built from (`docs/decisions.md`, decision 339). `fob-scanner`'s
   prefilter is the `monokulo-8ar` crate, in its own repo, shared with monokulo-lws (decision 366).
   `fob-chain::light` is the light wallet server client (the MyMonero/monero-lws REST API), for syncing through
-  a server instead of scanning, and sending through it, Trezor wallets too (decisions 371–397).
+  a server instead of scanning, and sending through it, Trezor wallets too (decisions 371–397). A coin's spent
+  state is one type moved by one exhaustive function (`fob-wallet`'s `wallet/coin.rs`, decision 400), and the
+  Trezor screens' words come from `fob-words` so both apps say the same (398).
 - `crates/fob-app` is what a client draws: unlocking, the open wallet, syncing.
 - `crates/fob-gtk` is the Linux desktop app, in Relm4 and libadwaita.
 - `crates/fob-ffi` is fob-wallet for Kotlin (later Swift) through UniFFI, and `android/` the Android app, a thin

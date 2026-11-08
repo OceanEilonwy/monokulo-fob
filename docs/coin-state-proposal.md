@@ -1,7 +1,8 @@
 # Proposal: a coin's state as a type, not a string
 
-Status: built, 2026-11-08, on the branch `coin-state` (decision 400, which
-also records what was changed from this document in the building).
+Status: built and released in Fob 0.1.16 (PR #29, merged 2026-11-08;
+decision 400, which also records what was changed from this document in the
+building).
 Prompted by decision 399: a Trezor wallet's balance fell when its key image
 sync found spent coins and climbed back eight minutes later, because one of
 eight places that write a coin's spent mark didn't know what the mark
