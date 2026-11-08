@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::light::{self, Backend, LightClient, Problem, lws};
-use monero_wallet::{ed25519::Scalar, extra::PaymentId};
 use catch_up::Amounts;
+use monero_wallet::{ed25519::Scalar, extra::PaymentId};
 use state::{SyncMode, TIME_LOCK_FROM};
 
 /// How far before the server's scanned height node scanning starts again

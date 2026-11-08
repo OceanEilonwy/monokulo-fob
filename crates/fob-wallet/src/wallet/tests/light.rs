@@ -882,7 +882,7 @@ async fn live_report(wallet: &Wallet, step: &str) {
     let chip = fob_words::catch_up::chip(status.chip());
     let state = wallet.inner.state.lock().await;
     println!(
-        "[{step}] chip {:?} · scanned {} tip {} synced {} connected {} error {:?} · registered {} subaddrs_sent {} light_scanned {} next_block {} restore {:?} · outputs {} pool {:?}",
+        "[{step}] chip {:?} · scanned {} tip {} synced {} connected {} error {:?} · registered {} subaddrs_sent {} light_scanned {} next_block {} restore {:?} · outputs {} pool {:?} · amounts {:?} refused {}",
         chip.text,
         status.scanned,
         status.tip,
@@ -896,7 +896,15 @@ async fn live_report(wallet: &Wallet, step: &str) {
         state.restore_height,
         state.outputs.len(),
         wallet.inner.pool.lock().unwrap().clone(),
+        status.light.as_ref().map(|l| l.amounts),
+        status.light.as_ref().is_some_and(|l| l.refused),
     );
+    for o in &state.outputs {
+        println!("    output {}… at {} · {} XMR · subaddress {} · unlock {} · key image {} · spent {}", &o.tx[..12], o.height, fob_monero::amount::format(o.amount), o.subaddress, o.unlock_block, o.key_image.as_deref().unwrap_or("none"), o.spent_in.as_deref().map_or("no", |t| &t[..12]));
+    }
+    for sp in &state.spends {
+        println!("    spend {}… at {} · fee {}", &sp.tx[..12], sp.height, if sp.fee == 0 { "not known".to_owned() } else { format!("{} XMR", fob_monero::amount::format(sp.fee)) });
+    }
 }
 
 /// A fresh stagenet wallet through a monokulo-lws running at `LWS_URL`
@@ -949,6 +957,44 @@ async fn live_a_fresh_wallet_through_monokulo_lws() {
     let status = wallet.status();
     assert!(status.synced, "the node caught up from the server's height");
     assert!(wallet.status().light.is_none());
+}
+
+/// The wallet in `LIVE_SPEND`/`LIVE_VIEW` (a stagenet test wallet, already
+/// known to the server at `LWS_URL`), synced through the server alone from
+/// `LIVE_FROM`: every output it lists comes with a commitment its amount
+/// opens, every spend with a fee, and nothing is refused.
+#[tokio::test]
+#[ignore = "needs monokulo-lws on stagenet at LWS_URL, a test wallet's keys, and the network"]
+async fn live_an_existing_wallet_through_monokulo_lws() {
+    let url = std::env::var("LWS_URL").unwrap_or_else(|_| "http://127.0.0.1:18443".into());
+    let spend = std::env::var("LIVE_SPEND").expect("LIVE_SPEND");
+    let view = std::env::var("LIVE_VIEW").expect("LIVE_VIEW");
+    let from: u64 = std::env::var("LIVE_FROM").ok().and_then(|f| f.parse().ok()).expect("LIVE_FROM");
+    let keys = Keys::from_spend_key(Network::Stagenet, &spend, Some(&view)).unwrap();
+    let wallet = Wallet::new(&dir("light-live-existing"), [1; 32], keys, Some(from)).unwrap();
+    println!("address {}", wallet.primary_address());
+    wallet.set_light_server(&url, false).await.unwrap();
+    wallet.use_light_wallet(true).await.unwrap();
+    for poll in 1..=12 {
+        let result = wallet.sync_step().await;
+        live_report(&wallet, &format!("poll {poll}: {result:?}")).await;
+        assert!(result.is_ok(), "nothing refused: {result:?}");
+        if wallet.status().synced {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let status = wallet.status();
+    assert!(status.synced);
+    assert_eq!(status.light.as_ref().unwrap().amounts, catch_up::Amounts::Checked, "every amount opened the chain's commitment");
+    let state = wallet.inner.state.lock().await;
+    assert!(!state.outputs.is_empty());
+    assert!(state.spends.iter().all(|s| s.fee > 0), "every spend with its fee");
+    drop(state);
+    println!("balance {:?}", wallet.balance().await);
+    for day in wallet.said_lists(clock_now()).await.days {
+        println!("{day:?}");
+    }
 }
 
 /// The wallet in `LIVE_SPEND`/`LIVE_VIEW` (a stagenet test wallet), caught up
