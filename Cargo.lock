@@ -543,7 +543,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "fob-app"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "fob-ffi",
  "fob-wallet",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "fob-chain"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "fob-monero",
  "hex",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "fob-codes"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "base64 0.22.1",
  "fob-monero",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "fob-ffi"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "curve25519-dalek",
  "fob-wallet",
@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "fob-gtk"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "fob-app",
  "relm4",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "fob-monero"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "hex",
  "monero-wallet",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "fob-price"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "fob-monero",
  "reqwest",
@@ -641,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "fob-scanner"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "curve25519-dalek",
  "hex",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "fob-screens"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "fob-codes",
  "fob-monero",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "fob-vault"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "fob-wallet"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "chacha20poly1305",
  "curve25519-dalek",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "fob-words"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "fob-chain",
  "fob-codes",
