@@ -2,6 +2,7 @@
 //! look up sent payments, and releasing what never arrived.
 
 use super::*;
+use coin::Event;
 
 impl Wallet {
     /// With Manual Sync on and nothing asked for: the sync loop waits.
@@ -324,7 +325,7 @@ impl Wallet {
                 .sent
                 .iter()
                 .filter(|s| s.height.is_none() && !s.released && !s.not_confirmed && s.time <= old && lookup.missing.contains(&s.tx))
-                .map(|s| (s.tx.clone(), s.time, state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&s.tx)).filter_map(|o| o.key_image.clone()).collect()))
+                .map(|s| (s.tx.clone(), s.time, state.outputs.iter().filter(|o| o.spent_by(&s.tx)).filter_map(|o| o.key_image_hex()).collect()))
                 .collect()
         };
         let images: Vec<&str> = asking.iter().flat_map(|(_, _, images)| images.iter().map(String::as_str)).collect();
@@ -389,9 +390,9 @@ impl Wallet {
         state.sent[i].not_confirmed = false;
         state.sent[i].released = true;
         state.sent[i].signed = None;
-        for output in &mut state.outputs {
-            if output.spent_in.as_deref() == Some(tx) {
-                output.spent_in = None;
+        if let Some(tx) = hash_bytes(tx) {
+            for i in 0..state.outputs.len() {
+                state.apply_at(i, Event::Released { tx });
             }
         }
         self.save_state(&state)

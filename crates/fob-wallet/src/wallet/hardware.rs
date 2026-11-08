@@ -2,12 +2,7 @@
 //! the payments it signs. The protocol itself is [`crate::trezor`].
 
 use super::*;
-
-/// Whether `spent_in` is a mark a device's key image sync left, not a
-/// transaction's hash.
-pub(super) fn is_sync_mark(spent_in: &str) -> bool {
-    spent_in == SPENT_BEFORE_SYNC || spent_in == SPENT_IN_POOL_AT_SYNC
-}
+use coin::{Coin, Event, Said};
 
 /// What's waiting on a Trezor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,7 +21,7 @@ impl Wallet {
             return TrezorWaiting::default();
         }
         let state = self.inner.state.lock().await;
-        let open = state.outputs.iter().filter(|o| o.spent_in.is_none() && o.key_image.is_none());
+        let open = state.outputs.iter().filter(|o| o.coin.is_free() && o.coin.key_image().is_none());
         let (frozen, unsynced) = open.fold((0, 0), |(frozen, unsynced), o| if o.tx_key.is_some() { (frozen, unsynced + 1) } else { (frozen + 1, unsynced) });
         TrezorWaiting { unsynced, frozen }
     }
@@ -52,13 +47,16 @@ impl Wallet {
         }
         let network = self.network();
         let (ids, transfers, minors, frozen) = {
-            let state = self.inner.state.lock().await;
+            let mut state = self.inner.state.lock().await;
+            // The sync decides every coin afresh: what a rewind remembered
+            // of dropped coins is moot.
+            state.remembered.clear();
             let mut ids = vec![];
             let mut transfers = vec![];
             let mut minors = vec![0];
             let mut frozen = 0;
             for o in &state.outputs {
-                if o.spent_in.is_some() || o.key_image.is_some() {
+                if o.coin.key_image().is_some() {
                     continue;
                 }
                 let key = |hex_key: &str| hex::decode(hex_key).ok().and_then(|k| <[u8; 32]>::try_from(k).ok());
@@ -93,9 +91,7 @@ impl Wallet {
             // (or the server) is away.
             let mut state = self.inner.state.lock().await;
             for (id, image) in ids.iter().zip(images) {
-                if let Some(output) = state.outputs.iter_mut().find(|o| o.id() == *id) {
-                    output.key_image = Some(hex::encode(image));
-                }
+                state.apply(id, Event::LearnedKeyImage(image));
             }
             self.save_state(&state)?;
         }
@@ -111,17 +107,20 @@ impl Wallet {
         Ok(ids.len() as u32)
     }
 
-    /// Asks the node which of this wallet's key images are spent, and marks
-    /// the outputs: spent on the chain stays so; spent in the pool only is
-    /// tentative, asked again next time; unspent frees a coin a mark held.
+    /// Asks the node which of this wallet's key images are spent, every coin
+    /// not already spent on the chain, and tells each coin what it said:
+    /// spent on the chain holds it until a sync says otherwise; spent in
+    /// the pool only is tentative, asked again next time; unspent frees a
+    /// coin a device hold held (decision 364). What `step` makes of each
+    /// answer in each state is the table in `coin.rs`.
     async fn mark_spent_by_node(&self) -> Result<()> {
-        let (ids, images): (Vec<(String, String)>, Vec<String>) = {
+        let (ids, images): (Vec<CoinId>, Vec<String>) = {
             let state = self.inner.state.lock().await;
             state
                 .outputs
                 .iter()
-                .filter(|o| o.spent_in.as_deref().is_none_or(is_sync_mark))
-                .filter_map(|o| Some((o.id(), o.key_image.clone()?)))
+                .filter(|o| !matches!(o.coin, Coin::Spent { .. }))
+                .filter_map(|o| Some((o.id(), o.key_image_hex()?)))
                 .unzip()
         };
         if images.is_empty() {
@@ -129,18 +128,15 @@ impl Wallet {
         }
         let spent = self.key_images_spent(&images).await?;
         let mut state = self.inner.state.lock().await;
+        let at = state.tip;
         let mut changed = false;
         for (id, status) in ids.iter().zip(spent) {
-            let Some(output) = state.outputs.iter_mut().find(|o| o.id() == *id) else { continue };
-            let mark = match status {
-                0 => None,
-                1 => Some(SPENT_BEFORE_SYNC),
-                _ => Some(SPENT_IN_POOL_AT_SYNC),
+            let answer = match status {
+                0 => Said::Unspent,
+                1 => Said::OnChain,
+                _ => Said::InPool,
             };
-            if output.spent_in.as_deref() != mark {
-                output.spent_in = mark.map(str::to_owned);
-                changed = true;
-            }
+            changed |= state.apply(id, Event::DeviceSaid { answer, at });
         }
         if changed {
             self.save_state(&state)?;
@@ -188,7 +184,7 @@ impl Wallet {
         .map_err(|e| FobError::Send(format!("{e}")))??;
         // Signed: it's going out, prepared still or not.
         self.inner.prepared.lock().await.take(id);
-        let hash = hex::encode(tx.hash());
+        let hash = tx.hash();
         let signed = hex::encode(tx.serialize());
         let publish = self.publishing(tx).await;
         self.publish_and_record(hash, fee, out, signed, publish).await

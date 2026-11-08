@@ -15,7 +15,7 @@
 //! request's `asked` are JSON in a column: nothing asks for them apart.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
 };
@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 9;
+const VERSION: i32 = 10;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -114,10 +114,15 @@ const OUTPUTS: Table = Table {
         ("coinbase", Bool),
         ("unlock_block", Int),
         ("key", Text),
+        // Until version 9 the coin's state, in two pieces; empty since
+        // version 10, when `coin` took it over (see `legacy_coin`).
         ("key_image", Text),
         ("spent_in", Text),
         ("tx_key", Text),
         ("extra_key", Text),
+        // Since version 10: where the coin stands, as the wallet's `Coin`
+        // writes itself (its JSON form, tagged, hashes in hex).
+        ("coin", Json),
     ],
 };
 const SPENDS: Table = Table { name: "spends", columns: &[("tx", Text), ("height", Int), ("time", Int), ("fee", Int)] };
@@ -188,6 +193,62 @@ const SHARES: Table = Table {
 const CUSTOM_NODES: Table = Table { name: "custom_nodes", columns: &[("url", Text), ("self_signed", Bool)] };
 
 const TABLES: [&Table; 14] = [&WALLET, &RECENT, &OUTPUTS, &SPENDS, &SENT, &NOTES, &PRICE_CURRENT, &PRICE_HISTORY, &PRICE_RECORDS, &CONTACTS, &REQUESTS, &PROFILE, &SHARES, &CUSTOM_NODES];
+
+/// A coin's state as version 10 keeps it in `coin`, from what version 9
+/// kept of it: the key image in hex, if any, and `spent_in`. Nothing in
+/// `spent_in` is a free coin. A hash among `spends` (transaction to height)
+/// is a spend on the chain, at that height; one among `sent`, a payment of
+/// this wallet's holding the coin; any other hash, a pool transaction's
+/// hold, which the next look at the pool frees if the pool doesn't have it.
+/// The two words a device's key image sync wrote are the device holds,
+/// asked at height 0, as the file didn't say. Anything else names a spend
+/// whose transaction can't be read: the coin is held as a device sync's
+/// chain finding, which no payment can pick, rather than counted as free.
+/// The shape is the wallet's `Coin` (fob-wallet, `wallet/coin.rs`), which
+/// reads it back; its tests hold the two to each other.
+pub fn legacy_coin(key_image: Option<&str>, spent_in: Option<&str>, spends: &HashMap<String, u64>, sent: &HashSet<String>) -> Value {
+    let is_hash = |text: &str| text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit());
+    let ki = match key_image.filter(|image| is_hash(image)) {
+        Some(image) => json!({ "Known": image }),
+        None => json!("Unknown"),
+    };
+    let held = |hold: Value| json!({ "Held": { "ki": ki, "hold": hold } });
+    match spent_in {
+        None => json!({ "Free": { "ki": ki } }),
+        Some("spent-before-sync") => held(json!({ "DeviceChain": { "asked": 0 } })),
+        Some("spent-in-pool-at-sync") => held(json!({ "DevicePool": { "asked": 0 } })),
+        Some(mark) if !is_hash(mark) => held(json!({ "DeviceChain": { "asked": 0 } })),
+        Some(tx) => match spends.get(tx) {
+            Some(height) => json!({ "Spent": { "ki": ki, "tx": tx, "height": height } }),
+            None if sent.contains(tx) => held(json!({ "OurPayment": { "tx": tx } })),
+            None => held(json!({ "InPool": { "tx": tx } })),
+        },
+    }
+}
+
+/// Brings a state's JSON form from before `coin` up to date: each output
+/// without one gets it from its `key_image` and `spent_in`, which go. For
+/// the sealed file wallets were kept in before the database, which may be
+/// from any time.
+pub fn coins_into_state(state: &mut Value) {
+    let rows = |name: &str| state.get(name).and_then(Value::as_array).cloned().unwrap_or_default();
+    let spends: HashMap<String, u64> = rows("spends")
+        .iter()
+        .filter_map(|s| Some((s.get("tx")?.as_str()?.to_owned(), s.get("height")?.as_u64()?)))
+        .collect();
+    let sent: HashSet<String> = rows("sent").iter().filter_map(|s| Some(s.get("tx")?.as_str()?.to_owned())).collect();
+    let Some(outputs) = state.get_mut("outputs").and_then(Value::as_array_mut) else { return };
+    for output in outputs {
+        let Some(fields) = output.as_object_mut() else { continue };
+        if fields.contains_key("coin") {
+            continue;
+        }
+        let key_image = fields.remove("key_image").unwrap_or(Value::Null);
+        let spent_in = fields.remove("spent_in").unwrap_or(Value::Null);
+        let coin = legacy_coin(key_image.as_str(), spent_in.as_str(), &spends, &sent);
+        fields.insert("coin".into(), coin);
+    }
+}
 
 fn sql_type(kind: Kind) -> &'static str {
     match kind {
@@ -468,7 +529,7 @@ impl Db {
     /// The database at `path`, brought up to this layout, refusing one with the
     /// wrong key or from a newer Fob.
     pub fn open(path: &Path, key: &[u8; 32]) -> Result<Db> {
-        let connection = Self::connect(path, key)?;
+        let mut connection = Self::connect(path, key)?;
         let mut version: i32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(failed)?;
         if version == 1 {
             let upgrade = format!("BEGIN;\n{}PRAGMA user_version = 2;\nCOMMIT;", create_table(&CUSTOM_NODES));
@@ -515,6 +576,36 @@ impl Db {
             let upgrade = "BEGIN;\nALTER TABLE wallet ADD COLUMN light_blocks TEXT DEFAULT '[]';\nALTER TABLE wallet ADD COLUMN light_history TEXT DEFAULT '[]';\nPRAGMA user_version = 9;\nCOMMIT;";
             connection.execute_batch(upgrade).map_err(failed)?;
             version = 9;
+        }
+        if version == 9 {
+            // A coin's state as one value, read from the two columns that
+            // held it in pieces, which are emptied: see `legacy_coin`.
+            let upgrade = connection.transaction().map_err(failed)?;
+            upgrade.execute_batch("ALTER TABLE outputs ADD COLUMN coin TEXT;").map_err(failed)?;
+            let spends: HashMap<String, u64> = {
+                let mut statement = upgrade.prepare("SELECT tx, height FROM spends").map_err(failed)?;
+                let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))).map_err(failed)?;
+                rows.collect::<std::result::Result<_, _>>().map_err(failed)?
+            };
+            let sent: HashSet<String> = {
+                let mut statement = upgrade.prepare("SELECT tx FROM sent").map_err(failed)?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(failed)?;
+                rows.collect::<std::result::Result<_, _>>().map_err(failed)?
+            };
+            let outputs: Vec<(i64, Option<String>, Option<String>)> = {
+                let mut statement = upgrade.prepare("SELECT pos, key_image, spent_in FROM outputs").map_err(failed)?;
+                let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(failed)?;
+                rows.collect::<std::result::Result<_, _>>().map_err(failed)?
+            };
+            for (pos, key_image, spent_in) in outputs {
+                let coin = legacy_coin(key_image.as_deref(), spent_in.as_deref(), &spends, &sent).to_string();
+                upgrade
+                    .execute("UPDATE outputs SET coin = ?1, key_image = NULL, spent_in = NULL WHERE pos = ?2", rusqlite::params![coin, pos])
+                    .map_err(failed)?;
+            }
+            upgrade.execute_batch("PRAGMA user_version = 10;").map_err(failed)?;
+            upgrade.commit().map_err(failed)?;
+            version = 10;
         }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));
@@ -623,6 +714,91 @@ mod tests {
     use super::*;
     use crate::keys::Keys;
     use fob_monero::network::Network;
+
+    /// A 32-byte hash in hex from a short name, for a row.
+    fn hash(name: &str) -> String {
+        let mut bytes = [0u8; 32];
+        bytes[..name.len()].copy_from_slice(name.as_bytes());
+        hex::encode(bytes)
+    }
+
+    /// Version 9 kept a coin's state in `key_image` and `spent_in`: nothing,
+    /// a hash (on the chain, a payment of ours, or the pool, told apart by
+    /// the other tables), one of two words for a device sync's finding.
+    /// Opening it as version 10 writes each coin's state whole into `coin`
+    /// and empties the two columns.
+    #[test]
+    fn a_version_9_file_opens_with_each_coin_in_its_state() {
+        let dir = std::env::temp_dir().join(format!("fob-db-v9-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.db");
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
+        let connection = db.connection;
+        connection.execute_batch("ALTER TABLE outputs DROP COLUMN coin; PRAGMA user_version = 9;").unwrap();
+        connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
+        connection.execute("INSERT INTO spends (pos, tx, height, time, fee) VALUES (0, ?1, 42, 1, 1)", [hash("spend")]).unwrap();
+        connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time) VALUES (0, ?1, 1, 1, 0, 1)", [hash("ours")]).unwrap();
+        let image = hash("image");
+        let rows: [(Option<&str>, Option<String>); 8] = [
+            (None, None),
+            (Some(&image), None),
+            (Some(&image), Some(hash("spend"))),
+            (Some(&image), Some(hash("ours"))),
+            (Some(&image), Some(hash("pooled"))),
+            (Some(&image), Some("spent-before-sync".into())),
+            (Some(&image), Some("spent-in-pool-at-sync".into())),
+            (Some(&image), Some("not a hash".into())),
+        ];
+        for (pos, (key_image, spent_in)) in rows.iter().enumerate() {
+            let sql = "INSERT INTO outputs (pos, output, tx, height, time, amount, subaddress, coinbase, unlock_block, key, key_image, spent_in) VALUES (?1, '', ?2, 1, 1, 1, 0, 0, 0, ?2, ?3, ?4)";
+            connection.execute(sql, rusqlite::params![pos as i64, format!("coin-{pos}"), key_image, spent_in]).unwrap();
+        }
+        connection.close().unwrap();
+
+        let reopened = Db::open(&path, &[7; 32]).unwrap();
+        let version: i32 = reopened.connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 10);
+        let state = reopened.load().unwrap();
+        let coins: Vec<&Value> = state["outputs"].as_array().unwrap().iter().map(|o| &o["coin"]).collect();
+        let known = json!({ "Known": image });
+        let held = |ki: &Value, hold: Value| json!({ "Held": { "ki": ki, "hold": hold } });
+        assert_eq!(coins[0], &json!({ "Free": { "ki": "Unknown" } }));
+        assert_eq!(coins[1], &json!({ "Free": { "ki": known } }));
+        assert_eq!(coins[2], &json!({ "Spent": { "ki": known, "tx": hash("spend"), "height": 42 } }));
+        assert_eq!(coins[3], &held(&known, json!({ "OurPayment": { "tx": hash("ours") } })));
+        assert_eq!(coins[4], &held(&known, json!({ "InPool": { "tx": hash("pooled") } })));
+        assert_eq!(coins[5], &held(&known, json!({ "DeviceChain": { "asked": 0 } })));
+        assert_eq!(coins[6], &held(&known, json!({ "DevicePool": { "asked": 0 } })));
+        assert_eq!(coins[7], &held(&known, json!({ "DeviceChain": { "asked": 0 } })), "unreadable: held, not free");
+        for output in state["outputs"].as_array().unwrap() {
+            assert_eq!((&output["key_image"], &output["spent_in"]), (&Value::Null, &Value::Null), "the old columns are empty");
+        }
+        // Opening it again is no upgrade.
+        reopened.close().unwrap();
+        Db::open(&path, &[7; 32]).unwrap().close().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The sealed file from before the database may be from any version:
+    /// its outputs get a `coin` the same way, and keep one they have.
+    #[test]
+    fn an_old_sealed_state_gets_its_coins() {
+        let mut state = json!({
+            "spends": [{ "tx": hash("spend"), "height": 7 }],
+            "sent": [],
+            "outputs": [
+                { "tx": "a", "key_image": hash("image"), "spent_in": hash("spend") },
+                { "tx": "b", "key_image": null, "spent_in": null },
+                { "tx": "c", "coin": { "Free": { "ki": "Unknown" } } },
+            ],
+        });
+        coins_into_state(&mut state);
+        let outputs = state["outputs"].as_array().unwrap();
+        assert_eq!(outputs[0], json!({ "tx": "a", "coin": { "Spent": { "ki": { "Known": hash("image") }, "tx": hash("spend"), "height": 7 } } }));
+        assert_eq!(outputs[1], json!({ "tx": "b", "coin": { "Free": { "ki": "Unknown" } } }));
+        assert_eq!(outputs[2], json!({ "tx": "c", "coin": { "Free": { "ki": "Unknown" } } }));
+    }
 
     #[test]
     fn freed_memory_is_wiped_once_a_wallet_is_open() {

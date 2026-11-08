@@ -1,6 +1,7 @@
 //! Paying: fees, building a payment or a split, publishing and recording it.
 
 use super::*;
+use coin::{Event, TxHash};
 
 impl Wallet {
     /// Builds a payment of `amount` to `to`, choosing the money to spend
@@ -132,16 +133,20 @@ impl Wallet {
         let device = self.inner.keys.device();
         let (mut candidates, available, unsynced) = {
             let state = self.inner.state.lock().await;
-            let ready = |o: &Owned| o.spent_in.is_none() && confirmations(&state, o.height) >= state.needed(o);
             // A device's output can't be spent before the device has given
-            // its key image (which says whether it's spent already).
-            let synced = |o: &Owned| device.is_none() || (o.key_image.is_some() && o.tx_key.is_some());
-            let unsynced = state.outputs.iter().filter(|o| ready(o) && !synced(o)).count();
-            let mut candidates: Vec<((String, String), u64, WalletOutput)> = state
-                .outputs
+            // its key image (which says whether it's spent already): only a
+            // coin with one gives a `Spendable`. Its transaction key, which
+            // the device needs to sign, must be known too.
+            let ready = |o: &Owned| o.coin.is_free() && confirmations(&state, o.height) >= state.needed(o);
+            let spendable = state.spendable_coins();
+            let signable = |i: &usize| device.is_none() || state.outputs[*i].tx_key.is_some();
+            let unsynced = state.outputs.iter().filter(|o| ready(o)).count()
+                - spendable.iter().map(|(i, _)| i).filter(|i| signable(i)).count();
+            let mut candidates: Vec<(CoinId, u64, WalletOutput)> = spendable
                 .iter()
-                .filter(|o| ready(o) && synced(o))
-                .filter_map(|o| {
+                .filter(|(i, _)| signable(i))
+                .filter_map(|(i, _)| {
+                    let o = &state.outputs[*i];
                     let bytes = hex::decode(&o.output).ok()?;
                     Some((o.id(), o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
                 })
@@ -260,7 +265,7 @@ impl Wallet {
         let money = self.price_now().await;
         let notes = split::notes(money.as_ref().map(|(c, p)| (c, *p)));
         let state = self.inner.state.lock().await;
-        let outputs = state.outputs.iter().filter(|o| o.spent_in.is_none() && confirmations(&state, o.height) >= state.needed(o)).map(|o| o.amount).collect();
+        let outputs = state.outputs.iter().filter(|o| o.coin.is_free() && confirmations(&state, o.height) >= state.needed(o)).map(|o| o.amount).collect();
         (money, notes, split::Budget { outputs, fee_rate: *self.inner.fee_rate.lock().expect("fee lock") })
     }
 
@@ -274,7 +279,7 @@ impl Wallet {
         let mut spent: HashSet<&str> = HashSet::new();
         // A restored wallet's spends: the inputs less change and fee, as in Activity.
         let spends = state.spends.iter().filter(|s| !sent.contains(s.tx.as_str()) && spent.insert(&s.tx)).map(|spend| {
-            let inputs: u64 = state.outputs.iter().filter(|o| o.spent_in.as_deref() == Some(&spend.tx)).map(|o| o.amount).sum();
+            let inputs: u64 = state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount).sum();
             let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
             (spend.time, inputs.saturating_sub(change).saturating_sub(spend.fee))
         });
@@ -368,7 +373,7 @@ impl Wallet {
         let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
         let tx = prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
-        let hash = hex::encode(tx.hash());
+        let hash = tx.hash();
         let signed = hex::encode(tx.serialize());
         let publish = self.publishing(tx).await;
         self.publish_and_record(hash, fee, prepared.out, signed, publish).await
@@ -405,7 +410,7 @@ impl Wallet {
     /// not confirmed, and its coins can be released.
     pub(super) async fn publish_and_record(
         &self,
-        hash: String,
+        hash: TxHash,
         fee: u64,
         out: Outgoing,
         signed: String,
@@ -420,7 +425,7 @@ impl Wallet {
                 // Spent already by a payment sent in the meantime, or gone
                 // with a rescan since it was prepared?
                 let state = wallet.inner.state.lock().await;
-                if out.inputs.iter().any(|id| !state.outputs.iter().any(|o| o.is(id) && o.spent_in.is_none())) {
+                if out.inputs.iter().any(|id| !state.outputs.iter().any(|o| o.is(id) && o.coin.is_free())) {
                     return Err(FobError::Screen(ScreenError::NoSuchPayment));
                 }
             }
@@ -434,15 +439,15 @@ impl Wallet {
         step.await.map_err(|e| FobError::Send(format!("{e}")))?
     }
 
-    /// Keeps a payment just published: its inputs spent, and what only the
-    /// sender knows. `signed`, for a payment the node didn't answer for.
-    pub(super) async fn record_sent(&self, hash: String, fee: u64, out: Outgoing, signed: Option<String>) -> Result<String> {
+    /// Keeps a payment just published: its inputs held by it, and what only
+    /// the sender knows. `signed`, for a payment the node didn't answer
+    /// for. Returns the hash in hex, as the rest of the wallet names it.
+    pub(super) async fn record_sent(&self, hash: TxHash, fee: u64, out: Outgoing, signed: Option<String>) -> Result<String> {
         let mut state = self.inner.state.lock().await;
-        for output in &mut state.outputs {
-            if out.inputs.iter().any(|id| output.is(id)) {
-                output.spent_in = Some(hash.clone());
-            }
+        for id in &out.inputs {
+            state.apply(id, Event::SentByUs { tx: hash });
         }
+        let hash = hex::encode(hash);
         // A split's pieces come back to this wallet with the change.
         let back = if out.pieces.is_some() { out.input_total } else { out.input_total.saturating_sub(out.amount) };
         let change = out.input_total.saturating_sub(out.amount).saturating_sub(fee);

@@ -233,7 +233,7 @@ type FoundSpend = (String, u64, u64, u64);
 fn found(state: &State) -> (serde_json::Value, Vec<FoundSpend>, u64, u64, u32) {
     let outputs = serde_json::to_value(&state.outputs).unwrap();
     let spends = state.spends.iter().map(|s| (s.tx.clone(), s.height, s.time, s.fee)).collect();
-    let total = state.outputs.iter().filter(|o| o.spent_in.is_none()).map(|o| o.amount).sum();
+    let total = state.outputs.iter().filter(|o| o.coin.is_free()).map(|o| o.amount).sum();
     (outputs, spends, total, state.spendable(), state.receive_index)
 }
 
@@ -364,7 +364,7 @@ fn reconcile_receives_spends_and_is_idempotent() {
     assert!(first.changed);
     assert_eq!(first.refused, 0);
     assert_eq!(state.outputs.len(), 3);
-    let spent: Vec<_> = state.outputs.iter().filter(|o| o.spent_in.is_some()).collect();
+    let spent: Vec<_> = state.outputs.iter().filter(|o| !o.coin.is_free()).collect();
     assert_eq!(spent.len(), 1, "the real spend only, not the decoy use");
     assert_eq!(spent[0].amount, 3 * XMR);
     assert_eq!(state.receive_index, 3);
@@ -391,7 +391,7 @@ fn a_transaction_the_server_drops_was_reorganised_out() {
     assert!(state.spends.is_empty());
     assert_eq!(state.sent[0].height, None);
     // Its coin stays spent: this wallet's own payment, now waiting, holds it.
-    assert_eq!(state.outputs.iter().filter(|o| o.spent_in.is_some()).count(), 1);
+    assert_eq!(state.outputs.iter().filter(|o| !o.coin.is_free()).count(), 1);
     // The payment to subaddress 3 goes too: its output is dropped.
     let done = reconcile(keys, &mut state, &answer(shorter[..2].to_vec(), 400_000), &HashMap::new(), 7).unwrap();
     assert!(done.changed);
@@ -688,7 +688,7 @@ async fn a_version_7_database_opens_as_a_node_wallet() {
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     old.execute_batch(&format!(
-        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; PRAGMA user_version = 7;",
+        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; {BACK_TO_VERSION_9} PRAGMA user_version = 7;",
         hex::encode([1u8; 32])
     ))
     .unwrap();
@@ -1237,7 +1237,7 @@ async fn live_report(wallet: &Wallet, step: &str) {
         status.light.as_ref().is_some_and(|l| l.refused),
     );
     for o in &state.outputs {
-        println!("    output {}… at {} · {} XMR · subaddress {} · unlock {} · key image {} · spent {}", &o.tx[..12], o.height, fob_monero::amount::format(o.amount), o.subaddress, o.unlock_block, o.key_image.as_deref().unwrap_or("none"), o.spent_in.as_deref().map_or("no", |t| &t[..12]));
+        println!("    output {}… at {} · {} XMR · subaddress {} · unlock {} · {}", &o.tx[..12], o.height, fob_monero::amount::format(o.amount), o.subaddress, o.unlock_block, o.coin);
     }
     for sp in &state.spends {
         println!("    spend {}… at {} · fee {}", &sp.tx[..12], sp.height, if sp.fee == 0 { "not known".to_owned() } else { format!("{} XMR", fob_monero::amount::format(sp.fee)) });

@@ -1,6 +1,7 @@
 //! A wallet: its keys, what it has found on the chain, syncing and sending.
 
 mod addresses;
+mod coin;
 mod connection;
 mod funds;
 mod hardware;
@@ -22,10 +23,10 @@ pub use crate::catch_up::{ScanProgress, SyncStatus};
 use manual_sync::{CoinsSaid,SentLookup, key_images_spent, sent_lookup, still_missing};
 #[cfg(test)]
 use send::turned_down;
-use state::{ChainSpend, Owned, Sent, State, SyncMode, confirmations, default_incoming_scan_blocks, default_settled_confirmations};
+use state::{ChainSpend, CoinId, Owned, Sent, State, SyncMode, confirmations, default_incoming_scan_blocks, default_settled_confirmations, hash_bytes};
 use sync::{Unpublished, publish_failure};
 #[cfg(test)]
-use sync::{ReorgReach, pool_left, pool_spends, reorg_reach};
+use sync::{ReorgReach, reorg_reach};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -99,12 +100,6 @@ const RESTORE_SKIP: u32 = 50;
 const RING_LEN: u8 = 16;
 /// The hard fork a hardware wallet is told it signs for: v16, Bulletproofs+.
 const HARD_FORK: u32 = 16;
-/// What an output's `spent_in` says when a device's key image sync found it
-/// spent before the key image was known: the spending transaction isn't.
-pub(crate) const SPENT_BEFORE_SYNC: &str = "spent-before-sync";
-/// As above, but the node saw the spend in its pool only: the next sync asks
-/// again, and a spend that never got mined frees the coin.
-pub(crate) const SPENT_IN_POOL_AT_SYNC: &str = "spent-in-pool-at-sync";
 /// The most Fob pays per unit of weight, whatever a node asks. With the tail
 /// emission an honest mainnet node's normal fee is about 20,000 per byte
 /// (less with larger blocks), so this leaves it room to rise about twenty
@@ -188,8 +183,14 @@ struct FileIn {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Balance {
     pub total: u64,
-    /// What can be sent now.
+    /// What can be sent now. In a wallet whose keys are on a device this
+    /// counts `unsynced` too, so Home's halves add up as they always have;
+    /// the Trezor banner says that much isn't vouched for.
     pub unlocked: u64,
+    /// Of `unlocked`, a device's coins whose key image the device hasn't
+    /// given: the wallet can't say whether they were spent elsewhere, and
+    /// no payment can pick them until a sync. 0 in every other wallet.
+    pub unsynced: u64,
 }
 
 /// What the screens list, read together by [`Wallet::lists`].

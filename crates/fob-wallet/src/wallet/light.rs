@@ -8,6 +8,7 @@
 //! block a node has there.
 
 use super::*;
+use coin::{Coin, Event, Hold, KeyImage, TxHash};
 use crate::light::{
     self, Backend, LightClient, Problem,
     hashes::{Known, NodeHashes},
@@ -554,8 +555,8 @@ const TIP_SLACK: u64 = 10;
 ///   its node never heard of; its coins can then be released.
 /// - **Pool**: transactions listed with `mempool: true` are the pool, kept
 ///   in memory; their outputs aren't owned until mined. A device wallet's
-///   coin whose key image a pool transaction spends is marked
-///   `spent-in-pool-at-sync` (tentative), and let go when it's gone.
+///   coin whose key image a pool transaction spends is held by that
+///   transaction, and let go when the pool no longer has it.
 /// - **Clock**: the latest block time among the transactions it vouches
 ///   for moves the chain's clock on (it judges time locks), unless it's
 ///   past `now`, the phone's: a server can't make a time lock pass early
@@ -591,11 +592,19 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
             changed = true;
         }
     }
-    let holding: HashSet<String> = state.spends.iter().map(|s| s.tx.clone()).chain(state.sent.iter().filter(|s| !s.released).map(|s| s.tx.clone())).collect();
-    for output in &mut state.outputs {
-        if output.spent_in.as_ref().is_some_and(|t| !hardware::is_sync_mark(t) && !holding.contains(t)) {
-            output.spent_in = None;
-            changed = true;
+    // A coin spent by a transaction the server no longer lists: the block
+    // that spent it is forgotten, and a payment of ours that spent it
+    // still stands as sent, so it holds the coin again.
+    let kept: HashSet<TxHash> = state.spends.iter().filter_map(|s| hash_bytes(&s.tx)).collect();
+    let standing: HashSet<TxHash> = state.sent.iter().filter(|s| !s.released).filter_map(|s| hash_bytes(&s.tx)).collect();
+    for i in 0..state.outputs.len() {
+        let Coin::Spent { tx, height, .. } = state.outputs[i].coin else { continue };
+        if kept.contains(&tx) {
+            continue;
+        }
+        changed |= state.apply_at(i, Event::Rewind { from: height });
+        if standing.contains(&tx) {
+            state.apply_at(i, Event::SentByUs { tx });
         }
     }
 
@@ -621,6 +630,10 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
             if Some(subaddress) != state.split_index {
                 state.receive_index = state.receive_index.max(subaddress);
             }
+            let ki = match keys.key_image(output.key(), output.key_offset()) {
+                Some(image) => KeyImage::Known(image),
+                None => KeyImage::Unknown,
+            };
             state.outputs.push(Owned {
                 output: hex::encode(output.serialize()),
                 tx: hash.clone(),
@@ -631,8 +644,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
                 coinbase: tx.coinbase,
                 unlock_block,
                 key,
-                key_image: keys.key_image(output.key(), output.key_offset()).map(hex::encode),
-                spent_in: None,
+                coin: Coin::Free { ki },
                 // The key it was derived from: the transaction's own, or the
                 // extra one at its index; a device takes either.
                 tx_key: Some(hex::encode(received.tx_pub_key.0)),
@@ -665,10 +677,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
                 }
                 Some(_) => {}
             }
-            if state.outputs[i].spent_in.as_deref() != Some(hash.as_str()) {
-                state.outputs[i].spent_in = Some(hash.clone());
-                changed = true;
-            }
+            changed |= state.apply_at(i, Event::MinedSpend { tx: tx.hash.0, height });
         }
         if let Some(sent) = state.sent.iter_mut().find(|s| s.tx == hash)
             && (sent.height != Some(height) || sent.not_confirmed || sent.released || sent.signed.is_some())
@@ -712,24 +721,29 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
         }
     }
 
-    // A device's coins spent in the pool only: a tentative mark, as its
-    // node sync makes one (decision 364), let go once the pool has
-    // forgotten the spend; mined, the spend above names it instead. A
+    // A device's coins spent in the pool only: held by the pool transaction
+    // that spends them, as the node path holds them, and let go once the
+    // pool has forgotten it; mined, the spend above names it instead. A
     // device's key images are the ones it gave (`trezor_sync`), so this is
     // decided afresh at every poll. A wallet with its own spend key sees
     // its own payments' spends recorded already, as it sent them.
     if keys.device().is_some() {
-        let spending: HashSet<[u8; 32]> = answer.transactions.iter().filter(|t| t.mempool).flat_map(|t| t.spent_outputs.iter().map(|s| s.key_image.0)).collect();
-        for output in &mut state.outputs {
-            let Some(image) = output.key_image.as_deref().and_then(|k| <[u8; 32]>::try_from(hex::decode(k).ok()?).ok()) else { continue };
-            if output.spent_in.as_deref().is_some_and(|s| s != SPENT_IN_POOL_AT_SYNC) {
-                continue;
+        let images = Wallet::key_images(state);
+        for tx in answer.transactions.iter().filter(|t| t.mempool) {
+            for spend in &tx.spent_outputs {
+                if let Some(&i) = images.get(&spend.key_image.0) {
+                    changed |= state.apply_at(i, Event::PoolSpend { tx: tx.hash.0 });
+                }
             }
-            let mark = spending.contains(&image).then(|| SPENT_IN_POOL_AT_SYNC.to_owned());
-            if output.spent_in != mark {
-                output.spent_in = mark;
-                changed = true;
-            }
+        }
+    }
+    // A pool transaction's hold whose transaction the pool no longer has.
+    let in_pool: HashSet<TxHash> = answer.transactions.iter().filter(|t| t.mempool).map(|t| t.hash.0).collect();
+    for i in 0..state.outputs.len() {
+        if let Coin::Held { hold: Hold::InPool { tx }, .. } = state.outputs[i].coin
+            && !in_pool.contains(&tx)
+        {
+            changed |= state.apply_at(i, Event::PoolLeft { tx });
         }
     }
 

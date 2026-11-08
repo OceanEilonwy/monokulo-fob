@@ -3801,3 +3801,56 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      the device knows are spent; carrying them over by coin id would close
      that.
 
+400. **A coin's state is a type, and one function moves it.** Every coin
+     the wallet owns carried its spent state in one string, `spent_in`,
+     that meant six things (a hash in the spends, in the sent payments, in
+     the pool, two words a device sync wrote, or nothing), and eight places
+     wrote it, each deciding on its own which it was looking at; decision
+     399 was the third of them found by someone watching the balance. Now
+     `wallet/coin.rs` says what a coin is: `Free`, `Held` or `Spent`, its
+     key image `Unknown` or `Known` in every state, the hold a pool
+     transaction's, a payment of ours, or a device sync's finding on the
+     chain or in the pool; everything that happens to it is an `Event`
+     (a key image learned, a spend mined, a pool transaction spending it
+     or leaving, the node's answer at a device sync, a payment sent or
+     released, a rewind); and `step` is one exhaustive match from the pair
+     to the state after, the table in the module comment arm by arm, with
+     decisions 364 and 399 written on the cells that carry them. A
+     forgotten pair is a build that fails. `State::apply` is the one door
+     a coin changes through, and keeps the last thousand transitions in
+     memory for the log (`Wallet::coin_transitions`): the eight-minute
+     mystery would have been one line. The writers are emitters now and
+     decide nothing: the scan says `MinedSpend`, the pool poll `PoolSpend`
+     and `PoolLeft` by transaction, the light reconcile the same for the
+     server's blocks and pool, the device sync `LearnedKeyImage` and
+     `DeviceSaid` for every key image, sending `SentByUs`, releasing
+     `Released`. A payment is built only from `Spendable`, proof made from
+     exactly one state, so a device's coin the device hasn't been asked
+     about can't be picked; `Balance.unsynced` says how much of the
+     unlocked balance that is, for the Trezor banner (it stays counted in
+     `unlocked`, so Home's halves still add up; taking it out is a screen
+     change for another day). A rewind remembers the state of the coins it
+     drops, by id, and the scan finding one again starts from it, closing
+     what 399 noted; a device sync forgets the memory. Transaction hashes
+     are 32 bytes everywhere a coin names one, so no word can stand in for
+     one again. The database is version 10: `coin` holds the state whole,
+     the two old columns are emptied, and a version 9 file is read into
+     it once (fob-vault's `legacy_coin`, which the sealed-file migration
+     also runs): a hash among the spends is spent at that height, among
+     the sent payments held by it, otherwise held by a pool transaction
+     until the pool is looked at; the two words are the device holds; and
+     a mark that is none of those holds the coin rather than free it.
+     Tested row by row, by `proptest` over random event sequences (spent
+     stays spent but for a rewind to or below its block, the pool's
+     leaving never lifts a device hold, nothing spendable from an unknown
+     key image), and by opening a version 9 file with a row for each old
+     meaning. Changed from the proposal: the dual-writing step was folded
+     into the emitters' step, since the fixtures would have been rewritten
+     twice; the light reconcile frees a coin whose spend the server
+     dropped with `Rewind` at the spend's height (and `SentByUs` again
+     where our payment still stands), since no separate event was in the
+     table; a device-pool hold is no longer let go by the server's pool
+     not listing the spend, only by the node's next answer or the pool
+     transaction naming it, as the table says; and the hash classification
+     is done in Rust inside the upgrade, not SQL, so one function serves
+     the database and the sealed file.

@@ -299,7 +299,7 @@ async fn a_payment_through_the_server_is_built_submitted_and_recorded() {
     // Recorded as the node path records a payment.
     {
         let state = wallet.inner.state.lock().await;
-        assert_eq!(state.outputs[0].spent_in.as_deref(), Some(hash.as_str()));
+        assert!(state.outputs[0].spent_by(&hash));
         let sent = state.sent.iter().find(|s| s.tx == hash).unwrap();
         assert_eq!((sent.amount, sent.fee, sent.to.as_str(), sent.note.as_deref()), (XMR / 10, prepared.fee, to.as_str(), Some("Lunch")));
         assert_eq!(sent.change, XMR - XMR / 10 - prepared.fee);
@@ -313,7 +313,7 @@ async fn a_payment_through_the_server_is_built_submitted_and_recorded() {
     );
     wallet.sync_step().await.unwrap();
     assert!(wallet.inner.pool.lock().unwrap().is_empty());
-    assert_eq!(wallet.inner.state.lock().await.outputs[0].spent_in.as_deref(), Some(hash.as_str()), "still spent");
+    assert!(wallet.inner.state.lock().await.outputs[0].spent_by(&hash), "still held");
 
     // Mined: the payment gets its height, the spend its fee.
     let mut mined = listed(hex::decode(&hash).unwrap().try_into().unwrap(), Some(2_249_102), vec![], vec![spend_of(&paid, image_of(keys, &paid))]);
@@ -346,7 +346,7 @@ async fn a_payment_the_server_refuses_is_not_recorded() {
     assert_eq!(refused.to_string(), "The light server's node turned the payment down: double spend");
     let state = wallet.inner.state.lock().await;
     assert!(state.sent.is_empty());
-    assert!(state.outputs[0].spent_in.is_none());
+    assert!(state.outputs[0].coin.is_free());
     drop(state);
 
     *server.fee.lock().unwrap() = r#"{"per_byte_fee":20000,"fee_mask":10000,"amount":"0","fees":[20000,8000000,32000000,400000000]}"#.into();
@@ -397,7 +397,7 @@ async fn a_spend_the_server_lists_before_the_record_is_one_payment() {
         polling.sync_step().await.map_err(Unpublished::Refused)?;
         Ok(())
     };
-    wallet.publish_and_record(hash.clone(), prepared.fee, out, hex::encode(tx.serialize()), publish).await.unwrap();
+    wallet.publish_and_record(tx.hash(), prepared.fee, out, hex::encode(tx.serialize()), publish).await.unwrap();
     wallet.sync_step().await.unwrap();
     let saved = found(&*wallet.inner.state.lock().await);
     let sent_saved = serde_json::to_value(&wallet.inner.state.lock().await.sent).unwrap();
@@ -406,7 +406,7 @@ async fn a_spend_the_server_lists_before_the_record_is_one_payment() {
         assert_eq!(state.sent.len(), 1);
         assert_eq!(state.sent[0].height, Some(2_249_102));
         assert_eq!(state.spends.len(), 1);
-        assert_eq!(state.outputs[0].spent_in.as_deref(), Some(hash.as_str()));
+        assert!(state.outputs[0].spent_by(&hash));
     }
     wallet.sync_step().await.unwrap();
     assert_eq!(found(&*wallet.inner.state.lock().await), saved, "the next poll changes nothing");

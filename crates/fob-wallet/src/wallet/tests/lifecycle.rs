@@ -72,6 +72,115 @@ async fn an_old_file_becomes_a_database_with_nothing_lost() {
 }
 
 /// A wallet the build before this one migrated still has its old file.
+/// Version 9 of the database kept a coin's state in two columns, the key
+/// image and `spent_in`: nothing, a hash (spent on the chain, held by a
+/// payment of ours, or by a pool transaction, told apart by the other
+/// tables) or one of two words a device sync wrote. Version 10 reads each
+/// into its Coin as the file opens, and a mark that is none of those holds
+/// the coin rather than freeing it.
+#[tokio::test]
+async fn a_version_9_database_opens_with_each_coin_in_its_state() {
+    let path = dir("v9-coins");
+    let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+    {
+        let mut state = wallet.inner.state.lock().await;
+        for name in ["free-unknown", "free-known", "spent", "ours", "pooled", "before-sync", "pool-at-sync", "junk"] {
+            state.outputs.push(received(name, 1, XMR));
+        }
+        state.spends.push(ChainSpend { tx: tx_hex("spend"), height: 42, time: 1, fee: 1 });
+        state.sent.push(Sent {
+            not_confirmed: false,
+            released: false,
+            tx: tx_hex("ours"),
+            to: "addr".into(),
+            amount: XMR,
+            fee: 30,
+            change: 0,
+            time: 1,
+            height: None,
+            receipt: None,
+            note: None,
+            pieces: None,
+            back: vec![],
+            recipient_name: None,
+            signed: None,
+        });
+        wallet.save_state(&state).unwrap();
+    }
+    drop(wallet);
+    // Back to version 9 by hand: the column gone, the two old ones filled.
+    let connection = rusqlite::Connection::open(path.with_extension("db")).unwrap();
+    connection.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex::encode([1u8; 32]))).unwrap();
+    connection.execute_batch("ALTER TABLE outputs DROP COLUMN coin; PRAGMA user_version = 9;").unwrap();
+    let image = hex::encode([0xaa; 32]);
+    let marks: [(Option<&str>, Option<String>); 8] = [
+        (None, None),
+        (Some(&image), None),
+        (Some(&image), Some(tx_hex("spend"))),
+        (Some(&image), Some(tx_hex("ours"))),
+        (Some(&image), Some(tx_hex("pooled"))),
+        (Some(&image), Some("spent-before-sync".into())),
+        (Some(&image), Some("spent-in-pool-at-sync".into())),
+        (Some(&image), Some("not a hash".into())),
+    ];
+    for (pos, (key_image, spent_in)) in marks.iter().enumerate() {
+        connection.execute("UPDATE outputs SET key_image = ?1, spent_in = ?2 WHERE pos = ?3", rusqlite::params![key_image, spent_in, pos as i64]).unwrap();
+    }
+    connection.close().unwrap();
+
+    let reopened = Wallet::open(&path, [1; 32]).unwrap();
+    let known = KeyImage::Known([0xaa; 32]);
+    let held = |hold| Coin::Held { ki: known, hold };
+    let coins: Vec<Coin> = reopened.inner.state.lock().await.outputs.iter().map(|o| o.coin).collect();
+    assert_eq!(
+        coins,
+        [
+            Coin::Free { ki: KeyImage::Unknown },
+            Coin::Free { ki: known },
+            Coin::Spent { ki: known, tx: tx_hash("spend"), height: 42 },
+            held(Hold::OurPayment { tx: tx_hash("ours") }),
+            held(Hold::InPool { tx: tx_hash("pooled") }),
+            held(Hold::DeviceChain { asked: 0 }),
+            held(Hold::DevicePool { asked: 0 }),
+            held(Hold::DeviceChain { asked: 0 }),
+        ]
+    );
+    assert_eq!(reopened.balance().await.total, 2 * XMR, "the two free coins");
+    // Saved again and opened again, the same.
+    reopened.save_state(&*reopened.inner.state.lock().await).unwrap();
+    drop(reopened);
+    let again = Wallet::open(&path, [1; 32]).unwrap();
+    assert_eq!(again.inner.state.lock().await.outputs.iter().map(|o| o.coin).collect::<Vec<_>>(), coins);
+}
+
+/// The sealed file from before the database kept the same two pieces:
+/// migrating one reads them into each coin's state the same way.
+#[tokio::test]
+async fn an_old_sealed_file_s_coins_are_read_into_their_states() {
+    let path = dir("sealed-coins");
+    let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.push(received("a", 1, XMR));
+        state.outputs.push(received("b", 1, XMR));
+        state.spends.push(ChainSpend { tx: tx_hex("spend"), height: 42, time: 1, fee: 1 });
+    }
+    let mut file = serde_json::to_value(FileOut { keys: StoredKeys::from(&wallet.inner.keys), state: &*wallet.inner.state.lock().await }).unwrap();
+    for (output, mark) in file["state"]["outputs"].as_array_mut().unwrap().iter_mut().zip([Some(tx_hex("spend")), None]) {
+        let fields = output.as_object_mut().unwrap();
+        fields.remove("coin");
+        fields.insert("key_image".into(), serde_json::json!(hex::encode([0xaa; 32])));
+        fields.insert("spent_in".into(), serde_json::json!(mark));
+    }
+    drop(wallet);
+    old_file(&path, &file);
+    let opened = Wallet::open(&path, [1; 32]).unwrap();
+    let state = opened.inner.state.lock().await;
+    let known = KeyImage::Known([0xaa; 32]);
+    assert_eq!(state.outputs[0].coin, Coin::Spent { ki: known, tx: tx_hash("spend"), height: 42 });
+    assert_eq!(state.outputs[1].coin, Coin::Free { ki: known });
+}
+
 #[tokio::test]
 async fn an_old_file_left_beside_a_database_goes_when_it_opens() {
     let path = dir("db-left-beside");
@@ -106,7 +215,7 @@ async fn a_second_version_database_is_brought_up_to_date() {
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     old.execute_batch(&format!(
-        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; ALTER TABLE sent DROP COLUMN signed; ALTER TABLE wallet DROP COLUMN node_pin; ALTER TABLE keys DROP COLUMN device; ALTER TABLE outputs DROP COLUMN tx_key; ALTER TABLE outputs DROP COLUMN extra_key; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; PRAGMA user_version = 2;",
+        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; ALTER TABLE sent DROP COLUMN signed; ALTER TABLE wallet DROP COLUMN node_pin; ALTER TABLE keys DROP COLUMN device; ALTER TABLE outputs DROP COLUMN tx_key; ALTER TABLE outputs DROP COLUMN extra_key; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; {BACK_TO_VERSION_9} PRAGMA user_version = 2;",
         hex::encode([1u8; 32])
     ))
     .unwrap();
@@ -134,7 +243,7 @@ async fn a_first_version_database_is_brought_up_to_date() {
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     old.execute_batch(&format!(
-        "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; ALTER TABLE sent DROP COLUMN signed; ALTER TABLE wallet DROP COLUMN node_pin; ALTER TABLE keys DROP COLUMN device; ALTER TABLE outputs DROP COLUMN tx_key; ALTER TABLE outputs DROP COLUMN extra_key; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; PRAGMA user_version = 1;",
+        "PRAGMA key = \"x'{}'\"; DROP TABLE custom_nodes; ALTER TABLE wallet DROP COLUMN gpu_checked_on; ALTER TABLE wallet DROP COLUMN gpu_check_passed; ALTER TABLE wallet DROP COLUMN manual_sync; ALTER TABLE wallet DROP COLUMN pull_mode; ALTER TABLE wallet DROP COLUMN incoming_scan_blocks; ALTER TABLE wallet DROP COLUMN settled_confirmations; ALTER TABLE wallet DROP COLUMN pull_mark_height; ALTER TABLE wallet DROP COLUMN pull_mark_hash; ALTER TABLE sent DROP COLUMN not_confirmed; ALTER TABLE sent DROP COLUMN released; ALTER TABLE sent DROP COLUMN signed; ALTER TABLE wallet DROP COLUMN node_pin; ALTER TABLE keys DROP COLUMN device; ALTER TABLE outputs DROP COLUMN tx_key; ALTER TABLE outputs DROP COLUMN extra_key; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; {BACK_TO_VERSION_9} PRAGMA user_version = 1;",
         hex::encode([1u8; 32])
     ))
     .unwrap();

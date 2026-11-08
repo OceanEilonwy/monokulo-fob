@@ -36,6 +36,8 @@ impl Wallet {
             receive_index: 0,
             receive_own: None,
             outputs: vec![],
+            transitions: std::collections::VecDeque::new(),
+            remembered: HashMap::new(),
             spends: vec![],
             sent: vec![],
             prices: price::Settings::default(),
@@ -239,7 +241,12 @@ impl Wallet {
     /// failure or a crash leaves the file to try again from.
     pub(super) fn migrate(path: &Path, file_key: &[u8; 32]) -> Result<()> {
         let sealed = path.with_extension("fob");
-        let file: FileIn = store::load(&sealed, file_key)?;
+        // A sealed file may be from before a coin's state was one value.
+        let mut file: serde_json::Value = store::load(&sealed, file_key)?;
+        if let Some(state) = file.get_mut("state") {
+            crate::db::coins_into_state(state);
+        }
+        let file: FileIn = serde_json::from_value(file).map_err(|e| FobError::storage(e.to_string()))?;
         let making = path.with_extension("db.migrating");
         let keys = Zeroizing::new(file.keys);
         let mut db = Db::create(&making, file_key, &keys)?;
