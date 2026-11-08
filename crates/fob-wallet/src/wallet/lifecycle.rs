@@ -37,6 +37,7 @@ impl Wallet {
             receive_own: None,
             outputs: vec![],
             transitions: std::collections::VecDeque::new(),
+            remembered: HashMap::new(),
             spends: vec![],
             sent: vec![],
             prices: price::Settings::default(),

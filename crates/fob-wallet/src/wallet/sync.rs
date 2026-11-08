@@ -449,25 +449,8 @@ impl Wallet {
     /// block before them, is what the next one must follow.
     pub(super) async fn rewind(&self, from: u64, anchor: Option<(u64, String)>) -> Result<()> {
         let mut state = self.inner.state.lock().await;
-        state.outputs.retain(|o| o.height < from);
         state.spends.retain(|s| s.height < from);
-        // A payment of ours in the forgotten blocks, or not yet mined, still
-        // stands as sent: a coin its spend had made spent is held by it again.
-        let pending: HashSet<TxHash> = state
-            .sent
-            .iter()
-            .filter(|s| !s.released && s.height.is_none_or(|h| h >= from))
-            .filter_map(|s| hash_bytes(&s.tx))
-            .collect();
-        for i in 0..state.outputs.len() {
-            let was = state.outputs[i].coin;
-            if state.apply_at(i, Event::Rewind { from })
-                && let Coin::Spent { tx, .. } = was
-                && pending.contains(&tx)
-            {
-                state.apply_at(i, Event::SentByUs { tx });
-            }
-        }
+        state.rewind_coins(from);
         for sent in &mut state.sent {
             if sent.height.is_some_and(|h| h >= from) {
                 sent.height = None;
@@ -519,6 +502,14 @@ impl Wallet {
     /// The card Home's sync chip opens, for the status now.
     pub fn sync_details(&self, clock: Clock) -> catch_up::Details {
         catch_up::details(&self.status(), clock)
+    }
+
+    /// The latest changes to the wallet's coins, oldest first, one line
+    /// each (`coin 1a2b3c4d… Held(DeviceChain asked at 100) --PoolLeft
+    /// 5e6f…--> Free`): why the balance moved, for the sync card's detail.
+    /// The last thousand of this run; not saved.
+    pub async fn coin_transitions(&self) -> Vec<String> {
+        self.inner.state.lock().await.transitions.iter().map(ToString::to_string).collect()
     }
 
     /// Keeps the wallet up to date in the background until [`stop_sync`]:
@@ -738,14 +729,17 @@ impl Wallet {
                 state.receive_index = state.receive_index.max(subaddress);
             }
             // A view-only wallet can't work the key image out, nor can a
-            // device's until the device is asked.
+            // device's until the device is asked; a rewind may have kept
+            // what the device said of this coin before.
             let ki = match keys.key_image(output.key(), output.key_offset()) {
-                Some(image) => {
-                    images.entry(image).or_insert(state.outputs.len());
-                    KeyImage::Known(image)
-                }
+                Some(image) => KeyImage::Known(image),
                 None => KeyImage::Unknown,
             };
+            let serialized = hex::encode(output.serialize());
+            let coin = state.found_coin(&(tx.clone(), serialized.clone()), ki);
+            if let Some(image) = coin.key_image() {
+                images.entry(image).or_insert(state.outputs.len());
+            }
             let (tx_key, extra_key) = scanned
                 .tx_keys
                 .get(&tx)
@@ -754,7 +748,7 @@ impl Wallet {
             // An output arriving in a transaction already seen spending (our
             // own change) is still ours to spend later.
             state.outputs.push(Owned {
-                output: hex::encode(output.serialize()),
+                output: serialized,
                 coinbase: tx == scanned.miner_tx,
                 unlock_block,
                 key,
@@ -763,7 +757,7 @@ impl Wallet {
                 time,
                 amount: output.commitment().amount,
                 subaddress,
-                coin: Coin::Free { ki },
+                coin,
                 tx_key,
                 extra_key,
             });

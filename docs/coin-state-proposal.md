@@ -1,10 +1,13 @@
 # Proposal: a coin's state as a type, not a string
 
-Status: proposal, 2026-11-08. Prompted by decision 399: a Trezor wallet's
-balance fell when its key image sync found spent coins and climbed back
-eight minutes later, because one of eight places that write a coin's spent
-mark didn't know what the mark meant. To be built on a branch of its own,
-after PR #28.
+Status: built, 2026-11-08, on the branch `coin-state` (decision 400, which
+also records what was changed from this document in the building).
+Prompted by decision 399: a Trezor wallet's balance fell when its key image
+sync found spent coins and climbed back eight minutes later, because one of
+eight places that write a coin's spent mark didn't know what the mark
+meant. The transition table lives in the module comment of
+`crates/fob-wallet/src/wallet/coin.rs`, so the code and the account of it
+are one file; what follows is the proposal as it was made.
 
 ## What it is
 
@@ -118,18 +121,9 @@ written by accident because they aren't hashes.
 
 ### The table
 
-Rows are the state before, columns the event; each cell the state after.
-A dash is no change. The arms of `step` are this table, in this order.
-
-| from \ event | LearnedKeyImage | MinedSpend | PoolSpend | PoolLeft(tx) | DeviceSaid Unspent | DeviceSaid OnChain | DeviceSaid InPool | SentByUs | Released(tx) | Rewind |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Free{Unknown} | Free{Known} | Spent | Held InPool | – | – | Held DeviceChain | Held DevicePool | Held OurPayment | – | see below |
-| Free{Known} | – | Spent | Held InPool | – | – | Held DeviceChain | Held DevicePool | Held OurPayment | – | see below |
-| Held InPool{t} | ki | Spent | – | Free if t | – | Held DeviceChain | – | Held OurPayment | – | see below |
-| Held OurPayment{t} | ki | Spent | – | – | – | – | – | – | Free if t | see below |
-| Held DeviceChain | ki | Spent | – | – (364) | Free | – | Held DevicePool | Held OurPayment | – | – (364) |
-| Held DevicePool | ki | Spent | Held InPool (399) | – (399) | Free | Held DeviceChain | – | Held OurPayment | – | – (364) |
-| Spent{h} | ki | – | – | – | – | – | – | – | – | Free{ki} if from ≤ h, else – |
+The table of states against events, each cell the state after, is the
+module comment of `coin.rs`, beside the arms of `step` that are its cells
+in its order. It isn't repeated here, so there is one copy to keep true.
 
 Notes on the cells that carry a decision:
 

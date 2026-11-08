@@ -211,9 +211,13 @@ impl From<receipt::ReceiptView> for Receipt {
 pub struct Balance {
     pub total: u64,
     pub unlocked: u64,
+    /// Of `unlocked`, what a Trezor hasn't been asked about yet, so the
+    /// wallet can't vouch for it; 0 in every other wallet.
+    pub unsynced: u64,
     /// "2.4813"
     pub total_text: String,
     pub unlocked_text: String,
+    pub unsynced_text: String,
     /// What the balance is worth now, "$412.06"; only with a currency besides XMR and a
     /// price from within the day.
     pub fiat_text: Option<String>,
@@ -1624,8 +1628,10 @@ impl FobWallet {
         Balance {
             total: b.total,
             unlocked: b.unlocked,
+            unsynced: b.unsynced,
             total_text: xmr(b.total),
             unlocked_text: xmr(b.unlocked),
+            unsynced_text: xmr(b.unsynced),
             fiat_line: worth.as_ref().map(|(w, old)| match old {
                 Some(old) => format!("{w} · {old}"),
                 None => w.clone(),

@@ -1,7 +1,7 @@
 //! What a wallet keeps in its database, and what it found on the chain.
 
 use super::*;
-use coin::{Coin, Event, Spendable, step};
+use coin::{Coin, Event, KeyImage, Spendable, step};
 use std::collections::VecDeque;
 
 /// An output the wallet owns.
@@ -186,6 +186,16 @@ pub(super) struct State {
     /// The latest changes to coins, newest last, for the log: not saved.
     #[serde(skip)]
     pub(super) transitions: VecDeque<Transition>,
+    /// What a rewind forgot of coins it dropped, by id, as the rewind left
+    /// them: the key image a device gave and the hold on the coin, so the
+    /// scan finding a coin again starts from them instead of asking the
+    /// device again and counting a spent coin as free until it does
+    /// (noted in decision 399). In memory only: a rewind and the
+    /// re-finding happen within one run, and a restart's scan asks the
+    /// device again anyway. A device sync, which decides everything
+    /// afresh, forgets it all; a coin found again takes its entry.
+    #[serde(skip)]
+    pub(super) remembered: HashMap<CoinId, Coin>,
     pub(super) spends: Vec<ChainSpend>,
     pub(super) sent: Vec<Sent>,
     /// How prices are shown; in dollars, from Kraken over the internet for
@@ -412,6 +422,49 @@ impl State {
         match self.outputs.iter().position(|o| o.is(id)) {
             Some(i) => self.apply_at(i, event),
             None => false,
+        }
+    }
+
+    /// Forgets the blocks from `from` on, as the coins see it: every coin
+    /// hears `Rewind`, a coin a still-standing payment of ours had spent is
+    /// held by it again (`SentByUs`), and the coins in those blocks leave
+    /// the list, remembered as they stand for the scan to find again.
+    pub(super) fn rewind_coins(&mut self, from: u64) {
+        // A payment of ours in the forgotten blocks, or not yet mined, still
+        // stands as sent.
+        let pending: HashSet<[u8; 32]> = self
+            .sent
+            .iter()
+            .filter(|s| !s.released && s.height.is_none_or(|h| h >= from))
+            .filter_map(|s| hash_bytes(&s.tx))
+            .collect();
+        for i in 0..self.outputs.len() {
+            let was = self.outputs[i].coin;
+            if self.apply_at(i, Event::Rewind { from })
+                && let Coin::Spent { tx, .. } = was
+                && pending.contains(&tx)
+            {
+                self.apply_at(i, Event::SentByUs { tx });
+            }
+        }
+        let (dropped, kept): (Vec<Owned>, Vec<Owned>) =
+            self.outputs.drain(..).partition(|o| o.height >= from);
+        self.outputs = kept;
+        for output in dropped {
+            if output.coin != Coin::default() {
+                self.remembered.insert(output.id(), output.coin);
+            }
+        }
+    }
+
+    /// The state a coin the scan has just found starts in: free with the
+    /// key image worked out (`ki`), unless a rewind remembered more of it.
+    /// A key image worked out now is taken over a remembered one.
+    pub(super) fn found_coin(&mut self, id: &CoinId, ki: KeyImage) -> Coin {
+        match (self.remembered.remove(id), ki) {
+            (Some(kept), KeyImage::Known(image)) => step(kept, &Event::LearnedKeyImage(image)),
+            (Some(kept), KeyImage::Unknown) => kept,
+            (None, ki) => Coin::Free { ki },
         }
     }
 

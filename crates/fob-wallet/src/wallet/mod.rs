@@ -183,8 +183,14 @@ struct FileIn {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Balance {
     pub total: u64,
-    /// What can be sent now.
+    /// What can be sent now. In a wallet whose keys are on a device this
+    /// counts `unsynced` too, so Home's halves add up as they always have;
+    /// the Trezor banner says that much isn't vouched for.
     pub unlocked: u64,
+    /// Of `unlocked`, a device's coins whose key image the device hasn't
+    /// given: the wallet can't say whether they were spent elsewhere, and
+    /// no payment can pick them until a sync. 0 in every other wallet.
+    pub unsynced: u64,
 }
 
 /// What the screens list, read together by [`Wallet::lists`].

@@ -181,6 +181,7 @@ async fn a_trezor_wallet_s_outputs_wait_for_their_key_images() {
         assert_eq!(state.outputs[0].amount, 7_000_000_000);
     }
     assert_eq!(wallet.trezor_unsynced().await, 1);
+    assert_eq!(wallet.balance().await, Balance { total: 7_000_000_000, unlocked: 7_000_000_000, unsynced: 7_000_000_000 }, "counted, and said not to be vouched for");
     // Not spendable until the device has been asked.
     match wallet.prepare(&full.address(3), 1_000_000, None, None).await {
         Err(FobError::TrezorNeeded) => {}
@@ -190,6 +191,7 @@ async fn a_trezor_wallet_s_outputs_wait_for_their_key_images() {
     let synced = wallet.trezor_sync(Arc::new(fake), Arc::new(person)).await.unwrap();
     assert_eq!(synced, 1);
     assert_eq!(wallet.trezor_unsynced().await, 0);
+    assert_eq!(wallet.balance().await, Balance::default(), "held: neither unlocked nor unvouched");
     let state = wallet.inner.state.lock().await;
     let image = state.outputs[0].coin.key_image().unwrap();
     let output = WalletOutput::read(&mut hex::decode(&state.outputs[0].output).unwrap().as_slice()).unwrap();
@@ -219,6 +221,58 @@ async fn a_trezor_wallet_s_outputs_wait_for_their_key_images() {
     let person2 = crate::trezor::session::fake::Person::new();
     assert_eq!(wallet.trezor_sync(Arc::new(fake2), Arc::new(person2)).await.unwrap(), 0);
     assert_eq!(wallet.inner.state.lock().await.outputs[0].coin, before);
+}
+
+/// A rewind below a device's coin drops it, and the scan finds it again as
+/// new; what the device's sync had said of it used to go with it, so a
+/// reorganised stretch counted coins the device knew were spent until the
+/// next sync (noted in decision 399). The rewind remembers the coin's
+/// state by its id, and the coin found again starts from it. A device
+/// sync, which decides every coin afresh, forgets what was remembered.
+#[tokio::test]
+async fn a_rewind_remembers_what_the_device_said_of_the_coins_it_dropped() {
+    let full = Keys::generate(Network::Stagenet).keys;
+    let (url, _) = counting_node(Duration::ZERO).await;
+    let wallet = Wallet::restore_trezor(&dir("trezor-rewind"), [1; 32], Network::Stagenet, &fake_trezor(&full), &crate::trezor::session::fake::Person::new(), Some(5)).unwrap();
+    wallet.inner.state.lock().await.node = url;
+    let (block, _) = block_paying(&wallet.inner.keys, 5_000_000_000, 10);
+    let hashes = [block.block.hash()];
+    let (scanner, prefilter) = wallet.scanner(10);
+    let scanned = || scan::scan(&scanner, &prefilter, vec![block.clone()], &hashes, false).0.into_iter().next().unwrap().unwrap();
+    let find = async |scanned: scan::Scanned| {
+        let mut state = wallet.inner.state.lock().await;
+        let mut images = Wallet::key_images(&state);
+        wallet.take_block(&mut state, &mut images, &HashMap::new(), scanned);
+        state.tip = 100;
+    };
+    find(scanned()).await;
+    wallet.trezor_sync(Arc::new(fake_trezor(&full)), Arc::new(crate::trezor::session::fake::Person::new())).await.unwrap();
+    let held = wallet.inner.state.lock().await.outputs[0].coin;
+    assert!(matches!(held, Coin::Held { ki: KeyImage::Known(_), hold: Hold::DeviceChain { .. } }));
+
+    // Dropped, and found again as the device left it.
+    wallet.rewind(5, None).await.unwrap();
+    {
+        let state = wallet.inner.state.lock().await;
+        assert!(state.outputs.is_empty());
+        assert_eq!(state.remembered.len(), 1);
+    }
+    find(scanned()).await;
+    {
+        let state = wallet.inner.state.lock().await;
+        assert_eq!(state.outputs[0].coin, held, "the key image and the hold come back with it");
+        assert!(state.remembered.is_empty(), "taken on use");
+    }
+    assert_eq!(wallet.balance().await, Balance::default(), "never counted as free in between");
+    assert_eq!(wallet.trezor_unsynced().await, 0, "the device needn't be asked again");
+
+    // A device sync forgets what a rewind remembered: it decides afresh.
+    wallet.rewind(5, None).await.unwrap();
+    assert_eq!(wallet.inner.state.lock().await.remembered.len(), 1);
+    wallet.trezor_sync(Arc::new(fake_trezor(&full)), Arc::new(crate::trezor::session::fake::Person::new())).await.unwrap();
+    assert!(wallet.inner.state.lock().await.remembered.is_empty());
+    find(scanned()).await;
+    assert_eq!(wallet.inner.state.lock().await.outputs[0].coin, Coin::default(), "found as new: the next sync asks");
 }
 
 /// Spent in the pool only is a tentative mark: the next sync asks the node

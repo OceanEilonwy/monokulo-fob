@@ -145,14 +145,14 @@ async fn money_locked_to_a_time_is_ready_once_the_chain_is_that_late() {
         state.last_block_time = until - 3_600;
         state.outputs.push(Owned { unlock_block: until, ..received("later", 1, XMR) });
     }
-    assert_eq!(wallet.balance().await, Balance { total: XMR, unlocked: 0 });
+    assert_eq!(wallet.balance().await, Balance { total: XMR, unlocked: 0, unsynced: 0 });
     {
         let state = wallet.inner.state.lock().await;
         // An hour of two-minute blocks past the 90 it has.
         assert_eq!(state.needed(&state.outputs[0]), 90 + 30);
     }
     wallet.inner.state.lock().await.last_block_time = until;
-    assert_eq!(wallet.balance().await, Balance { total: XMR, unlocked: XMR });
+    assert_eq!(wallet.balance().await, Balance { total: XMR, unlocked: XMR, unsynced: 0 });
     // A block lock is still a block lock.
     wallet.inner.state.lock().await.outputs[0].unlock_block = 200;
     assert_eq!(wallet.balance().await.unlocked, 0);

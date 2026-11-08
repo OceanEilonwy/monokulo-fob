@@ -47,7 +47,10 @@ impl Wallet {
         }
         let network = self.network();
         let (ids, transfers, minors, frozen) = {
-            let state = self.inner.state.lock().await;
+            let mut state = self.inner.state.lock().await;
+            // The sync decides every coin afresh: what a rewind remembered
+            // of dropped coins is moot.
+            state.remembered.clear();
             let mut ids = vec![];
             let mut transfers = vec![];
             let mut minors = vec![0];

@@ -5,11 +5,15 @@ use super::*;
 impl Wallet {
     pub async fn balance(&self) -> Balance {
         let state = self.inner.state.lock().await;
+        let device = self.inner.keys.device().is_some();
         let mut balance = Balance::default();
         for output in state.outputs.iter().filter(|o| o.coin.is_free()) {
             balance.total += output.amount;
             if confirmations(&state, output.height) >= state.needed(output) {
                 balance.unlocked += output.amount;
+                if device && output.coin.key_image().is_none() {
+                    balance.unsynced += output.amount;
+                }
             }
         }
         for sent in state.sent.iter().filter(|s| s.height.is_none() && !s.released) {
