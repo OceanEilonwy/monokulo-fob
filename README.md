@@ -170,8 +170,9 @@ cargo run --release -p fob-wallet --example fetch_speed [node] [blocks]
 - `crates/fob-gtk` is the Linux desktop app, in Relm4 and libadwaita.
 - `crates/fob-ffi` is fob-wallet for Kotlin (later Swift) through UniFFI, and `android/` the Android app, a thin
   Compose layer over it.
-- `third_party/` holds two vendored seed crates (see its README), and `docs/decisions.md` says why things are the
-  way they are.
+- The seed crates, `monero-seed` and `polyseed`, come from
+  [kayabaNerve/monero-wallet-util](https://github.com/kayabaNerve/monero-wallet-util) at a fixed commit, and
+  `docs/decisions.md` says why things are the way they are.
 
 Designs: https://claude.ai/artifact/MK3rLvr8rcGa6WA5CZrXat
 

@@ -13,6 +13,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahash"
+version = "0.8.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+dependencies = [
+ "cfg-if",
+ "once_cell",
+ "version_check",
+ "zerocopy",
+]
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1223,6 +1235,15 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
@@ -1774,7 +1795,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23c140740c6411e3e92ce74215daaaffaa55bb913213a480ddef5f15c9bb26d0"
 dependencies = [
  "monero-primitives",
- "std-shims",
+ "std-shims 0.1.5",
 ]
 
 [[package]]
@@ -1786,7 +1807,7 @@ dependencies = [
  "curve25519-dalek",
  "monero-ed25519",
  "monero-io",
- "std-shims",
+ "std-shims 0.1.5",
  "zeroize",
 ]
 
@@ -1802,7 +1823,7 @@ dependencies = [
  "monero-io",
  "monero-primitives",
  "rand_core 0.6.4",
- "std-shims",
+ "std-shims 0.1.5",
  "thiserror 2.0.21",
  "zeroize",
 ]
@@ -1817,7 +1838,7 @@ dependencies = [
  "monero-ed25519",
  "monero-io",
  "monero-primitives",
- "std-shims",
+ "std-shims 0.1.5",
 ]
 
 [[package]]
@@ -1832,7 +1853,7 @@ dependencies = [
  "monero-io",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
- "std-shims",
+ "std-shims 0.1.5",
  "subtle",
  "thiserror 2.0.21",
  "zeroize",
@@ -1851,7 +1872,7 @@ dependencies = [
  "monero-oxide",
  "serde",
  "serde_json",
- "std-shims",
+ "std-shims 0.1.5",
 ]
 
 [[package]]
@@ -1865,7 +1886,7 @@ dependencies = [
  "monero-io",
  "rand_core 0.6.4",
  "sha3",
- "std-shims",
+ "std-shims 0.1.5",
  "subtle",
  "zeroize",
 ]
@@ -1884,7 +1905,7 @@ checksum = "5b126530c30a9d7c6a21e35899d569151a645768f0b15dee3f8190bd6edeba55"
 dependencies = [
  "hex",
  "monero-oxide",
- "std-shims",
+ "std-shims 0.1.5",
  "thiserror 2.0.21",
  "zeroize",
 ]
@@ -1895,7 +1916,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9f1a95e908282938246cd0206ee37dcbb8b8317b38c32f6760f7483eff8adb"
 dependencies = [
- "std-shims",
+ "std-shims 0.1.5",
 ]
 
 [[package]]
@@ -1907,7 +1928,7 @@ dependencies = [
  "curve25519-dalek",
  "monero-ed25519",
  "monero-io",
- "std-shims",
+ "std-shims 0.1.5",
  "thiserror 2.0.21",
  "zeroize",
 ]
@@ -1927,7 +1948,7 @@ dependencies = [
  "monero-io",
  "monero-mlsag",
  "monero-primitives",
- "std-shims",
+ "std-shims 0.1.5",
  "zeroize",
 ]
 
@@ -1943,12 +1964,11 @@ dependencies = [
 [[package]]
 name = "monero-seed"
 version = "0.1.0"
+source = "git+https://github.com/kayabaNerve/monero-wallet-util?rev=797fe701a6f9e99ae614c49479bb981de1afe8ec#797fe701a6f9e99ae614c49479bb981de1afe8ec"
 dependencies = [
  "curve25519-dalek",
- "hex",
- "monero-primitives",
  "rand_core 0.6.4",
- "std-shims",
+ "std-shims 0.1.4",
  "thiserror 1.0.69",
  "zeroize",
 ]
@@ -1969,7 +1989,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "rand_distr",
- "std-shims",
+ "std-shims 0.1.5",
  "subtle",
  "thiserror 2.0.21",
  "zeroize",
@@ -2145,12 +2165,12 @@ dependencies = [
 [[package]]
 name = "polyseed"
 version = "0.1.0"
+source = "git+https://github.com/kayabaNerve/monero-wallet-util?rev=797fe701a6f9e99ae614c49479bb981de1afe8ec#797fe701a6f9e99ae614c49479bb981de1afe8ec"
 dependencies = [
- "hex",
  "pbkdf2",
  "rand_core 0.6.4",
  "sha2",
- "std-shims",
+ "std-shims 0.1.4",
  "subtle",
  "thiserror 1.0.69",
  "zeroize",
@@ -2806,6 +2826,16 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "std-shims"
+version = "0.1.4"
+source = "git+https://github.com/serai-dex/serai#4b89cf0206184886e96d0663861596312e5b47d2"
+dependencies = [
+ "hashbrown 0.14.5",
+ "rustversion",
+ "spin 0.10.1",
+]
 
 [[package]]
 name = "std-shims"
