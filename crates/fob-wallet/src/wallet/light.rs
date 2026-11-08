@@ -8,6 +8,7 @@
 use super::*;
 use crate::light::{self, Backend, LightClient, Problem, lws};
 use monero_wallet::{ed25519::Scalar, extra::PaymentId};
+use catch_up::Amounts;
 use state::{SyncMode, TIME_LOCK_FROM};
 
 /// How far before the server's scanned height node scanning starts again
@@ -17,8 +18,9 @@ const BACK_MARGIN: u64 = 30;
 /// The first block with compact amounts (hard fork 10, Bulletproofs 2) on
 /// each network. From it on, an output's mask comes from the view key, so
 /// the server's can be checked; older RingCT outputs carried theirs
-/// encrypted, and it's taken on the server's word (a wrong one only makes
-/// the coin unspendable, never more money).
+/// encrypted, and it's the server's, held to the output's commitment when
+/// the server gives one (a wrong one only makes the coin unspendable,
+/// never more money).
 fn compact_from(network: Network) -> u64 {
     match network {
         Network::Mainnet => 1_978_433,
@@ -56,12 +58,29 @@ impl Wallet {
         Some(fob_words::light::line(&host, state))
     }
 
+    /// What the Light server screen shows of the server in use before any
+    /// Test: the key a server whose own certificate is accepted is held to,
+    /// what the amounts it reports are worth, and why its last answer
+    /// failed, if it did.
+    pub async fn light_standing(&self) -> fob_words::light::Standing {
+        let pin: Option<[u8; 32]> = {
+            let state = self.inner.state.lock().await;
+            state.light_pin.as_deref().filter(|_| state.light_self_signed).and_then(|p| hex::decode(p).ok()?.try_into().ok())
+        };
+        let status = self.status();
+        let (amounts, failed) = match &status.light {
+            Some(light) => (light.amounts, status.error.clone()),
+            None => (Amounts::NotYet, None),
+        };
+        fob_words::light::standing(pin.as_ref(), amounts, failed.as_deref())
+    }
+
     /// The Light server screen's Test: `/get_version`, which sends nothing
     /// of the wallet's. A server already chosen is held to its pinned key.
     pub async fn check_light_server(&self, url: &str, self_signed: bool) -> light::Report {
         let pin = {
             let state = self.inner.state.lock().await;
-            let same = state.light_url.as_deref() == Some(node::normalize(url).as_str()) && state.light_self_signed == self_signed;
+            let same = state.light_url.as_deref() == Some(light::normalize(url).as_str()) && state.light_self_signed == self_signed;
             state.light_pin.as_deref().filter(|_| same).and_then(|p| hex::decode(p).ok()?.try_into().ok())
         };
         light::check(self.network(), url, self_signed, pin).await
@@ -69,18 +88,16 @@ impl Wallet {
 
     /// Chooses the light wallet server, refusing one that doesn't answer, is
     /// on another network or has subaddresses off (`set_node`'s rules, plus
-    /// that one). It isn't synced through until [`use_light_wallet`]; while
-    /// it is, the new one takes over at once, and is told of the wallet afresh.
+    /// that one), or is plain `http://` to another machine. It isn't synced
+    /// through until [`use_light_wallet`]; while it is, the new one takes
+    /// over at once, and is told of the wallet afresh. A server whose own
+    /// certificate is accepted is held from here on to the key this check
+    /// saw, so the view key's first journey is to that key too.
     ///
     /// [`use_light_wallet`]: Wallet::use_light_wallet
     pub async fn set_light_server(&self, url: &str, self_signed: bool) -> Result<()> {
-        let url = node::normalize(url);
-        node::reachable(&url).map_err(|e| {
-            FobError::Light(match e {
-                crate::error::EndpointProblem::Onion => Problem::Onion,
-                _ => Problem::BadAddress,
-            })
-        })?;
+        let url = light::normalize(url);
+        light::allowed(&url).map_err(FobError::Light)?;
         let report = light::check(self.network(), &url, self_signed, None).await;
         if let Some(refused) = report.refusal() {
             return Err(FobError::Light(refused));
@@ -88,11 +105,21 @@ impl Wallet {
         let restart = {
             let mut state = self.inner.state.lock().await;
             if state.light_url.as_deref() == Some(url.as_str()) && state.light_self_signed == self_signed {
+                // Chosen again with another key: the new one is accepted, as
+                // choosing a node again accepts its new certificate.
+                let pin = report.pin.map(hex::encode);
+                if !self_signed || state.light_pin == pin {
+                    return Ok(());
+                }
+                state.light_pin = pin;
+                self.save_state(&state)?;
+                drop(state);
+                *self.inner.light.lock().expect("light lock") = None;
                 return Ok(());
             }
             state.light_url = Some(url);
             state.light_self_signed = self_signed;
-            state.light_pin = None;
+            state.light_pin = report.pin.map(hex::encode);
             state.light_registered = false;
             state.light_subaddrs_sent = 0;
             self.save_state(&state)?;
@@ -310,21 +337,37 @@ impl Wallet {
             Err(e) => return Err(refused(e)),
         };
         let pool_before = self.inner.pool.lock().expect("pool lock").clone();
-        let rejected = {
+        let done = {
             let mut state = self.inner.state.lock().await;
             if state.sync_mode != SyncMode::Light {
                 // Switched back while asking.
                 return Ok(false);
             }
-            let done = reconcile(&self.inner.keys, &mut state, &answer, &pool_before, now());
-            *self.inner.pool.lock().expect("pool lock") = done.pool;
-            // 5. Prices for payments newly seen, as the node's step records them.
-            let priced = self.record_prices(&mut state);
-            if done.changed || priced {
-                self.save_state(&state)?;
+            match reconcile(&self.inner.keys, &mut state, &answer, &pool_before, now()) {
+                Ok(mut done) => {
+                    *self.inner.pool.lock().expect("pool lock") = std::mem::take(&mut done.pool);
+                    // 5. Prices for payments newly seen, as the node's step records them.
+                    let priced = self.record_prices(&mut state);
+                    if done.changed || priced {
+                        self.save_state(&state)?;
+                    }
+                    done
+                }
+                // A lie or a contradiction: nothing of the answer was taken.
+                Err(untrue) => {
+                    self.set_status(|s| {
+                        s.connected = true;
+                        let light = s.light.get_or_insert_with(light_view_default);
+                        light.refused = true;
+                        if untrue == Problem::AmountMismatch {
+                            light.amounts = Amounts::Mismatch;
+                        }
+                    });
+                    return Err(FobError::Light(untrue));
+                }
             }
-            done.refused
         };
+        let rejected = done.refused;
 
         // 4. Status.
         self.set_status(|s| {
@@ -332,7 +375,15 @@ impl Wallet {
             if !s.error_local {
                 s.error = None;
             }
-            s.light.get_or_insert_with(light_view_default).waiting_approval = false;
+            let light = s.light.get_or_insert_with(light_view_default);
+            light.waiting_approval = false;
+            light.refused = false;
+            light.amounts = match (done.checked, done.unchecked, light.amounts) {
+                (_, 1.., _) => Amounts::ServersWord,
+                (1.., 0, _) => Amounts::Checked,
+                (0, 0, Amounts::Mismatch) => Amounts::NotYet,
+                (0, 0, before) => before,
+            };
         });
         self.refresh_status().await;
         if rejected > 0 {
@@ -356,12 +407,26 @@ pub(super) struct Reconciled {
     pub(super) pool: HashMap<String, Pooled>,
     /// Outputs the server named that failed the checks: not counted.
     pub(super) refused: usize,
+    /// Outputs of this wallet's listed with the chain's commitment, which
+    /// their amount opens, and listed without one (their amount is the
+    /// server's word).
+    pub(super) checked: usize,
+    pub(super) unchecked: usize,
 }
+
+/// How far past the chain's tip, as the server gives it, a transaction's
+/// block may be before the answer is taken to contradict itself: the tip it
+/// reports can lag the block its scanner just took in.
+const TIP_SLACK: u64 = 10;
 
 /// Brings `state` in line with what the server says of the wallet. The
 /// server's list is the truth for the blocks it vouches for (from its start
 /// height to its scanned height); each rule is idempotent, so the same answer
 /// twice changes nothing the second time.
+///
+/// First the whole answer is [`vet`]ted: an amount that doesn't open the
+/// commitment the server gives with it, or an answer that contradicts
+/// itself, refuses all of it, and nothing in `state` changes. Then:
 ///
 /// - **Gone**: a transaction Fob recorded at a height the server vouches
 ///   for and no longer lists was reorganised out: its outputs and spends go,
@@ -370,15 +435,21 @@ pub(super) struct Reconciled {
 /// - **Received**: each output listed whose one-time key isn't known yet
 ///   becomes owned (the first with a key wins: the burning bug), once its key
 ///   checks against the view key and, for an output with compact amounts,
-///   its mask too. Locked to a time: dropped, as decision 48 had it (there's
-///   no chain clock here to judge it by).
+///   its mask too. Locked to a block or to a time, it's kept with its
+///   transaction's unlock time, as the node's scan keeps it.
 /// - **Spent**: a candidate spend whose key image is one of the wallet's
 ///   (worked out with the spend key, as `take_block` does) spends that
-///   output. The API gives no fee, so the spend's is 0.
+///   output, with the fee the server gives (0, not known, from a server
+///   that gives none).
 /// - **Sent**: a payment of this wallet's that's listed gets its height.
 /// - **Pool**: transactions listed with `mempool: true` are the pool, kept
 ///   in memory; their outputs aren't owned until mined.
-pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs, pool_before: &HashMap<String, Pooled>, now: u64) -> Reconciled {
+/// - **Clock**: the latest block time among the transactions it vouches
+///   for moves the chain's clock on (it judges time locks), unless it's
+///   past `now`, the phone's: a server can't make a time lock pass early
+///   unless the phone's clock is wrong too. It never moves back here.
+pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs, pool_before: &HashMap<String, Pooled>, now: u64) -> std::result::Result<Reconciled, Problem> {
+    let (checked, unchecked) = vet(keys, answer)?;
     let mut changed = false;
     let mut refused = 0;
     let mut mined: Vec<&lws::Transaction> = answer.transactions.iter().filter(|t| !t.mempool && t.height.is_some()).collect();
@@ -412,12 +483,9 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
         let height = tx.height.unwrap_or_default();
         let hash = hex::encode(tx.hash.0);
         let time = tx.timestamp.as_ref().and_then(|t| unix_time(&t.0)).unwrap_or(0);
-        let unlock_block = match tx.unlock_time {
-            0 => 0,
-            block if block < TIME_LOCK_FROM => block,
-            // Locked to a time.
-            _ => continue,
-        };
+        // As Monero writes it, and as the node's scan keeps it: a block, or
+        // from TIME_LOCK_FROM on a Unix time.
+        let unlock_block = tx.unlock_time;
         for received in &tx.receives {
             let key = hex::encode(received.public_key.0);
             if state.outputs.iter().any(|o| o.key == key) {
@@ -459,11 +527,22 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
         let height = tx.height.unwrap_or_default();
         let hash = hex::encode(tx.hash.0);
         let time = tx.timestamp.as_ref().and_then(|t| unix_time(&t.0)).unwrap_or(0);
+        // 0 when the server doesn't say: no spend pays nothing, so a history
+        // row reads it as not known.
+        let fee = tx.fee.map_or(0, |f| f.0);
         for candidate in &tx.spent_outputs {
             let Some(&i) = images.get(&candidate.key_image.0) else { continue };
-            if !state.spends.iter().any(|s| s.tx == hash) {
-                state.spends.push(ChainSpend { tx: hash.clone(), height, time, fee: 0 });
-                changed = true;
+            match state.spends.iter_mut().find(|s| s.tx == hash) {
+                None => {
+                    state.spends.push(ChainSpend { tx: hash.clone(), height, time, fee });
+                    changed = true;
+                }
+                // Found before the server gave fees.
+                Some(spend) if spend.fee == 0 && fee > 0 => {
+                    spend.fee = fee;
+                    changed = true;
+                }
+                Some(_) => {}
             }
             if state.outputs[i].spent_in.as_deref() != Some(hash.as_str()) {
                 state.outputs[i].spent_in = Some(hash.clone());
@@ -491,7 +570,7 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
             continue;
         }
         for received in &tx.receives {
-            if received.recipient.maj_i != 0 || keys.light_output(&received.tx_pub_key.0, received.index.into(), received.recipient.min_i, &received.public_key.0).is_none() {
+            if !matches!(opened(keys, tx, received, None), Opened::Ours { .. }) {
                 refused += 1;
                 continue;
             }
@@ -501,41 +580,140 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
         }
     }
 
+    // The clock.
+    let latest = mined.iter().filter(|t| vouched(t.height.unwrap_or_default())).filter_map(|t| t.timestamp.as_ref().and_then(|t| unix_time(&t.0))).filter(|&t| t <= now).max();
+    if let Some(latest) = latest
+        && latest > state.last_block_time
+    {
+        state.last_block_time = latest;
+        changed = true;
+    }
+
     if state.light_scanned_height != answer.scanned_height || state.tip != answer.blockchain_height {
         state.light_scanned_height = answer.scanned_height;
         state.tip = answer.blockchain_height;
         changed = true;
     }
-    Reconciled { changed, pool, refused }
+    Ok(Reconciled { changed, pool, refused, checked, unchecked })
+}
+
+/// Checks the whole answer before any of it is taken. Refuses it all when
+/// an amount doesn't open the commitment the server gives for that output
+/// ([`Problem::AmountMismatch`]: the server lied or is broken), or when it
+/// contradicts itself ([`Problem::Contradiction`]): an output named twice
+/// with different one-time keys, two outputs given one place on the chain,
+/// or a transaction in a block well past the chain's tip as the server
+/// gives it. Otherwise counts this wallet's outputs listed with a
+/// commitment and without.
+pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs) -> std::result::Result<(usize, usize), Problem> {
+    let (mut checked, mut unchecked) = (0, 0);
+    let mut places: HashMap<([u8; 32], u16), [u8; 32]> = HashMap::new();
+    let mut global: HashMap<u64, [u8; 32]> = HashMap::new();
+    for tx in &answer.transactions {
+        let mined = (!tx.mempool).then_some(tx.height).flatten();
+        if mined.is_some_and(|h| h > answer.blockchain_height.saturating_add(TIP_SLACK)) {
+            return Err(Problem::Contradiction);
+        }
+        for received in &tx.receives {
+            let key = received.public_key.0;
+            if *places.entry((tx.hash.0, received.index)).or_insert(key) != key {
+                return Err(Problem::Contradiction);
+            }
+            if mined.is_some() && *global.entry(received.global_index).or_insert(key) != key {
+                return Err(Problem::Contradiction);
+            }
+            match opened(keys, tx, received, mined) {
+                Opened::Mismatch => return Err(Problem::AmountMismatch),
+                Opened::Ours { checked: true, .. } => checked += 1,
+                Opened::Ours { checked: false, .. } => unchecked += 1,
+                Opened::NotOurs => {}
+            }
+        }
+    }
+    Ok((checked, unchecked))
+}
+
+/// An output the server says this wallet received, as far as Fob can check it.
+pub(super) enum Opened {
+    /// Its key isn't one this wallet's view key makes from the transaction
+    /// key and index for the subaddress named, or its mask isn't the one it
+    /// makes: not this wallet's.
+    NotOurs,
+    /// Its key and mask check, but the amount and mask don't open the
+    /// commitment the server gives for it.
+    Mismatch,
+    /// This wallet's: its key offset and mask, and whether the amount was
+    /// held to a commitment (`false`: the server gave none).
+    Ours { key_offset: Scalar, mask: Scalar, checked: bool },
+}
+
+/// Checks an output the server says this wallet received, mined at
+/// `height` (`None` in the pool): its one-time key is the one the view key
+/// makes from the transaction key and index for the subaddress named (so a
+/// server can't hand Fob an output under a key it doesn't own), its mask is
+/// the one the view key makes (from hard fork 10 on; a mined reward's is 1;
+/// before, it came encrypted and is the server's), and, when the server
+/// gives the output's commitment, `mask·G + amount·H` is that commitment,
+/// compared in constant time.
+///
+/// The commitment is the server's word for what the chain holds: checking
+/// it binds the amount to it, so a server can't misstate an amount without
+/// also misstating the commitment. Without a node to ask, Fob can't tell a
+/// misstated commitment from the chain's; a coin with one can't be spent,
+/// as the node refuses the transaction.
+pub(super) fn opened(keys: &Keys, tx: &lws::Transaction, received: &lws::ReceivedOutput, height: Option<u64>) -> Opened {
+    use subtle::ConstantTimeEq;
+    if received.recipient.maj_i != 0 {
+        return Opened::NotOurs;
+    }
+    let index = u64::from(received.index);
+    let Some((key_offset, derived_mask)) = keys.light_output(&received.tx_pub_key.0, index, received.recipient.min_i, &received.public_key.0) else {
+        return Opened::NotOurs;
+    };
+    let compact = height.is_none_or(|h| h >= compact_from(keys.network));
+    let said = match received.rct {
+        Some(rct) => match Scalar::read(&mut rct.0.as_slice()) {
+            Ok(said) => said,
+            Err(_) => return Opened::NotOurs,
+        },
+        // A modern output's mask is the view key's to make, given or not.
+        None if compact && !tx.coinbase => derived_mask,
+        None => return Opened::NotOurs,
+    };
+    let mask = match tx.coinbase {
+        true if said == monero_wallet::ed25519::Commitment::zero().mask => said,
+        true => return Opened::NotOurs,
+        false if said == derived_mask || !compact => said,
+        false => return Opened::NotOurs,
+    };
+    let checked = match &received.commitment {
+        None => false,
+        Some(given) => {
+            let made = monero_wallet::ed25519::Commitment::new(mask, received.amount.0).commit().compress().to_bytes();
+            if !bool::from(made.ct_eq(&given.0)) {
+                return Opened::Mismatch;
+            }
+            true
+        }
+    };
+    Opened::Ours { key_offset, mask, checked }
 }
 
 /// The `WalletOutput` for an output the server says this wallet received,
-/// once it checks: its one-time key is the one the view key makes from the
-/// transaction key and index for the subaddress named, and its mask is the
-/// one the view key makes (from hard fork 10 on; a mined reward's is 1).
-/// The amount can't be checked: the server gives no commitment from the
-/// chain (the 96-byte `rct` blob of `/get_unspent_outs` carries one it
-/// works out itself from the same mask and amount), so a server could
-/// misstate an amount. A wrong amount can't be spent: the node refuses the
-/// transaction.
+/// once it checks ([`opened`]), locked as its transaction's unlock time
+/// says: a block below `TIME_LOCK_FROM`, a Unix time from it on.
 pub(super) fn checked_output(keys: &Keys, tx: &lws::Transaction, received: &lws::ReceivedOutput, height: u64, unlock_block: u64) -> Option<WalletOutput> {
-    if received.recipient.maj_i != 0 {
-        return None;
-    }
+    let Opened::Ours { key_offset, mask, .. } = opened(keys, tx, received, Some(height)) else { return None };
     let index = u64::from(received.index);
-    let (key_offset, derived_mask) = keys.light_output(&received.tx_pub_key.0, index, received.recipient.min_i, &received.public_key.0)?;
-    let said = Scalar::read(&mut received.rct?.0.as_slice()).ok()?;
-    let mask = match tx.coinbase {
-        true if said == monero_wallet::ed25519::Commitment::zero().mask => said,
-        true => return None,
-        false if said == derived_mask || height < compact_from(keys.network) => said,
-        false => return None,
-    };
     let payment_id = match tx.payment_id.as_ref().map(|p| p.0.as_slice()) {
         Some(id) if id.len() == 8 => Some(PaymentId::Encrypted(id.try_into().ok()?)),
         _ => None,
     };
-    let timelock = if unlock_block == 0 { Timelock::None } else { Timelock::Block(usize::try_from(unlock_block).ok()?) };
+    let timelock = match unlock_block {
+        0 => Timelock::None,
+        block if block < TIME_LOCK_FROM => Timelock::Block(usize::try_from(block).ok()?),
+        time => Timelock::Time(time),
+    };
     let bytes = wallet_output_bytes(&WalletOutputParts {
         tx: tx.hash.0,
         index,

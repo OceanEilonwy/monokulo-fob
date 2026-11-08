@@ -146,10 +146,13 @@ struct Verifier {
 impl Verifier {
     /// Holds `cert` to the key pinned, pinning it if none is yet.
     fn pinned(&self, cert: &[u8]) -> Result<(), CertProblem> {
+        use subtle::ConstantTimeEq;
         let Some(key) = fingerprint(cert) else { return Err(CertProblem::Invalid) };
         let mut pin = self.pin.lock().expect("pin lock");
         match *pin {
-            Some(pinned) if pinned != key => Err(CertProblem::Changed),
+            // A public key's hash is no secret, but nothing is lost comparing
+            // it in constant time either.
+            Some(pinned) if !bool::from(pinned.ct_eq(&key)) => Err(CertProblem::Changed),
             Some(_) => Ok(()),
             None => {
                 *pin = Some(key);

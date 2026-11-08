@@ -7,6 +7,7 @@ use super::*;
 use crate::light::lws;
 use curve25519_dalek::{EdwardsPoint, Scalar as DScalar, constants::ED25519_BASEPOINT_TABLE};
 use crate::wallet::light::{WalletOutputParts, reconcile, unix_time, wallet_output_bytes};
+use crate::light::Problem;
 use monero_wallet::{
     block::{Block, BlockHeader},
     ed25519::{Commitment, CompressedPoint, Scalar},
@@ -75,6 +76,11 @@ fn stray_point() -> CompressedPoint {
 /// A transaction paying `amount` to `sub` (or nobody, with `None`), spending
 /// `images`, with a fee of 1,000.
 fn transaction(keys: &Keys, pays: Option<(u64, u32)>, images: &[[u8; 32]]) -> (Transaction<Pruned>, [u8; 32], Option<Paid>) {
+    locked_transaction(keys, pays, images, Timelock::None)
+}
+
+/// [`transaction`], locked as `timelock` says.
+fn locked_transaction(keys: &Keys, pays: Option<(u64, u32)>, images: &[[u8; 32]], timelock: Timelock) -> (Transaction<Pruned>, [u8; 32], Option<Paid>) {
     let (output, paid, commitment, encrypted, tx_key) = match pays {
         Some((amount, sub)) => {
             let (output, paid, enc) = pay(keys, amount, sub, 0, false);
@@ -92,7 +98,7 @@ fn transaction(keys: &Keys, pays: Option<(u64, u32)>, images: &[[u8; 32]]) -> (T
         inputs.push(Input::ToKey { amount: None, key_offsets: vec![1; 16], key_image: stray_point() });
     }
     let tx: Transaction<Pruned> = Transaction::V2 {
-        prefix: TransactionPrefix { additional_timelock: Timelock::None, inputs, outputs: vec![output], extra: ExtraField::PublicKey(CompressedPoint::from(tx_key)).serialize() },
+        prefix: TransactionPrefix { additional_timelock: timelock, inputs, outputs: vec![output], extra: ExtraField::PublicKey(CompressedPoint::from(tx_key)).serialize() },
         proofs: Some(PrunedRctProofs {
             rct_type: RctType::ClsagBulletproofPlus,
             base: RctBase { fee: 1000, pseudo_outs: vec![], encrypted_amounts: vec![EncryptedAmount::Compact { amount: encrypted }], commitments: vec![commitment] },
@@ -132,8 +138,15 @@ fn received(paid: &Paid, global_index: u64) -> lws::ReceivedOutput {
         global_index,
         tx_pub_key: lws::Hex(paid.tx_key),
         rct: Some(lws::Hex(paid.mask)),
+        commitment: Some(lws::Hex(commitment_of(paid))),
         recipient: lws::AddressMeta { maj_i: 0, min_i: paid.subaddress },
     }
+}
+
+/// The commitment the chain holds for `paid`: `mask·G + amount·H`.
+fn commitment_of(paid: &Paid) -> [u8; 32] {
+    let mask = Scalar::read(&mut paid.mask.as_slice()).unwrap();
+    Commitment::new(mask, paid.amount).commit().compress().to_bytes()
 }
 
 fn listed(hash: [u8; 32], height: Option<u64>, receives: Vec<lws::ReceivedOutput>, spent_outputs: Vec<lws::Spend>) -> lws::Transaction {
@@ -143,6 +156,7 @@ fn listed(hash: [u8; 32], height: Option<u64>, receives: Vec<lws::ReceivedOutput
         timestamp: height.map(|h| lws::Timestamp::from_unix(1_700_000_000 + h * 120)),
         total_received: lws::Amount(receives.iter().map(|r| r.amount.0).sum()),
         total_sent: lws::Amount(spent_outputs.iter().map(|s| s.amount.0).sum()),
+        fee: None,
         unlock_time: 0,
         height,
         spent_outputs,
@@ -202,17 +216,21 @@ fn chain(keys: &Keys) -> Chain {
     coinbase.unlock_time = 300_101 + 60;
     // The spend lists the real spend of p1, and a decoy use of p2 with
     // another key image: only the first is a spend.
-    let spend = listed(h3, Some(300_103), vec![], vec![spend_of(&p1, image), spend_of(&p2, [9; 32])]);
+    let mut spend = listed(h3, Some(300_103), vec![], vec![spend_of(&p1, image), spend_of(&p2, [9; 32])]);
+    spend.fee = Some(lws::Amount(1000));
     Chain {
         blocks: [b1, b2, b3].into_iter().map(|b| { let hash = b.block.hash(); (b, hash) }).collect(),
         listed: vec![coinbase, listed(h1, Some(300_101), vec![received(&p1, 3_001_011)], vec![]), listed(h2, Some(300_102), vec![received(&p2, 3_001_021)], vec![]), spend],
     }
 }
 
+/// A spend as both paths must find it: transaction, height, time, fee.
+type FoundSpend = (String, u64, u64, u64);
+
 /// What a state holds that both paths must agree on.
-fn found(state: &State) -> (serde_json::Value, Vec<(String, u64, u64)>, u64, u64, u32) {
+fn found(state: &State) -> (serde_json::Value, Vec<FoundSpend>, u64, u64, u32) {
     let outputs = serde_json::to_value(&state.outputs).unwrap();
-    let spends = state.spends.iter().map(|s| (s.tx.clone(), s.height, s.time)).collect();
+    let spends = state.spends.iter().map(|s| (s.tx.clone(), s.height, s.time, s.fee)).collect();
     let total = state.outputs.iter().filter(|o| o.spent_in.is_none()).map(|o| o.amount).sum();
     (outputs, spends, total, state.spendable(), state.receive_index)
 }
@@ -273,9 +291,9 @@ async fn the_light_path_finds_what_the_node_path_finds() {
     let state = wallet.inner.state.lock().await;
     let light_state = found(&state);
     assert_eq!(light_state.0, node_state.0, "the same outputs, byte for byte");
-    assert_eq!(light_state.1, node_state.1, "the same spends");
+    assert_eq!(light_state.1, node_state.1, "the same spends, fee too");
     assert_eq!((light_state.2, light_state.3, light_state.4), (node_state.2, node_state.3, node_state.4), "the same balance and addresses");
-    assert!(state.spends.iter().all(|s| s.fee == 0), "the API gives no fee");
+    assert_eq!(state.spends[0].fee, 1000);
     assert!(state.light_registered);
     assert_eq!(state.light_subaddrs_sent, Wallet::watched(0), "told of the addresses watched before the poll");
     assert_eq!((state.light_scanned_height, state.tip), (300_299, 300_300));
@@ -283,6 +301,7 @@ async fn the_light_path_finds_what_the_node_path_finds() {
     let status = wallet.status();
     assert!(status.synced && status.connected);
     assert_eq!(fob_words::catch_up::chip(status.chip()).text, "Synced · server");
+    assert_eq!(status.light.as_ref().unwrap().amounts, catch_up::Amounts::Checked, "every amount opened the chain's commitment");
 }
 
 /// The bytes Fob writes for a `WalletOutput` are those monero-wallet 0.2's
@@ -339,7 +358,7 @@ fn reconcile_receives_spends_and_is_idempotent() {
     let keys = &wallet.inner.keys;
     let chain = chain(keys);
     let response = answer(chain.listed.clone(), 400_000);
-    let first = reconcile(keys, &mut state, &response, &HashMap::new(), 5);
+    let first = reconcile(keys, &mut state, &response, &HashMap::new(), 5).unwrap();
     assert!(first.changed);
     assert_eq!(first.refused, 0);
     assert_eq!(state.outputs.len(), 3);
@@ -350,7 +369,7 @@ fn reconcile_receives_spends_and_is_idempotent() {
     let coinbase = state.outputs.iter().find(|o| o.coinbase).unwrap();
     assert_eq!(coinbase.unlock_block, 300_161);
     let saved = serde_json::to_value(&state).unwrap();
-    let again = reconcile(keys, &mut state, &response, &HashMap::new(), 6);
+    let again = reconcile(keys, &mut state, &response, &HashMap::new(), 6).unwrap();
     assert!(!again.changed, "the same answer twice changes nothing");
     assert_eq!(serde_json::to_value(&state).unwrap(), saved);
 }
@@ -360,24 +379,24 @@ fn a_transaction_the_server_drops_was_reorganised_out() {
     let (wallet, mut state) = fresh();
     let keys = &wallet.inner.keys;
     let chain = chain(keys);
-    reconcile(keys, &mut state, &answer(chain.listed.clone(), 400_000), &HashMap::new(), 5);
+    reconcile(keys, &mut state, &answer(chain.listed.clone(), 400_000), &HashMap::new(), 5).unwrap();
     state.sent.push(Sent { height: Some(300_103), ..sent_payment(&hex::encode(chain.listed[3].hash.0)) });
     // The spend in block 103 is gone from the chain: its coin is free again,
     // the payment unmined; what's below stays.
     let shorter: Vec<_> = chain.listed[..3].to_vec();
-    let done = reconcile(keys, &mut state, &answer(shorter.clone(), 400_000), &HashMap::new(), 6);
+    let done = reconcile(keys, &mut state, &answer(shorter.clone(), 400_000), &HashMap::new(), 6).unwrap();
     assert!(done.changed);
     assert!(state.spends.is_empty());
     assert_eq!(state.sent[0].height, None);
     // Its coin stays spent: this wallet's own payment, now waiting, holds it.
     assert_eq!(state.outputs.iter().filter(|o| o.spent_in.is_some()).count(), 1);
     // The payment to subaddress 3 goes too: its output is dropped.
-    let done = reconcile(keys, &mut state, &answer(shorter[..2].to_vec(), 400_000), &HashMap::new(), 7);
+    let done = reconcile(keys, &mut state, &answer(shorter[..2].to_vec(), 400_000), &HashMap::new(), 7).unwrap();
     assert!(done.changed);
     assert_eq!(state.outputs.len(), 2);
     // A server that hasn't scanned that far (after a request to scan from
     // the start) vouches for nothing past its height: nothing more goes.
-    let done = reconcile(keys, &mut state, &answer(vec![], 50), &HashMap::new(), 8);
+    let done = reconcile(keys, &mut state, &answer(vec![], 50), &HashMap::new(), 8).unwrap();
     assert_eq!(state.outputs.len(), 2);
     assert!(done.changed, "its height moved");
 }
@@ -409,16 +428,16 @@ fn a_pool_payment_is_on_its_way_until_mined() {
     let (_, hash, paid) = transaction(keys, Some((XMR, 2)), &[]);
     let paid = paid.unwrap();
     let pooled = listed(hash, None, vec![received(&paid, 0)], vec![]);
-    let done = reconcile(keys, &mut state, &answer(vec![pooled], 200), &HashMap::new(), 42);
+    let done = reconcile(keys, &mut state, &answer(vec![pooled], 200), &HashMap::new(), 42).unwrap();
     assert!(state.outputs.is_empty(), "not owned until mined");
     assert_eq!(done.pool.get(&hex::encode(hash)), Some(&Pooled { seen: 42, parts: vec![(2, XMR)] }));
     // Seen again later: still when it was first seen.
     let pooled = listed(hash, None, vec![received(&paid, 0)], vec![]);
-    let done = reconcile(keys, &mut state, &answer(vec![pooled], 200), &done.pool, 99);
+    let done = reconcile(keys, &mut state, &answer(vec![pooled], 200), &done.pool, 99).unwrap();
     assert_eq!(done.pool[&hex::encode(hash)].seen, 42);
     // Mined: owned, and out of the pool.
     let mined = listed(hash, Some(150), vec![received(&paid, 1500)], vec![]);
-    let done = reconcile(keys, &mut state, &answer(vec![mined], 200), &done.pool, 120);
+    let done = reconcile(keys, &mut state, &answer(vec![mined], 200), &done.pool, 120).unwrap();
     assert!(done.pool.is_empty());
     assert_eq!(state.outputs.len(), 1);
     assert_eq!(state.outputs[0].height, 150);
@@ -432,24 +451,229 @@ fn an_output_that_isn_t_the_wallet_s_is_refused() {
     let paid = paid.unwrap();
     // Another key: not made from the transaction key for this wallet.
     let mut forged = received(&paid, 7);
+    forged.index = 1;
     forged.public_key = lws::Hex(stray_point().to_bytes());
     // The right key with another mask: a commitment that isn't on the chain.
     let mut wrong_mask = received(&paid, 8);
-    wrong_mask.public_key = lws::Hex(paid.key);
     wrong_mask.rct = Some(lws::Hex(<[u8; 32]>::from(Scalar::hash(b"another"))));
-    let done = reconcile(keys, &mut state, &answer(vec![listed(hash, Some(300_000), vec![forged.clone(), wrong_mask.clone()], vec![])], 400_000), &HashMap::new(), 1);
+    let done = reconcile(keys, &mut state, &answer(vec![listed(hash, Some(300_000), vec![forged.clone(), wrong_mask.clone()], vec![])], 400_000), &HashMap::new(), 1).unwrap();
     assert_eq!(done.refused, 2);
     assert!(state.outputs.is_empty());
     // Before hard fork 10 a mask came encrypted, not from the view key: it is
-    // taken on the server's word (a wrong one only makes the coin unspendable).
-    let done = reconcile(keys, &mut state, &answer(vec![listed(hash, Some(150), vec![forged, wrong_mask], vec![])], 400_000), &HashMap::new(), 1);
-    assert_eq!((done.refused, state.outputs.len()), (1, 1));
-    state.outputs.clear();
-    // A time lock: dropped, as decision 48 has it.
-    let mut locked = listed(hash, Some(150), vec![received(&paid, 9)], vec![]);
-    locked.unlock_time = 1_900_000_000;
-    let done = reconcile(keys, &mut state, &answer(vec![locked], 200), &HashMap::new(), 1);
-    assert_eq!((done.refused, state.outputs.len()), (0, 0));
+    // the server's, held to the commitment when the server gives one...
+    let old = |receives| answer(vec![listed(hash, Some(150), receives, vec![])], 400_000);
+    assert!(matches!(reconcile(keys, &mut state, &old(vec![forged.clone(), wrong_mask.clone()]), &HashMap::new(), 1), Err(Problem::AmountMismatch)));
+    assert!(state.outputs.is_empty());
+    // ...and taken on its word when it gives none (a wrong one only makes the
+    // coin unspendable).
+    wrong_mask.commitment = None;
+    let done = reconcile(keys, &mut state, &old(vec![forged, wrong_mask]), &HashMap::new(), 1).unwrap();
+    assert_eq!((done.refused, state.outputs.len(), done.unchecked), (1, 1, 1));
+}
+
+/// An amount that doesn't open the commitment the server gives: the whole
+/// answer is refused, nothing in the wallet changes, the sync stops with
+/// words, and the Light server screen and the chip say so.
+#[tokio::test]
+async fn an_amount_that_doesn_t_match_the_chain_stops_the_sync() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let mut lying = chain.listed.clone();
+    // The payment to subaddress 3, a thousand times larger.
+    lying[2].receives[0].amount = lws::Amount(500 * XMR);
+    let before = serde_json::to_value(&state).unwrap();
+    assert!(matches!(reconcile(keys, &mut state, &answer(lying.clone(), 400_000), &HashMap::new(), 5), Err(Problem::AmountMismatch)));
+    assert_eq!(serde_json::to_value(&state).unwrap(), before, "nothing of the answer taken, the honest outputs neither");
+
+    // Through a server: the poll fails with the words, and says so.
+    let txs = serde_json::to_string(&answer(lying, 300_299)).unwrap();
+    let url = scripted_node(move |text| {
+        let txs = txs.clone();
+        async move {
+            if text.starts_with("POST /login") {
+                r#"{"new_address":true,"start_height":300100}"#.to_owned()
+            } else if text.starts_with("POST /upsert_subaddrs") {
+                r#"{"new_subaddrs":[]}"#.to_owned()
+            } else if text.starts_with("POST /get_address_txs") {
+                txs
+            } else {
+                "{}".to_owned()
+            }
+        }
+    })
+    .await;
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.light_url = Some(url);
+        state.sync_mode = SyncMode::Light;
+    }
+    let said = wallet.sync_step().await.unwrap_err().to_string();
+    assert_eq!(said, "The light server reported an amount that doesn't match the chain. Nothing from its answer was taken");
+    assert!(wallet.inner.state.lock().await.outputs.is_empty());
+    let light = wallet.status().light.unwrap();
+    assert!(light.refused);
+    assert_eq!(light.amounts, catch_up::Amounts::Mismatch);
+    wallet.set_status(|s| s.error = Some(said.clone()));
+    assert_eq!(fob_words::catch_up::chip(wallet.status().chip()).text, "Server answer refused");
+    let standing = wallet.light_standing().await;
+    assert!(standing.rows.iter().any(|r| r.label == "Amounts" && r.value == "don't match the chain" && r.bad));
+    assert!(standing.rows.iter().any(|r| r.label == "Last answer" && r.value == said));
+}
+
+/// A server that serves no commitments (monero-lws): its outputs are taken,
+/// and the Light server screen says their amounts are its word.
+#[tokio::test]
+async fn amounts_without_commitments_are_the_server_s_word() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let mut bare = chain.listed.clone();
+    for tx in &mut bare {
+        for r in &mut tx.receives {
+            r.commitment = None;
+        }
+    }
+    let done = reconcile(keys, &mut state, &answer(bare.clone(), 400_000), &HashMap::new(), 5).unwrap();
+    assert_eq!((done.checked, done.unchecked, state.outputs.len()), (0, 3, 3));
+    let done = reconcile(keys, &mut fresh().1, &answer(chain.listed.clone(), 400_000), &HashMap::new(), 5).unwrap();
+    assert_eq!((done.checked, done.unchecked), (3, 0));
+
+    let txs = serde_json::to_string(&answer(bare, 300_299)).unwrap();
+    let url = scripted_node(move |text| {
+        let txs = txs.clone();
+        async move {
+            if text.starts_with("POST /login") {
+                r#"{"new_address":true,"start_height":300100}"#.to_owned()
+            } else if text.starts_with("POST /get_address_txs") {
+                txs
+            } else {
+                r#"{"new_subaddrs":[]}"#.to_owned()
+            }
+        }
+    })
+    .await;
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.light_url = Some(url);
+        state.sync_mode = SyncMode::Light;
+    }
+    wallet.sync_step().await.unwrap();
+    assert_eq!(wallet.status().light.unwrap().amounts, catch_up::Amounts::ServersWord);
+    let standing = wallet.light_standing().await;
+    assert!(standing.rows.iter().any(|r| r.label == "Amounts" && r.value == "the server's word" && !r.bad));
+    assert!(standing.notes.iter().any(|n| n.as_str() == fob_words::light::SERVERS_WORD));
+}
+
+/// An answer that contradicts itself is refused whole: one output named
+/// twice with different keys, one place on the chain for two outputs, a
+/// block well past the tip.
+#[test]
+fn an_answer_that_contradicts_itself_is_refused() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let before = serde_json::to_value(&state).unwrap();
+    let refused = |state: &mut State, txs: Vec<lws::Transaction>| matches!(reconcile(keys, state, &answer(txs, 400_000), &HashMap::new(), 5), Err(Problem::Contradiction));
+
+    let mut twice = chain.listed.clone();
+    let mut other = twice[1].receives[0].clone();
+    other.public_key = lws::Hex(stray_point().to_bytes());
+    twice[1].receives.push(other);
+    assert!(refused(&mut state, twice), "the same output with two keys");
+
+    let mut one_place = chain.listed.clone();
+    one_place[2].receives[0].global_index = one_place[1].receives[0].global_index;
+    assert!(refused(&mut state, one_place), "two outputs at one global index");
+
+    let mut future = chain.listed.clone();
+    future[3].height = Some(400_001 + 11);
+    assert!(refused(&mut state, future), "a block past the tip");
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+
+    // A block just past the tip the server gives is its scanner ahead of
+    // the height it reports: taken.
+    let mut ahead = chain.listed.clone();
+    ahead[3].height = Some(400_001 + 5);
+    assert!(reconcile(keys, &mut state, &answer(ahead, 400_000), &HashMap::new(), 5).is_ok());
+}
+
+/// The fee the server gives is the spend's; none is 0, which Activity says
+/// isn't known rather than claiming none; one given later fills it in.
+#[tokio::test]
+async fn a_spend_s_fee_is_the_server_s_or_not_known() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let chain = chain(keys);
+    let mut without = chain.listed.clone();
+    without[3].fee = None;
+    reconcile(keys, &mut state, &answer(without, 400_000), &HashMap::new(), 5).unwrap();
+    assert_eq!(state.spends[0].fee, 0);
+    *wallet.inner.state.lock().await = state.clone();
+    let rows = wallet.activity().await;
+    let out = rows.iter().find(|r| r.direction == Direction::Out).unwrap();
+    assert_eq!(out.fee, None, "no fee claimed");
+    let detail = fob_words::activity::detail(fob_screens::activity::detail(out, None, false, "Kraken", clock_now()));
+    assert_eq!(detail.fee.as_deref(), Some("Not known · counted in the amount"));
+    // Given now: filled in, once.
+    let done = reconcile(keys, &mut state, &answer(chain.listed.clone(), 400_000), &HashMap::new(), 6).unwrap();
+    assert!(done.changed);
+    assert_eq!(state.spends[0].fee, 1000);
+    *wallet.inner.state.lock().await = state;
+    let rows = wallet.activity().await;
+    let out = rows.iter().find(|r| r.direction == Direction::Out).unwrap();
+    assert_eq!(out.fee, Some(1000));
+    let detail = fob_words::activity::detail(fob_screens::activity::detail(out, None, false, "Kraken", clock_now()));
+    assert_eq!(detail.fee.as_deref(), Some("0.000000001 XMR"));
+}
+
+/// An output locked to a time, and one locked to a block, found the node
+/// way and through a server, come out the same byte for byte; the time lock
+/// is judged by the chain's clock, which the server's block times move on,
+/// but not one past the phone's.
+#[tokio::test]
+async fn a_locked_output_is_kept_alike_both_ways() {
+    let wallet = Wallet::create(&dir("light-locked"), [1; 32], Network::Stagenet).unwrap();
+    let keys = &wallet.inner.keys;
+    let until = 1_900_000_000;
+    let (t1, h1, p1) = locked_transaction(keys, Some((2 * XMR, 0)), &[], Timelock::Time(until));
+    let (t2, h2, p2) = locked_transaction(keys, Some((XMR, 4)), &[], Timelock::Block(300_500));
+    let (b1, _, _) = block(keys, 300_201, None, vec![(t1, h1), (t2, h2)]);
+    let hash = b1.block.hash();
+
+    let (scanner, prefilter) = wallet.scanner(Wallet::watched(0));
+    let (results, _) = scan::scan(&scanner, &prefilter, vec![b1], &[hash], false);
+    let node = {
+        let mut state = wallet.inner.state.lock().await;
+        let mut images = Wallet::key_images(&state);
+        for result in results {
+            wallet.take_block(&mut state, &mut images, &HashMap::new(), result.unwrap());
+        }
+        assert_eq!(state.outputs.len(), 2, "both kept the node way");
+        let kept = serde_json::to_value(&state.outputs).unwrap();
+        state.outputs.clear();
+        state.receive_index = 0;
+        kept
+    };
+
+    let mut locked = listed(h1, Some(300_201), vec![received(&p1.unwrap(), 3_002_011)], vec![]);
+    locked.unlock_time = until;
+    let mut later = listed(h2, Some(300_201), vec![received(&p2.unwrap(), 3_002_012)], vec![]);
+    later.unlock_time = 300_500;
+    let mut state = wallet.inner.state.lock().await;
+    let now = 1_700_000_000 + 300_201 * 120 + 30;
+    let done = reconcile(keys, &mut state, &answer(vec![locked, later], 300_300), &HashMap::new(), now).unwrap();
+    assert_eq!(done.refused, 0);
+    assert_eq!(serde_json::to_value(&state.outputs).unwrap(), node, "the same outputs, byte for byte");
+    let time_locked = state.outputs.iter().find(|o| o.unlock_time().is_some()).unwrap().clone();
+    assert_eq!(time_locked.unlock_block, until);
+    assert_eq!(state.last_block_time, 1_700_000_000 + 300_201 * 120, "the latest block time vouched for");
+    assert!(state.needed(&time_locked) > confirmations(&state, time_locked.height), "not ready before its time");
+    // A server's block time past the phone's clock doesn't move it.
+    let mut ahead = listed([5; 32], Some(300_250), vec![], vec![]);
+    ahead.timestamp = Some(lws::Timestamp::from_unix(until + 10));
+    reconcile(keys, &mut state, &answer(vec![ahead], 300_300), &HashMap::new(), now + 60).unwrap();
+    assert_eq!(state.last_block_time, 1_700_000_000 + 300_201 * 120);
 }
 
 /// A version 7 file, from before light mode, opens as a node wallet with

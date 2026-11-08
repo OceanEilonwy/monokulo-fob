@@ -1972,6 +1972,14 @@ impl FobWallet {
         }
     }
 
+    /// What the Light server screen shows of the server in use before any
+    /// Test: the key it's held to, what its amounts are worth, its last
+    /// failure. Every word from Rust.
+    pub async fn light_standing(&self) -> LightStanding {
+        let said = self.inner.light_standing().await;
+        LightStanding { rows: said.rows.into_iter().map(|r| LightReportRow { label: r.label, value: r.value, bad: r.bad }).collect(), notes: said.notes }
+    }
+
     /// Chooses the light wallet server, refused with words when it doesn't
     /// answer, is on another network or has subaddresses off.
     pub async fn set_light_server(&self, url: String, self_signed: bool) -> Result<()> {
@@ -3489,6 +3497,15 @@ pub struct LightReport {
     /// "Sync through this server" can go ahead.
     pub usable: bool,
     pub rows: Vec<LightReportRow>,
+}
+
+/// The server in use, on the Light server screen before any Test: "Certificate
+/// key" · "ab12 cd34 …", "Amounts" · "the server's word", and the sentences
+/// that go under them.
+#[derive(uniffi::Record)]
+pub struct LightStanding {
+    pub rows: Vec<LightReportRow>,
+    pub notes: Vec<String>,
 }
 
 /// The words of Settings' Node card and the Light server screen.

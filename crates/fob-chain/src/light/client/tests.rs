@@ -135,3 +135,39 @@ async fn an_unreachable_or_onion_server_is_said_so() {
     assert_eq!(LightClient::new("http://lws.abcdefghijklmnop.onion:8443", false).err(), Some(Problem::Onion));
     assert_eq!(check(Network::Stagenet, "lws.example.onion.", false, None).await.refusal(), Some(Problem::Onion));
 }
+
+/// The view key goes with every request: `https://` only, but for a server
+/// on this device. A bare `host:port` is taken as `https://`.
+#[test]
+fn plain_http_only_to_this_device() {
+    assert_eq!(LightClient::new("http://lws.example:8443", false).err(), Some(Problem::PlainHttp));
+    assert_eq!(LightClient::new("http://192.168.1.20:8443", false).err(), Some(Problem::PlainHttp));
+    assert!(LightClient::new("https://lws.example:8443", false).is_ok());
+    assert!(LightClient::new("http://127.0.0.1:18443", false).is_ok());
+    assert!(LightClient::new("http://localhost:18443", false).is_ok());
+    assert!(LightClient::new("http://[::1]:18443", false).is_ok());
+    assert_eq!(super::super::normalize("lws.example:8443"), "https://lws.example:8443");
+    assert_eq!(super::super::normalize("127.0.0.1:18443/"), "http://127.0.0.1:18443");
+    assert_eq!(LightClient::new("lws.abcdefghijklmnop.i2p", false).err(), Some(Problem::Onion));
+    assert_eq!(LightClient::new("ftp://lws.example", false).err(), Some(Problem::BadAddress));
+}
+
+/// An answer past [`LIMIT`] is refused before it's read, by the length
+/// the server says, and the poll fails.
+#[tokio::test]
+async fn an_answer_too_large_is_refused() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf).await;
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{", LIMIT + 1);
+                let _ = stream.write_all(head.as_bytes()).await;
+            });
+        }
+    });
+    let client = LightClient::new(&url, false).unwrap();
+    assert_eq!(client.get_address_txs(&login()).await.unwrap_err(), Problem::Unreachable("the server's answer was too large".into()));
+}

@@ -212,6 +212,9 @@ pub enum SyncState {
     Starting { percent: u32 },
     /// Syncing through a light wallet server: its last round failed.
     ServerFailed { local: bool },
+    /// The server's last answer was refused: an amount that doesn't match
+    /// its commitment, or an answer that contradicts itself.
+    ServerRefused,
     /// The server hasn't approved this wallet yet.
     ServerWaiting,
     /// Asking the server, before its first answer.
@@ -242,6 +245,26 @@ pub struct Light {
     /// Roughly when the block the server has scanned to was mined, while it
     /// is [`SERVER_FAR_BEHIND`] or more.
     pub scanning_from: Option<u64>,
+    /// What the amounts the server reports are worth, as its last answer
+    /// showed.
+    pub amounts: Amounts,
+    /// Its last answer was refused as untrue (see [`SyncState::ServerRefused`]).
+    pub refused: bool,
+}
+
+/// How far the amounts a light wallet server reports are checked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Amounts {
+    /// No answer yet with an output in it: nothing to say.
+    #[default]
+    NotYet,
+    /// Every output came with the chain's commitment, and its amount opens it.
+    Checked,
+    /// Some came without a commitment (monero-lws serves none): their
+    /// amounts are the server's word.
+    ServersWord,
+    /// An amount didn't open the commitment the server gave for it.
+    Mismatch,
 }
 
 /// The year a Unix time falls in.
@@ -266,6 +289,7 @@ impl SyncStatus {
     pub fn chip(&self) -> Chip {
         if let Some(light) = &self.light {
             let state = match () {
+                _ if light.refused && self.error.is_some() => return Chip { look: Look::Offline, state: SyncState::ServerRefused },
                 _ if self.error.is_some() => return Chip { look: Look::Offline, state: SyncState::ServerFailed { local: self.error_local } },
                 _ if light.waiting_approval => SyncState::ServerWaiting,
                 _ if !self.connected => SyncState::ServerConnecting,

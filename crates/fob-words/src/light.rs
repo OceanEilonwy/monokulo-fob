@@ -3,7 +3,7 @@
 
 use fob_chain::light::{Problem, Report};
 use fob_monero::amount::grouped;
-use fob_screens::catch_up::SyncState;
+use fob_screens::catch_up::{Amounts, SyncState};
 
 use crate::{device, node::certificate};
 
@@ -63,12 +63,15 @@ pub fn problem(problem: &Problem) -> String {
         Problem::Unreachable(why) => format!("Can't reach the server: {why}"),
         Problem::Certificate(cert) => format!("The server's certificate is {}, not accepted", certificate(*cert)),
         Problem::Unreadable => "The server's answer isn't a light wallet server's".into(),
-        Problem::Onion => "Fob can't reach .onion servers yet".into(),
+        Problem::Onion => "Fob can't reach .onion or .i2p servers yet".into(),
+        Problem::PlainHttp => "A light wallet server needs https, as the view key goes with every request. Plain http is only for a server on this device".into(),
         Problem::BadAddress => "That isn't an address Fob can read".into(),
         Problem::OtherNetwork { theirs, ours } => format!("The server is on {}, and this wallet is on {}", network_name(theirs), network_name(ours)),
         Problem::NoSubaddresses => "This server doesn't watch subaddresses, so it would miss payments to requests and shares".into(),
         Problem::BadOutputs(1) => "The server named a payment that isn't this wallet's: it wasn't counted".into(),
         Problem::BadOutputs(n) => format!("The server named {n} payments that aren't this wallet's: they weren't counted"),
+        Problem::AmountMismatch => "The light server reported an amount that doesn't match the chain. Nothing from its answer was taken".into(),
+        Problem::Contradiction => "The light server's answer contradicts itself. Nothing from it was taken".into(),
         Problem::NoServerSet => "Choose a light wallet server first".into(),
     }
 }
@@ -92,6 +95,7 @@ pub fn line(host: &str, state: Option<SyncState>) -> String {
         Some(SyncState::ServerWaiting) => "waiting for approval".into(),
         Some(SyncState::ServerFailed { local: false }) => "can't reach".into(),
         Some(SyncState::ServerFailed { local: true }) => "can't save".into(),
+        Some(SyncState::ServerRefused) => "answer refused".into(),
         Some(SyncState::ServerBehind { blocks }) => format!("{} behind", grouped(blocks)),
         Some(SyncState::ServerScanning { year }) => format!("scanning from {year}"),
         Some(_) => "connecting".into(),
@@ -141,6 +145,9 @@ pub fn report(report: &Report) -> ReportView {
                 row("New wallets", "asked when you switch".into(), false),
                 row("Server", format!("{} · API {}", v.server_type, v.api), false),
             ]
+            .into_iter()
+            .chain(report.pin.map(|pin| row(KEY_LABEL, key(&pin), false)))
+            .collect()
         }
     };
     ReportView {
@@ -149,6 +156,58 @@ pub fn report(report: &Report) -> ReportView {
         usable: refusal.is_none(),
         rows,
     }
+}
+
+/// The row of the key a server whose own certificate is accepted is held to.
+pub const KEY_LABEL: &str = "Certificate key";
+/// Under it.
+pub const KEY_NOTE: &str = "The SHA3-256 of the server's public key. Fob talks to this server only while it answers with this key.";
+/// When amounts can't be checked.
+pub const SERVERS_WORD: &str =
+    "This server doesn't send the chain's commitments, so Fob can't check the amounts it reports against the chain. They're the server's word.";
+/// A history row's fee when the server didn't give one: the amount then
+/// includes it.
+pub const FEE_NOT_KNOWN: &str = "Not known · counted in the amount";
+
+/// A key's fingerprint in groups of four, so two can be compared by eye.
+pub fn key(pin: &[u8; 32]) -> String {
+    let hex: String = pin.iter().map(|b| format!("{b:02x}")).collect();
+    hex.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join(" ")
+}
+
+/// What the Light server screen says of the server in use, before any Test:
+/// the key it's held to, what its amounts are worth, and its last answer
+/// if that failed.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Standing {
+    pub rows: Vec<ReportRow>,
+    /// Sentences under the rows.
+    pub notes: Vec<String>,
+}
+
+/// The server in use, as the Light server screen shows it: `pin` (for a
+/// server whose own certificate is accepted), what its amounts are worth,
+/// and why its last answer failed, if it did.
+pub fn standing(pin: Option<&[u8; 32]>, amounts: Amounts, failed: Option<&str>) -> Standing {
+    let row = |label: &str, value: String, bad: bool| ReportRow { label: label.into(), value, bad };
+    let mut said = Standing::default();
+    if let Some(pin) = pin {
+        said.rows.push(row(KEY_LABEL, key(pin), false));
+        said.notes.push(KEY_NOTE.into());
+    }
+    match amounts {
+        Amounts::NotYet => {}
+        Amounts::Checked => said.rows.push(row("Amounts", "match the chain's commitments".into(), false)),
+        Amounts::ServersWord => {
+            said.rows.push(row("Amounts", "the server's word".into(), false));
+            said.notes.push(SERVERS_WORD.into());
+        }
+        Amounts::Mismatch => said.rows.push(row("Amounts", "don't match the chain".into(), true)),
+    }
+    if let Some(failed) = failed {
+        said.rows.push(row("Last answer", failed.into(), true));
+    }
+    said
 }
 
 #[cfg(test)]
@@ -179,6 +238,21 @@ mod tests {
         assert_eq!(said(&SyncStatus { error: Some("x".into()), ..base.clone() }), "Can't reach server");
         assert_eq!(said(&SyncStatus { connected: false, ..base }), "Connecting");
         assert_eq!((year_of(0), year_of(951_782_400), year_of(1_793_406_347)), (1970, 2000, 2026));
+    }
+
+    /// The Light server screen's rows for the server in use: the key in
+    /// groups of four, what amounts are worth, a failure.
+    #[test]
+    fn standing_says_the_key_and_the_amounts() {
+        assert_eq!(standing(None, Amounts::NotYet, None), Standing::default());
+        let said = standing(Some(&[0xab; 32]), Amounts::ServersWord, Some("Can't reach the server: refused"));
+        assert_eq!(said.rows[0].value, ["abab"; 16].join(" "));
+        assert_eq!((said.rows[1].label.as_str(), said.rows[1].value.as_str(), said.rows[1].bad), ("Amounts", "the server's word", false));
+        assert!(said.rows[2].bad);
+        assert_eq!(said.notes, vec![KEY_NOTE.to_owned(), SERVERS_WORD.to_owned()]);
+        assert!(standing(None, Amounts::Mismatch, None).rows[0].bad);
+        assert_eq!(problem(&Problem::AmountMismatch), "The light server reported an amount that doesn't match the chain. Nothing from its answer was taken");
+        assert!(problem(&Problem::PlainHttp).starts_with("A light wallet server needs https"));
     }
 
     #[test]

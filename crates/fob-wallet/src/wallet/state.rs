@@ -43,6 +43,8 @@ pub(super) struct ChainSpend {
     pub(super) tx: String,
     pub(super) height: u64,
     pub(super) time: u64,
+    /// 0 when not known: found through a light wallet server that gives no
+    /// fees. Every transaction that spends pays one.
     pub(super) fee: u64,
 }
 

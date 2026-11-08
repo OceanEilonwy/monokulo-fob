@@ -92,6 +92,7 @@ fn server_chip(state: SyncState) -> (String, String) {
     match state {
         SyncState::ServerFailed { local: true } => ("Can't save".into(), failed_title(true).into()),
         SyncState::ServerFailed { local: false } => ("Can't reach server".into(), "Can't reach the light wallet server".into()),
+        SyncState::ServerRefused => ("Server answer refused".into(), "The light wallet server's answer was refused".into()),
         SyncState::ServerWaiting => ("Waiting for approval".into(), "Waiting for the server to approve this wallet".into()),
         SyncState::ServerSynced => ("Synced · server".into(), "Synced through the light wallet server".into()),
         SyncState::ServerBehind { blocks } => (format!("Server {} behind", grouped(blocks)), format!("The server is {} blocks behind", grouped(blocks))),
@@ -175,6 +176,7 @@ pub fn details(d: catch_up::Details) -> Details {
             Title::Server(SyncState::ServerSynced) => "Synced through server",
             Title::Server(SyncState::ServerWaiting) => "Waiting for approval",
             Title::Server(SyncState::ServerFailed { local }) => if local { failed_title(true) } else { "Can't reach server" },
+            Title::Server(SyncState::ServerRefused) => "Server answer refused",
             Title::Server(SyncState::ServerBehind { .. } | SyncState::ServerScanning { .. }) => "Server catching up",
             Title::Server(_) => "Connecting",
         }

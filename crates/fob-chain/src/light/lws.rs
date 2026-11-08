@@ -1,4 +1,4 @@
-//! Copied from monokulo-lws, `crates/lws-api/src/lib.rs` at efb59c8
+//! Copied from monokulo-lws, `crates/lws-api/src/lib.rs` at 0fca96c
 //! (github.com/OceanEilonwy/monokulo-lws, private), as decision 44 copied
 //! Monokulo's ZMTP: Fob depends on no private repository CI can't fetch.
 //! Kept in sync by hand; only this header differs. When it changes there,
@@ -233,6 +233,13 @@ pub struct ReceivedOutput {
     /// The unencrypted RingCT mask. Absent for a non-RingCT output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rct: Option<Hex32>,
+    /// The output's Pedersen commitment as it is on the chain (the
+    /// transaction's RingCT base `outPk`), so a client can check that
+    /// `mask·G + amount·H` is what the chain holds and not trust the
+    /// server's `amount` and `rct`. Absent for a non-RingCT output, and
+    /// from servers that do not serve it (monero-lws).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<Hex32>,
     pub recipient: AddressMeta,
 }
 
@@ -247,6 +254,10 @@ pub struct Transaction {
     pub total_received: Amount,
     /// The sum of the candidate spends' amounts.
     pub total_sent: Amount,
+    /// The fee the transaction paid, as monero-lws serves it. Absent from
+    /// servers that do not serve it, and for a coinbase transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee: Option<Amount>,
     pub unlock_time: u64,
     /// Absent while in the mempool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -628,6 +639,7 @@ mod tests {
     #[test]
     fn mempool_transaction_leaves_out_height_and_time() {
         let t = Transaction {
+            fee: None,
             id: 1,
             hash: Hex([1; 32]),
             timestamp: None,

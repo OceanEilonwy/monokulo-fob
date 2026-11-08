@@ -4,7 +4,11 @@
 //! rule (a self-signed server pinned to the key it first answers with),
 //! user:pass@ in the URL sent as Basic auth, no redirects, a 15 s connect
 //! and 30 s idle limit (decision 28), and an onion host refused before
-//! anything is looked up (decision 73).
+//! anything is looked up (decision 73). On top of the node's rules, since
+//! every request carries the view key: `https://` only, but for a server on
+//! this device ([`allowed`](super::allowed)); a whole request may take
+//! [`REQUEST`] at most, however slowly the answer trickles in; an answer
+//! may be [`LIMIT`] at most.
 //!
 //! Every account call carries the wallet's private view key in its body:
 //! the protocol has no other credential. Nothing here logs a request or puts
@@ -16,12 +20,18 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use fob_monero::network::Network;
 
-use super::{Problem, api_network, lws::*};
+use super::{Problem, allowed, api_network, lws::*, normalize};
 use crate::transport::{CertProblem, Transport};
 
 /// The most a server's answer may be: a wallet's whole history of
 /// transactions comes in one `/get_address_txs`, a few hundred bytes each.
-const LIMIT: usize = 32 << 20;
+pub const LIMIT: usize = 32 << 20;
+
+/// The longest a request may take, start to end. The transport's 30 s limit
+/// is between pieces of an answer; this bounds the whole, so a server can't
+/// hold a poll open by sending a byte every 29 s. Long enough for
+/// [`LIMIT`] at about 300 kB/s.
+pub const REQUEST: Duration = Duration::from_secs(120);
 
 /// How long the settings screen's Test waits for `/get_version`.
 pub const ANSWER: Duration = Duration::from_secs(10);
@@ -35,7 +45,7 @@ pub struct LightClient {
 
 impl LightClient {
     /// A client for the server at `url` (`https://host:port`, or `http://`
-    /// on the local network); `self_signed` accepts its own certificate,
+    /// on this device only); `self_signed` accepts its own certificate,
     /// pinned to the first key it answers with.
     pub fn new(url: &str, self_signed: bool) -> Result<LightClient, Problem> {
         Self::pinned(url, self_signed, None)
@@ -44,11 +54,8 @@ impl LightClient {
     /// [`new`](LightClient::new), held to the key `pin` fingerprints, from an
     /// earlier connection.
     pub fn pinned(url: &str, self_signed: bool, pin: Option<[u8; 32]>) -> Result<LightClient, Problem> {
-        let url = crate::node::normalize(url);
-        crate::node::reachable(&url).map_err(|e| match e {
-            crate::error::EndpointProblem::Onion => Problem::Onion,
-            _ => Problem::BadAddress,
-        })?;
+        let url = normalize(url);
+        allowed(&url)?;
         let transport = Transport::pinned(&url, self_signed, pin).map_err(|_| Problem::BadAddress)?;
         Ok(LightClient { transport, self_signed })
     }
@@ -67,9 +74,11 @@ impl LightClient {
     /// statuses to [`Problem`]s.
     pub async fn post<T: Serialize, U: DeserializeOwned>(&self, route: &str, body: &T) -> Result<U, Problem> {
         let body = serde_json::to_vec(body).map_err(|_| Problem::Unreadable)?;
-        let (status, answer) = match self.transport.post_json(route, body, LIMIT).await {
-            Ok(answered) => answered,
-            Err(text) => {
+        let asked = tokio::time::timeout(REQUEST, self.transport.post_json(route, body, LIMIT)).await;
+        let (status, answer) = match asked {
+            Err(_) => return Err(Problem::Unreachable(format!("no answer in {} s", REQUEST.as_secs()))),
+            Ok(Ok(answered)) => answered,
+            Ok(Err(text)) => {
                 return Err(match self.certificate() {
                     Some(Err(problem)) if !self.self_signed || !problem.acceptable() => Problem::Certificate(problem),
                     _ => Problem::Unreachable(text),
@@ -165,6 +174,10 @@ pub struct Report {
     pub ours: Network,
     /// Its `/get_version`, or why there was none.
     pub outcome: Result<Version, Problem>,
+    /// For a server whose own certificate is accepted: the SHA3-256 of the
+    /// public key it answered with, to show so it can be compared with the
+    /// server's own, and to hold it to from then on.
+    pub pin: Option<[u8; 32]>,
 }
 
 impl Report {
@@ -183,15 +196,18 @@ impl Report {
 /// The settings screen's Test: `/get_version` within [`ANSWER`], which
 /// sends nothing of the wallet's.
 pub async fn check(network: Network, url: &str, self_signed: bool, pin: Option<[u8; 32]>) -> Report {
-    let normal = crate::node::normalize(url);
-    let outcome = match LightClient::pinned(&normal, self_signed, pin) {
-        Err(problem) => Err(problem),
-        Ok(client) => match tokio::time::timeout(ANSWER, client.get_version()).await {
-            Ok(answer) => answer,
-            Err(_) => Err(Problem::Unreachable(format!("no answer in {} s", ANSWER.as_secs()))),
-        },
+    let normal = normalize(url);
+    let (outcome, pin) = match LightClient::pinned(&normal, self_signed, pin) {
+        Err(problem) => (Err(problem), None),
+        Ok(client) => {
+            let outcome = match tokio::time::timeout(ANSWER, client.get_version()).await {
+                Ok(answer) => answer,
+                Err(_) => Err(Problem::Unreachable(format!("no answer in {} s", ANSWER.as_secs()))),
+            };
+            (outcome, client.pin().filter(|_| self_signed))
+        }
     };
-    Report { address: crate::node::address(&normal), url: normal, self_signed, ours: network, outcome }
+    Report { address: crate::node::address(&normal), url: normal, self_signed, ours: network, outcome, pin }
 }
 
 #[cfg(test)]
