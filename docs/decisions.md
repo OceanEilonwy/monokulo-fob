@@ -3538,3 +3538,126 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      refused, balance 0.2 XMR. The unproved candidate spends neither
      lowered the state nor refused the answer: the state counts the
      wallet's outputs, and a spend found would be matched by key image.
+389. **Sending through a server: the fee is the server's, capped as a
+     node's.** Phase 3 of `docs/light-wallet-proposal.md`. A payment in
+     light mode asks `/get_unspent_outs` (with `use_dust`, amount 0) for its
+     fee only. Its `fees` are the four priorities lowest first, as a node's
+     `get_fee_estimate` gives them, and Fob takes the second, Normal, which
+     is what monero-daemon-rpc picks for `FeePriority::Normal` and so what
+     the node path pays; a server without `fees` (monero-lws before it had
+     them) gives `per_byte_fee`, taken as it is (the lowest priority, where
+     monero-oxide would multiply a node's lone `fee` by five), and a list
+     that stops before Normal is unreadable. `FeeRate::new(per byte,
+     fee_mask)`, refused, with "The light server asked a network fee far
+     above the usual, so nothing was sent", above `MAX_FEE_PER_WEIGHT`
+     (400,000, about twenty times an honest mainnet node's, decision 12's
+     cap) or with a mask above `MAX_FEE_MASK`. That second cap is new, and
+     the node path has it too: a fee is rounded up to a multiple of the
+     mask, and a mask of a whole XMR (which nothing checked) would round
+     every fee up to one; monerod's is 10,000, the cap 100,000, ten times
+     that. The fee is kept for Split up's estimate as the node's is;
+     `warm_up_send` and `refresh_fee_rate` ask the server in light mode.
+390. **The coins spent are the wallet's own records.** Light syncing has
+     already found and checked each of them (decisions 373, 377, 384: key,
+     mask, commitment, proof) and worked out its key image, so
+     `prepare_payments` picks from `state.outputs` as the node path does,
+     ready by the same confirmations against the tip the server reported at
+     the last poll (`state.tip`, which `reconcile` sets), never more than
+     20 s old and only ever late, so a coin is never ready early.
+     `/get_unspent_outs`' own list (and its 96-byte `rct`, which monokulo-lws
+     works out from the mask and amount, decision 377) isn't read. The
+     transaction is built and signed exactly as the node path builds it:
+     the same coin choice, `SignableTransaction`, retry on
+     `NotEnoughFunds`; only where the fee and the rings come from differs
+     (`wallet/light_send.rs`, a `Source` that is the node's or the server's).
+391. **Rings from the server's members, and what the server learns.** One
+     `/get_random_outs` asks `count` 16 (`RING_LEN`, the ring size since
+     the 2022 hard fork) for each input, `amounts` `"0"` each (RingCT), at
+     most 150 rings a request (monero-lws's limit; a payment with more asks
+     again); a coin added after `NotEnoughFunds` asks for its one. Sixteen
+     is one more than a ring's fifteen decoys, as wallet2 asks a server:
+     the member that is the real coin, if the server happened to pick it,
+     is the one dropped, and otherwise one at random. Each answer must be
+     RingCT's, exactly 16 members, no global index twice, every key and
+     commitment (the first 32 bytes of `rct`, which is 32 bytes or, for old
+     clients, 96) a point, and a member at the coin's own index must be the
+     coin, key and commitment, as monero-oxide holds a node to it; members
+     with torsion or the identity key are dropped, as monero-oxide's picker
+     skips them, and too few left refuses the payment with "The light
+     server's ring members for this payment aren't usable, so nothing was
+     sent". The ring is the coin and fifteen members sorted by global index,
+     offsets relative, the coin's place the signer's, `Decoys::new`; and,
+     since `OutputWithDecoys` has no constructor for a ring picked
+     elsewhere, its bytes (the coin's key, key offset and commitment, then
+     the `Decoys`) read back with `OutputWithDecoys::read`. A test hands
+     `ring` the decoys monero-oxide's own picker chose from a fake chain and
+     gets its `OutputWithDecoys` byte for byte. Not checked: a member's age
+     (the API gives no heights, so the proposal's "older than 10 blocks"
+     can't be), or that a member exists at its index (the node refuses the
+     transaction if not). What the server learns: it already knows every
+     output of the wallet's (it holds the view key), and when the ring is
+     formed, it knows which member is the spend: the one that is the
+     wallet's, among members it picked itself. So decoys from the server
+     hide the spend from the chain and from everyone else, never from the
+     server. That is inherent to the light wallet model, which the
+     switch's words already say; a server that picks poor decoys weakens
+     the ring only against the chain.
+392. **Submitted, then recorded as the node path records it.**
+     `/submit_raw_tx { tx }` replaces the node's `publish_transaction` inside
+     the same `publish_and_record`: the coins are checked unspent first, the
+     payment recorded as sent once published (its coins spent, amount, fee,
+     change, note, receipt), all in one task that runs to the end however
+     the screen goes. "OK" is published. "OK" with `not_relayed` (its node
+     holds it but didn't pass it on), no answer, an answer that can't be
+     read, a 503 or another 5xx are what the node path calls unsure: the
+     payment is recorded with its signed transaction kept, and each poll
+     offers it to the server again until taken or turned down
+     (`publish_unanswered_through`, the node path's rule). A 422 is the
+     server's node turning it down: "The light server's node turned the
+     payment down: double spend", with the server's reason made one line of
+     printable characters, 120 at most (it's the server's words about the
+     transaction, nothing of the wallet's), and nothing recorded; so is a
+     request that never reached the server, or a 400. `LightClient` now
+     reads a 422's body for that reason (it had dropped it). The next poll
+     sees the payment in the pool (monokulo-lws lists it, `mempool: true`;
+     it's left out of the pool rows as this wallet's own), then mined: the
+     payment gets its height and the spend found by key image takes the
+     server's fee. A poll that lands between the submission and the record
+     can find the spend first: the record then marks the same coins with
+     the same hash and the next poll gives the payment its height, one row,
+     nothing twice (tested); a pool row for it is dropped at the record. A
+     payment the server has neither mined nor in its pool a day after it
+     was sent is marked not confirmed, as the node path marks one its node
+     never heard of, so its coins can be released; mined after all, it's
+     confirmed again. Against monero-lws, which reports no pool, a payment
+     stuck in a pool for a day is marked too.
+393. **A Trezor wallet sends through its node.** The device's payment uses
+     the same rings and would go through the same builder, but a device
+     wallet's coins are spendable only once the device has given their key
+     images, which `sync_trezor` checks against a node's
+     `is_key_image_spent`, and light syncing has no key images for it
+     (`reconcile` can't make them without the spend key). So in light mode
+     `prepare` and `send_with_trezor` refuse a device wallet with "A Trezor
+     wallet sends through a node for now. Switch Sync through to Node in
+     Settings to send" (`FobError::TrezorThroughServer`), and Send shows it
+     where its errors go with Review off: `Wallet::send_notice`, the FFI's
+     `Screens.send_notice` and `send_notice()`, read by Android's
+     `WalletModel.sendNotice` and GTK's Send. For every other wallet Send is
+     open in light mode: "Sending through a server comes next"
+     (`SEND_LATER`, `LightWords.send_later`, `SendingThroughServerLater`)
+     is gone, and Confirm shows the fee as it always has.
+394. **Tried on stagenet, 2026-11-08**, against monokulo-lws at `db1d695`
+     (main) on 127.0.0.1:18443 (`serve --daemon
+     http://stagenet.xmr-tw.org:38081 --create auto`, the test wallet added
+     from 2,244,400). The ignored `live_a_payment_from_light_mode`
+     (`LWS_URL`, `LIVE_SPEND`, `LIVE_VIEW`, `LIVE_FROM=2244400`,
+     `LIVE_NODE=http://stagenet.xmr-tw.org:38081`) synced in one poll at
+     2,245,988 ("Amounts · match the chain", 0.2 XMR ready), prepared
+     0.01 XMR to the wallet's own subaddress 1 at the server's Normal fee
+     (80,000 a byte, mask 10,000): fee 0.0001224 XMR. The server took it
+     ("OK"); `fbd23337f4a2e5c398bcce03977ebad950a4f09c51340641e6fdd98c5aa6da9a`
+     was in its pool 20 s later and mined at 2,245,988 at the next poll
+     (40 s), its spend found by key image with the fee 0.0001224 XMR, the
+     change (0.0898776 XMR) and the 0.01 XMR found as new coins with
+     proofs the node vouched for, balance 0.1998776 XMR. Activity: "Sent to
+     yourself · Confirming · 1 of 10", −0.0001 XMR (the fee).
