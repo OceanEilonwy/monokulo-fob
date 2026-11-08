@@ -53,6 +53,8 @@ import com.monokulo.fob.Nav
 import uniffi.fob.scanEngine
 import uniffi.fob.lightWords
 import uniffi.fob.LightReport
+import uniffi.fob.LightReportRow
+import uniffi.fob.LightStanding
 import com.monokulo.fob.ui.Segmented
 import com.monokulo.fob.Screen
 import com.monokulo.fob.Nfc
@@ -731,8 +733,9 @@ fun ZmqScreen(model: WalletModel, nav: Nav) {
 }
 
 /**
- * The Light server screen: the server's address, its own certificate, Test with what it found, what the server sees,
- * and "Sync through this server", which Rust refuses with words when the server doesn't answer, is on another network
+ * The Light server screen: the server's address, its own certificate, the server in use as it stands (the key it's
+ * held to, whether its amounts are checked, its last failure), Test with what it found, what the server sees, and
+ * "Sync through this server", which Rust refuses with words when the server doesn't answer, is on another network
  * or has subaddresses off. Every word is Rust's.
  */
 @Composable
@@ -743,11 +746,13 @@ fun LightServerScreen(model: WalletModel, nav: Nav) {
     var url by remember { mutableStateOf("") }
     var selfSigned by remember { mutableStateOf(false) }
     var report by remember { mutableStateOf<LightReport?>(null) }
+    var standing by remember { mutableStateOf<LightStanding?>(null) }
     var testing by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(wallet) {
         model.lightServer()?.let { url = it.url; selfSigned = it.selfSigned }
+        standing = model.lightStanding()
     }
     // What's typed has changed since the Test: its report isn't this server's.
     fun edited() { report = null; error = null }
@@ -777,20 +782,35 @@ fun LightServerScreen(model: WalletModel, nav: Nav) {
                     }
                 })
             }
+            standing?.takeIf { it.rows.isNotEmpty() && report == null }?.let { s ->
+                Card {
+                    s.rows.forEachIndexed { i, row ->
+                        if (i > 0) Divider()
+                        LightRow(row)
+                    }
+                }
+                s.notes.forEach { Text(it, color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp)) }
+            }
             report?.let { r ->
                 Card {
                     InfoRow(r.address, r.verdict, bold = true)
                     r.rows.forEach { row ->
                         Divider()
-                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(row.label, color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                            Text(row.value, color = if (row.bad) Fob.red else Fob.ink, fontSize = 15.sp, textAlign = TextAlign.End)
-                        }
+                        LightRow(row)
                     }
                 }
             }
             Text(words.privacy, color = Fob.muted, fontSize = 14.sp)
         }
+    }
+}
+
+/** One line of what the Light server screen says of a server: label, and its value in red when it's the trouble. */
+@Composable
+private fun LightRow(row: LightReportRow) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(row.label, color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        Text(row.value, color = if (row.bad) Fob.red else Fob.ink, fontSize = 15.sp, textAlign = TextAlign.End, modifier = Modifier.weight(2f, fill = false))
     }
 }
 

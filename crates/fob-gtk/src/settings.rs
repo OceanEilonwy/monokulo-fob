@@ -626,18 +626,29 @@ impl Settings {
         form.append(&url);
         form.append(&self_signed);
         form.append(&test);
+        // The server in use as it stands: the key it's held to, whether its
+        // amounts are checked, its last failure.
+        let standing = widgets::dim("");
+        standing.set_wrap(true);
+        standing.set_selectable(true);
+        standing.set_visible(false);
         let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
         column.append(&form);
+        column.append(&standing);
         column.append(&found);
         let dialog = adw::AlertDialog::builder().heading(&self.words.server_title).body(&self.words.privacy).extra_child(&column).build();
         dialog.add_responses(&[("cancel", "_Cancel"), ("use", self.words.use_server.as_str())]);
         dialog.set_close_response("cancel");
         dialog.set_response_appearance("use", adw::ResponseAppearance::Suggested);
-        let (engine, shown, switch) = (self.engine.clone(), url.clone(), self_signed.clone());
+        let (engine, shown, switch, stands) = (self.engine.clone(), url.clone(), self_signed.clone(), standing.clone());
         gtk::glib::spawn_future_local(async move {
-            if let Ok(Some(Some(now))) = relm4::spawn(async move { engine.read(|wallet, _| async move { wallet.light_server().await }).await }).await {
+            if let Ok(Some((Some(now), said))) = relm4::spawn(async move { engine.read(|wallet, _| async move { (wallet.light_server().await, wallet.light_standing().await) }).await }).await {
                 shown.set_text(&now.url);
                 switch.set_active(now.self_signed);
+                let mut lines: Vec<String> = said.rows.iter().map(|r| format!("{}: {}{}", r.label, r.value, if r.bad { " ✗" } else { "" })).collect();
+                lines.extend(said.notes);
+                stands.set_text(&lines.join("\n"));
+                stands.set_visible(!said.rows.is_empty());
             }
         });
         let (engine, typed, ss, label) = (self.engine.clone(), url.clone(), self_signed.clone(), found.clone());

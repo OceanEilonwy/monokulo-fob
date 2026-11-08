@@ -56,6 +56,7 @@ import uniffi.fob.TrezorPrompts
 import uniffi.fob.ReceiveAddress
 import uniffi.fob.LightReport
 import uniffi.fob.LightSetting
+import uniffi.fob.LightStanding
 import uniffi.fob.Profile
 import uniffi.fob.ProfileRow
 import uniffi.fob.ProfileShare
@@ -777,6 +778,9 @@ class WalletModel(private val app: Application) {
 
     /** The light wallet server chosen, in use or not. */
     suspend fun lightServer(): LightSetting? = _wallet.value?.lightServer()
+
+    /** The server in use, for its screen: the key it's held to, what its amounts are worth, its last failure. */
+    suspend fun lightStanding(): LightStanding? = _wallet.value?.let { withContext(Dispatchers.Default) { it.lightStanding() } }
 
     /**
      * Chooses the server and syncs through it: Rust refuses one that doesn't answer, is on another network or has
