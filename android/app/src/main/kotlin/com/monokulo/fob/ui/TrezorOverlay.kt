@@ -70,6 +70,7 @@ fun TrezorOverlay(model: WalletModel) {
 
 /** What to say for the device's screens, by the names its firmware gives them. */
 private fun buttonWords(what: String): String = when {
+    what.contains("pin", ignoreCase = true) -> "Unlock the Trezor: enter its PIN on the device."
     what.contains("address", ignoreCase = true) -> "The Trezor shows this wallet's address. Fob shows the same one on Receive: if they ever differ, don't use this wallet."
     what.contains("watch", ignoreCase = true) || what.contains("export", ignoreCase = true) -> "On the Trezor, allow Fob to watch this wallet: it asks to export the view key."
     what.contains("sync", ignoreCase = true) || what.contains("key_image", ignoreCase = true) -> "On the Trezor, allow the key image sync: it shows which of this wallet's coins are spent."

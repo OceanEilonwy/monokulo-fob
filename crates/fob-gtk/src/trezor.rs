@@ -27,7 +27,9 @@ pub fn prompter<C: Component<Output = RootMsg>>(sender: &ComponentSender<C>) -> 
 /// What to say for the device's screens, by the names its firmware gives them.
 fn button_words(what: &str) -> &'static str {
     let what = what.to_ascii_lowercase();
-    if what.contains("address") {
+    if what.contains("pin") {
+        "Unlock the Trezor: enter its PIN on the device."
+    } else if what.contains("address") {
         "The Trezor shows this wallet's address. Fob shows the same one on Receive: if they ever differ, don't use this wallet."
     } else if what.contains("watch") || what.contains("export") {
         "On the Trezor, allow Fob to watch this wallet: it asks to export the view key."
@@ -177,4 +179,18 @@ fn waiting(heading: &str, body: &str, cancel: Arc<dyn Fn() + Send + Sync>) -> ad
     dialog.set_close_response("cancel");
     dialog.connect_response(Some("cancel"), move |_, _| cancel());
     dialog
+}
+
+#[cfg(test)]
+mod tests {
+    use super::button_words;
+
+    #[test]
+    fn the_device_s_screens_are_said_in_words() {
+        assert!(button_words("pin_device").starts_with("Unlock the Trezor"));
+        assert!(button_words("confirm_watchkey").contains("allow Fob to watch"));
+        assert!(button_words("show_address").contains("address"));
+        assert!(button_words("confirm_tx").contains("payment"));
+        assert_eq!(button_words("button 1"), "Confirm on the Trezor.");
+    }
 }

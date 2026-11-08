@@ -133,6 +133,52 @@ impl Features {
     }
 }
 
+/// A message type by its name in Trezor's protocol, for an error that
+/// says what came where what was expected.
+pub fn name(msg_type: u16) -> String {
+    let known = match msg_type {
+        INITIALIZE => "Initialize",
+        SUCCESS => "Success",
+        FAILURE => "Failure",
+        FEATURES => "Features",
+        PIN_MATRIX_REQUEST => "PinMatrixRequest",
+        PIN_MATRIX_ACK => "PinMatrixAck",
+        CANCEL => "Cancel",
+        BUTTON_REQUEST => "ButtonRequest",
+        BUTTON_ACK => "ButtonAck",
+        PASSPHRASE_REQUEST => "PassphraseRequest",
+        PASSPHRASE_ACK => "PassphraseAck",
+        MONERO_TRANSACTION_INIT_REQUEST => "MoneroTransactionInitRequest",
+        MONERO_TRANSACTION_INIT_ACK => "MoneroTransactionInitAck",
+        MONERO_TRANSACTION_SET_INPUT_REQUEST => "MoneroTransactionSetInputRequest",
+        MONERO_TRANSACTION_SET_INPUT_ACK => "MoneroTransactionSetInputAck",
+        MONERO_TRANSACTION_INPUT_VINI_REQUEST => "MoneroTransactionInputViniRequest",
+        MONERO_TRANSACTION_INPUT_VINI_ACK => "MoneroTransactionInputViniAck",
+        MONERO_TRANSACTION_ALL_INPUTS_SET_REQUEST => "MoneroTransactionAllInputsSetRequest",
+        MONERO_TRANSACTION_ALL_INPUTS_SET_ACK => "MoneroTransactionAllInputsSetAck",
+        MONERO_TRANSACTION_SET_OUTPUT_REQUEST => "MoneroTransactionSetOutputRequest",
+        MONERO_TRANSACTION_SET_OUTPUT_ACK => "MoneroTransactionSetOutputAck",
+        MONERO_TRANSACTION_ALL_OUT_SET_REQUEST => "MoneroTransactionAllOutSetRequest",
+        MONERO_TRANSACTION_ALL_OUT_SET_ACK => "MoneroTransactionAllOutSetAck",
+        MONERO_TRANSACTION_SIGN_INPUT_REQUEST => "MoneroTransactionSignInputRequest",
+        MONERO_TRANSACTION_SIGN_INPUT_ACK => "MoneroTransactionSignInputAck",
+        MONERO_TRANSACTION_FINAL_REQUEST => "MoneroTransactionFinalRequest",
+        MONERO_TRANSACTION_FINAL_ACK => "MoneroTransactionFinalAck",
+        MONERO_KEY_IMAGE_EXPORT_INIT_REQUEST => "MoneroKeyImageExportInitRequest",
+        MONERO_KEY_IMAGE_EXPORT_INIT_ACK => "MoneroKeyImageExportInitAck",
+        MONERO_KEY_IMAGE_SYNC_STEP_REQUEST => "MoneroKeyImageSyncStepRequest",
+        MONERO_KEY_IMAGE_SYNC_STEP_ACK => "MoneroKeyImageSyncStepAck",
+        MONERO_KEY_IMAGE_SYNC_FINAL_REQUEST => "MoneroKeyImageSyncFinalRequest",
+        MONERO_KEY_IMAGE_SYNC_FINAL_ACK => "MoneroKeyImageSyncFinalAck",
+        MONERO_GET_ADDRESS => "MoneroGetAddress",
+        MONERO_ADDRESS => "MoneroAddress",
+        MONERO_GET_WATCH_KEY => "MoneroGetWatchKey",
+        MONERO_WATCH_KEY => "MoneroWatchKey",
+        _ => return format!("message {msg_type}"),
+    };
+    known.to_owned()
+}
+
 /// `Failure`: its code and text.
 pub fn failure(data: &[u8]) -> (u64, String) {
     match Reader::parse(data) {

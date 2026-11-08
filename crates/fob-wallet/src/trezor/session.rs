@@ -56,9 +56,20 @@ const MIN_VERSION: (u64, u64, u64) = (2, 5, 2);
 impl<'a> Session<'a> {
     /// Says hello and reads what the device is. Refuses one that can't do
     /// Monero, isn't set up, or has firmware too old to talk to.
+    ///
+    /// An exchange cut short (Fob gave up on a wait, or was closed) can
+    /// leave the device's last reply unread, to be read first by the next
+    /// one: `Initialize` ends whatever the device was doing, so anything
+    /// read before its `Features` is from before and is passed over.
     pub fn open(link: &'a dyn Link, prompts: &'a dyn Prompts) -> Result<Session<'a>> {
         let mut session = Session { link, prompts, features: m::Features::default() };
-        let data = session.expect(m::INITIALIZE, &m::initialize(None), m::FEATURES)?;
+        session.write(m::INITIALIZE, &m::initialize(None))?;
+        let data = loop {
+            let (reply, data) = session.read()?;
+            if reply == m::FEATURES {
+                break data;
+            }
+        };
         let features = m::Features::parse(&data).map_err(|e| device(e.to_string()))?;
         if !features.can(m::CAPABILITY_MONERO) {
             return Err(device(format!("{} can't hold Monero: Trezor Model One doesn't, and a Trezor set up for Bitcoin only needs its full firmware", features.name())));
@@ -114,6 +125,10 @@ impl<'a> Session<'a> {
                         Passphrase::Cancelled => self.write(m::CANCEL, &[])?,
                     }
                 }
+                // A hello's answer from an exchange cut short: the device
+                // never answers anything else with its features. The reply
+                // to what was asked follows.
+                m::FEATURES if msg_type != m::INITIALIZE => continue,
                 m::FAILURE => {
                     // Fob's own words for each code: the device's text isn't
                     // shown, as a hostile one could say anything there.
@@ -142,7 +157,7 @@ impl<'a> Session<'a> {
     pub fn expect(&self, msg_type: u16, data: &[u8], wanted: u16) -> Result<Vec<u8>> {
         let (reply, data) = self.call(msg_type, data)?;
         if reply != wanted {
-            return Err(device(format!("the device answered with message {reply} where {wanted} was expected")));
+            return Err(device(format!("the Trezor answered out of step: it sent {} where {} was expected. Unplug it, plug it in again and try again.", m::name(reply), m::name(wanted))));
         }
         Ok(data)
     }
@@ -273,7 +288,14 @@ pub mod fake {
             }
         }
 
-        fn features_bytes(&self) -> Vec<u8> {
+        /// Leaves a reply unread from an exchange before this one, as a
+        /// device does when Fob gave up on a wait: the next read gets it
+        /// first.
+        pub fn leave_stale(&self, msg_type: u16, data: &[u8]) {
+            self.queue(msg_type, data);
+        }
+
+        pub fn features_bytes(&self) -> Vec<u8> {
             let f = &self.features;
             let mut w = Writer::new();
             w.bytes(1, f.vendor.as_bytes()).uint(2, f.version.0).uint(3, f.version.1).uint(4, f.version.2).bool(12, f.initialized);
@@ -384,7 +406,11 @@ pub mod fake {
         }
 
         fn proceed(&self, msg_type: u16, data: Vec<u8>) {
-            let next = {
+            // As the firmware: a hello is answered locked, with no seed, so
+            // it asks nothing; the questions wait for the first real request.
+            let next = if msg_type == m::INITIALIZE {
+                None
+            } else {
                 let mut asks = self.asks.lock().unwrap();
                 if asks.is_empty() { None } else { Some(asks.remove(0)) }
             };
@@ -494,22 +520,25 @@ mod tests {
         assert_eq!((*key, address.as_str()), ([7; 32], "4abc"));
         assert_eq!(*person.pins_asked.lock().unwrap(), 1);
         assert_eq!(*person.buttons.lock().unwrap(), vec!["confirm_tx".to_string()]);
-        assert_eq!(*fake.log.lock().unwrap(), vec![m::INITIALIZE, m::PIN_MATRIX_ACK, m::PASSPHRASE_ACK, m::BUTTON_ACK, m::MONERO_GET_WATCH_KEY]);
+        assert_eq!(*fake.log.lock().unwrap(), vec![m::INITIALIZE, m::MONERO_GET_WATCH_KEY, m::PIN_MATRIX_ACK, m::PASSPHRASE_ACK, m::BUTTON_ACK]);
     }
 
     #[test]
     fn a_wrong_pin_and_a_cancel_are_told_apart() {
         let fake = Fake::new();
-        *fake.asks.lock().unwrap() = vec![Asks::Pin];
         let mut person = Person::new();
         person.pin = Some("9999".into());
-        assert!(matches!(Session::open(&fake, &person), Err(FobError::Trezor(text)) if text.contains("PIN")));
+        let session = Session::open(&fake, &person).unwrap();
+        *fake.asks.lock().unwrap() = vec![Asks::Pin];
+        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(text)) if text.contains("PIN")));
         *fake.asks.lock().unwrap() = vec![Asks::Pin];
         person.pin = None;
-        assert!(matches!(Session::open(&fake, &person), Err(FobError::TrezorCancelled)));
+        let session = Session::open(&fake, &person).unwrap();
+        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::TrezorCancelled)));
         *fake.asks.lock().unwrap() = vec![Asks::Passphrase];
         person.passphrase = Passphrase::Cancelled;
-        assert!(matches!(Session::open(&fake, &person), Err(FobError::TrezorCancelled)));
+        let session = Session::open(&fake, &person).unwrap();
+        assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::TrezorCancelled)));
         *fake.fail.lock().unwrap() = Some((m::MONERO_GET_WATCH_KEY, m::FAILURE_ACTION_CANCELLED));
         person.passphrase = Passphrase::OnDevice;
         let session = Session::open(&fake, &person).unwrap();
@@ -519,6 +548,39 @@ mod tests {
         assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t.contains("busy") && !t.contains("refused")));
         *fake.fail.lock().unwrap() = Some((m::MONERO_GET_WATCH_KEY, 77));
         assert!(matches!(session.watch_key(Network::Stagenet), Err(FobError::Trezor(t)) if t == "the Trezor refused (code 77)"));
+    }
+
+    #[test]
+    fn a_reply_left_over_from_an_exchange_cut_short_is_passed_over() {
+        // The hello's answer, read by the next exchange: the device sends
+        // its features once more for the hello that follows.
+        let mut fake = Fake::new();
+        fake.address = "4abc".into();
+        fake.leave_stale(m::FEATURES, &fake.features_bytes());
+        let person = Person::new();
+        let session = Session::open(&fake, &person).unwrap();
+        assert_eq!(session.watch_key(Network::Mainnet).unwrap().1, "4abc");
+        assert_eq!(session.address_shown(Network::Mainnet).unwrap(), "4abc");
+        // A question left unanswered: the hello ended what it was for.
+        let fake = Fake::new();
+        let mut w = crate::trezor::proto::Writer::new();
+        w.uint(1, 20).bytes(4, b"pin_device");
+        fake.leave_stale(m::BUTTON_REQUEST, &w.finish());
+        let session = Session::open(&fake, &person).unwrap();
+        assert_eq!(session.features.name(), "Trezor Safe 3");
+        assert!(person.buttons.lock().unwrap().is_empty(), "a stale question isn't put to the person");
+        assert_eq!(*fake.log.lock().unwrap(), vec![m::INITIALIZE]);
+    }
+
+    #[test]
+    fn an_answer_out_of_step_is_named() {
+        let fake = Fake::new();
+        let person = Person::new();
+        let session = Session::open(&fake, &person).unwrap();
+        let wrong = session.expect(m::MONERO_GET_WATCH_KEY, &m::get_watch_key(Network::Mainnet), m::MONERO_ADDRESS);
+        assert!(matches!(wrong, Err(FobError::Trezor(t)) if t.contains("MoneroWatchKey where MoneroAddress was expected") && t.contains("Unplug it")));
+        assert_eq!(m::name(17), "Features");
+        assert_eq!(m::name(9999), "message 9999");
     }
 
     #[test]
