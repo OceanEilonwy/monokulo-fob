@@ -32,12 +32,12 @@
 
 ## Why Fob
 
-- **Fast to catch up.** Scanning is done in Rust on [monero-oxide](https://github.com/monero-oxide/monero-oxide), with a prefilter shared with monokulo-lws; Scan lets you pick how far back to look.
-- **Simple to pay with.** Paste or read a payment code and confirm. Requests carry an amount, a note and who they're for.
-- **Receipts kept.** Payment codes from Monokular's tills carry Open Receipt Format receipts, and Fob keeps them with the payment.
-- **Sealed.** Wallets live in an encrypted file under a passphrase you choose and lock when left alone.
-- **Hardware wallets.** A Trezor Model T, Safe 3 or Safe 5 can hold the spend key, over USB on the phone and the desktop.
-- **Starts on stagenet.** Test coins first, nothing to lose; mainnet is a separate wallet a switch away.
+- **Scans on the GPU.** The [monokulo-8ar](https://github.com/OceanEilonwy/monokulo-8ar) prefilter works out 8·a·R for tens of thousands of transaction keys per Vulkan dispatch, at about half the energy per block of a phone's cores. Only flagged blocks go to monero-oxide's own scanner, and a GPU must pass test vectors, with each wallet's own view key too, before it's trusted; without one, the CPU does the work.
+- **Rich contacts.** Each contact has a name, a note, a photo and a send address, and keeps every address they've been paid at, so Activity says who a payment was for. A contact's card lists what you've paid them and what you've asked of them, and "Paid, not saved" offers to save any address you've paid as a contact. Scanning someone's profile code adds them.
+- **Hardware wallets.** Keep the spend key on a Trezor Model T, Safe 3 or Safe 5, over USB on the phone and the desktop. Fob watches with the view key, and every payment is confirmed on the device's own screen.
+- **Easy testing.** Fob starts on stagenet, with test coins and nothing to lose; mainnet is a separate wallet one switch away in Settings.
+- **Light and fast.** A native app on both platforms, with no web view and one small Rust core. Scan lets you pick how far back to look, from unsettled payments to the whole wallet, and says how long it will take.
+- **Receipts.** Payment codes from Monokular's tills carry [Open Receipt Format](https://github.com/openreceiptformat/orf-spec) receipts, and Fob keeps each one with the payment it was for.
 
 <table>
   <tr>
