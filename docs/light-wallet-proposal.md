@@ -2,8 +2,9 @@
 
 Status: proposal, 2026-11-07. Phase 2, read-only light mode, is built in Fob
 (decisions 371–376) and hardened (377–382: amounts held to the server's
-commitments, fees, time locks, the client's rules); the server half
-(`monokulo-lws`) exists as a first working version, in its own repository.
+commitments, fees, time locks, the client's rules; 384–387: each payment
+proved to be in a block a node has); the server half (`monokulo-lws`)
+exists as a first working version, in its own repository.
 
 ## What it is
 
@@ -55,7 +56,7 @@ strings, keys as hex.
 | Call | What Fob gets |
 |---|---|
 | `/login` | Registers or recognises the account. `new_address`, `start_height`. 501 if the server doesn't take new accounts; 403 while an admin hasn't approved yet. |
-| `/get_address_txs` | Every transaction that touched the wallet: hash, height, time, `total_received`, `total_sent`, `unlock_time`, `coinbase`, `mixin`, `payment_id`, `fee` (monero-lws, and monokulo-lws from `0fca96c`'s wire types), and per transaction the **candidate spends** (`spent_outputs`: amount, key image, the spent output's tx pub key and index, ring size) and, from monero-lws on, the **outputs received** (`receives`: amount, one-time key, index, global index, tx pub key, RingCT mask, subaddress, and from monokulo-lws the output's on-chain `commitment`). Plus `scanned_height`, `blockchain_height`. |
+| `/get_address_txs` | Every transaction that touched the wallet: hash, height, time, `total_received`, `total_sent`, `unlock_time`, `coinbase`, `mixin`, `payment_id`, `fee` (monero-lws, and monokulo-lws from `0fca96c`'s wire types), and per transaction the **candidate spends** (`spent_outputs`: amount, key image, the spent output's tx pub key and index, ring size) and, from monero-lws on, the **outputs received** (`receives`: amount, one-time key, index, global index, tx pub key, RingCT mask, subaddress, and from monokulo-lws the output's on-chain `commitment`). From monokulo-lws (`3bb52de`'s wire types), a mined transaction's **`proof`**: its block as Monero serialises it and its pruned parts. Plus `scanned_height`, `blockchain_height`. |
 | `/get_address_info` | The same heights, `locked_funds`, totals and all candidate spends, without the transactions. |
 | `/get_unspent_outs` | Every output received, with its global index, the 96-byte `rct` blob (commitment, then mask and amount encrypted the old way), tx hash, tx prefix hash, the key images of every candidate spend of it, and the network fee (`per_byte_fee`, `fee_mask`, and per-priority `fees`). |
 | `/get_random_outs` | Ring members: `count` outputs per requested amount (`"0"` for RingCT), each with global index, one-time key and commitment. The **server** picks them (gamma over age, as wallet2). |
@@ -81,7 +82,10 @@ What the protocol leaves to the client, and what it lacks:
   hashes as it does now (decision 9). Instead each poll is a *reconciliation*:
   the server's list of transactions is the truth, and a transaction that was
   there and is gone (reorged out) has its outputs removed. Fob never scans
-  in light mode, so this is cheap and idempotent.
+  in light mode, so this is cheap and idempotent. The blocks a proving
+  server's transactions are in (decision 384) are held to a node's hashes,
+  which Fob keeps with a few near where it last asked, so a reorganisation
+  there shows and those blocks are checked again (decision 385).
 - **No output distribution.** Fob's decoy cache (decision 27) and
   monero-oxide's own decoy picker need `get_output_distribution`, which the
   API doesn't have. In light mode the server picks decoys, as the protocol
@@ -198,10 +202,15 @@ light_step():
   spend key (of that subaddress)`, and `amount·H + mask·G == the commitment`
   the server sent (decision 377). A server can hide outputs. The checks catch
   an output of another wallet's and an amount that doesn't fit the
-  commitment given; but the commitment is the server's word for the chain,
-  and a server holding the view key can make a key and a commitment that
-  fit an output it invented. Only the chain (a node's `get_outs`) catches
-  that, and the node refuses to spend such a coin. The format is "not protocol defined" (monero-oxide's
+  commitment given; but the commitment alone is the server's word for the
+  chain, and a server holding the view key can make a key and a commitment
+  that fit an output it invented. So a server that can proves each
+  transaction is in a block (decision 384): Fob works out the transaction's
+  hash from its pruned parts, finds it in the block, reads the one-time
+  keys, commitments, fee and unlock time back from the parts, and holds the
+  block's hash to a node's at that height, asked over stretches of the
+  chain so the node can't tell which blocks are the wallet's (decision
+  385). The format is "not protocol defined" (monero-oxide's
   words), so this needs a round-trip test pinned to `monero-wallet 0.2`, and
   a small upstream PR for a `WalletOutput::new` would be the lasting fix.
 - **Spent.** For each candidate in `spent_outputs`, find the owned output by
@@ -280,12 +289,14 @@ lws.example.com". The screen:
 |---|---|
 | See every payment in, with amounts, subaddresses and times. | Said in the words; the user's choice. |
 | Guess spends from which outputs sit in rings. | Statistical, same as any light wallet. |
-| Hide a payment or a spend. | Not detectable; also the user's choice of server. Fob can at least show when the server's `scanned_height` lags the chain. |
+| Hide a payment or a spend, or leave a proof off. | Not detectable; also the user's choice of server. Fob can at least show when the server's `scanned_height` lags the chain, and a payment without a proof makes the Light server screen say "commitments only" or "the server's word" (decision 386). |
 | Name an output of another wallet's, or one under a key Fob can't spend. | Caught: the one-time key is re-derived from the transaction key, the view key and the index, and the mask from hard fork 10 on (decisions 373, 382). |
 | Misstate an amount. | Caught when the server serves commitments (monokulo-lws): the amount and mask must open the commitment given, in constant time, or the whole answer is refused and the sync stops with words (decisions 377, 378). monero-lws serves none: its amounts are taken on its word, and the Light server screen says so. |
-| Invent an output whole (it holds the view key, so key, mask and commitment can be made to fit). | Not caught without the chain: a node's `get_outs` by global index would, at the price of telling the node which outputs are the wallet's. Such a coin can't be spent: the node refuses the transaction. |
+| Invent an output whole (it holds the view key, so key, mask and commitment can be made to fit). | Caught when the server proves its transactions (monokulo-lws) and a node answers: the proof must hold and name the block the node has at that height, or the whole answer is refused and the sync stops with words (decisions 384, 385). Without a proof (monero-lws) it isn't, and the screen says the payments are held to commitments only, or are the server's word; with the node unreachable, "not checked yet" until it answers. Such a coin can't be spent either way: the node refuses the transaction. |
+| Misstate a proved transaction's fee, unlock time, time or height. | Caught: each is read back from the proof (decision 384). |
 | Contradict itself (one output with two keys, two outputs at one global index, a block past the tip). | The whole answer is refused (decision 378). |
-| Misstate the tip or a transaction's height. | Not checked: confirmations count from the server's tip. A block far past it is refused (378). |
+| Misstate the tip, or a height or global index it doesn't prove. | Not checked: confirmations count from the server's tip, and a global index is used only when spending, where the node checks it. A block far past the tip is refused (378). |
+| Learn, through the node, which blocks are the wallet's. | It isn't the server's to learn, and the node isn't told: it's asked for stretches from where Fob last stopped, and only past 20,000 blocks for each payment's 1,000-block window, which leaks the week at most, not the block (decision 385). |
 | Report a wrong network fee for sending. | Capped by `MAX_FEE_PER_WEIGHT`. |
 | Report a wrong fee for a spend found. | Shown as given, or "Not known" without one (decision 379); it moves money between a history row's amount and its fee, never the balance. |
 | Time a time lock wrongly. | Judged by its block times, never one past the phone's clock: early only if the phone's clock is wrong too (decision 380). |
@@ -319,7 +330,12 @@ the phone itself (decision 381). A request may take 120 s in all, an answer
    answer refused whole; the server's fee for a spend found, "not known"
    without one; time-locked outputs kept as the node path keeps them;
    `https://` only but for the phone itself, a 120 s request limit, the
-   pinned key shown on the Light server screen.
+   pinned key shown on the Light server screen. Then (384–387) a proof of
+   inclusion for each mined transaction, checked against block hashes from
+   the wallet's node (or Fob's default) asked over stretches, kept so a
+   poll asks nothing twice, and checked again after a reorganisation; the
+   Light server screen says whether payments match the chain, are held to
+   commitments only, or are the server's word.
 3. **Sending**: `SendSource` for the light client, inputs from server
    decoys, submit. Tested end to end on stagenet.
 4. **Instant updates**: `/feed` on both sides (monero-lws's websocket

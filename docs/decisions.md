@@ -3382,3 +3382,144 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      uses and Fob rightly recorded no spend. The server's fees and commitments
      for all five transactions matched the node's `get_transactions`. A spend
      with a fee wasn't tried live: the wallet has made none.
+384. **A server proves each mined transaction is in a block, and Fob checks
+     the proof before anything is taken.** Decision 377 left one way for a
+     server to lie that nothing on the phone could catch: holding the view
+     key, it can invent an output whole, its one-time key, mask and
+     commitment all fitting. monokulo-lws's wire types (at `3bb52de`, copied
+     into decision 374's file, whose header now names that rev; the copy
+     also brings `lws-api`'s `Debug` that prints neither a key nor an
+     address, which decision 382 left to it) give each transaction in a block
+     an optional `proof`: the block as Monero serialises it (header, miner
+     transaction, the other transactions' hashes) and, but for the miner
+     transaction, the pruned transaction's `tx_prefix`, `rct_base` and
+     `prunable_hash`. `fob_chain::light::proof::check` works out the
+     transaction's hash as Monero does, keccak(keccak(prefix) ‖ keccak(base)
+     ‖ prunable hash), from the bytes as given and again from the
+     transaction read back from them (so the split between the parts is the
+     one read), and requires it to be the hash the server reported and in
+     the block's list; for a mined reward the hash is the block's miner
+     transaction's, and the server must say `coinbase`. The block must be at
+     the reported height (its miner transaction's input says which). From
+     the prefix: each output received has its transaction key among the
+     keys in the extra (or the extra key at its index), and its one-time key
+     at its index; from the RingCT base, its commitment at that index is the
+     one the server gave, if it gave one, and the fee is the reported fee; a
+     mined reward's amount is the one in the clear. The prefix's unlock time
+     is the reported `unlock_time` (the one locks are judged by, decision
+     380), and the block's timestamp the reported time. What comes out is
+     the block's hash, `Block::hash()`, at that height, for a node to vouch
+     for (decision 385). Nothing here needs the wallet's keys: the key and
+     mask checks of decision 373 stay where they are, and the proof binds
+     what they checked to the chain. `vet` (decision 378) checks every
+     mined transaction's proof before the answer is used, with the same
+     all-or-nothing rule: a proof that doesn't hold, or names a block other
+     than the node's at that height, refuses the whole answer,
+     `Problem::NotOnChain`, "The light server named a payment that doesn't
+     match the chain. Nothing from its answer was taken", with "Server
+     answer refused" on the chip and "Amounts · don't match the chain" on
+     the Light server screen as for a misstated amount. Two proofs naming
+     two blocks at one height are a contradiction. With a proof, the amount
+     is held to the commitment the chain holds, from the proof, whatever the
+     server's `commitment` says. A transaction with no proof (monero-lws, a
+     monokulo-lws database from before proofs) is taken as before and
+     counted as not proved (decision 386). A version 1 transaction (before
+     RingCT) has no pruned hash to check by: its proof proves nothing and it
+     counts as having none. Pool transactions have no proof and are on their
+     way as before, outside the count. A server whose node hands it the
+     all-zero prunable hash that public nodes send (decision 6) can't make a
+     proof that holds: monokulo-lws has to work out the real one, which it
+     can from the whole transaction. Tested with blocks made with
+     monero-oxide: a proof as an honest server makes it holds, for a payment
+     and for a reward; a changed byte of the prefix, another hash, another
+     prunable hash, another height, key, index, commitment, transaction key,
+     fee, unlock time or time, a trailing byte, a missing part, or a
+     transaction claimed to be the miner's each break it.
+385. **The block hashes come from a node, asked so it can't tell which
+     blocks are the wallet's.** A wallet keeps its node in light mode (the
+     Node backend's setting, unused for syncing, decision 371), and its
+     proofs are checked with it; a wallet with none checks them with Fob's
+     default node for its network, and the Light server screen says so
+     ("Checked with · stagenet.xmr-tw.org:38081 · Fob's default", "This
+     wallet has no node of its own, so Fob checks the server's proofs with
+     its default node for the network"). The node is asked over its own
+     transport, with the node path's rules (decision 73's certificate and
+     pin, Basic auth, no redirects, the onion refusal, 15 s to connect and
+     30 s between pieces), 120 s a request and 1 MB an answer, as for a
+     light server (decision 381). Hashes come from `/get_hashes.bin`, which
+     gives up to 10,000 from the newest of the blocks it's told Fob knows
+     (and the first block, every chain's), the way monerod's own peers
+     catch up: 32 bytes a block, where `get_block_headers_range` sends about
+     870 bytes and a restricted node gives 1,000 at a time. The epee request
+     and reader are beside `get_blocks.bin`'s, with the same `monero-epee`.
+     JSON's `on_get_block_hash` is asked only for where a stretch starts.
+     What Fob asks: the stretch from where it last stopped to the server's
+     tip, or, the first time, from the wallet's first block (which the node
+     path's first request says too), while that's 20,000 blocks or fewer:
+     two or three requests, about 640 kB. Past 20,000 (a restore, a long
+     absence), each payment's window of 1,000 blocks, aligned, is asked from
+     its start, and a window already covered by another's answer isn't
+     asked; then the tip's hash, to go on from next time. A window leaks
+     the week a payment came in, at most (1,000 blocks are about a day and a
+     half on mainnet), not the block. A payment's own height is never asked by itself. Fob keeps (schema
+     version 9, migrated from 8 with two JSON columns, `light_blocks` and
+     `light_history`, defaulting to empty) the node's hash at each height a
+     payment of the current answer came in, and twelve where it last
+     stopped (that block, then 1, 2, 4, … 1,024 before it), so a later poll
+     asks nothing for what's checked and goes on from there. Those twelve
+     are what the next request names as known, as monerod's short chain
+     history does: a node that no longer has the newest answers from the
+     newest it has, which is where a reorganisation parted the chains, and
+     every hash checked above it is forgotten and checked again from that
+     answer; none of them still there forgets them all. A server naming
+     another block at a height already checked has the node asked on from
+     there first, in case the chain moved; if the node still has the old
+     block, the node's word stands and the answer is refused. A node that
+     can't be reached, or hasn't the block yet, isn't the server's fault:
+     the outputs are taken, counted as not checked yet, the screen says so,
+     and the next poll asks again (nothing is refused for it). A node on a
+     stale fork of its own would have honest answers refused until it
+     follows the chain; the node path has the same trust in its node. Tested
+     with a fake node that answers both calls as monerod does: a stretch
+     below 20,000 is asked from one start and pages of 10,000, a span past
+     it by windows' starts and the tip, what's kept asks nothing again, a
+     reorganisation is found from the kept blocks and checked again without
+     asking a height by itself, a node that's down keeps what was known; and
+     with real stagenet nodes (`stagenet.xmr-tw.org:38081`,
+     `node.monerodevs.org:38089`), whose `/get_hashes.bin` reads as this
+     reader expects (the ignored `live_hashes_from_a_stagenet_node`).
+386. **Three ways a server's payments stand, said on the Light server
+     screen.** `catch_up::Amounts` (decision 377's) is worked out afresh each
+     poll from this wallet's outputs in blocks in the whole answer, the
+     weakest saying it for all: `Chain`, "Amounts · match the chain", when
+     every one came with a proof that holds and the node has its block;
+     `Checked`, "Amounts · commitments only", when any came with the chain's
+     commitment, which its amount opens, but no proof ("This server doesn't
+     prove where its payments are on the chain, so Fob holds their amounts
+     only to the commitments it sends. A server could make up a payment
+     whose commitment fits"); `ServersWord`, "Amounts · the server's word",
+     when any came with neither (decision 377's words). Between the first
+     two, `ChainPending`: every one proved, but some block not yet vouched
+     for, "not checked yet: can't reach the node" (with "Fob couldn't reach
+     the node to check this server's proofs against the chain. Until it
+     can, its payments are held only to the commitments the proofs carry.
+     It tries again at the next poll") or "not checked yet: the node is
+     behind". `Mismatch` stays "don't match the chain", for an amount or a
+     proof. The node is a row of its own, "Checked with · host:port", marked
+     bad while it can't be reached. Outputs in the pool aren't counted: they
+     aren't the wallet's until mined, and are proved then. The words are in
+     `fob_words::light`; the Android and GTK screens show `Standing`'s rows
+     and notes as they come, so neither changed.
+387. **What a server can still do, with proofs and a node.** It can't
+     invent an output any more, nor misstate an amount, fee, unlock time or
+     time of a transaction it proves, nor put one at another height: the
+     proof and the node's hash bind them to the chain. It can still withhold
+     (a payment or a spend left out, a proof left off, which the screen then
+     says), misstate the tip and its scanned height (confirmations count
+     from its tip; a block past it is refused, decision 378), misstate an
+     output's global index (used only when spending, where the node checks
+     it), list candidate spends that aren't (key images decide), and
+     misstate the fee of a transaction it doesn't prove. The node learns,
+     from the stretches asked, that some wallet syncs from where Fob last
+     stopped, and, past 20,000 blocks, the 1,000-block windows its payments
+     are in (decision 385).
