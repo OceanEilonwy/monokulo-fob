@@ -136,7 +136,8 @@ private const val CORNERS = "M8 64V24a16 16 0 0 1 16-16h40 M216 8h40a16 16 0 0 1
  * Back returns to it, its note the one Confirm showed. [code] is the
  * payment code it was filled from, whose name and receipt Rust keeps with
  * the payment as long as they still apply; [read] is the last code the
- * camera saw, not taken again while it still sees it.
+ * camera saw, not taken again while it still sees it. [open]: the form
+ * pulled up; folded, Send opens on the camera.
  */
 data class SendDraft(
     val to: String,
@@ -145,6 +146,7 @@ data class SendDraft(
     val note: String = "",
     val code: String? = null,
     val read: String? = null,
+    val open: Boolean = true,
 )
 
 /**
@@ -175,7 +177,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     val scope = rememberCoroutineScope()
     // The node is asked what a payment needs while the form is filled, not after Review is pressed.
     LaunchedEffect(wallet) { wallet?.warmUpSend() }
-    var open by rememberSaveable { mutableStateOf(draft != null) }
+    var open by rememberSaveable { mutableStateOf(draft?.open ?: false) }
     var torch by remember { mutableStateOf(false) }
     var hasTorch by remember { mutableStateOf(false) }
     var to by remember { mutableStateOf(draft?.to ?: "") }
@@ -231,7 +233,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         val keep = {
             val money = heldMoney
             if (open || to.isNotBlank() || amount.isNotBlank() || money != null) {
-                nav.replace(Screen.Send(draft = SendDraft(to, money ?: amount, money != null || inFiat, note, filledFrom, lastRead)))
+                nav.replace(Screen.Send(draft = SendDraft(to, money ?: amount, money != null || inFiat, note, filledFrom, lastRead, open)))
             }
         }
         nav.keepForm = keep
@@ -240,7 +242,11 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
 
     val toValid = remember(to, network) { toIsValid(network, to) }
 
-    fun review(address: String, typed: String, fiat: Boolean, withNote: String?) {
+    /**
+     * Opens Confirm on the payment. [scanned]: straight from a code with an amount, never typed here, so Back finds
+     * Send empty on the camera (the code it read not taken again); otherwise the form as filled.
+     */
+    fun review(address: String, typed: String, fiat: Boolean, withNote: String?, scanned: Boolean = false) {
         busy = true
         error = null
         scope.launch {
@@ -248,9 +254,9 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
             runCatching { model.preview(address, typed, fiat, filledFrom) }
                 .onSuccess {
                     if (nav.current is Screen.Send) {
-                        // Under Confirm, the form as filled, with the note Confirm shows: Back returns to it, not Home.
                         val filled = SendDraft(address, typed, fiat, withNote ?: "", filledFrom, lastRead)
-                        nav.back(); nav.go(Screen.Send(draft = filled)); nav.go(Screen.Confirm(note = withNote, pending = PendingSend(it, filled)))
+                        val under = if (scanned) SendDraft(to = "", read = lastRead, open = false) else filled
+                        nav.back(); nav.go(Screen.Send(draft = under)); nav.go(Screen.Confirm(note = withNote, pending = PendingSend(it, filled)))
                     }
                 }
                 .onFailure { error = it.reason(); open = true }
@@ -285,7 +291,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                 amount = taken.amount
                 inFiat = false
                 defaulted = true
-                review(taken.to, taken.amount, false, taken.note.ifEmpty { null })
+                review(taken.to, taken.amount, false, taken.note.ifEmpty { null }, scanned = true)
             }
         }
     }

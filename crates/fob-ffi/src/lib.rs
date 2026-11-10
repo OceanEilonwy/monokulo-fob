@@ -2507,6 +2507,12 @@ impl FobWallet {
         self.inner.cancel(id).await;
     }
 
+    /// The note prepared payment `id` is recorded with, as typed on
+    /// Confirm; empty clears it. Throws once it's sent or forgotten.
+    pub async fn set_note(&self, id: u64, note: Option<String>) -> Result<()> {
+        Ok(self.inner.set_note(id, note).await?)
+    }
+
     /// Your profile, once it's set up.
     pub async fn profile(&self) -> Option<Profile> {
         self.inner.profile().await.map(Into::into)

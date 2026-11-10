@@ -574,7 +574,10 @@ fun ConfirmScreen(
     var busy by remember { mutableStateOf(false) }
     val prepared = screen.prepared
     val preview = screen.pending?.preview
-    val note = screen.note
+    // The note as typed here, the payment code's description to start with: carried into the screen made when the
+    // fee comes in, and set on the payment just before it's sent.
+    var note by remember { mutableStateOf(screen.note ?: "") }
+    val typedNote by rememberUpdatedState(note)
     val split = prepared?.split
     val receipt = prepared?.receipt ?: preview?.receipt
     val amountText = prepared?.amountText ?: preview?.amountText ?: ""
@@ -592,8 +595,8 @@ fun ConfirmScreen(
         val pending = screen.pending
         if (prepared != null || pending == null) return@LaunchedEffect
         val d = pending.draft
-        runCatching { model.prepare(d.to, d.amount, d.inFiat, note, d.code) }
-            .onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it)) else model.cancelLater(it) }
+        runCatching { model.prepare(d.to, d.amount, d.inFiat, screen.note, d.code) }
+            .onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it, note = typedNote.ifBlank { null })) else model.cancelLater(it) }
             .onFailure { error = it.reason() }
     }
 
@@ -616,6 +619,8 @@ fun ConfirmScreen(
         busy = true
         error = null
         scope.launch {
+            // The note as it stands now goes with the payment; one it can't take (gone already) fails the send below.
+            if (split == null) runCatching { model.setNote(ready, note) }
             if (trezor) {
                 // The device shows the payment and asks there; the phone's lock isn't needed.
                 sent(ready, runCatching { model.sendWithTrezor(ready) })
@@ -658,11 +663,12 @@ fun ConfirmScreen(
                 AmountHeadline("$amountText XMR", 52)
                 // Worth now, at the current price: the number to match against the till.
                 (prepared?.amountFiat ?: preview?.amountFiat)?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
-                note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
             Card {
                 if (split != null) InfoRow("To", split.to) else ToRow(to)
                 Divider()
+                // A split pays this wallet back: nothing to note.
+                if (split == null) { NoteRow(note, { note = it }, enabled = !busy); Divider() }
                 InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
                 Divider()
                 InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
@@ -684,6 +690,33 @@ fun AmountHeadline(text: String, max: Int) {
         // Manrope ExtraBold digits run about 0.62 em wide.
         val fits = (maxWidth.value / (text.length * 0.62f)).toInt()
         Text(text, style = display(fits.coerceIn(24, max)), maxLines = 1, softWrap = false)
+    }
+}
+
+/**
+ * Confirm's note, a row of its card typed into in place: the payment code's
+ * description to start with, else "Add a note". Kept with the payment.
+ */
+@Composable
+fun NoteRow(value: String, onChange: (String) -> Unit, enabled: Boolean = true) {
+    val style = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = Fob.ink, textAlign = TextAlign.End)
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Note", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(end = 16.dp))
+        androidx.compose.foundation.text.BasicTextField(
+            value = value, onValueChange = onChange, enabled = enabled, singleLine = true, textStyle = style,
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(Fob.ink),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+            ),
+            modifier = Modifier.weight(1f).semantics { contentDescription = "Note" },
+            decorationBox = { field ->
+                Box(contentAlignment = Alignment.CenterEnd) {
+                    if (value.isEmpty()) Text("Add a note", color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    field()
+                }
+            },
+        )
     }
 }
 

@@ -1162,6 +1162,11 @@ class WalletModel(private val app: Application) {
     /** The send of [prepared] begun already, under way or over; null when it hasn't been sent. */
     fun sendBegun(prepared: Prepared): Deferred<String>? = sends[prepared.id]
 
+    /** The note [prepared] is recorded with, as typed on Confirm; blank clears it. Throws once it's sent or forgotten. */
+    suspend fun setNote(prepared: Prepared, note: String) {
+        requireNotNull(_wallet.value).setNote(prepared.id, note.trim().ifEmpty { null })
+    }
+
     /** Forgets a prepared payment Confirm left without sending; on the model's scope, as Confirm is going. */
     fun cancelLater(prepared: Prepared) {
         val wallet = _wallet.value ?: return

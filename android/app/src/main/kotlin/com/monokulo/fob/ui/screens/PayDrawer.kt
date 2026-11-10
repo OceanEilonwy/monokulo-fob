@@ -20,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
@@ -61,6 +60,8 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     var busy by remember { mutableStateOf(false) }
     val sending by rememberUpdatedState(busy)
     val amount = request?.amountText
+    // The note as typed here, the code's description to start with; set on the payment just before it's sent.
+    var note by remember(request) { mutableStateOf(request?.description ?: "") }
 
     // The node is asked what the payment needs as the drawer opens; the fee below takes the answer, whichever is first.
     LaunchedEffect(code) { model.wallet.value?.warmUpSend() }
@@ -91,6 +92,7 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         busy = true
         error = null
         scope.launch {
+            runCatching { model.setNote(ready, note) }
             if (trezor) {
                 runCatching { model.sendWithTrezor(ready) }
                     .onSuccess { tx -> onClose(); nav.go(Screen.Paid(ready, tx)) }
@@ -122,11 +124,12 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             // The XMR sent and Fob's own valuation first; the receipt's total is only what the code claims.
             Column(Modifier.padding(top = 4.dp)) { AmountHeadline("$amountText XMR", 44) }
             fiat?.let { Text(it, color = Fob.muted, fontSize = 16.sp) }
-            request?.description?.let { Text(it, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
         }
         val to = prepared?.to ?: preview?.to ?: request?.address ?: ""
         Card {
             ToRow(to)
+            Divider()
+            NoteRow(note, { note = it }, enabled = !busy)
             Divider()
             InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
             Divider()
