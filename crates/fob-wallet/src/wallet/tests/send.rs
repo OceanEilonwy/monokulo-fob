@@ -366,3 +366,15 @@ async fn a_prepared_payment_left_behind_is_forgotten() {
     assert!(pending.items.len() == 1 && pending.items.contains_key(&3), "pruned as others come and go");
     assert_eq!(pending.take(3), Some("newer"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_prepared_payment_s_note_changes_in_place_until_it_goes() {
+    let mut pending = Pending::default();
+    pending.insert(1, String::from("Coffee"));
+    *pending.get_mut(1).unwrap() = String::from("Coffee with Sam");
+    assert_eq!(pending.take(1).as_deref(), Some("Coffee with Sam"));
+    assert!(pending.get_mut(1).is_none(), "sent or cancelled: nothing to change");
+    // A payment Confirm no longer has can't take a note.
+    let wallet = Wallet::create(&dir("note-gone"), [1; 32], Network::Stagenet).unwrap();
+    assert!(matches!(wallet.set_note(7, Some("Lunch".into())).await, Err(FobError::Screen(ScreenError::NoSuchPayment))));
+}

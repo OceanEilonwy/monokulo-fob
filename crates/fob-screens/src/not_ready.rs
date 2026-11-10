@@ -253,6 +253,42 @@ pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unl
     }
 }
 
+/// A payment Confirm can't make: what it needs against what's ready, in
+/// atomic units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shortfall {
+    /// The amount with about the fee.
+    pub needed: u64,
+    /// Ready to spend now.
+    pub ready: u64,
+    /// Not ready yet: received, or change, still settling.
+    pub on_way: u64,
+    /// `needed` less `ready`.
+    pub short: u64,
+    /// When money on its way covers it: about how long until enough is
+    /// ready, and how far along the coin that tips it is, for the bar.
+    /// `None` when even all of it wouldn't.
+    pub ready_after: Option<(u64, f32)>,
+}
+
+/// What paying `needed` lacks, with `ready` spendable and `not_ready` (from
+/// [`summarise`]) still settling, its pieces soonest ready first.
+pub fn shortfall(needed: u64, ready: u64, not_ready: Option<&NotReady>) -> Shortfall {
+    let on_way = not_ready.map_or(0, |n| n.total);
+    let mut have = ready;
+    let mut ready_after = None;
+    for piece in not_ready.map(|n| n.pieces.as_slice()).unwrap_or_default() {
+        if have >= needed {
+            break;
+        }
+        have = have.saturating_add(piece.atomic);
+        if have >= needed {
+            ready_after = Some((piece.seconds_left, piece.progress));
+        }
+    }
+    Shortfall { needed, ready, on_way, short: needed.saturating_sub(ready), ready_after }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +303,25 @@ mod tests {
 
     fn piece(amount: u64, confirmations: u64, source: Source, time: u64) -> Piece {
         Piece { amount, confirmations, needed: 10, source, time }
+    }
+
+    #[test]
+    fn a_shortfall_says_when_money_on_its_way_covers_it() {
+        // 0.3 ready; 0.2 with 7 of 10 confirmations (about 6 min), 0.5 with 2 (about 16 min).
+        let pieces = vec![piece(XMR / 5, 7, Source::Received, NOW - 600), piece(XMR / 2, 2, Source::Received, NOW - 300)];
+        let waiting = summarise(pieces, 3 * XMR / 10, NOW, clock());
+        // 0.45 needs the first coin only.
+        let s = shortfall(45 * XMR / 100, 3 * XMR / 10, waiting.as_ref());
+        assert_eq!((s.short, s.on_way), (15 * XMR / 100, 7 * XMR / 10));
+        assert_eq!(s.ready_after, Some((3 * 120, 0.7)));
+        // 0.9 needs both.
+        assert_eq!(shortfall(9 * XMR / 10, 3 * XMR / 10, waiting.as_ref()).ready_after, Some((8 * 120, 0.2)));
+        // 2 XMR is more than everything: short, with nothing to wait for.
+        let never = shortfall(2 * XMR, 3 * XMR / 10, waiting.as_ref());
+        assert_eq!((never.short, never.ready_after), (17 * XMR / 10, None));
+        // Nothing on its way at all.
+        let none = shortfall(XMR, 3 * XMR / 10, None);
+        assert_eq!((none.on_way, none.ready_after), (0, None));
     }
 
     #[test]

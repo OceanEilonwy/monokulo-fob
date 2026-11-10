@@ -513,6 +513,16 @@ impl Wallet {
         let _ = self.save_state(&state);
     }
 
+    /// Changes the note a prepared payment is recorded with, as typed on
+    /// Confirm (none, or only spaces, clears it). Refused once it's sent,
+    /// cancelled or too old.
+    pub async fn set_note(&self, id: u64, note: Option<String>) -> Result<()> {
+        let mut prepared = self.inner.prepared.lock().await;
+        let payment = prepared.get_mut(id).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
+        payment.out.note = requests::clean_note(note.as_deref());
+        Ok(())
+    }
+
     /// Forgets a prepared payment that won't be sent.
     pub async fn cancel(&self, id: u64) {
         self.inner.prepared.lock().await.take(id);

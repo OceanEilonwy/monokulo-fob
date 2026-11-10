@@ -745,6 +745,33 @@ fun SwipeToSend(label: String, enabled: Boolean, sending: Boolean, waiting: Bool
 }
 
 /**
+ * In the swipe's place when there isn't enough ready: the same track,
+ * locked ([progress] null), or filling toward when money settling makes
+ * enough ready. Nothing to drag; TalkBack reads [label].
+ */
+@Composable
+fun LockedSwipe(label: String, progress: Float?) {
+    Box(
+        Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(32.dp)).background(Fob.sunken).semantics(mergeDescendants = true) { contentDescription = label },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (progress != null) Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(64.dp).background(Fob.selectedFill))
+        Text(
+            label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (progress != null) Fob.ink else Fob.muted,
+            textAlign = TextAlign.Center, maxLines = 1, modifier = Modifier.fillMaxWidth().padding(horizontal = 64.dp),
+        )
+        Box(Modifier.padding(4.dp).size(56.dp).clip(CircleShape).background(Fob.track), contentAlignment = Alignment.Center) {
+            StrokeIcon(if (progress != null) CLOCK else LOCK, tint = if (progress != null) Fob.orangeText else Fob.outline, size = 22.dp, width = 2f)
+        }
+    }
+}
+
+/** A padlock. */
+const val LOCK = "M6 11h12v9H6z M8.5 11V8a3.5 3.5 0 0 1 7 0v3"
+/** A clock face. */
+const val CLOCK = "M12 4a8 8 0 1 1 0 16a8 8 0 1 1 0-16z M12 8v4l3 2"
+
+/**
  * A value still coming (Confirm's fee before the node answers): a bar
  * [width] wide that slowly brightens and fades; TalkBack reads [label].
  */

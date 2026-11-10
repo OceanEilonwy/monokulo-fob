@@ -417,6 +417,12 @@ impl<T> Pending<T> {
         self.prune();
         self.items.get(&id).map(|(_, item)| item)
     }
+
+    /// The one with `id`, left in place to change.
+    fn get_mut(&mut self, id: u64) -> Option<&mut T> {
+        self.prune();
+        self.items.get_mut(&id).map(|(_, item)| item)
+    }
 }
 
 /// A payment to this wallet still in the node's pool.

@@ -23,6 +23,7 @@ import uniffi.fob.BlockInfo
 import uniffi.fob.FobException
 import uniffi.fob.ManualSettings
 import uniffi.fob.PullMode
+import uniffi.fob.Shortfall
 import uniffi.fob.PullOutcome
 import uniffi.fob.ScanDrawer
 import uniffi.fob.ScanRequest
@@ -570,6 +571,13 @@ class WalletModel(private val app: Application) {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
         return wallet.syncDetails(seconds, offset, hours24)
+    }
+
+    /** What a payment needing [needed] lacks (from NotEnoughFunds), every word from Rust; null without a wallet. */
+    suspend fun shortfall(needed: ULong): Shortfall? {
+        val wallet = _wallet.value ?: return null
+        val (seconds, offset, hours24) = clock()
+        return wallet.shortfall(needed, seconds, offset, hours24)
     }
 
     /** Split up's screen for [counts], every word from Rust (its price's age by the phone's clock); null without a wallet. */
@@ -1161,6 +1169,11 @@ class WalletModel(private val app: Application) {
 
     /** The send of [prepared] begun already, under way or over; null when it hasn't been sent. */
     fun sendBegun(prepared: Prepared): Deferred<String>? = sends[prepared.id]
+
+    /** The note [prepared] is recorded with, as typed on Confirm; blank clears it. Throws once it's sent or forgotten. */
+    suspend fun setNote(prepared: Prepared, note: String) {
+        requireNotNull(_wallet.value).setNote(prepared.id, note.trim().ifEmpty { null })
+    }
 
     /** Forgets a prepared payment Confirm left without sending; on the model's scope, as Confirm is going. */
     fun cancelLater(prepared: Prepared) {

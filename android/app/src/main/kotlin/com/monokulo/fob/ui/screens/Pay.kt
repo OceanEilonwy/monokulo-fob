@@ -102,6 +102,7 @@ import uniffi.fob.QrCode
 import uniffi.fob.Receipt
 import uniffi.fob.ReceiveCode
 import uniffi.fob.SaveOffer
+import uniffi.fob.Shortfall
 import uniffi.fob.Contact
 import com.monokulo.fob.ui.Avatar
 import androidx.compose.ui.text.style.TextOverflow
@@ -574,7 +575,10 @@ fun ConfirmScreen(
     var busy by remember { mutableStateOf(false) }
     val prepared = screen.prepared
     val preview = screen.pending?.preview
-    val note = screen.note
+    // The note as typed here, the payment code's description to start with: carried into the screen made when the
+    // fee comes in, and set on the payment just before it's sent.
+    var note by remember { mutableStateOf(screen.note ?: "") }
+    val typedNote by rememberUpdatedState(note)
     val split = prepared?.split
     val receipt = prepared?.receipt ?: preview?.receipt
     val amountText = prepared?.amountText ?: preview?.amountText ?: ""
@@ -582,19 +586,32 @@ fun ConfirmScreen(
     val title = split?.title ?: receipt?.merchant?.let { "Pay $it" } ?: "Send"
     var failed by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
+    // Not enough ready to pay it: what it lacks, in place of the fee and the swipe.
+    var short by remember { mutableStateOf<Shortfall?>(null) }
     val sending by rememberUpdatedState(busy)
     DisposableEffect(prepared?.id) {
         onDispose { if (prepared != null && !sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
     }
     BackHandler(enabled = busy) {}
     // The fee: once in, this screen becomes the prepared one; gone meanwhile, Rust forgets it.
+    // Not enough ready: what it lacks; while money on its way would cover it, asked again every 30 s, so the
+    // swipe comes back once enough is ready.
     LaunchedEffect(screen) {
         val pending = screen.pending
         if (prepared != null || pending == null) return@LaunchedEffect
         val d = pending.draft
-        runCatching { model.prepare(d.to, d.amount, d.inFiat, note, d.code) }
-            .onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it)) else model.cancelLater(it) }
-            .onFailure { error = it.reason() }
+        while (true) {
+            val result = runCatching { model.prepare(d.to, d.amount, d.inFiat, screen.note, d.code) }
+            result.onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it, note = typedNote.ifBlank { null })) else model.cancelLater(it) }
+            val lacking = result.exceptionOrNull() as? uniffi.fob.FobException.NotEnoughFunds
+            if (lacking == null) {
+                result.onFailure { error = it.reason() }
+                break
+            }
+            short = model.shortfall(lacking.needed) ?: run { error = lacking.reason(); null }
+            if (short?.settling != true) break
+            kotlinx.coroutines.delay(30_000)
+        }
     }
 
     fun sent(ready: Prepared, result: Result<String>) {
@@ -616,6 +633,8 @@ fun ConfirmScreen(
         busy = true
         error = null
         scope.launch {
+            // The note as it stands now goes with the payment; one it can't take (gone already) fails the send below.
+            if (split == null) runCatching { model.setNote(ready, note) }
             if (trezor) {
                 // The device shows the payment and asks there; the phone's lock isn't needed.
                 sent(ready, runCatching { model.sendWithTrezor(ready) })
@@ -640,15 +659,19 @@ fun ConfirmScreen(
     // Made again while the phone's lock was asked for: its answer comes here.
     LaunchedEffect(Unit) { if (identityPending()) swiped() }
     Page(bottom = {
-        if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = model::openScan)
-        else ErrorText(error)
-        val label = when {
-            busy -> if (trezor) "Confirm on Trezor" else "Sending…"
-            failed -> "Not sent"
-            prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
-            else -> "Swipe to send"
+        val lacking = short
+        if (lacking != null && prepared == null) ShortfallAlert(lacking)
+        else {
+            if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = model::openScan)
+            else ErrorText(error)
+            val label = when {
+                busy -> if (trezor) "Confirm on Trezor" else "Sending…"
+                failed -> "Not sent"
+                prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+                else -> "Swipe to send"
+            }
+            SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
         }
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
     }) {
         TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -658,14 +681,19 @@ fun ConfirmScreen(
                 AmountHeadline("$amountText XMR", 52)
                 // Worth now, at the current price: the number to match against the till.
                 (prepared?.amountFiat ?: preview?.amountFiat)?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
-                note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
             Card {
                 if (split != null) InfoRow("To", split.to) else ToRow(to)
                 Divider()
-                InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
-                Divider()
-                InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
+                // A split pays this wallet back: nothing to note.
+                if (split == null) { NoteRow(note, { note = it }, enabled = !busy); Divider() }
+                val lacking = short
+                if (lacking != null && prepared == null) ShortfallRows(lacking)
+                else {
+                    InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
+                    Divider()
+                    InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
+                }
             }
             // A split's pieces; its address is this wallet's own, with no pattern to compare.
             if (split != null) Card {
@@ -677,6 +705,37 @@ fun ConfirmScreen(
     }
 }
 
+/** Confirm's card rows when there isn't enough ready: the numbers live here, the alert below stays general. */
+@Composable
+fun ShortfallRows(short: Shortfall) {
+    fun with(text: String, fiat: String?) = text + (fiat?.let { " · $it" } ?: "")
+    InfoRow("With the fee", with(short.neededText, short.neededFiat))
+    Divider()
+    InfoRow("Ready to spend", with(short.readyText, short.readyFiat))
+    short.onWayText?.let { Divider(); InfoRow("On its way", with(it, short.onWayFiat)) }
+    Divider()
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(short.shortLabel, color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        Text(with(short.shortText, short.shortFiat), color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End)
+    }
+}
+
+/** In the swipe's place when there isn't enough ready: the alert in general words, over the locked or filling track. */
+@Composable
+fun ShortfallAlert(short: Shortfall) {
+    Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(48.dp).clip(CircleShape).background(Fob.warning), contentAlignment = Alignment.Center) {
+            StrokeIcon(if (short.settling) com.monokulo.fob.ui.CLOCK else WALLET, tint = Fob.orangeText, size = 22.dp, width = 2f)
+        }
+        Text(short.title, style = display(20), textAlign = TextAlign.Center)
+        Text(short.line, color = Fob.muted, fontSize = 15.sp, lineHeight = 22.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp))
+    }
+    com.monokulo.fob.ui.LockedSwipe(short.swipe, if (short.settling) short.progress else null)
+}
+
+/** A wallet. */
+private const val WALLET = "M3 6h18v13H3z M3 10h18 M16 15h2"
+
 /** What's paid, as large as [max] sp but never wrapping: a long exact amount shrinks to fit the width. */
 @Composable
 fun AmountHeadline(text: String, max: Int) {
@@ -684,6 +743,33 @@ fun AmountHeadline(text: String, max: Int) {
         // Manrope ExtraBold digits run about 0.62 em wide.
         val fits = (maxWidth.value / (text.length * 0.62f)).toInt()
         Text(text, style = display(fits.coerceIn(24, max)), maxLines = 1, softWrap = false)
+    }
+}
+
+/**
+ * Confirm's note, a row of its card typed into in place: the payment code's
+ * description to start with, else "Add a note". Kept with the payment.
+ */
+@Composable
+fun NoteRow(value: String, onChange: (String) -> Unit, enabled: Boolean = true) {
+    val style = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = Fob.ink, textAlign = TextAlign.End)
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Note", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(end = 16.dp))
+        androidx.compose.foundation.text.BasicTextField(
+            value = value, onValueChange = onChange, enabled = enabled, singleLine = true, textStyle = style,
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(Fob.ink),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+            ),
+            modifier = Modifier.weight(1f).semantics { contentDescription = "Note" },
+            decorationBox = { field ->
+                Box(contentAlignment = Alignment.CenterEnd) {
+                    if (value.isEmpty()) Text("Add a note", color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    field()
+                }
+            },
+        )
     }
 }
 

@@ -20,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
@@ -61,6 +60,8 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     var busy by remember { mutableStateOf(false) }
     val sending by rememberUpdatedState(busy)
     val amount = request?.amountText
+    // The note as typed here, the code's description to start with; set on the payment just before it's sent.
+    var note by remember(request) { mutableStateOf(request?.description ?: "") }
 
     // The node is asked what the payment needs as the drawer opens; the fee below takes the answer, whichever is first.
     LaunchedEffect(code) { model.wallet.value?.warmUpSend() }
@@ -72,10 +73,23 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         runCatching { model.preview(r.address, amount, false, code) }.onSuccess { preview = it }.onFailure { error = it.reason() }
     }
     // Then the fee comes in on it.
+    // Not enough ready: what it lacks; asked again every 30 s while money on its way would cover it.
+    var short by remember { mutableStateOf<uniffi.fob.Shortfall?>(null) }
     LaunchedEffect(preview) {
         val r = request ?: return@LaunchedEffect
         if (preview == null || amount == null) return@LaunchedEffect
-        runCatching { model.prepare(r.address, amount, false, r.description, code) }.onSuccess { prepared = it }.onFailure { error = it.reason() }
+        while (true) {
+            val result = runCatching { model.prepare(r.address, amount, false, r.description, code) }
+            result.onSuccess { prepared = it; short = null }
+            val lacking = result.exceptionOrNull() as? uniffi.fob.FobException.NotEnoughFunds
+            if (lacking == null) {
+                result.onFailure { error = it.reason() }
+                break
+            }
+            short = model.shortfall(lacking.needed) ?: run { error = lacking.reason(); null }
+            if (short?.settling != true) break
+            kotlinx.coroutines.delay(30_000)
+        }
     }
     DisposableEffect(prepared?.id) {
         val p = prepared
@@ -91,6 +105,7 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         busy = true
         error = null
         scope.launch {
+            runCatching { model.setNote(ready, note) }
             if (trezor) {
                 runCatching { model.sendWithTrezor(ready) }
                     .onSuccess { tx -> onClose(); nav.go(Screen.Paid(ready, tx)) }
@@ -122,25 +137,34 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
             // The XMR sent and Fob's own valuation first; the receipt's total is only what the code claims.
             Column(Modifier.padding(top = 4.dp)) { AmountHeadline("$amountText XMR", 44) }
             fiat?.let { Text(it, color = Fob.muted, fontSize = 16.sp) }
-            request?.description?.let { Text(it, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
         }
         val to = prepared?.to ?: preview?.to ?: request?.address ?: ""
         Card {
             ToRow(to)
             Divider()
-            InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
+            NoteRow(note, { note = it }, enabled = !busy)
             Divider()
-            InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
+            val lacking = short
+            if (lacking != null && prepared == null) ShortfallRows(lacking)
+            else {
+                InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
+                Divider()
+                InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
+            }
         }
         receipt?.let { ReceiptCard(it) }
-        if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
-        else ErrorText(error)
-        val label = when {
-            busy -> if (trezor) "Confirm on Trezor" else "Sending…"
-            failed -> "Not sent"
-            prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
-            else -> "Swipe to send"
+        val lacking = short
+        if (lacking != null && prepared == null) ShortfallAlert(lacking)
+        else {
+            if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
+            else ErrorText(error)
+            val label = when {
+                busy -> if (trezor) "Confirm on Trezor" else "Sending…"
+                failed -> "Not sent"
+                prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
+                else -> "Swipe to send"
+            }
+            SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
         }
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
     }
 }

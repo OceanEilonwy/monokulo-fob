@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use fob_app::{Engine, views::{Prepared, SaveOffer}};
+use fob_app::{Engine, FobError, views::{Prepared, SaveOffer, Shortfall}};
 use relm4::{
     adw::{self, prelude::*},
     gtk,
@@ -34,6 +34,10 @@ pub enum Input {
     /// Prepared elsewhere (Split): a round of its own.
     Adopt(View<Prepared>),
     NotPrepared(u64, String),
+    /// Not enough ready to spend for that round: what it lacks.
+    Short(u64, View<Shortfall>),
+    /// Money was settling for that round: prepare again, quietly.
+    Recheck(u64),
     Failed(String),
     Send,
     Typed(Secret),
@@ -53,6 +57,10 @@ pub struct Confirm {
     /// another round is cancelled, never shown, so Send only pays what's on screen.
     round: u64,
     prepared: Option<Arc<Prepared>>,
+    /// The form as filled, to prepare again while money settles.
+    filled: Option<Filled>,
+    /// What's lacking, when there isn't enough ready: Send is locked.
+    short: Option<Arc<Shortfall>>,
     busy: bool,
     sent: Option<String>,
     error: Option<String>,
@@ -97,9 +105,9 @@ impl SimpleComponent for Confirm {
                             add_css_class: "pill",
                             set_halign: gtk::Align::Center,
                             #[watch]
-                            set_label: if model.sent.is_some() { "Done" } else if model.busy && model.prepared.is_some() && model.engine.is_trezor() { "Confirm on Trezor" } else if model.busy { "Working…" } else { "Send" },
+                            set_label: &if model.sent.is_some() { "Done".to_owned() } else if let Some(short) = &model.short { short.swipe.clone() } else if model.busy && model.prepared.is_some() && model.engine.is_trezor() { "Confirm on Trezor".to_owned() } else if model.busy { "Working…".to_owned() } else { "Send".to_owned() },
                             #[watch]
-                            set_sensitive: model.sent.is_some() || (model.prepared.is_some() && !model.busy),
+                            set_sensitive: model.sent.is_some() || (model.prepared.is_some() && !model.busy && model.short.is_none()),
                             connect_clicked => Input::Send,
                         },
                     },
@@ -110,7 +118,7 @@ impl SimpleComponent for Confirm {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let model = Confirm { engine, round: 0, prepared: None, busy: false, sent: None, error: None, body: body.clone() };
+        let model = Confirm { engine, round: 0, prepared: None, filled: None, short: None, busy: false, sent: None, error: None, body: body.clone() };
         let body = &body;
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -123,20 +131,39 @@ impl SimpleComponent for Confirm {
                     self.engine.cancel(&old);
                 }
                 self.round += 1;
-                let round = self.round;
                 self.busy = true;
                 self.sent = None;
                 self.error = None;
+                self.short = None;
                 self.draw_waiting(&filled);
-                let (engine, sender) = (self.engine.clone(), sender.clone());
-                relm4::spawn(async move {
-                    let prepared = engine.read(move |wallet, _| async move { wallet.prepare(filled.to, filled.amount, filled.in_fiat, filled.note, filled.code).await }).await;
-                    match prepared {
-                        Some(Ok(prepared)) => sender.input(Input::Ready(round, View(prepared.into()))),
-                        Some(Err(e)) => sender.input(Input::NotPrepared(round, e.to_string())),
-                        None => {}
-                    }
-                });
+                self.prepare(filled.clone(), &sender);
+                self.filled = Some(filled);
+            }
+            Input::Short(round, View(short)) => {
+                if round != self.round {
+                    return;
+                }
+                self.busy = false;
+                self.error = None;
+                if let Some(filled) = &self.filled {
+                    self.draw_short(filled, &short);
+                }
+                // Settling: prepare again in a while, so Send unlocks once enough is ready.
+                if short.settling {
+                    let then = sender.clone();
+                    relm4::spawn_local(async move {
+                        gtk::glib::timeout_future_seconds(30).await;
+                        then.input(Input::Recheck(round));
+                    });
+                }
+                self.short = Some(short);
+            }
+            Input::Recheck(round) => {
+                if round == self.round && self.short.is_some() && self.prepared.is_none()
+                    && let Some(filled) = self.filled.clone()
+                {
+                    self.prepare(filled, &sender);
+                }
             }
             Input::Ready(round, View(prepared)) => {
                 // Prepared for a form since changed, or after leaving: let it
@@ -151,6 +178,7 @@ impl SimpleComponent for Confirm {
                 self.busy = false;
                 self.sent = None;
                 self.error = None;
+                self.short = None;
                 self.draw(&prepared);
                 self.prepared = Some(prepared);
             }
@@ -285,6 +313,7 @@ impl SimpleComponent for Confirm {
             Input::Left => {
                 // A prepare still running belongs to no screen now.
                 self.round += 1;
+                self.short = None;
                 if let Some(prepared) = self.prepared.take() {
                     self.engine.cancel(&prepared);
                 }
@@ -299,6 +328,67 @@ fn copy_draft(draft: &fob_app::views::ContactDraft) -> fob_app::views::ContactDr
 }
 
 impl Confirm {
+    /// Prepares `filled` for this round: the payment, or, with not enough
+    /// ready, what it lacks.
+    fn prepare(&self, filled: Filled, sender: &ComponentSender<Self>) {
+        let round = self.round;
+        let (engine, sender) = (self.engine.clone(), sender.clone());
+        relm4::spawn(async move {
+            let prepared = engine.read(move |wallet, _| async move { wallet.prepare(filled.to, filled.amount, filled.in_fiat, filled.note, filled.code).await }).await;
+            match prepared {
+                Some(Ok(prepared)) => sender.input(Input::Ready(round, View(prepared.into()))),
+                Some(Err(FobError::NotEnoughFunds { reason, needed })) => {
+                    let short = engine.read(move |wallet, clock| async move { wallet.shortfall(needed, clock.now, clock.utc_offset, clock.hours_24).await }).await;
+                    sender.input(match short {
+                        Some(short) => Input::Short(round, View(short.into())),
+                        None => Input::NotPrepared(round, reason),
+                    });
+                }
+                Some(Err(e)) => sender.input(Input::NotPrepared(round, e.to_string())),
+                None => {}
+            }
+        });
+    }
+
+    /// Not enough ready: who it's to, what it lacks in the list, and above
+    /// the locked Send, the alert in general words (the numbers are the
+    /// list's). Settling, a bar fills toward when enough is ready.
+    fn draw_short(&self, filled: &Filled, short: &Shortfall) {
+        widgets::empty(&self.body);
+        self.body.append(&widgets::recipient(&filled.to));
+        let list = widgets::list();
+        let row = |title: &str, value: &str, fiat: Option<&str>, warn: bool| {
+            let view = widgets::row(title, fiat.unwrap_or(""));
+            let text = gtk::Label::new(Some(value));
+            text.add_css_class("money");
+            if warn {
+                view.add_css_class("warning");
+                text.add_css_class("warning");
+            }
+            view.add_suffix(&text);
+            list.append(&view);
+        };
+        row("With the fee", &short.needed_text, short.needed_fiat.as_deref(), false);
+        row("Ready to spend", &short.ready_text, short.ready_fiat.as_deref(), false);
+        if let Some(on_way) = &short.on_way_text {
+            row("On its way", on_way, short.on_way_fiat.as_deref(), false);
+        }
+        row(&short.short_label, &short.short_text, short.short_fiat.as_deref(), true);
+        self.body.append(&list);
+        let alert = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_top(12).build();
+        let mark = gtk::Image::from_icon_name(if short.settling { "alarm-symbolic" } else { "dialog-warning-symbolic" });
+        mark.set_pixel_size(32);
+        mark.add_css_class("warning");
+        alert.append(&mark);
+        alert.append(&widgets::heading(&short.title));
+        alert.append(&widgets::centred(&short.line));
+        if short.settling {
+            let bar = gtk::ProgressBar::builder().fraction(short.progress.into()).margin_top(6).margin_start(80).margin_end(80).build();
+            alert.append(&bar);
+        }
+        self.body.append(&alert);
+    }
+
     fn draw_waiting(&self, filled: &Filled) {
         widgets::empty(&self.body);
         self.body.append(&widgets::recipient(&filled.to));
