@@ -738,42 +738,68 @@ pub struct NotReadyPiece {
     pub ready: String,
 }
 
-/// A line of Home's opened card.
+/// One segment of the coins bar: a coin, or the smallest ready ones put
+/// together.
 #[derive(uniffi::Record)]
-pub struct NotReadySum {
-    /// "Ready to spend", "Not ready · 3 coins", "All of it".
-    pub label: String,
-    /// "1.8592"
-    pub amount_text: String,
-    /// Worth now, with a currency besides XMR: "$308.70".
-    pub fiat_text: Option<String>,
-    /// The line for TalkBack: "Ready to spend, 1.8592 XMR, $308.70".
-    pub description: String,
+pub struct CoinSegment {
+    /// In atomic units: how wide it is beside the others.
+    pub atomic: u64,
+    /// How far a coin not ready yet is along, 0 to 1, drawn as solid green
+    /// over faint; none for money ready to spend, drawn in ink.
+    pub progress: Option<f32>,
+    /// How many coins it stands for.
+    pub coins: u32,
 }
 
-/// The money not ready yet beside what is, for Home's card.
+impl From<fob_wallet::coin_bar::Segment> for CoinSegment {
+    fn from(s: fob_wallet::coin_bar::Segment) -> Self {
+        CoinSegment { atomic: s.atomic, progress: s.progress, coins: s.coins }
+    }
+}
+
+/// The coins bar's gap between segments and its narrowest segment, in dp
+/// (px on the desktop).
+pub const COIN_BAR_GAP: f32 = 2.0;
+pub const COIN_BAR_MIN: f32 = 4.0;
+
+/// The gap between the coins bar's segments, for drawing them.
+#[uniffi::export]
+pub fn coin_bar_gap() -> f32 {
+    COIN_BAR_GAP
+}
+
+/// Each segment's width across a bar `width` wide: [`COIN_BAR_GAP`] apart,
+/// none narrower than [`COIN_BAR_MIN`], the rest shared by amount.
+#[uniffi::export]
+pub fn coin_bar_widths(segments: Vec<CoinSegment>, width: f32) -> Vec<f32> {
+    fob_wallet::coin_bar::widths(&segments.iter().map(|s| s.atomic).collect::<Vec<_>>(), width, COIN_BAR_GAP, COIN_BAR_MIN)
+}
+
+/// The money not ready yet beside what is, for Home's card: what's ready
+/// on the left in ink; what's on its way and when it'll all be ready on
+/// the right in green; the coins bar under them.
 #[derive(uniffi::Record)]
 pub struct NotReady {
-    /// Ready to spend and not ready, in atomic units: the bar's two parts.
+    /// Ready to spend and not ready, in atomic units.
     pub ready: u64,
     pub not_ready: u64,
-    /// "1.8592 ready", in bold.
-    pub ready_text: String,
-    /// "0.6221 not yet"
-    pub not_yet_text: String,
-    /// "09:02"
+    /// "1.8592 XMR"
+    pub ready_xmr: String,
+    /// "1.253 XMR"
+    pub incoming_xmr: String,
+    /// The same in money, once there's a price, longest first: show the
+    /// first that fits ("A$1,080.92", "A$1,081", "A$1.08K"). Empty without
+    /// a price. Shown in place of the XMR while the balance shows money
+    /// first.
+    pub ready_money: Vec<String>,
+    pub incoming_money: Vec<String>,
+    /// "09:02", beside the clock.
     pub all_ready: String,
-    /// "All ready about 09:02 · in 14 min"
-    pub all_ready_line: String,
-    /// The folded card for TalkBack.
+    /// The card for TalkBack: "1.8592 XMR ready to spend, 1.253 XMR not
+    /// yet, all ready about 09:02".
     pub description: String,
-    /// Ready to spend, not ready, all of it.
-    pub sums: Vec<NotReadySum>,
-    /// How old the price the sums are worth at is, once it's missed a
-    /// refresh: "23 h old".
-    pub price_age: Option<String>,
-    /// Weighted by amount, 0 to 1: how much of the not-ready part is green.
-    pub progress: f32,
+    /// The coins bar.
+    pub segments: Vec<CoinSegment>,
 }
 
 impl From<not_ready::NotReady> for NotReady {
@@ -782,14 +808,13 @@ impl From<not_ready::NotReady> for NotReady {
         NotReady {
             ready: n.ready,
             not_ready: n.not_ready,
-            ready_text: n.ready_text,
-            not_yet_text: n.not_yet_text,
+            ready_xmr: n.ready_xmr,
+            incoming_xmr: n.incoming_xmr,
+            ready_money: n.ready_money,
+            incoming_money: n.incoming_money,
             all_ready: n.all_ready,
-            all_ready_line: n.all_ready_line,
             description: n.description,
-            sums: n.sums.into_iter().map(|s| NotReadySum { description: s.description, label: s.label, amount_text: s.amount, fiat_text: s.fiat }).collect(),
-            price_age: n.price_age,
-            progress: n.progress,
+            segments: n.segments.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -848,6 +873,8 @@ pub struct Coins {
     /// Split up can be pressed: a coin is ready to spend in a wallet that
     /// can spend. Otherwise it shows greyed out.
     pub can_split: bool,
+    /// The coins bar, coin by coin.
+    pub segments: Vec<CoinSegment>,
 }
 
 impl From<not_ready::Coins> for Coins {
@@ -866,6 +893,7 @@ impl From<not_ready::Coins> for Coins {
             not_ready_sum: c.not_ready_sum,
             not_ready_coins: c.not_ready_coins.into_iter().map(Into::into).collect(),
             can_split: c.can_split,
+            segments: c.segments.into_iter().map(Into::into).collect(),
         }
     }
 }

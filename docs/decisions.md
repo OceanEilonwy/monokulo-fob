@@ -3870,3 +3870,29 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      as before. `--locked` in every workflow keeps the resolution fixed. The
      upstream branch has not moved since the copy was taken.
 
+
+## Home's coins card (November 2026)
+
+402. **The coins bar draws each coin, and Home's card says only what the bar
+     shows.** The bar was ready money in ink beside a grey track filling
+     green with the weighted confirmations, so its green said how far along
+     the money was, not how much was coming, and the card opened into sums
+     that repeated its own first line. Designed on a canvas
+     (https://claude.ai/artifact/4imr6DJSBSCekG3Xbt4J27): one square
+     segment per coin, ready ones first in ink (largest first), then those
+     not ready in green (soonest ready first, so the next to turn ink sits
+     beside the ink), each as wide as its amount and filling from faint to
+     solid with its own confirmations. Every segment is at least 4 dp, 2 dp
+     apart; past 24 segments the smallest ready coins share one.
+     `fob_screens::coin_bar` makes the segments and their widths, and
+     `coin_bar_widths` hands the widths to Kotlin, so both apps draw from the
+     same arithmetic. Over the bar: what's ready on the left in ink; on the
+     right, in green, the arrow in, what's on its way, and a clock with a
+     tick before the time all of it should be ready. No separator, no
+     "ready"/"not yet": the colours and the arrow say it. While the balance
+     shows money first, the amounts are money, the longest of
+     `fiat::forms` that fits the row as measured (all the cents, whole
+     units, then "A$42.15M"). The card no longer opens; on Android it does
+     nothing when tapped (the Coins chip is beside it), on the desktop it
+     opens Coins as the line it replaces did, and that line still shows once
+     every coin is ready. The Coins screen draws the same bar on both.

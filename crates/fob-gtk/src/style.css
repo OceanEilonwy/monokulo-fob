@@ -97,6 +97,15 @@ button.refreshing image {
 	color: #1f7a45;
 }
 
+/* Home's coins card: what's on its way, and the bar's green, as on Android's dark theme. */
+.coin-incoming {
+	color: #5cc88a;
+}
+
+.ready-card {
+	padding: 12px 16px 14px;
+}
+
 /* The Trezor card: the device drawn beside what to do on it. */
 .trezor-card {
 	padding: 16px 20px 14px;

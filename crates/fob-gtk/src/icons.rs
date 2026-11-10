@@ -5,6 +5,8 @@ use relm4::gtk::{self, cairo, prelude::*};
 
 pub const DOWN: &str = "M12 4v13M6 11l6 6 6-6";
 pub const UP: &str = "M12 20V7M6 13l6-6 6 6";
+/// A clock with a tick: when it'll all be ready.
+pub const CLOCK: &str = "M20.5 13.5A8.5 8.5 0 1 1 12 3.5 M12 7.5V12l2.5 1.5 M16 5.5l2 2 3.5-3.5";
 pub const ARROW: &str = "M5 12h13 M13 6l6 6-6 6";
 pub const PLUS: &str = "M12 5v14M5 12h14";
 pub const CHECK: &str = "M5 12.5l4.5 4.5L19 7.5";

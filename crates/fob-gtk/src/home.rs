@@ -47,6 +47,8 @@ pub struct Home {
     /// The wallets under the title, with a way to add one.
     wallet_list: gtk::ListBox,
     popover: gtk::Popover,
+    /// What's ready beside what isn't yet, over the coins bar.
+    ready_card: crate::coin_bar::ReadyCard,
 }
 
 impl Home {
@@ -71,8 +73,10 @@ impl Home {
         }
     }
 
+    /// The line under the balance once all of it is ready; the card takes
+    /// its place while some isn't.
     fn ready(&self) -> String {
-        self.screens.as_ref().map_or(String::new(), |View(s)| s.balance.ready_line.clone())
+        self.screens.as_ref().filter(|View(s)| s.not_ready.is_none()).map_or(String::new(), |View(s)| s.balance.ready_line.clone())
     }
 
     fn reminder(&self) -> Option<(String, String)> {
@@ -261,6 +265,10 @@ impl SimpleComponent for Home {
                                 },
                             },
                         },
+                        #[local_ref]
+                        ready_card -> gtk::Button {
+                            connect_clicked[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Coins)); },
+                        },
                         gtk::Button {
                             add_css_class: "flat",
                             set_halign: gtk::Align::Center,
@@ -372,11 +380,13 @@ impl SimpleComponent for Home {
         let popover = gtk::Popover::new();
         popover.set_child(Some(&wallet_list));
         wallet_button.set_popover(Some(&popover));
-        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, refreshing: false, wallet_list, popover };
+        let card = crate::coin_bar::ReadyCard::new();
+        let ready_card = card.root.clone();
+        let model = Home { engine, screens: None, status: None, title: String::new(), days: days.clone(), sync_card: None, refreshing: false, wallet_list, popover, ready_card: card };
         let swap_mark = crate::icons::icon(crate::icons::SWAP, 16, 0.7);
         // As on Android: the arrow in for Receive, out for Send.
         let (receive_icon, send_icon) = (crate::icons::icon(crate::icons::DOWN, 18, 1.0), crate::icons::icon(crate::icons::UP, 18, 1.0));
-        let (days, wallet_button, swap_mark, receive_icon, send_icon) = (&days, &wallet_button, &swap_mark, &receive_icon, &send_icon);
+        let (days, wallet_button, swap_mark, receive_icon, send_icon, ready_card) = (&days, &wallet_button, &swap_mark, &receive_icon, &send_icon, &ready_card);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -385,6 +395,7 @@ impl SimpleComponent for Home {
         match input {
             Input::Screens(view) => {
                 self.draw_days(&view.0, &sender);
+                self.ready_card.show(view.0.not_ready.as_ref(), view.0.balance.fiat_first);
                 self.screens = Some(view);
             }
             Input::Status(view) => self.status = Some(view),

@@ -62,9 +62,12 @@ impl SimpleComponent for Coins {
         let coins = &screens.coins;
         widgets::empty(&self.body);
         self.body.append(&widgets::dim(&coins.intro));
-        let bar = gtk::LevelBar::builder().value(f64::from(coins.progress)).build();
-        bar.update_property(&[gtk::accessible::Property::Label(&coins.bar_description)]);
-        self.body.append(&bar);
+        if !coins.segments.is_empty() {
+            let bar = crate::coin_bar::Bar::new();
+            bar.set(&coins.segments);
+            bar.area.update_property(&[gtk::accessible::Property::Label(&coins.bar_description)]);
+            self.body.append(&bar.area);
+        }
         let ready = adw::PreferencesGroup::builder().title(gtk::glib::markup_escape_text(&coins.ready_title).as_str()).description(gtk::glib::markup_escape_text(&coins.ready_sum).as_str()).build();
         for coin in &coins.ready_coins {
             let row = widgets::row(&coin.amount_text, &coin.source);

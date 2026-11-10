@@ -2,6 +2,7 @@
 //! only a desktop can do; everything about the wallet is in the crates below.
 
 mod bridge;
+mod coin_bar;
 mod coins;
 mod confirm;
 mod contacts;

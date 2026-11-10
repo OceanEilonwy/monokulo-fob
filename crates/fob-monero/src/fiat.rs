@@ -130,11 +130,37 @@ fn digits(minor: u64, currency: &Currency, group: bool) -> String {
 /// otherwise the code after ("412.06 CHF"); a point before the cents,
 /// commas between thousands, always all the decimals.
 pub fn format(minor: u64, currency: &Currency) -> String {
-    let digits = digits(minor, currency, true);
+    signed(digits(minor, currency, true), currency)
+}
+
+fn signed(digits: String, currency: &Currency) -> String {
     match currency.symbol {
         Some(symbol) => format!("{symbol}{digits}"),
         None => format!("{digits} {}", currency.code),
     }
+}
+
+/// `minor` written ever shorter, for a line that takes the first that fits:
+/// as [`format`] ("A$1,080.92"), then in whole units rounded half up
+/// ("A$1,081"), then in thousands, millions or billions to two places
+/// ("A$42.15M"). Each only when shorter than the one before.
+pub fn forms(minor: u64, currency: &Currency) -> Vec<String> {
+    let mut out = vec![format(minor, currency)];
+    let unit = 10u64.pow(currency.decimals);
+    let whole = minor / unit + u64::from(minor % unit >= unit.div_ceil(2) && unit > 1);
+    let mut push = |text: String| {
+        if out.last().is_some_and(|last| text.chars().count() < last.chars().count()) {
+            out.push(text);
+        }
+    };
+    push(signed(grouped(whole), currency));
+    if let Some((div, suffix)) = [(1_000_000_000_000u64, "T"), (1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")].into_iter().find(|(div, _)| whole >= *div) {
+        let hundredths = (u128::from(minor) * 100 + u128::from(div) * u128::from(unit) / 2) / (u128::from(div) * u128::from(unit));
+        let short = format!("{}.{:02}", hundredths / 100, hundredths % 100);
+        let short = short.trim_end_matches('0').trim_end_matches('.');
+        push(signed(format!("{short}{suffix}"), currency));
+    }
+    out
 }
 
 /// As [`format`], for typing into: no commas, no symbol ("1234.50").
@@ -225,6 +251,21 @@ mod tests {
 
     fn eur() -> Currency {
         currency("EUR")
+    }
+
+    #[test]
+    fn forms_get_shorter_until_one_fits() {
+        let aud = currency("AUD");
+        assert_eq!(forms(108_092, &aud), ["A$1,080.92", "A$1,081"]);
+        assert_eq!(forms(244_212_605, &aud), ["A$2,442,126.05", "A$2,442,126", "A$2.44M"]);
+        assert_eq!(forms(4_215_072_939, &aud), ["A$42,150,729.39", "A$42,150,729", "A$42.15M"]);
+        assert_eq!(forms(100_000_000_000, &aud), ["A$1,000,000,000.00", "A$1,000,000,000", "A$1B"]);
+        // Half a cent short of a dollar rounds up; nothing shorter than "$1".
+        assert_eq!(forms(9_950, &usd()), ["$99.50", "$100"]);
+        assert_eq!(forms(120, &usd()), ["$1.20", "$1"]);
+        // No symbol: the code after; no decimals: whole already.
+        assert_eq!(forms(123_456_789, &currency("XYZ")), ["1,234,567.89 XYZ", "1,234,568 XYZ", "1.23M XYZ"]);
+        assert_eq!(forms(1_234_567, &currency("JPY")), ["¥1,234,567", "¥1.23M"]);
     }
 
     fn gbp() -> Currency {

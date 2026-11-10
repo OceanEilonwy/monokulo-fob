@@ -1,11 +1,13 @@
 //! The wallet's coins: each output it owns, ready to spend or not yet. Money
 //! not ready is listed piece by piece: each output that hasn't its 10
 //! confirmations (a mined reward, its 60), where it came from, and about
-//! when it will be ready. Home folds it into one line beside what's ready,
-//! with a bar, and opens it into sums; the Coins screen lists every coin.
+//! when it will be ready. Home shows it beside what's ready on one line
+//! over the coins bar ([`crate::coin_bar`]); the Coins screen lists every
+//! coin.
 
 use fob_monero::{amount, fiat};
 use crate::clock::{Clock, local, short_when, time_of_day};
+use crate::coin_bar;
 
 /// About how long a block takes.
 const BLOCK_SECONDS: u64 = 120;
@@ -105,6 +107,14 @@ pub struct NotReady {
     pub progress: f32,
     /// Soonest ready first.
     pub pieces: Vec<PieceView>,
+    /// The coins bar: what's ready as one segment until the wallet sets
+    /// its coins one by one, then each piece.
+    pub segments: Vec<coin_bar::Segment>,
+    /// What's ready and what's on its way, in money, once there's a price:
+    /// longest first ("A$1,080.92", "A$1,081", "A$1.08K"), for the header to
+    /// take the first that fits; empty without one.
+    pub ready_money: Vec<String>,
+    pub incoming_money: Vec<String>,
 }
 
 /// When the next block's two minutes count from: the last block, if it
@@ -161,7 +171,10 @@ pub fn summarise(pieces: Vec<Piece>, ready: u64, last_block_time: u64, clock: Cl
         sums: vec![sum(SumKind::Ready, ready), sum(SumKind::NotReady { coins: views.len() }, total), sum(SumKind::All, ready + total)],
         price_age: None,
         progress: progress as f32,
+        segments: coin_bar::segments(&[ready], &views),
         pieces: views,
+        ready_money: vec![],
+        incoming_money: vec![],
     })
 }
 
@@ -199,6 +212,8 @@ pub struct Coins {
     pub not_ready: u64,
     /// The not-ready part's weighted progress, as on Home.
     pub progress: f32,
+    /// The coins bar, coin by coin.
+    pub segments: Vec<coin_bar::Segment>,
     /// What's ready: "1.8592".
     pub ready_amount: String,
     /// What it's worth, with a price: "$308.70".
@@ -238,11 +253,13 @@ pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unl
         piece.fiat = worth(piece.atomic);
     }
     let count = ready_coins.len() + pieces.len();
+    let segments = coin_bar::segments(&ready_coins.iter().map(|c| c.atomic).collect::<Vec<_>>(), &pieces);
     Coins {
         held: (count > 0).then(|| Held { amount: amount::format_short(ready_total + not_ready_total), coins: count, minutes: unlock * BLOCK_SECONDS / 60 }),
         ready: ready_total,
         not_ready: not_ready_total,
         progress,
+        segments,
         ready_amount: amount::format_short(ready_total),
         ready_fiat: worth(ready_total),
         price_age: worth(ready_total).and(age),
