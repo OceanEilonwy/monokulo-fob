@@ -52,43 +52,111 @@ pub fn disagrees(view: &ReceiptView, atomic: u64, price: u64, currency: &fiat::C
     Some(worth.abs_diff(said) * 100 > AGREE_PERCENT * worth.max(said))
 }
 
-/// What checking a receipt against Fob's prices found.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Check {
-    /// The total and what the payment is worth agree; Confirm needs nothing.
-    Matches,
-    /// They disagree: the warning to show and have acknowledged before paying,
-    /// "The receipt says $5.00, but 5 XMR is worth $812.40 now. …".
-    Mismatch(String),
-    /// Fob has no price in the receipt's currency, so the total can't be
-    /// checked: the softer notice to show, still acknowledged before paying,
-    /// since a tampered code is exactly what would pick a currency Fob can't
-    /// check.
-    Unchecked(String),
+/// A receipt as Confirm shows it, set against Fob's prices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checked {
+    /// The receipt's currency when it isn't the wallet's ("USD"), for the
+    /// receipt's heading; `None` in the wallet's own.
+    pub other_currency: Option<String>,
+    /// Lines, tax and total as written beside the wallet's money: "US$4.50"
+    /// where a bare "$" could be another dollar.
+    pub lines: Vec<ReceiptLine>,
+    pub tax: Option<String>,
+    pub total: String,
+    /// In another currency, the total in the wallet's at Fob's prices, its
+    /// last row: ("US$8.25 in AUD", "A$12.62").
+    pub converted: Option<(String, String)>,
+    /// The total and what the XMR is worth are more than 5% apart: the red
+    /// line under the receipt.
+    pub mismatch: Option<String>,
+    /// Fob has no price in the receipt's currency: "No USD price right now".
+    pub no_price: Option<String>,
 }
 
-/// Confirm's notice when Fob can't check the receipt's total.
-const UNCHECKED: &str = "Fob can't check this receipt's total against its own price. Make sure the XMR amount is right before paying.";
+/// Whether a receipt in `receipt_currency` is in another currency than the
+/// wallet's (`None`: XMR only), so money beside it is written
+/// [`distinct`](fiat::Currency::distinct)ly.
+pub fn other_currency(receipt_currency: &str, wallet: Option<&str>) -> bool {
+    wallet.is_some_and(|w| !w.eq_ignore_ascii_case(receipt_currency))
+}
 
-/// Checks the receipt for paying `atomic` (written `amount_text`) against
-/// `prices`, Fob's own XMR prices as (currency, price) pairs, using the one
-/// in the receipt's currency. With none in that currency (another currency
-/// than the user's, or no price yet) the receipt is unchecked, never taken
-/// as matching.
-pub fn check(view: &ReceiptView, atomic: u64, amount_text: &str, prices: &[(fiat::Currency, u64)]) -> Check {
-    let compared = prices.iter().find_map(|(currency, price)| Some((disagrees(view, atomic, *price, currency)?, currency, *price)));
-    match compared {
-        Some((false, _, _)) => Check::Matches,
-        Some((true, currency, price)) => Check::Mismatch(format!(
-            "The receipt says {}, but {amount_text} XMR is worth {} now. Pay only if the XMR amount is right.",
-            view.total,
-            fiat::value(atomic, price, currency)
-        )),
-        None => Check::Unchecked(UNCHECKED.into()),
+/// How a receipt writes `code`: as Fob knows it, or by its code with the
+/// usual digits for one it doesn't.
+fn receipt_currency(code: &str) -> fiat::Currency {
+    let mut currency = fiat::currency(code);
+    if fiat::currencies::find(code).is_none() {
+        currency.decimals = minor_digits(code);
+    }
+    currency
+}
+
+/// `text`, written by [`money`] in `currency`, written distinctly instead:
+/// "$4.50" as "US$4.50". Anything else comes back as it was.
+fn distinct_text(text: &str, currency: &fiat::Currency) -> String {
+    let distinct = currency.clone().distinct();
+    let (Some(symbol), Some(d)) = (currency.symbol, distinct.symbol.filter(|d| Some(*d) != currency.symbol)) else { return text.to_owned() };
+    let (sign, rest) = text.strip_prefix('−').map_or(("", text), |rest| ("−", rest));
+    match rest.strip_prefix(symbol) {
+        Some(digits) => format!("{sign}{d}{digits}"),
+        None => text.to_owned(),
     }
 }
 
-fn minor_digits(currency: &str) -> usize {
+/// Sets the receipt for paying `atomic` against Fob's prices. `wallet` is
+/// the currency amounts are also shown in (`None`: XMR only, when Fob asks
+/// for no prices and checks nothing), at `wallet_price` when it has one;
+/// `receipt_price` is Fob's price in the receipt's currency, when another.
+///
+/// With no price in the receipt's currency the total can't be checked, and
+/// a muted line says so: never taken as a match, never a warning.
+pub fn check(view: &ReceiptView, atomic: u64, wallet: Option<&fiat::Currency>, wallet_price: Option<u64>, receipt_price: Option<u64>) -> Checked {
+    let plain = receipt_currency(&view.currency);
+    let other = other_currency(&view.currency, wallet.map(|w| w.code.as_str()));
+    let written = |text: &str| if other { distinct_text(text, &plain) } else { text.to_owned() };
+    let mut checked = Checked {
+        other_currency: other.then(|| view.currency.to_ascii_uppercase()),
+        lines: view.lines.iter().map(|l| ReceiptLine { label: l.label.clone(), amount: written(&l.amount) }).collect(),
+        tax: view.tax.as_deref().map(written),
+        total: written(&view.total),
+        converted: None,
+        mismatch: None,
+        no_price: None,
+    };
+    let Some(wallet) = wallet else { return checked };
+    let receipt_price = if other { receipt_price } else { wallet_price };
+    let Some(receipt_price) = receipt_price.filter(|p| *p > 0) else {
+        checked.no_price = Some(format!("No {} price right now", view.currency.to_ascii_uppercase()));
+        return checked;
+    };
+    let receipt_in = if other { plain.clone().distinct() } else { plain.clone() };
+    let wallet_in = if other { wallet.clone().distinct() } else { wallet.clone() };
+    let real_total = view.total_value.is_finite() && view.total_value > 0.0;
+    // The total in the wallet's currency, through XMR at Fob's two prices.
+    let in_wallet = match wallet_price {
+        Some(wp) if other && real_total => {
+            let minor = (view.total_value * wp as f64 / receipt_price as f64 * 10f64.powi(wallet.decimals as i32)).round();
+            (minor.is_finite() && minor < u64::MAX as f64).then(|| fiat::format(minor as u64, &wallet_in))
+        }
+        _ => None,
+    };
+    if let Some(value) = &in_wallet {
+        checked.converted = Some((format!("{} in {}", checked.total, wallet.code), value.clone()));
+    }
+    if disagrees(view, atomic, receipt_price, &plain) == Some(true) {
+        let (paying, expected) = match (wallet_price, &in_wallet) {
+            (Some(wp), Some(value)) => (fiat::value(atomic, wp, &wallet_in), value.clone()),
+            _ => (fiat::value(atomic, receipt_price, &receipt_in), checked.total.clone()),
+        };
+        checked.mismatch = Some(if real_total {
+            format!("You're paying {paying}, not {expected}. Don't send unless the till shows the same XMR.")
+        } else {
+            "This receipt's total isn't a real amount. Don't send unless the till shows the same XMR.".to_owned()
+        });
+    }
+    checked
+}
+
+fn minor_digits(currency: &str) -> u32 {
     match currency {
         "JPY" | "KRW" | "VND" | "CLP" | "ISK" | "UGX" | "XAF" | "XOF" => 0,
         "BHD" | "KWD" | "OMR" | "JOD" | "TND" | "LYD" | "IQD" => 3,
@@ -96,19 +164,14 @@ fn minor_digits(currency: &str) -> usize {
     }
 }
 
-/// `amount` in `currency`, the way people write it: "$24.50", "€9.00",
-/// "CHF 12.00".
+/// `amount` in `currency`, written as Fob writes money: its own sign first
+/// ("$24.50", "A$9.00", "€9.00"), else the code after ("12.00 CHF").
 pub fn money(amount: f64, currency: &str) -> String {
-    let digits = minor_digits(currency);
-    let number = format!("{:.*}", digits, amount.abs());
+    let currency = receipt_currency(currency);
+    let minor = (amount.abs() * 10f64.powi(currency.decimals as i32)).round();
+    let minor = if minor.is_finite() && minor < u64::MAX as f64 { minor as u64 } else { 0 };
     let sign = if amount < 0.0 { "−" } else { "" };
-    match currency {
-        "USD" | "CAD" | "AUD" | "NZD" => format!("{sign}${number}"),
-        "EUR" => format!("{sign}€{number}"),
-        "GBP" => format!("{sign}£{number}"),
-        "JPY" => format!("{sign}¥{number}"),
-        _ => format!("{sign}{currency} {number}"),
-    }
+    format!("{sign}{}", fiat::format(minor, &currency))
 }
 
 fn quantity(q: f64) -> String {
@@ -162,9 +225,11 @@ mod tests {
     #[test]
     fn money_is_written_the_usual_way() {
         assert_eq!(money(24.5, "USD"), "$24.50");
+        assert_eq!(money(8.25, "AUD"), "A$8.25");
         assert_eq!(money(9.0, "EUR"), "€9.00");
-        assert_eq!(money(1200.0, "JPY"), "¥1200");
-        assert_eq!(money(1.5, "KWD"), "KWD 1.500");
+        assert_eq!(money(1200.0, "JPY"), "¥1,200");
+        assert_eq!(money(1.5, "KWD"), "1.500 KWD");
+        assert_eq!(money(2.0, "OMR"), "2.000 OMR");
         assert_eq!(money(-3.0, "GBP"), "−£3.00");
     }
 
@@ -199,7 +264,7 @@ mod tests {
         ReceiptView {
             merchant: "Corner Café".into(),
             issued: String::new(),
-            lines: vec![],
+            lines: vec![ReceiptLine { label: "Flat white".into(), amount: money(total, currency) }],
             item_count: 1,
             tax: None,
             total: money(total, currency),
@@ -208,56 +273,90 @@ mod tests {
         }
     }
 
+    const XMR: u64 = fob_monero::amount::ATOMIC_PER_XMR;
+
     #[test]
     fn a_receipt_is_checked_against_fob_s_own_price() {
         let usd = fiat::currency("USD");
         // $160.00 per XMR.
         let price = 160 * fiat::MICRO;
-        let xmr = fob_monero::amount::ATOMIC_PER_XMR;
         // 0.05 XMR is $8.00: a receipt for $8.00, or a little off, agrees.
-        assert_eq!(disagrees(&view(8.0, "USD"), xmr / 20, price, &usd), Some(false));
-        assert_eq!(disagrees(&view(7.80, "USD"), xmr / 20, price, &usd), Some(false));
+        assert_eq!(disagrees(&view(8.0, "USD"), XMR / 20, price, &usd), Some(false));
+        assert_eq!(disagrees(&view(7.80, "USD"), XMR / 20, price, &usd), Some(false));
         // A $5.00 receipt on a code asking 5 XMR ($800) is the attack.
-        assert_eq!(disagrees(&view(5.0, "USD"), 5 * xmr, price, &usd), Some(true));
+        assert_eq!(disagrees(&view(5.0, "USD"), 5 * XMR, price, &usd), Some(true));
         // Not a total at all.
-        assert_eq!(disagrees(&view(-1.0, "USD"), xmr, price, &usd), Some(true));
-        assert_eq!(disagrees(&view(f64::NAN, "USD"), xmr, price, &usd), Some(true));
+        assert_eq!(disagrees(&view(-1.0, "USD"), XMR, price, &usd), Some(true));
+        assert_eq!(disagrees(&view(f64::NAN, "USD"), XMR, price, &usd), Some(true));
         // Another currency can't be compared at a USD price.
-        assert_eq!(disagrees(&view(5.0, "EUR"), 5 * xmr, price, &usd), None);
+        assert_eq!(disagrees(&view(5.0, "EUR"), 5 * XMR, price, &usd), None);
     }
 
     #[test]
-    fn a_matching_receipt_needs_nothing() {
+    fn a_matching_receipt_in_the_wallet_s_currency_adds_nothing() {
         let usd = fiat::currency("USD");
-        let prices = [(usd, 160 * fiat::MICRO)];
-        let xmr = fob_monero::amount::ATOMIC_PER_XMR;
-        assert_eq!(check(&view(8.0, "USD"), xmr / 20, "0.05", &prices), Check::Matches);
+        let checked = check(&view(8.0, "USD"), XMR / 20, Some(&usd), Some(160 * fiat::MICRO), None);
+        assert_eq!(checked.other_currency, None);
+        assert_eq!(checked.total, "$8.00");
+        assert_eq!((checked.converted, checked.mismatch, checked.no_price), (None, None, None));
     }
 
     #[test]
-    fn a_receipt_far_from_the_price_is_a_mismatch() {
+    fn a_receipt_far_from_the_price_says_so_in_one_line() {
         let usd = fiat::currency("USD");
-        let prices = [(usd, 160 * fiat::MICRO)];
-        let xmr = fob_monero::amount::ATOMIC_PER_XMR;
-        let Check::Mismatch(warning) = check(&view(5.0, "USD"), 5 * xmr, "5", &prices) else { panic!("not a mismatch") };
-        assert!(warning.starts_with("The receipt says $5.00, but 5 XMR is worth $800.00 now."), "{warning}");
+        let checked = check(&view(5.0, "USD"), 5 * XMR, Some(&usd), Some(160 * fiat::MICRO), None);
+        assert_eq!(checked.mismatch.as_deref(), Some("You're paying $800.00, not $5.00. Don't send unless the till shows the same XMR."));
+        let nan = check(&view(f64::NAN, "USD"), 5 * XMR, Some(&usd), Some(160 * fiat::MICRO), None);
+        assert!(nan.mismatch.unwrap().starts_with("This receipt's total isn't a real amount."));
     }
 
     #[test]
-    fn a_receipt_fob_has_no_price_for_is_unchecked() {
+    fn a_receipt_in_another_currency_is_converted_and_names_its_dollar() {
+        let aud = fiat::currency("AUD");
+        // A$240.00 and US$160.00 per XMR: 0.05 XMR is US$8.00, A$12.00.
+        let (wallet_price, usd_price) = (240 * fiat::MICRO, 160 * fiat::MICRO);
+        let checked = check(&view(8.0, "USD"), XMR / 20, Some(&aud), Some(wallet_price), Some(usd_price));
+        assert_eq!(checked.other_currency.as_deref(), Some("USD"));
+        assert_eq!(checked.lines[0].amount, "US$8.00");
+        assert_eq!(checked.total, "US$8.00");
+        assert_eq!(checked.converted, Some(("US$8.00 in AUD".into(), "A$12.00".into())));
+        assert_eq!((checked.mismatch, checked.no_price), (None, None));
+        // The attack, across currencies: US$8.00 over 5 XMR.
+        let attack = check(&view(8.0, "USD"), 5 * XMR, Some(&aud), Some(wallet_price), Some(usd_price));
+        assert_eq!(attack.mismatch.as_deref(), Some("You're paying A$1,200.00, not A$12.00. Don't send unless the till shows the same XMR."));
+    }
+
+    #[test]
+    fn a_usd_wallet_names_its_own_dollar_beside_an_aud_receipt() {
         let usd = fiat::currency("USD");
-        let eur = fiat::currency("EUR");
-        let xmr = fob_monero::amount::ATOMIC_PER_XMR;
-        // "€5.00" over 5 XMR, with only a USD price: not a match, and not
-        // passed over either.
-        let usd_only = [(usd.clone(), 160 * fiat::MICRO)];
-        assert!(matches!(check(&view(5.0, "EUR"), 5 * xmr, "5", &usd_only), Check::Unchecked(_)));
-        // No price at all, offline or on a fresh install.
-        assert!(matches!(check(&view(8.0, "USD"), xmr / 20, "0.05", &[]), Check::Unchecked(_)));
-        // With a EUR price as well, the same receipt is checked in euros.
-        let both = [(usd, 160 * fiat::MICRO), (eur, 150 * fiat::MICRO)];
-        let Check::Mismatch(warning) = check(&view(5.0, "EUR"), 5 * xmr, "5", &both) else { panic!("not a mismatch") };
-        assert!(warning.starts_with("The receipt says €5.00, but 5 XMR is worth €750.00 now."), "{warning}");
-        assert_eq!(check(&view(7.5, "EUR"), xmr / 20, "0.05", &both), Check::Matches);
+        let checked = check(&view(12.0, "AUD"), XMR / 20, Some(&usd), Some(160 * fiat::MICRO), Some(240 * fiat::MICRO));
+        assert_eq!(checked.total, "A$12.00");
+        assert_eq!(checked.converted, Some(("A$12.00 in USD".into(), "US$8.00".into())));
+    }
+
+    #[test]
+    fn without_a_price_in_the_receipt_s_currency_it_says_so_quietly() {
+        let aud = fiat::currency("AUD");
+        let checked = check(&view(8.0, "USD"), 5 * XMR, Some(&aud), Some(240 * fiat::MICRO), None);
+        assert_eq!(checked.no_price.as_deref(), Some("No USD price right now"));
+        assert_eq!((checked.converted, checked.mismatch), (None, None));
+        // Its own currency with no price yet, offline or on a fresh install.
+        let offline = check(&view(8.0, "AUD"), XMR / 20, Some(&aud), None, None);
+        assert_eq!(offline.no_price.as_deref(), Some("No AUD price right now"));
+    }
+
+    #[test]
+    fn xmr_only_checks_nothing() {
+        let checked = check(&view(8.0, "USD"), 5 * XMR, None, None, None);
+        assert_eq!(checked.total, "$8.00");
+        assert_eq!((checked.other_currency, checked.converted, checked.mismatch, checked.no_price), (None, None, None, None));
+    }
+
+    #[test]
+    fn other_signs_stay_as_they_are_beside_another_currency() {
+        let usd = fiat::currency("USD");
+        let checked = check(&view(1200.0, "JPY"), XMR / 20, Some(&usd), Some(160 * fiat::MICRO), None);
+        assert_eq!(checked.total, "¥1,200");
+        assert_eq!(checked.other_currency.as_deref(), Some("JPY"));
     }
 }

@@ -358,6 +358,9 @@ struct Inner {
     price_looked_up: AtomicU64,
     /// The run of failed price lookups, for the toast.
     price_alerts: std::sync::Mutex<crate::price_alert::Alerts>,
+    /// Prices asked for receipts in other currencies than the user's:
+    /// (price, when asked) by currency code. Not saved.
+    receipt_prices: std::sync::Mutex<HashMap<String, (u64, u64)>>,
     /// The node's fee per unit of weight and its rounding mask, as last
     /// asked: Split up's fee "about" before a payment is built.
     fee_rate: std::sync::Mutex<Option<(u64, u64)>>,

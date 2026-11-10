@@ -126,6 +126,45 @@ impl Wallet {
         state.price_cache.shown(&state.prices, now()).map(|c| (fiat::currency(&c.currency), c.price))
     }
 
+    /// The currency amounts are also shown in, whether or not there's a
+    /// price for it yet: `None` with XMR only.
+    pub async fn shown_currency(&self) -> Option<fiat::Currency> {
+        self.inner.state.lock().await.prices.currency.as_deref().map(fiat::currency)
+    }
+
+    /// Fob's price for XMR in `code`, a receipt's currency, to check its
+    /// total with: the shown price in the user's own currency, else one
+    /// asked of the chosen provider over the chosen transport, kept for 5
+    /// minutes. `ask`: ask when none is kept (Confirm's prepare); otherwise
+    /// only one kept is used (its preview, which asks nothing). Never with
+    /// XMR only, nor of a provider the user didn't pick: a currency it
+    /// doesn't price has none.
+    pub async fn receipt_price(&self, code: &str, ask: bool) -> Option<u64> {
+        use crate::price::Source as _;
+        let settings = self.inner.state.lock().await.prices.clone();
+        let own = settings.currency.as_deref()?;
+        if own.eq_ignore_ascii_case(code) {
+            return self.price_now().await.map(|(_, p)| p);
+        }
+        let code = code.to_ascii_uppercase();
+        let now = now();
+        let kept = self.inner.receipt_prices.lock().expect("receipt prices lock").get(&code).copied();
+        if let Some((p, _)) = kept.filter(|(_, at)| now.saturating_sub(*at) < price::REFRESH) {
+            return Some(p);
+        }
+        let provider = settings.provider;
+        if !ask || !provider.prices(&code) || !provider.answers_over(settings.transport) || !settings.transport.available() {
+            return None;
+        }
+        match tokio::time::timeout(price::CHECK_TIMEOUT, provider.current(&code, settings.transport)).await {
+            Ok(Ok(p)) if p > 0 => {
+                self.inner.receipt_prices.lock().expect("receipt prices lock").insert(code, (p, now));
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
     /// When the price shown at `now` was asked: new with every new price,
     /// so a screen converting money knows to convert again.
     pub async fn price_at(&self, now: u64) -> Option<u64> {

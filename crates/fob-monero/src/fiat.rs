@@ -73,6 +73,16 @@ impl Currency {
     pub fn sign(&self) -> String {
         self.symbol.map(str::to_owned).unwrap_or_else(|| self.code.clone())
     }
+
+    /// As written beside money in another currency, where a bare "$" could
+    /// be any dollar: the US dollar as "US$". Every other sign in
+    /// [`currencies`] is already its own ("A$", "CN¥", "€").
+    pub fn distinct(mut self) -> Currency {
+        if self.symbol == Some("$") {
+            self.symbol = Some("US$");
+        }
+        self
+    }
 }
 
 fn pow10(n: u32) -> u128 {
@@ -219,6 +229,18 @@ mod tests {
 
     fn gbp() -> Currency {
         currency("GBP")
+    }
+
+    #[test]
+    fn distinct_names_the_us_dollar() {
+        assert_eq!(format(825, &usd().distinct()), "US$8.25");
+        assert_eq!(format(1262, &currency("AUD").distinct()), "A$12.62");
+        assert_eq!(format(900, &eur().distinct()), "€9.00");
+        assert_eq!(format(1200, &currency("JPY").distinct()), "¥1,200");
+        assert_eq!(format(1200, &currency("CHF").distinct()), "12.00 CHF");
+        // No two currencies Fob knows share a sign, so only "$" needs it.
+        let signs: std::collections::HashSet<_> = currencies::TABLE.iter().filter_map(|c| c.symbol).collect();
+        assert_eq!(signs.len(), currencies::TABLE.iter().filter(|c| c.symbol.is_some()).count());
     }
 
     #[test]
