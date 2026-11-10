@@ -107,9 +107,13 @@ async fn the_paid_screen_offers_to_save_whoever_a_payment_went_to() {
     assert!(add.footnote.as_deref().is_some_and(|f| f.starts_with("This code said it was Sam,")));
     let plain_offer = wallet.said_offer("plain").await.unwrap();
     assert_eq!(plain_offer.draft.send_address.as_deref(), Some(plain.as_str()));
+    // Each payment's note ("Pizza") is what it was for: it stays with the
+    // payment and never becomes the contact's note.
+    assert_eq!((add.draft.note.as_deref(), plain_offer.draft.note.as_deref()), (None, None));
     // "Paid, not saved": an address once paid with a named code is only ever paid at.
     let henry_draft = wallet.new_contact_for(&henry).await;
     assert_eq!((henry_draft.name.as_str(), henry_draft.send_address, henry_draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
+    assert_eq!(henry_draft.note, None);
     assert_eq!(wallet.new_contact_for(&plain).await.send_address.as_deref(), Some(plain.as_str()));
     // So too on Paid after paying it again without the name (from Paid before, or pasted).
     let again = wallet.said_offer("henry-again").await.unwrap();

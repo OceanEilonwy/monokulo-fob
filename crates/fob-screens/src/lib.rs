@@ -4,6 +4,7 @@
 
 pub mod activity;
 pub mod catch_up;
+pub mod coin_bar;
 pub mod clock;
 pub mod contacts;
 pub mod manual;

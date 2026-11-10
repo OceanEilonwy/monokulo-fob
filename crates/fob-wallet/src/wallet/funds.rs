@@ -79,12 +79,15 @@ impl Wallet {
     pub async fn not_ready(&self, clock: Clock) -> Option<NotReady> {
         // Both halves from one look at the wallet, so they always add up.
         let (ready, pieces, last_block_time) = self.coin_pieces().await;
-        let ready = ready.iter().map(|p| p.amount).sum();
-        let mut summary = not_ready::summarise(pieces, ready, last_block_time, clock)?;
+        let coins: Vec<u64> = ready.iter().map(|p| p.amount).collect();
+        let mut summary = not_ready::summarise(pieces, coins.iter().sum(), last_block_time, clock)?;
+        summary.segments = fob_screens::coin_bar::segments(&coins, &summary.pieces);
         if let Some((currency, p)) = self.price_now().await {
             for sum in &mut summary.sums {
                 sum.fiat = Some(fiat::value(sum.atomic, p, &currency));
             }
+            summary.ready_money = fiat::forms(fiat::to_minor(summary.ready, p, &currency), &currency);
+            summary.incoming_money = fiat::forms(fiat::to_minor(summary.total, p, &currency), &currency);
             summary.price_age = self.price_age(clock.now).await;
         }
         Some(summary)

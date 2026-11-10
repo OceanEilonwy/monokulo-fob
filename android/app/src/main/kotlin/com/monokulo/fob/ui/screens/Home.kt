@@ -1,11 +1,5 @@
 package com.monokulo.fob.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -43,21 +36,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layoutId
-import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.collapse
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.expand
 import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.constrainHeight
@@ -92,6 +76,16 @@ import uniffi.fob.ActivityRow
 import uniffi.fob.BackupReminder
 import uniffi.fob.Network
 import uniffi.fob.NotReady
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import uniffi.fob.CoinSegment
+import uniffi.fob.coinBarGap
+import uniffi.fob.coinBarWidths
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -228,7 +222,7 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
                     Modifier.padding(bottom = 12.dp), title = "Scan again for your Trezor", icon = Icons.refresh, onClick = model::openScan,
                 )
             }
-            notReady?.let { ReadyCard(it) }
+            notReady?.let { ReadyCard(it, balance?.fiatFirst == true) }
         }
 
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -274,60 +268,53 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
 }
 
 /**
- * What's ready beside what isn't yet, while some isn't: folded, one line
- * and the bar; opened, the sums and when all of it should be ready. Rust
- * wrote every word.
+ * What's ready beside what isn't yet, while some isn't: what's ready on the
+ * left in ink; on the right, in green, the arrow in, what's on its way and
+ * when all of it should be ready; the coins bar under them. In money while
+ * the balance shows money first, the longest of Rust's forms that fits
+ * ("A$1,080.92", "A$1,081", "A$1.08K"). TalkBack reads Rust's description.
  */
 @Composable
-private fun ReadyCard(n: NotReady) {
-    var open by rememberSaveable { mutableStateOf(false) }
-    val turn by animateFloatAsState(if (open) -90f else 90f, label = "chevron")
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Fob.card)) {
-        Column(
-            Modifier.fillMaxWidth()
-                .clickable(role = Role.Button, onClickLabel = if (open) "Hide the sums" else "Show the sums") { open = !open }
-                .semantics {
-                    contentDescription = n.description
-                    stateDescription = if (open) "Expanded" else "Collapsed"
-                    if (open) collapse { open = false; true } else expand { open = true; true }
-                }
-                .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(Modifier.clearAndSetSemantics {}, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun ReadyCard(n: NotReady, moneyFirst: Boolean) {
+    val money = moneyFirst && n.readyMoney.isNotEmpty() && n.incomingMoney.isNotEmpty()
+    val ready = if (money) n.readyMoney else listOf(n.readyXmr)
+    val incoming = if (money) n.incomingMoney else listOf(n.incomingXmr)
+    val style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    val measurer = rememberTextMeasurer()
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Fob.card)
+            .clearAndSetSemantics { contentDescription = n.description }
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val room = constraints.maxWidth
+            // The arrow, the clock, the time and the gaps between them stay as they are.
+            val fixed = with(LocalDensity.current) { (14 + 2 + 10 + 16 + 4 + 8).dp.roundToPx() } +
+                measurer.measure(n.allReady, style.copy(fontWeight = FontWeight.Normal)).size.width
+            fun pick(list: List<String>, level: Int) = list[minOf(level, list.lastIndex)]
+            val levels = maxOf(ready.size, incoming.size)
+            val level = (0 until levels).firstOrNull { l ->
+                measurer.measure(pick(ready, l), style).size.width + measurer.measure(pick(incoming, l), style).size.width + fixed <= room
+            } ?: (levels - 1)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    buildAnnotatedString {
-                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(n.readyText) }
-                        append(" · ${n.notYetText}")
-                    },
-                    fontSize = 14.sp, modifier = Modifier.weight(1f),
+                    pick(ready, level), style = style, color = if (n.ready > 0u) Fob.ink else Fob.muted,
+                    maxLines = 1, softWrap = false, modifier = Modifier.weight(1f),
                 )
-                Text(n.allReady, color = Fob.muted, fontSize = 14.sp)
-                Box(Modifier.rotate(turn)) { StrokeIcon(Icons.chevron, tint = Fob.muted, size = 20.dp) }
-            }
-            Box(Modifier.clearAndSetSemantics {}) { CoinBar(n.ready, n.notReady, n.progress) }
-        }
-        AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val dots = listOf(Fob.ink, Fob.green)
-                val priced = n.sums.any { it.fiatText != null }
-                // One line per sum, read as one by TalkBack ("Ready to spend, 1.8592 XMR, $308.70"); the money in a
-                // column wide enough for it, so the amounts line up.
-                n.sums.forEachIndexed { i, sum ->
-                    val weight = if (i == n.sums.lastIndex) FontWeight.SemiBold else FontWeight.Normal
-                    Row(
-                        Modifier.fillMaxWidth().clearAndSetSemantics { contentDescription = sum.description },
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        dots.getOrNull(i)?.let { Box(Modifier.size(10.dp).clip(CircleShape).background(it)) }
-                        Text(sum.label, fontSize = 14.sp, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        Text(sum.amountText, fontSize = 14.sp, fontWeight = weight)
-                        if (priced) Text(sum.fiatText ?: "", color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 80.dp).padding(start = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        StrokeIcon(Icons.down, tint = Fob.green, size = 14.dp, width = 2.4f)
+                        Text(pick(incoming, level), style = style, color = Fob.green, maxLines = 1, softWrap = false)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        StrokeIcon(Icons.clockDone, tint = Fob.green, size = 16.dp)
+                        Text(n.allReady, fontSize = 14.sp, color = Fob.green, maxLines = 1, softWrap = false)
                     }
                 }
-                Text(n.allReadyLine, color = Fob.muted, fontSize = 13.sp)
             }
         }
+        CoinBar(n.segments)
     }
 }
 
@@ -438,27 +425,34 @@ private fun MeetButton(onClick: () -> Unit, modifier: Modifier) {
 }
 
 /**
- * The thin bar under the balance: what's ready in ink, what isn't on the
- * track beside it, each as wide as its share, the not-ready part filled
- * green as far as its confirmations go (weighted by amount). TalkBack reads
- * Rust's [description] of it, or nothing where the words around it say the
- * same.
+ * The coins bar: one square segment per coin, as wide as Rust's widths
+ * say. What's ready in ink; what's on its way in faint green, filled solid
+ * as far as its own confirmations go. TalkBack reads Rust's [description]
+ * of it, or nothing where the words around it say the same.
  */
 @Composable
-fun CoinBar(ready: ULong, notReady: ULong, progress: Float, description: String? = null) {
-    Row(
+fun CoinBar(segments: List<CoinSegment>, description: String? = null) {
+    val (ink, green) = Fob.ink to Fob.green
+    BoxWithConstraints(
         Modifier.fillMaxWidth().height(6.dp).clearAndSetSemantics {
-            if (description != null) {
-                contentDescription = description
-                progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f)
-            }
+            if (description != null) contentDescription = description
         },
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        if (ready > 0u) Box(Modifier.weight(ready.toFloat()).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Fob.ink))
-        if (notReady > 0u) {
-            Box(Modifier.weight(notReady.toFloat()).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Fob.track)) {
-                Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(Fob.green))
+        val width = maxWidth.value
+        val widths = remember(segments, width) { coinBarWidths(segments, width) }
+        val gap = remember { coinBarGap() }
+        Canvas(Modifier.fillMaxSize()) {
+            var x = 0f
+            segments.forEachIndexed { i, segment ->
+                val w = widths.getOrElse(i) { 0f }.dp.toPx()
+                val progress = segment.progress
+                if (progress == null) {
+                    drawRect(ink, Offset(x, 0f), Size(w, size.height))
+                } else {
+                    drawRect(green.copy(alpha = green.alpha * 0.28f), Offset(x, 0f), Size(w, size.height))
+                    drawRect(green, Offset(x, 0f), Size(w * progress.coerceIn(0f, 1f), size.height))
+                }
+                x += w + gap.dp.toPx()
             }
         }
     }

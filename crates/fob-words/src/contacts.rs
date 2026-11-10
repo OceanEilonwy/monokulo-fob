@@ -293,8 +293,8 @@ mod tests {
         contacts::found(network, current, text).map(|f| super::found(f, name))
     }
 
-    fn offer(book: &Book, address: &str, name: Option<&str>, note: Option<&str>) -> Option<Offer> {
-        contacts::offer(book, address, name, note).map(super::offer)
+    fn offer(book: &Book, address: &str, name: Option<&str>) -> Option<Offer> {
+        contacts::offer(book, address, name).map(super::offer)
     }
 
     fn paid_at_note(addresses: &[String]) -> Option<String> {
@@ -506,7 +506,7 @@ mod tests {
         // one-tap Add to Sam (which filed anyone's address under Sam and made
         // later payments to it read as Sam's), only a new contact, and the
         // footnote says whose name it borrowed and shows the address.
-        let o = offer(&book, &code, Some(" sAm "), Some("Pizza")).unwrap();
+        let o = offer(&book, &code, Some(" sAm ")).unwrap();
         assert_eq!(o.add_to, None);
         assert_eq!((o.button.as_str(), o.other.as_deref(), o.named.as_deref()), ("Save as a contact", None, Some("to a code named “sAm”")));
         assert_eq!(
@@ -517,27 +517,28 @@ mod tests {
             ))
         );
         // A lookalike name is the same namesake.
-        let lookalike = offer(&book, &code, Some("\u{405}am\u{2800}"), None).unwrap();
+        let lookalike = offer(&book, &code, Some("\u{405}am\u{2800}")).unwrap();
         assert!(lookalike.footnote.unwrap().starts_with("This code said it was Sam,"));
         assert_eq!(lookalike.add_to, None);
-        assert_eq!(o.draft, Draft { name: "sAm".into(), note: Some("Pizza".into()), photo: None, send_address: None, also_paid_at: vec![code.clone()] });
+        assert_eq!(o.draft, Draft { name: "sAm".into(), note: None, photo: None, send_address: None, also_paid_at: vec![code.clone()] });
         // A name that's nobody's: Save as a contact, the address one they were paid at, never their send address.
-        let o = offer(&book, &henry, Some("Henry"), None).unwrap();
+        let o = offer(&book, &henry, Some("Henry")).unwrap();
         assert_eq!((o.add_to, o.button.as_str(), o.other), (None, "Save as a contact", None));
         assert_eq!(o.footnote.as_deref(), Some(NAMED_FOOTNOTE));
         assert_eq!((o.draft.name.as_str(), o.draft.send_address, o.draft.also_paid_at), ("Henry", None, vec![henry.clone()]));
-        // No name: the address is their send address, the payment's note theirs.
-        let o = offer(&book, &plain, None, Some(" Lunch ")).unwrap();
+        // No name: the address is their send address. A payment's note is
+        // what it was for, never the contact's note.
+        let o = offer(&book, &plain, None).unwrap();
         assert_eq!((o.named, o.footnote, o.button.as_str()), (None, None, "Save as a contact"));
-        assert_eq!(o.draft, Draft { name: String::new(), note: Some("Lunch".into()), photo: None, send_address: Some(plain.clone()), also_paid_at: vec![] });
+        assert_eq!(o.draft, Draft { name: String::new(), note: None, photo: None, send_address: Some(plain.clone()), also_paid_at: vec![] });
         // A name that cleans to nothing counts as none.
-        assert_eq!(offer(&book, &plain, Some("\n"), None).unwrap().draft.send_address.as_deref(), Some(plain.as_str()));
+        assert_eq!(offer(&book, &plain, Some("\n")).unwrap().draft.send_address.as_deref(), Some(plain.as_str()));
         // Already a contact's (send address or paid at): nothing.
-        assert!(offer(&book, &sam_send, Some("Henry"), None).is_none());
+        assert!(offer(&book, &sam_send, Some("Henry")).is_none());
         book.add_paid_at(Network::Stagenet, sam.id, &code).unwrap();
-        assert!(offer(&book, &code, Some("Sam"), None).is_none());
+        assert!(offer(&book, &code, Some("Sam")).is_none());
         // Saving the offered draft keeps the address apart from the send address.
-        let saved = book.add(Network::Stagenet, new_contact(&henry, Some("Henry"), None), NOW).unwrap();
+        let saved = book.add(Network::Stagenet, new_contact(&henry, Some("Henry")), NOW).unwrap();
         assert_eq!((saved.send_address, saved.also_paid_at), (None, vec![henry.clone()]));
         assert_eq!(
             paid_at_note(std::slice::from_ref(&henry)).unwrap(),

@@ -1,7 +1,7 @@
 //! Coins, ready to spend and not yet, in words.
 
 use fob_monero::amount;
-use fob_screens::not_ready::{self, Source, SumKind};
+use fob_screens::{coin_bar::Segment, not_ready::{self, Source, SumKind}};
 
 use crate::{prices, split};
 
@@ -114,6 +114,16 @@ pub struct NotReady {
     pub progress: f32,
     /// Soonest ready first.
     pub pieces: Vec<PieceView>,
+    /// Home's header, in XMR: "1.8592 XMR" ready, in ink, and "1.253 XMR"
+    /// on its way, in green.
+    pub ready_xmr: String,
+    pub incoming_xmr: String,
+    /// The same in money, once there's a price, longest first for the
+    /// header to take the first that fits: "A$1,080.92", "A$1,081".
+    pub ready_money: Vec<String>,
+    pub incoming_money: Vec<String>,
+    /// The coins bar.
+    pub segments: Vec<Segment>,
 }
 
 pub fn not_ready(n: not_ready::NotReady) -> NotReady {
@@ -135,6 +145,11 @@ pub fn not_ready(n: not_ready::NotReady) -> NotReady {
         price_age,
         progress: n.progress,
         pieces: n.pieces.into_iter().map(piece).collect(),
+        ready_xmr: format!("{ready_text} XMR"),
+        incoming_xmr: format!("{total_text} XMR"),
+        ready_money: n.ready_money,
+        incoming_money: n.incoming_money,
+        segments: n.segments,
     }
 }
 
@@ -174,6 +189,8 @@ pub struct Coins {
     /// Soonest ready first.
     pub not_ready_coins: Vec<PieceView>,
     pub can_split: bool,
+    /// The coins bar, coin by coin.
+    pub segments: Vec<Segment>,
 }
 
 pub fn coins(c: not_ready::Coins) -> Coins {
@@ -203,6 +220,7 @@ pub fn coins(c: not_ready::Coins) -> Coins {
         not_ready_sum: c.all_ready.filter(|_| !c.not_ready_coins.is_empty()).map_or(String::new(), |when| format!("all by {when}")),
         not_ready_coins: c.not_ready_coins.into_iter().map(piece).collect(),
         can_split: c.can_split,
+        segments: c.segments,
     }
 }
 
