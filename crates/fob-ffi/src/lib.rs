@@ -30,8 +30,10 @@ pub enum FobError {
     /// The node couldn't be reached or answered badly.
     #[error("{reason}")]
     Node { reason: String },
+    /// Not enough ready to spend: `needed`, the amount with about the fee,
+    /// in atomic units, for [`FobWallet::shortfall`].
     #[error("{reason}")]
-    NotEnoughFunds { reason: String },
+    NotEnoughFunds { reason: String, needed: u64 },
     /// The wallet file and key don't match.
     #[error("{reason}")]
     WrongKey { reason: String },
@@ -64,7 +66,7 @@ impl From<fob_wallet::FobError> for FobError {
         let reason = e.to_string();
         match e {
             E::Node(_) | E::Light(_) => FobError::Node { reason },
-            E::Screen(ScreenError::NotEnoughFunds { .. }) => FobError::NotEnoughFunds { reason },
+            E::Screen(ScreenError::NotEnoughFunds { needed, .. }) => FobError::NotEnoughFunds { reason, needed },
             E::Vault(VaultError::WrongKey) => FobError::WrongKey { reason },
             E::Vault(VaultError::ViewOnly) => FobError::ViewOnly { reason },
             E::SpendRejected(_) => FobError::SpendRejected { reason },
@@ -1678,6 +1680,7 @@ impl FobWallet {
     async fn not_ready(&self, now: u64, utc_offset: i32, hours_24: bool) -> Option<NotReady> {
         self.inner.not_ready(clock::Clock { now, utc_offset, hours_24 }).await.map(Into::into)
     }
+
 
     /// Every coin, ready to spend or not yet, for the Coins screen; the
     /// clock as for `activity_days`.
@@ -3885,3 +3888,71 @@ pub trait NodeCheckObserver: Send + Sync {
     fn on_progress(&self, report: NodeReport) -> Result<()>;
 }
 
+
+/// Confirm when a payment needs more than is ready: its card's rows, the
+/// alert above the swipe, and the swipe's words. Settling (money on its way
+/// covers it), the swipe is a bar filling until enough is ready; otherwise
+/// it's locked.
+#[derive(uniffi::Record)]
+pub struct Shortfall {
+    /// "about 0.0218 XMR", and what it's worth: the amount with the fee.
+    pub needed_text: String,
+    pub needed_fiat: Option<String>,
+    pub ready_text: String,
+    pub ready_fiat: Option<String>,
+    /// Money not ready yet; none when there's none.
+    pub on_way_text: Option<String>,
+    pub on_way_fiat: Option<String>,
+    /// "Short by", or "Short by, for now" while settling.
+    pub short_label: String,
+    pub short_text: String,
+    pub short_fiat: Option<String>,
+    pub settling: bool,
+    /// The alert: "Not enough to send this", "Not enough ready yet".
+    pub title: String,
+    pub line: String,
+    /// The swipe's words: "Not enough to send", or "Ready in about 14 min".
+    pub swipe: String,
+    /// How far along the bar is while settling, 0 to 1.
+    pub progress: f32,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl FobWallet {
+    /// Confirm's shortfall for a payment needing `needed` (from
+    /// [`FobError::NotEnoughFunds`]) at `now`, against what's ready and
+    /// what's on its way.
+    pub async fn shortfall(&self, needed: u64, now: u64, utc_offset: i32, hours_24: bool) -> Shortfall {
+        let clock = clock::Clock { now, utc_offset, hours_24 };
+        let waiting = self.inner.not_ready(clock).await;
+        let ready = match &waiting {
+            Some(n) => n.ready,
+            None => self.inner.balance().await.unlocked,
+        };
+        let s = fob_wallet::not_ready::shortfall(needed, ready, waiting.as_ref());
+        let worth = |atomic: u64| async move { self.inner.worth_now(atomic).await };
+        let settling = s.ready_after.is_some();
+        let (seconds, progress) = s.ready_after.unwrap_or((0, 0.0));
+        Shortfall {
+            needed_text: format!("about {} XMR", xmr(s.needed)),
+            needed_fiat: worth(s.needed).await,
+            ready_text: format!("{} XMR", xmr(s.ready)),
+            ready_fiat: worth(s.ready).await,
+            on_way_text: (s.on_way > 0).then(|| format!("{} XMR", xmr(s.on_way))),
+            on_way_fiat: if s.on_way > 0 { worth(s.on_way).await } else { None },
+            short_label: if settling { "Short by, for now" } else { "Short by" }.into(),
+            short_text: format!("{} XMR", xmr(s.short)),
+            short_fiat: worth(s.short).await,
+            settling,
+            title: if settling { "Not enough ready yet" } else { "Not enough to send this" }.into(),
+            line: if settling {
+                "Money you received is still settling. Send wakes up when enough is ready."
+            } else {
+                "This wallet doesn't have enough ready to cover the payment and its fee."
+            }
+            .into(),
+            swipe: if settling { format!("Ready in about {}", fob_wallet::words::catch_up::short_time(seconds.max(60))) } else { "Not enough to send".into() },
+            progress: progress.clamp(0.0, 1.0),
+        }
+    }
+}
