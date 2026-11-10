@@ -35,9 +35,6 @@ pub enum Input {
     Adopt(View<Prepared>),
     NotPrepared(u64, String),
     Failed(String),
-    /// The receipt disagrees with Fob's price, or couldn't be checked, and
-    /// its notice was read.
-    Acknowledged,
     Send,
     Typed(Secret),
     /// Left without sending: the wallet can let what it prepared go.
@@ -56,9 +53,6 @@ pub struct Confirm {
     /// another round is cancelled, never shown, so Send only pays what's on screen.
     round: u64,
     prepared: Option<Arc<Prepared>>,
-    /// The receipt's mismatch or unchecked notice was acknowledged for what's
-    /// prepared now.
-    acknowledged: bool,
     busy: bool,
     sent: Option<String>,
     error: Option<String>,
@@ -103,9 +97,9 @@ impl SimpleComponent for Confirm {
                             add_css_class: "pill",
                             set_halign: gtk::Align::Center,
                             #[watch]
-                            set_label: if model.sent.is_some() { "Done" } else if model.busy && model.engine.is_trezor() { "Confirm on the Trezor…" } else if model.busy { "Working…" } else if model.engine.is_trezor() { "Send with the Trezor" } else { "Send" },
+                            set_label: if model.sent.is_some() { "Done" } else if model.busy && model.prepared.is_some() && model.engine.is_trezor() { "Confirm on Trezor" } else if model.busy { "Working…" } else { "Send" },
                             #[watch]
-                            set_sensitive: model.sent.is_some() || (model.prepared.is_some() && !model.busy && !model.awaits_acknowledgement()),
+                            set_sensitive: model.sent.is_some() || (model.prepared.is_some() && !model.busy),
                             connect_clicked => Input::Send,
                         },
                     },
@@ -116,7 +110,7 @@ impl SimpleComponent for Confirm {
 
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let model = Confirm { engine, round: 0, prepared: None, acknowledged: false, busy: false, sent: None, error: None, body: body.clone() };
+        let model = Confirm { engine, round: 0, prepared: None, busy: false, sent: None, error: None, body: body.clone() };
         let body = &body;
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -130,7 +124,6 @@ impl SimpleComponent for Confirm {
                 }
                 self.round += 1;
                 let round = self.round;
-                self.acknowledged = false;
                 self.busy = true;
                 self.sent = None;
                 self.error = None;
@@ -158,8 +151,7 @@ impl SimpleComponent for Confirm {
                 self.busy = false;
                 self.sent = None;
                 self.error = None;
-                self.acknowledged = false;
-                self.draw(&prepared, &sender);
+                self.draw(&prepared);
                 self.prepared = Some(prepared);
             }
             Input::Adopt(prepared) => {
@@ -172,7 +164,6 @@ impl SimpleComponent for Confirm {
                     self.error = Some(why);
                 }
             }
-            Input::Acknowledged => self.acknowledged = true,
             Input::Failed(why) => {
                 self.busy = false;
                 self.error = Some(why);
@@ -184,7 +175,7 @@ impl SimpleComponent for Confirm {
                     let _ = sender.output(RootMsg::Go(Go::Back));
                     return;
                 }
-                if self.prepared.is_none() || self.awaits_acknowledgement() {
+                if self.prepared.is_none() {
                     return;
                 }
                 if self.engine.is_trezor() {
@@ -294,7 +285,6 @@ impl SimpleComponent for Confirm {
             Input::Left => {
                 // A prepare still running belongs to no screen now.
                 self.round += 1;
-                self.acknowledged = false;
                 if let Some(prepared) = self.prepared.take() {
                     self.engine.cancel(&prepared);
                 }
@@ -309,18 +299,13 @@ fn copy_draft(draft: &fob_app::views::ContactDraft) -> fob_app::views::ContactDr
 }
 
 impl Confirm {
-    /// Whether Send waits for the receipt's warning to be acknowledged.
-    fn awaits_acknowledgement(&self) -> bool {
-        !self.acknowledged && self.prepared.as_ref().and_then(|p| p.receipt.as_ref()).is_some_and(|r| r.mismatch.is_some() || r.unchecked.is_some())
-    }
-
     fn draw_waiting(&self, filled: &Filled) {
         widgets::empty(&self.body);
         self.body.append(&widgets::recipient(&filled.to));
         self.body.append(&gtk::Spinner::builder().spinning(true).halign(gtk::Align::Center).build());
     }
 
-    fn draw(&self, prepared: &Prepared, sender: &ComponentSender<Self>) {
+    fn draw(&self, prepared: &Prepared) {
         widgets::empty(&self.body);
         match &prepared.split {
             // Paid back to this wallet: there's no one else's address to check.
@@ -331,41 +316,6 @@ impl Confirm {
             None => {
                 self.body.append(&widgets::recipient(&prepared.to));
             }
-        }
-        // The receipt's total is only the code's claim: a hostile code can put
-        // a calm "$5.00" over 5 XMR. When Fob's price says the amount is worth
-        // something else, that comes first, and Send waits until it's been read.
-        // When Fob has no price to check it with, a softer notice still waits
-        // for the same acknowledgement: an unchecked total proves nothing.
-        let notice = prepared.receipt.as_ref().and_then(|r| match (&r.mismatch, &r.unchecked) {
-            (Some(mismatch), _) => Some((true, mismatch.as_str())),
-            (None, Some(unchecked)) => Some((false, unchecked.as_str())),
-            (None, None) => None,
-        });
-        if let Some((mismatch, text)) = notice {
-            let banner = gtk::Box::new(gtk::Orientation::Vertical, 8);
-            banner.add_css_class("card");
-            let title = widgets::heading(if mismatch { "The receipt doesn't match the amount" } else { "Check the amount yourself" });
-            title.add_css_class(if mismatch { "error" } else { "warning" });
-            title.set_margin_top(12);
-            banner.append(&title);
-            let warning = widgets::words(text);
-            if mismatch {
-                warning.add_css_class("error");
-            }
-            warning.set_margin_start(12);
-            warning.set_margin_end(12);
-            banner.append(&warning);
-            let check = gtk::CheckButton::builder().label("I've checked the XMR amount").halign(gtk::Align::Center).margin_bottom(8).build();
-            let then = sender.clone();
-            check.connect_toggled(move |check| {
-                if check.is_active() {
-                    check.set_sensitive(false);
-                    then.input(Input::Acknowledged);
-                }
-            });
-            banner.append(&check);
-            self.body.append(&banner);
         }
         // What's paid, in XMR and at Fob's own price, is the headline.
         let list = widgets::list();
@@ -386,9 +336,11 @@ impl Confirm {
         if let Some(age) = &prepared.fiat_age {
             self.body.append(&widgets::dim(age));
         }
-        // The code's own receipt follows, as what it says rather than what's paid.
+        // The receipt follows, set against Fob's prices: in another currency
+        // its last row is the total in the wallet's, and a total far from what
+        // the XMR is worth says so in red there (a hostile code can put a calm
+        // "$5.00" over 5 XMR).
         if let Some(receipt) = &prepared.receipt {
-            self.body.append(&widgets::dim("The receipt, as the code gives it"));
             self.body.append(&widgets::receipt(receipt));
         }
     }

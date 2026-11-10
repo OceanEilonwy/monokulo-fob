@@ -2,9 +2,7 @@ package com.monokulo.fob.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -29,20 +26,17 @@ import androidx.compose.ui.unit.sp
 import com.monokulo.fob.Nav
 import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
-import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.Divider
 import com.monokulo.fob.ui.ErrorText
 import com.monokulo.fob.ui.Fob
 import com.monokulo.fob.ui.InfoRow
-import com.monokulo.fob.ui.OutlineButton
 import com.monokulo.fob.ui.SheetHandle
 import com.monokulo.fob.ui.SwipeToSend
 import com.monokulo.fob.ui.display
 import com.monokulo.fob.ui.Warning
 import com.monokulo.fob.ui.reason
-import com.monokulo.fob.ui.short
 import kotlinx.coroutines.launch
 import uniffi.fob.PaymentPreview
 import uniffi.fob.Prepared
@@ -91,7 +85,6 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
     val title = request?.recipientName?.let { "Pay $it" } ?: "Send"
     var failed by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
-    var checked by remember { mutableStateOf(false) }
     val trezor = model.wallet.value?.isTrezor() == true
     fun swiped() {
         val ready = prepared ?: return
@@ -127,39 +120,27 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, fontSize = 17.sp, fontWeight = FontWeight.Medium, modifier = Modifier.semantics { heading() })
             // The XMR sent and Fob's own valuation first; the receipt's total is only what the code claims.
-            Text("$amountText XMR", style = display(44), modifier = Modifier.padding(top = 4.dp))
+            Column(Modifier.padding(top = 4.dp)) { AmountHeadline("$amountText XMR", 44) }
             fiat?.let { Text(it, color = Fob.muted, fontSize = 16.sp) }
-            receipt?.let { Text("Receipt says ${it.total}", color = Fob.muted, fontSize = 14.sp) }
             request?.description?.let { Text(it, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
         }
         val to = prepared?.to ?: preview?.to ?: request?.address ?: ""
         Card {
-            // Who it goes to, with the address's pattern beside it, so it can be compared with their screen.
-            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("To", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                AddressPattern(to, 28.dp)
-                Text(short(to, 2), fontFamily = FontFamily.Monospace, fontSize = 15.sp, modifier = Modifier.padding(start = 10.dp))
-            }
+            ToRow(to)
             Divider()
             InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
             Divider()
             InfoRow("Total", prepared?.let { "${it.totalText} XMR" + (it.totalFiat?.let { f -> " · $f" } ?: "") }, bold = true)
         }
-        // A total Fob's price disagrees with, or has no price to check, must be
-        // looked at before the swipe works.
-        val mismatch = receipt?.mismatch
-        val notice = mismatch ?: receipt?.unchecked
-        notice?.let { Warning(it, title = if (mismatch != null) "The receipt doesn't match the amount" else "Check the amount yourself") }
-        if (notice != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
+        receipt?.let { ReceiptCard(it) }
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = { onClose(); model.openScan() })
         else ErrorText(error)
         val label = when {
-            busy -> if (trezor) "Confirm on the Trezor…" else "Sending…"
+            busy -> if (trezor) "Confirm on Trezor" else "Sending…"
             failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
-            trezor -> "Swipe, then confirm on the Trezor"
-            else -> "Swipe to send ${prepared!!.amountText} XMR"
+            else -> "Swipe to send"
         }
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (notice == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
     }
 }

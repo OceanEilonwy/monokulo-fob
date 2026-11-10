@@ -162,33 +162,56 @@ pub struct Receipt {
     pub lines: Vec<ReceiptLine>,
     pub item_count: u32,
     pub tax: Option<String>,
-    /// The receipt's own total, as the code says: Confirm shows it below the
-    /// XMR amount and Fob's own valuation, never in their place.
+    /// The receipt's own total, as the code says: on Confirm it sits on the
+    /// receipt, never in the XMR amount's or Fob's valuation's place.
     pub total: String,
     pub currency: String,
+    /// On Confirm, the receipt's currency when it isn't the wallet's
+    /// ("USD"), for the receipt's heading. Its money, and the wallet's
+    /// beside it, then name their dollar ("US$8.25", "A$12.62").
+    pub other_currency: Option<String>,
+    /// On Confirm, in another currency: the receipt's last row, the total
+    /// in the wallet's currency at Fob's prices ("US$8.25 in AUD" beside
+    /// "A$12.62"), the same money as under the XMR amount when they agree.
+    pub converted_label: Option<String>,
+    pub converted: Option<String>,
     /// On Confirm, when the total and what the XMR amount is worth at Fob's
-    /// price are far apart: the warning to show, and to have acknowledged
-    /// before paying.
+    /// prices are more than 5% apart: the red line under the receipt (and
+    /// its converted row red too).
     pub mismatch: Option<String>,
-    /// On Confirm, when Fob has no price in the receipt's currency to check
-    /// the total with: the softer notice to show, still to have acknowledged
-    /// before paying, since a code can name any currency to dodge the check.
-    pub unchecked: Option<String>,
+    /// On Confirm, when Fob has no price in the receipt's currency: a muted
+    /// line, "No USD price right now".
+    pub no_price: Option<String>,
 }
 
 impl Receipt {
-    /// The receipt for paying `atomic`, checked against Fob's price.
-    async fn checked(wallet: &fob_wallet::Wallet, r: receipt::ReceiptView, atomic: u64) -> Receipt {
-        // The wallet keeps a current price only in the user's own currency,
-        // so that is the one rate a receipt can be checked against.
-        let prices: Vec<_> = wallet.price_now().await.into_iter().collect();
-        let (mismatch, unchecked) = match receipt::check(&r, atomic, &exact(atomic), &prices) {
-            receipt::Check::Matches => (None, None),
-            receipt::Check::Mismatch(warning) => (Some(warning), None),
-            receipt::Check::Unchecked(notice) => (None, Some(notice)),
-        };
-        Receipt { mismatch, unchecked, ..Receipt::from(r) }
+    /// The receipt for paying `atomic`, set against Fob's prices; `ask`
+    /// asks the provider for a price in its currency if none is kept.
+    async fn checked(wallet: &fob_wallet::Wallet, r: receipt::ReceiptView, atomic: u64, ask: bool) -> Receipt {
+        let shown = wallet.shown_currency().await;
+        let wallet_price = wallet.price_now().await.map(|(_, p)| p);
+        let receipt_price = wallet.receipt_price(&r.currency, ask).await;
+        let c = receipt::check(&r, atomic, shown.as_ref(), wallet_price, receipt_price);
+        let (converted_label, converted) = c.converted.unzip();
+        Receipt {
+            lines: c.lines.into_iter().map(|l| ReceiptLine { label: l.label, amount: l.amount }).collect(),
+            tax: c.tax,
+            total: c.total,
+            other_currency: c.other_currency,
+            converted_label,
+            converted,
+            mismatch: c.mismatch,
+            // The preview asks for no price, but prepare will: not "no price" for a moment first.
+            no_price: if ask { c.no_price } else { None },
+            ..Receipt::from(r)
+        }
     }
+}
+
+/// What `atomic` XMR is worth at the shown price, written distinctly
+/// ("US$8.00") when `distinct`: beside a receipt in another currency.
+async fn worth(wallet: &fob_wallet::Wallet, atomic: u64, distinct: bool) -> Option<String> {
+    wallet.price_now().await.map(|(c, p)| fob_wallet::fiat::value(atomic, p, &if distinct { c.distinct() } else { c }))
 }
 
 impl From<receipt::ReceiptView> for Receipt {
@@ -201,8 +224,11 @@ impl From<receipt::ReceiptView> for Receipt {
             tax: r.tax,
             total: r.total,
             currency: r.currency,
+            other_currency: None,
+            converted_label: None,
+            converted: None,
             mismatch: None,
-            unchecked: None,
+            no_price: None,
         }
     }
 }
@@ -1590,24 +1616,27 @@ async fn prepared(wallet: &fob_wallet::Wallet, p: fob_wallet::Prepared) -> Prepa
         swipe: fob_wallet::words::split::swipe_text(n),
         done: fob_wallet::words::split::done_text(n),
     });
+    let receipt = match p.receipt {
+        Some(r) => Some(Receipt::checked(wallet, r, p.amount, true).await),
+        None => None,
+    };
+    // Beside a receipt in another currency, the wallet's money names its dollar too.
+    let distinct = receipt.as_ref().is_some_and(|r| r.other_currency.is_some());
     Prepared {
         id: p.id,
         to: p.to,
         amount_text: exact(p.amount),
         fee_text: amount::format(p.fee),
         total_text: amount::format(p.amount + p.fee),
-        amount_fiat: wallet.worth_now(p.amount).await,
-        fee_fiat: wallet.worth_now(p.fee).await,
+        amount_fiat: worth(wallet, p.amount, distinct).await,
+        fee_fiat: worth(wallet, p.fee, distinct).await,
         // The total says how old the price is, once it's missed a refresh.
-        total_fiat: match (wallet.worth_now(p.amount + p.fee).await, &age) {
+        total_fiat: match (worth(wallet, p.amount + p.fee, distinct).await, &age) {
             (Some(total), Some(age)) => Some(format!("{total} · {age}")),
             (total, _) => total,
         },
         fiat_age: age,
-        receipt: match p.receipt {
-            Some(r) => Some(Receipt::checked(wallet, r, p.amount).await),
-            None => None,
-        },
+        receipt,
         split,
     }
 }
@@ -2215,11 +2244,13 @@ impl FobWallet {
     /// without asking the node: Confirm shows it at once, the fee to come.
     pub async fn preview(&self, to: String, amount: String, in_fiat: bool, code: Option<String>) -> Result<PaymentPreview> {
         let p = self.inner.preview_typed(&to, &amount, in_fiat, code.as_deref()).await?;
+        // Only a price already kept: the preview asks nothing.
         let receipt = match p.receipt {
-            Some(r) => Some(Receipt::checked(&self.inner, r, p.amount).await),
+            Some(r) => Some(Receipt::checked(&self.inner, r, p.amount, false).await),
             None => None,
         };
-        Ok(PaymentPreview { to: p.to, amount_text: exact(p.amount), amount_fiat: self.inner.worth_now(p.amount).await, receipt })
+        let distinct = receipt.as_ref().is_some_and(|r| r.other_currency.is_some());
+        Ok(PaymentPreview { to: p.to, amount_text: exact(p.amount), amount_fiat: worth(&self.inner, p.amount, distinct).await, receipt })
     }
 
     /// Split up's screen for `counts` pieces of each note (none as it

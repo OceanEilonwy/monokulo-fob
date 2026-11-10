@@ -128,6 +128,13 @@ pub fn receipt(receipt: &views::Receipt) -> adw::PreferencesGroup {
         row.add_suffix(&text);
         group.add(&row);
     };
+    // In another currency than the wallet's: which, beside the heading.
+    if let Some(code) = &receipt.other_currency {
+        let label = gtk::Label::new(Some(code));
+        label.add_css_class("dim-label");
+        label.add_css_class("caption-heading");
+        group.set_header_suffix(Some(&label));
+    }
     for item in &receipt.lines {
         line(&item.label, &item.amount);
     }
@@ -135,6 +142,30 @@ pub fn receipt(receipt: &views::Receipt) -> adw::PreferencesGroup {
         line("Tax", tax);
     }
     line("Total", &receipt.total);
+    // Its total in the wallet's currency, the same as the amount's when they agree.
+    if let (Some(label), Some(value)) = (&receipt.converted_label, &receipt.converted) {
+        let row = self::row(label, "");
+        let text = gtk::Label::new(Some(value));
+        text.add_css_class("money");
+        if receipt.mismatch.is_some() {
+            row.add_css_class("error");
+            text.add_css_class("error");
+        }
+        row.add_suffix(&text);
+        group.add(&row);
+    }
+    // More than 5% from what the XMR is worth: said in red, in place.
+    if let Some(mismatch) = &receipt.mismatch {
+        let words = words(mismatch);
+        words.add_css_class("error");
+        words.set_margin_top(8);
+        group.add(&words);
+    }
+    if let Some(no_price) = &receipt.no_price {
+        let words = dim(no_price);
+        words.set_margin_top(8);
+        group.add(&words);
+    }
     group
 }
 

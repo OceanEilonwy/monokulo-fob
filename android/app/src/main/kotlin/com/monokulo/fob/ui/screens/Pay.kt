@@ -57,7 +57,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -516,6 +518,43 @@ fun ReceiptLines(receipt: Receipt) {
 }
 
 /**
+ * Confirm's receipt: its lines and total, set against Fob's prices. In
+ * another currency the heading names it and the last row is the total in
+ * the wallet's ("US$8.25 in AUD · A$12.62"), the same money as under the
+ * XMR amount when they agree. A total more than 5% from what the XMR is
+ * worth says so in red, in place: a code chooses both the total and the
+ * amount. No price in its currency: one muted line.
+ */
+@Composable
+fun ReceiptCard(receipt: Receipt) {
+    Card(padding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val items = receipt.itemCount.toInt()
+                Text("Receipt · $items ${if (items == 1) "item" else "items"}", fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                receipt.otherCurrency?.let { Text(it, color = Fob.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp) }
+            }
+            receipt.lines.forEach { line ->
+                Row { Text(line.label, fontSize = 15.sp, modifier = Modifier.weight(1f)); Text(line.amount, fontSize = 15.sp) }
+            }
+            receipt.tax?.let { Row { Text("Includes tax", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f)); Text(it, color = Fob.muted, fontSize = 15.sp) } }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Fob.line))
+            Row { Text("Total", fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); Text(receipt.total, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+            val mismatch = receipt.mismatch
+            val label = receipt.convertedLabel
+            val converted = receipt.converted
+            if (label != null && converted != null) Row {
+                val tint = if (mismatch != null) Fob.red else Fob.muted
+                Text(label, color = tint, fontSize = 15.sp, fontWeight = if (mismatch != null) FontWeight.SemiBold else null, modifier = Modifier.weight(1f))
+                Text(converted, color = if (mismatch != null) Fob.red else Fob.ink, fontSize = 15.sp, fontWeight = if (mismatch != null) FontWeight.SemiBold else null)
+            }
+            mismatch?.let { Text(it, color = Fob.red, fontSize = 14.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
+            receipt.noPrice?.let { Text(it, color = Fob.muted, fontSize = 15.sp) }
+        }
+    }
+}
+
+/**
  * Confirm: what's paid, to whom, the fee; swipe, then the phone's lock.
  * Opened from Send before the fee is in ([Screen.Confirm.pending]), it
  * shows what Rust checked at once, the fee and total waiting, and prepares
@@ -543,13 +582,6 @@ fun ConfirmScreen(
     val title = split?.title ?: receipt?.merchant?.let { "Pay $it" } ?: "Send"
     var failed by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
-    // A receipt whose total Fob's own price disagrees with must be looked at
-    // before the swipe works: the code chose both the total and the amount.
-    // One Fob has no price to check with is acknowledged the same way, since
-    // a code could pick its currency just to dodge the check.
-    val mismatch = receipt?.mismatch
-    val notice = mismatch ?: receipt?.unchecked
-    var checked by remember { mutableStateOf(false) }
     val sending by rememberUpdatedState(busy)
     DisposableEffect(prepared?.id) {
         onDispose { if (prepared != null && !sending && activity?.isChangingConfigurations != true) model.cancelLater(prepared) }
@@ -611,29 +643,25 @@ fun ConfirmScreen(
         if (refused) Warning("A coin in it may already be spent. Tap to sync, then try again.", title = "Your node refused this payment", onClick = model::openScan)
         else ErrorText(error)
         val label = when {
-            busy -> if (trezor) "Confirm on the Trezor…" else "Sending…"
+            busy -> if (trezor) "Confirm on Trezor" else "Sending…"
             failed -> "Not sent"
             prepared == null -> if (error == null) "Getting the fee…" else "Can't send"
-            trezor -> "Swipe, then confirm on the Trezor"
-            else -> split?.swipe ?: "Swipe to send ${prepared.amountText} XMR"
+            else -> "Swipe to send"
         }
-        if (notice != null && !checked) OutlineButton("I've checked the XMR amount", { checked = true }, Modifier.fillMaxWidth())
-        SwipeToSend(label, enabled = !busy && !failed && prepared != null && (notice == null || checked), sending = busy, waiting = prepared == null && error == null) { swiped() }
+        SwipeToSend(label, enabled = !busy && !failed && prepared != null, sending = busy, waiting = prepared == null && error == null) { swiped() }
     }) {
         TopBar(title, onBack = { if (!busy) nav.back() })
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             // What is sent, and what Fob's own price says it's worth, come
             // first; the receipt's total is only what the code claims.
             Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("$amountText XMR", style = display(52))
-                // Worth now, at the current price.
+                AmountHeadline("$amountText XMR", 52)
+                // Worth now, at the current price: the number to match against the till.
                 (prepared?.amountFiat ?: preview?.amountFiat)?.let { Text(it, color = Fob.muted, fontSize = 18.sp) }
-                receipt?.let { Text("Receipt says ${it.total}", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
                 note?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             }
-            notice?.let { Warning(it, title = if (mismatch != null) "The receipt doesn't match the amount" else "Check the amount yourself") }
             Card {
-                if (split != null) InfoRow("To", split.to) else InfoRow("To", short(to, 2), mono = true)
+                if (split != null) InfoRow("To", split.to) else ToRow(to)
                 Divider()
                 InfoRow("Network fee", prepared?.let { "${it.feeText} XMR" + (it.feeFiat?.let { f -> " · $f" } ?: "") })
                 Divider()
@@ -643,17 +671,29 @@ fun ConfirmScreen(
             if (split != null) Card {
                 Text(split.piecesText, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
                 split.pieces.forEach { InfoRow(it.label, it.amountText) }
-            } else Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    AddressPattern(to, 54.dp)
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("Address pattern", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                        Text("Check it matches the pattern on their screen. If it differs, don't send.", color = Fob.muted, fontSize = 14.sp)
-                    }
-                }
             }
-            receipt?.let { Card { Text("Receipt · ${it.itemCount} items", fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp)); ReceiptLines(it) } }
+            receipt?.let { ReceiptCard(it) }
         }
+    }
+}
+
+/** What's paid, as large as [max] sp but never wrapping: a long exact amount shrinks to fit the width. */
+@Composable
+fun AmountHeadline(text: String, max: Int) {
+    BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        // Manrope ExtraBold digits run about 0.62 em wide.
+        val fits = (maxWidth.value / (text.length * 0.62f)).toInt()
+        Text(text, style = display(fits.coerceIn(24, max)), maxLines = 1, softWrap = false)
+    }
+}
+
+/** Who it goes to: their address's pattern beside its short form, to compare with their screen. */
+@Composable
+fun ToRow(to: String) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("To", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        AddressPattern(to, 28.dp)
+        Text(short(to, 2), fontFamily = FontFamily.Monospace, fontSize = 15.sp, modifier = Modifier.padding(start = 10.dp))
     }
 }
 

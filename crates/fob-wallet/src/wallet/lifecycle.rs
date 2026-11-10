@@ -112,6 +112,7 @@ impl Wallet {
                 price_lookups: AtomicU64::new(0),
                 price_looked_up: AtomicU64::new(0),
                 price_alerts: std::sync::Mutex::new(crate::price_alert::Alerts::default()),
+                receipt_prices: std::sync::Mutex::new(HashMap::new()),
                 fee_rate: std::sync::Mutex::new(None),
                 send_context: SendContext::new(),
                 fresh_share: std::sync::Mutex::new(None),

@@ -697,7 +697,9 @@ fun ProgressBar(progress: Float, height: Dp = 6.dp, fill: Color = Fob.orange) {
  * it springs back, so a stray tap never pays. It goes back too when [sending]
  * ends without leaving the screen: a cancelled fingerprint or a failed send.
  * TalkBack gets a plain action.
- * While [waiting] (the fee still coming), the knob turns a spinner.
+ * While [waiting] (the fee still coming) or [sending], the knob turns a
+ * spinner. The label sits centred on the whole track, clear of the knob at
+ * either end.
  */
 @Composable
 fun SwipeToSend(label: String, enabled: Boolean, sending: Boolean, waiting: Boolean = false, onSwiped: () -> Unit) {
@@ -716,7 +718,7 @@ fun SwipeToSend(label: String, enabled: Boolean, sending: Boolean, waiting: Bool
         val max = with(LocalDensity.current) { (maxWidth - knob - 8.dp).toPx() }
         Text(
             label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) Fob.ink else Fob.muted,
-            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(start = 48.dp),
+            textAlign = TextAlign.Center, maxLines = 1, modifier = Modifier.fillMaxWidth().padding(horizontal = knob + 8.dp),
         )
         Box(
             Modifier.padding(4.dp).offset { IntOffset(offset.value.roundToInt(), 0) }.size(knob).clip(CircleShape)
@@ -736,7 +738,7 @@ fun SwipeToSend(label: String, enabled: Boolean, sending: Boolean, waiting: Bool
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            if (waiting) CircularProgressIndicator(Modifier.size(24.dp), color = Fob.paper, strokeWidth = 2.6.dp)
+            if (waiting || sending) CircularProgressIndicator(Modifier.size(24.dp), color = Fob.paper, strokeWidth = 2.6.dp)
             else StrokeIcon(Icons.arrow, tint = Fob.onOrange, size = 24.dp, width = 2.2f)
         }
     }
