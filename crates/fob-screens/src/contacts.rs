@@ -523,29 +523,30 @@ pub struct Offer {
     pub draft: Draft,
 }
 
-/// New contact for `address`, paid with a code named `name` (if it had one)
-/// for `note`: a name from a code only names them, so the address is one
-/// they were paid at; without one, it's their send address.
-pub fn new_contact(address: &str, name: Option<&str>, note: Option<&str>) -> Draft {
-    let note = note.map(clean).map(|n| n.trim().chars().take(NOTE_MAX).collect::<String>().trim_end().to_owned()).filter(|n| !n.is_empty());
+/// New contact for `address`, paid with a code named `name` (if it had
+/// one): a name from a code only names them, so the address is one they
+/// were paid at; without one, it's their send address. Its note starts
+/// empty: a payment's note says what that payment was for, not who they
+/// are, so it stays with the payment.
+pub fn new_contact(address: &str, name: Option<&str>) -> Draft {
     match name.and_then(clean_name) {
-        Some(name) => Draft { name, note, photo: None, send_address: None, also_paid_at: vec![address.to_owned()] },
-        None => Draft { name: String::new(), note, photo: None, send_address: Some(address.to_owned()), also_paid_at: vec![] },
+        Some(name) => Draft { name, note: None, photo: None, send_address: None, also_paid_at: vec![address.to_owned()] },
+        None => Draft { name: String::new(), note: None, photo: None, send_address: Some(address.to_owned()), also_paid_at: vec![] },
     }
 }
 
-/// What to offer after paying `address` with a code named `name` (if any)
-/// for `note`: nothing when the address is already a contact's; otherwise
+/// What to offer after paying `address` with a code named `name` (if
+/// any): nothing when the address is already a contact's; otherwise
 /// Save as a contact, saying which contact the name looks like when one
 /// does. A code carries nothing that proves who made it (its name is only
 /// text), so an address nobody has is never filed with an existing contact
 /// from here; if it really is theirs, it's set on their card, where the
 /// address is shown.
-pub fn offer(book: &Book, address: &str, name: Option<&str>, note: Option<&str>) -> Option<Offer> {
+pub fn offer(book: &Book, address: &str, name: Option<&str>) -> Option<Offer> {
     if book.owner(address).is_some() {
         return None;
     }
-    let draft = new_contact(address, name, note);
+    let draft = new_contact(address, name);
     let name = name.and_then(clean_name);
     let namesake = name.as_deref().and_then(|n| book.named(n)).cloned();
     Some(Offer { address: address.to_owned(), namesake, name, draft })

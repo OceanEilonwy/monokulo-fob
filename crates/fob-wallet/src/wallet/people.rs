@@ -377,7 +377,7 @@ impl Wallet {
         let state = self.inner.state.lock().await;
         let sent = state.sent.iter().find(|s| s.tx == tx && s.pieces.is_none())?;
         let name = sent.recipient_name.as_deref().or_else(|| Self::naming_payment(&state, &sent.to)?.recipient_name.as_deref());
-        contacts::offer(&state.contacts, &sent.to, name, sent.note.as_deref())
+        contacts::offer(&state.contacts, &sent.to, name)
     }
 
     /// New contact for an address paid that's no contact's ("Paid, not
@@ -386,7 +386,7 @@ impl Wallet {
     pub async fn new_contact_for(&self, address: &str) -> contacts::Draft {
         let state = self.inner.state.lock().await;
         let named = Self::naming_payment(&state, address);
-        contacts::new_contact(address, named.and_then(|s| s.recipient_name.as_deref()), named.and_then(|s| s.note.as_deref()))
+        contacts::new_contact(address, named.and_then(|s| s.recipient_name.as_deref()))
     }
 
     /// Deletes a contact; payments to its addresses stay.
