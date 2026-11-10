@@ -748,11 +748,13 @@ fun AmountHeadline(text: String, max: Int) {
 
 /**
  * Confirm's note, a row of its card typed into in place: the payment code's
- * description to start with, else "Add a note". Kept with the payment.
+ * description to start with, else "Add a note", which goes once the field
+ * takes focus. Kept with the payment.
  */
 @Composable
 fun NoteRow(value: String, onChange: (String) -> Unit, enabled: Boolean = true) {
     val style = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = Fob.ink, textAlign = TextAlign.End)
+    var focused by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Note", color = Fob.muted, fontSize = 15.sp, modifier = Modifier.padding(end = 16.dp))
         androidx.compose.foundation.text.BasicTextField(
@@ -762,10 +764,10 @@ fun NoteRow(value: String, onChange: (String) -> Unit, enabled: Boolean = true) 
                 capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
                 imeAction = androidx.compose.ui.text.input.ImeAction.Done,
             ),
-            modifier = Modifier.weight(1f).semantics { contentDescription = "Note" },
+            modifier = Modifier.weight(1f).onFocusChanged { focused = it.isFocused }.semantics { contentDescription = "Note" },
             decorationBox = { field ->
                 Box(contentAlignment = Alignment.CenterEnd) {
-                    if (value.isEmpty()) Text("Add a note", color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    if (value.isEmpty() && !focused) Text("Add a note", color = Fob.orangeText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     field()
                 }
             },
@@ -812,11 +814,12 @@ fun PaidScreen(model: WalletModel, nav: Nav, prepared: Prepared, tx: String) {
                 detail?.unanswered?.let { Text(it, color = Fob.orangeText, fontSize = 14.sp, textAlign = TextAlign.Center) }
                 offer?.named?.let { Text(it, color = Fob.muted, fontSize = 15.sp, textAlign = TextAlign.Center) }
             }
+            // The payment is done: Back from the contact goes Home, not to Paid.
             offer?.let { o -> SaveOfferButtons(o, onAdd = { c ->
                 scope.launch {
-                    runCatching { model.changeContacts { it.addContactPaidAt(c.id, o.address) } }.onSuccess { nav.go(Screen.Contact(c.id)) }
+                    runCatching { model.changeContacts { it.addContactPaidAt(c.id, o.address) } }.onSuccess { nav.reset(Screen.Home); nav.go(Screen.Contact(c.id)) }
                 }
-            }, onNew = { nav.go(Screen.ContactEdit(prefill = o.draft)) }) }
+            }, onNew = { nav.reset(Screen.Home); nav.go(Screen.ContactEdit(prefill = o.draft)) }) }
             prepared.receipt?.let {
                 Card(Modifier.padding(top = 12.dp), padding = PaddingValues(vertical = 12.dp)) {
                     Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
