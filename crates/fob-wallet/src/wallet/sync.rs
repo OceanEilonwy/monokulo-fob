@@ -272,11 +272,11 @@ impl Wallet {
         // whole file is written each time, and the chain has it if it's lost.
         let due = self.inner.saved_at.lock().expect("save lock").elapsed() >= SAVE_EVERY;
         if changed || !more || due {
-            self.save_state(&state)?;
+            self.save_releasing(state)?;
         } else {
             self.inner.unsaved.store(true, Ordering::Relaxed);
+            drop(state);
         }
-        drop(state);
         if watch_further {
             *self.inner.pipeline.lock().await = None;
         }

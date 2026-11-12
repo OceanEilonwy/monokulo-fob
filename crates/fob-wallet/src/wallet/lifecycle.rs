@@ -92,6 +92,8 @@ impl Wallet {
                 sending: Mutex::new(()),
                 unsaved: AtomicBool::new(false),
                 saved_at: std::sync::Mutex::new(Instant::now()),
+                save_numbered: AtomicU64::new(0),
+                save_written: AtomicU64::new(0),
                 db: std::sync::Mutex::new(Some(db)),
                 prepared: Mutex::new(Pending::default()),
                 next_id: AtomicU64::new(1),
@@ -269,20 +271,56 @@ impl Wallet {
     }
 
     pub(super) fn save_state(&self, state: &State) -> Result<()> {
+        let (number, value) = self.snapshot(state)?;
+        self.write_state(number, value)
+    }
+
+    /// Saves like [`save_state`](Wallet::save_state), letting go of the
+    /// state first: the screens and the rest of the wallet needn't wait on
+    /// the write, which grows with the wallet's history.
+    pub(super) fn save_releasing(&self, state: tokio::sync::MutexGuard<'_, State>) -> Result<()> {
+        let (number, value) = self.snapshot(&state)?;
+        drop(state);
+        self.write_state(number, value)
+    }
+
+    /// The state's JSON form to save, numbered. Called with the state lock
+    /// held, so the numbers follow the changes; all of them are in this one.
+    pub(super) fn snapshot(&self, state: &State) -> Result<(u64, serde_json::Value)> {
         let value = Self::state_value(state)?;
-        let mut db = self.inner.db.lock().expect("db lock");
-        let Some(db) = db.as_mut() else { return Ok(()) };
-        db.save(value)?;
         self.inner.unsaved.store(false, Ordering::Relaxed);
-        *self.inner.saved_at.lock().expect("save lock") = Instant::now();
-        Ok(())
+        Ok((self.inner.save_numbered.fetch_add(1, Ordering::Relaxed) + 1, value))
+    }
+
+    /// Writes state `number`, unless a newer one is written already. The
+    /// encoding and the database work move a worker of a multi-thread
+    /// runtime aside, so its other tasks (network I/O) go on meanwhile.
+    pub(super) fn write_state(&self, number: u64, value: serde_json::Value) -> Result<()> {
+        let write = || {
+            let mut db = self.inner.db.lock().expect("db lock");
+            let Some(db) = db.as_mut() else { return Ok(()) };
+            if self.inner.save_written.load(Ordering::Relaxed) >= number {
+                return Ok(());
+            }
+            if let Err(e) = db.save(value) {
+                // Still to save, as far as leaving is concerned.
+                self.inner.unsaved.store(true, Ordering::Relaxed);
+                return Err(e.into());
+            }
+            self.inner.save_written.store(number, Ordering::Relaxed);
+            *self.inner.saved_at.lock().expect("save lock") = Instant::now();
+            Ok(())
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(write),
+            _ => write(),
+        }
     }
 
     /// Saves scanning that hasn't been yet. Best effort: the chain has it.
     pub(super) async fn flush(&self) {
         if self.inner.unsaved.load(Ordering::Relaxed) {
-            let state = self.inner.state.lock().await;
-            let _ = self.save_state(&state);
+            let _ = self.save_releasing(self.inner.state.lock().await);
         }
     }
 

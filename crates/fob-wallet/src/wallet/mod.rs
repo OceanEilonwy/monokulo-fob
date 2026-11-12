@@ -317,6 +317,10 @@ struct Inner {
     unsaved: AtomicBool,
     /// When the file was last saved.
     saved_at: std::sync::Mutex<Instant>,
+    /// The last state numbered for saving, under the state lock, and the
+    /// last written: an older one finishing late never overwrites a newer.
+    save_numbered: AtomicU64,
+    save_written: AtomicU64,
     /// The database, held for each write; none once the wallet has been taken
     /// off the phone, which no late save may bring back.
     db: std::sync::Mutex<Option<Db>>,
