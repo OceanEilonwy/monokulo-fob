@@ -3938,5 +3938,15 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
 408. **Payments cross the FFI typed.** A scanned code is parsed once into a
      `ScannedCode` object that the form and confirm keep, and `prepare` and
      `preview` take a `TypedAmount` (`Xmr` or `Fiat`) instead of text and
-     an `in_fiat` flag. `amount_entry`, `receive_code` and `make_request`
-     still take the flag.
+     an `in_fiat` flag. Decision 410 takes the flag out of the rest.
+
+410. **An amount's unit is a type all the way down** (finishes 408).
+     `amount_entry`, `receive_code` and `make_request` take a
+     `TypedAmount` (optional where the amount is), `convert_amount` takes
+     the `AmountUnit` to convert to, and the amount field's record says
+     `typed_in` and `for_typed_in` as an `AmountUnit`. Below the FFI the
+     core's `amount::Typed` (`Xmr(&str)` or `Fiat(&str)`) and
+     `amount::Unit` carry it through fob-wallet and fob-price, so text and
+     its unit can't come apart or be swapped. Nothing behaves differently:
+     blank text still asks nothing, and money typed with no price is still
+     read as XMR by the field and refused by a payment.

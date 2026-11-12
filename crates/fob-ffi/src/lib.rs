@@ -2267,16 +2267,14 @@ impl FobWallet {
     /// from, as read: its name goes with the payment while `to` is its
     /// address, its receipt while the amount is its too.
     pub async fn prepare(&self, to: String, amount: TypedAmount, note: Option<String>, code: Option<Arc<form::ScannedCode>>) -> Result<Prepared> {
-        let (text, in_fiat) = amount.parts();
-        let p = self.inner.prepare_typed(&to, text, in_fiat, note, code.as_deref().map(form::ScannedCode::request)).await?;
+        let p = self.inner.prepare_typed(&to, amount.typed(), note, code.as_deref().map(form::ScannedCode::request)).await?;
         Ok(prepared(&self.inner, p).await)
     }
 
     /// What [`prepare`](FobWallet::prepare) would pay, checked the same,
     /// without asking the node: Confirm shows it at once, the fee to come.
     pub async fn preview(&self, to: String, amount: TypedAmount, code: Option<Arc<form::ScannedCode>>) -> Result<PaymentPreview> {
-        let (text, in_fiat) = amount.parts();
-        let p = self.inner.preview_typed(&to, text, in_fiat, code.as_deref().map(form::ScannedCode::request)).await?;
+        let p = self.inner.preview_typed(&to, amount.typed(), code.as_deref().map(form::ScannedCode::request)).await?;
         // Only a price already kept: the preview asks nothing.
         let receipt = match p.receipt {
             Some(r) => Some(Receipt::checked(&self.inner, r, p.amount, false).await),
@@ -2335,26 +2333,26 @@ impl FobWallet {
         Ok(self.inner.remember_receive_note(index, &note).await?)
     }
 
-    /// An amount field for `text`, typed in money (`in_fiat`) or XMR; in
+    /// An amount field for `amount`, typed in money or XMR; in
     /// money only with a currency besides XMR and a price from within the
     /// day, its age said once it's aged (the clock as for `activity_days`).
     /// Money typed against a price 5 minutes old has Rust ask again; a
     /// failure comes as the price toast.
-    pub async fn amount_entry(&self, text: String, in_fiat: bool, now: u64, utc_offset: i32, hours_24: bool) -> AmountEntry {
-        self.inner.amount_field(&text, in_fiat, clock::Clock { now, utc_offset, hours_24 }).await.into()
+    pub async fn amount_entry(&self, amount: TypedAmount, now: u64, utc_offset: i32, hours_24: bool) -> AmountEntry {
+        self.inner.amount_field(amount.typed(), clock::Clock { now, utc_offset, hours_24 }).await.into()
     }
 
-    /// An amount field's text switched between money and XMR (`to_fiat`):
+    /// An amount field's text switched between money and XMR, to `to`:
     /// the typed text converted, or blank.
-    pub async fn convert_amount(&self, text: String, to_fiat: bool) -> String {
-        self.inner.convert_amount(&text, to_fiat).await
+    pub async fn convert_amount(&self, text: String, to: AmountUnit) -> String {
+        self.inner.convert_amount(&text, to.into()).await
     }
 
     /// A payment code to show: the address and, if typed, an amount (in
-    /// money when `in_fiat`) and a note for the payer. Throws when the
-    /// amount isn't one.
-    pub async fn receive_code(&self, address: String, amount: Option<String>, in_fiat: bool, note: Option<String>) -> Result<ReceiveCode> {
-        let r = self.inner.receive_code(&address, amount.as_deref(), in_fiat, note.as_deref()).await?;
+    /// XMR or money) and a note for the payer. Throws when the amount
+    /// isn't one.
+    pub async fn receive_code(&self, address: String, amount: Option<TypedAmount>, note: Option<String>) -> Result<ReceiveCode> {
+        let r = self.inner.receive_code(&address, amount.as_ref().map(TypedAmount::typed), note.as_deref()).await?;
         Ok(ReceiveCode { uri: r.uri, headline: r.headline, detail: r.detail })
     }
 
@@ -2477,11 +2475,11 @@ impl FobWallet {
     }
 
     /// Makes a request, when Share or Copy is pressed on Receive: a new
-    /// address, for `contact` (or no one), asking `amount` (in money when
-    /// `in_fiat`) with `note`. Throws when the amount isn't one, or the
+    /// address, for `contact` (or no one), asking `amount` (in XMR or
+    /// money) with `note`. Throws when the amount isn't one, or the
     /// contact was deleted.
-    pub async fn make_request(&self, contact: Option<u64>, amount: Option<String>, in_fiat: bool, note: Option<String>) -> Result<MadeRequest> {
-        let (r, code) = self.inner.make_request(contact, amount.as_deref(), in_fiat, note.as_deref()).await?;
+    pub async fn make_request(&self, contact: Option<u64>, amount: Option<TypedAmount>, note: Option<String>) -> Result<MadeRequest> {
+        let (r, code) = self.inner.make_request(contact, amount.as_ref().map(TypedAmount::typed), note.as_deref()).await?;
         Ok(MadeRequest {
             id: r.id,
             address: r.address,
@@ -3068,14 +3066,56 @@ pub enum TypedAmount {
 }
 
 impl TypedAmount {
-    /// The text, and whether it's money.
-    fn parts(&self) -> (&str, bool) {
+    /// As the core takes it.
+    pub fn typed(&self) -> amount::Typed<'_> {
         match self {
-            TypedAmount::Xmr { text } => (text, false),
-            TypedAmount::Fiat { text } => (text, true),
+            TypedAmount::Xmr { text } => amount::Typed::Xmr(text),
+            TypedAmount::Fiat { text } => amount::Typed::Fiat(text),
+        }
+    }
+
+    /// `text` typed in `unit`.
+    pub fn new(text: String, unit: AmountUnit) -> TypedAmount {
+        match unit {
+            AmountUnit::Xmr => TypedAmount::Xmr { text },
+            AmountUnit::Fiat => TypedAmount::Fiat { text },
         }
     }
 }
+
+/// What an amount field is typed in: XMR, or money at the current price.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Enum)]
+pub enum AmountUnit {
+    #[default]
+    Xmr,
+    Fiat,
+}
+
+impl AmountUnit {
+    /// What the field's chip switches it to.
+    pub fn other(self) -> AmountUnit {
+        amount::Unit::from(self).other().into()
+    }
+}
+
+impl From<amount::Unit> for AmountUnit {
+    fn from(u: amount::Unit) -> Self {
+        match u {
+            amount::Unit::Xmr => AmountUnit::Xmr,
+            amount::Unit::Fiat => AmountUnit::Fiat,
+        }
+    }
+}
+
+impl From<AmountUnit> for amount::Unit {
+    fn from(u: AmountUnit) -> Self {
+        match u {
+            AmountUnit::Xmr => amount::Unit::Xmr,
+            AmountUnit::Fiat => amount::Unit::Fiat,
+        }
+    }
+}
+
 
 /// Receive's payment code and the words around it.
 #[derive(uniffi::Record)]
@@ -3093,8 +3133,9 @@ pub struct ReceiveCode {
 /// An amount field (toggle B), every word from Rust.
 #[derive(uniffi::Record)]
 pub struct AmountEntry {
-    /// Typing in money: there's a price and the field is switched to it.
-    pub in_fiat: bool,
+    /// What it's typed in: money only while there's a price and the field
+    /// is switched to it.
+    pub typed_in: AmountUnit,
     /// Before what's typed: "$", "€", "ɱ" for XMR; none for a currency
     /// without a symbol.
     pub sign: Option<String>,
@@ -3115,7 +3156,7 @@ pub struct AmountEntry {
     /// while they're what the field holds. Nothing is sent, shared or
     /// copied from one that's behind (the chip just tapped, say).
     pub for_text: String,
-    pub for_in_fiat: bool,
+    pub for_typed_in: AmountUnit,
     /// The line without the rate, for a field with no room for it.
     pub conversion: Option<String>,
 }
@@ -3124,7 +3165,7 @@ impl From<price::AmountField> for AmountEntry {
     fn from(f: price::AmountField) -> Self {
         let f = fob_wallet::words::prices::field(f);
         AmountEntry {
-            in_fiat: f.in_fiat,
+            typed_in: f.typed_in.into(),
             sign: f.sign,
             unit: f.unit,
             can_switch: f.can_switch,
@@ -3133,7 +3174,7 @@ impl From<price::AmountField> for AmountEntry {
             switch_label: f.switch_label,
             sendable: f.sendable,
             for_text: f.for_text,
-            for_in_fiat: f.for_in_fiat,
+            for_typed_in: f.for_typed_in.into(),
             conversion: f.conversion,
         }
     }

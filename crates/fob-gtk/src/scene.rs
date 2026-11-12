@@ -420,7 +420,7 @@ async fn play(engine: &Engine, to: &Sender<Msg>, scene: &str) -> Result<(), Stri
         "split" => Some(Go::Split),
         "request" => {
             let e = engine.clone();
-            let made = off(async move { e.change(|wallet| async move { wallet.make_request(None, Some("1.5".into()), false, Some("Lunch".into())).await }).await }).await.map_err(|e| e.to_string())?;
+            let made = off(async move { e.change(|wallet| async move { wallet.make_request(None, Some(fob_app::views::TypedAmount::Xmr { text: "1.5".into() }), Some("Lunch".into())).await }).await }).await.map_err(|e| e.to_string())?;
             Some(Go::Request(made.id))
         }
         // Confirm opens at once, while the fee is asked for.

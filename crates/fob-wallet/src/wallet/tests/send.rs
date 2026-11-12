@@ -35,9 +35,9 @@ async fn a_payment_previews_without_a_node_and_refuses_what_prepare_refuses() {
     let to = Keys::generate(Network::Stagenet).keys.primary_address();
     let code = format!("monero:{to}?tx_amount=0.5&tx_description=Flat%20white");
     let code = uri::parse_payment(Network::Stagenet, &code).unwrap();
-    let p = wallet.preview_typed(&format!(" {to} "), "0.5", false, Some(&code)).await.unwrap();
+    let p = wallet.preview_typed(&format!(" {to} "), Typed::Xmr("0.5"), Some(&code)).await.unwrap();
     assert_eq!(p, Preview { to: to.clone(), amount: 500_000_000_000, receipt: None });
-    assert!(matches!(wallet.preview_typed("86Ux", "0.5", false, None).await, Err(FobError::Monero(MoneroError::BadAddress(_)))));
+    assert!(matches!(wallet.preview_typed("86Ux", Typed::Xmr("0.5"), None).await, Err(FobError::Monero(MoneroError::BadAddress(_)))));
     assert!(matches!(wallet.preview(&to, 0, None), Err(FobError::Monero(MoneroError::BadAmount))));
     let mainnet = Keys::generate(Network::Mainnet).keys.primary_address();
     assert!(wallet.preview(&mainnet, 1, None).is_err());

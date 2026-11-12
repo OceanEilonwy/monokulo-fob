@@ -82,6 +82,61 @@ pub fn total(amounts: impl IntoIterator<Item = u64>) -> u64 {
     amounts.into_iter().fold(0, u64::saturating_add)
 }
 
+/// What an amount is typed in: XMR, or money converted at a price.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Unit {
+    #[default]
+    Xmr,
+    Fiat,
+}
+
+impl Unit {
+    /// The unit a field's chip switches to.
+    pub fn other(self) -> Unit {
+        match self {
+            Unit::Xmr => Unit::Fiat,
+            Unit::Fiat => Unit::Xmr,
+        }
+    }
+}
+
+/// Text someone typed as an amount, with what it's typed in, so the two
+/// can't come apart or be swapped on the way down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Typed<'a> {
+    Xmr(&'a str),
+    Fiat(&'a str),
+}
+
+impl<'a> Typed<'a> {
+    pub fn new(text: &'a str, unit: Unit) -> Typed<'a> {
+        match unit {
+            Unit::Xmr => Typed::Xmr(text),
+            Unit::Fiat => Typed::Fiat(text),
+        }
+    }
+
+    /// The text as typed, untrimmed.
+    pub fn text(self) -> &'a str {
+        match self {
+            Typed::Xmr(t) | Typed::Fiat(t) => t,
+        }
+    }
+
+    pub fn unit(self) -> Unit {
+        match self {
+            Typed::Xmr(_) => Unit::Xmr,
+            Typed::Fiat(_) => Unit::Fiat,
+        }
+    }
+
+    /// The same amount trimmed, or none when nothing but space is typed.
+    pub fn trimmed(self) -> Option<Typed<'a>> {
+        let t = self.text().trim();
+        (!t.is_empty()).then(|| Typed::new(t, self.unit()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +146,15 @@ mod tests {
         assert_eq!(total([1, 2, 3]), 6);
         assert_eq!(total([u64::MAX, 1, 2]), u64::MAX);
         assert_eq!(total([]), 0);
+    }
+
+    #[test]
+    fn a_typed_amount_keeps_its_unit() {
+        assert_eq!((Typed::new("20", Unit::Fiat).text(), Typed::new("20", Unit::Fiat).unit()), ("20", Unit::Fiat));
+        assert_eq!(Typed::new(" 0.5 ", Unit::Xmr), Typed::Xmr(" 0.5 "));
+        assert_eq!(Typed::Fiat(" 20 ").trimmed(), Some(Typed::Fiat("20")));
+        assert_eq!(Typed::Xmr("  ").trimmed(), None);
+        assert_eq!((Unit::Xmr.other(), Unit::Fiat.other(), Unit::default()), (Unit::Fiat, Unit::Xmr, Unit::Xmr));
     }
 
     #[test]

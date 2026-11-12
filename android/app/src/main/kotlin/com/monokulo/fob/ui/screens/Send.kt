@@ -108,6 +108,7 @@ import com.monokulo.fob.ui.StrokeIcon
 import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import uniffi.fob.AmountUnit
 import uniffi.fob.ContactRow
 import uniffi.fob.PaidBefore
 import uniffi.fob.PaymentPreview
@@ -144,15 +145,24 @@ private const val CORNERS = "M8 64V24a16 16 0 0 1 16-16h40 M216 8h40a16 16 0 0 1
 data class SendDraft(
     val to: String,
     val amount: String = "",
-    val inFiat: Boolean = false,
+    val unit: AmountUnit = AmountUnit.XMR,
     val note: String = "",
     val code: ScannedCode? = null,
     val read: String? = null,
     val open: Boolean = true,
 )
 
-/** [text] as Rust takes it: typed in money when [inFiat], else XMR. */
-fun typedAmount(text: String, inFiat: Boolean): TypedAmount = if (inFiat) TypedAmount.Fiat(text) else TypedAmount.Xmr(text)
+/** [text] as Rust takes it, typed in [unit]. */
+fun typedAmount(text: String, unit: AmountUnit): TypedAmount = when (unit) {
+    AmountUnit.XMR -> TypedAmount.Xmr(text)
+    AmountUnit.FIAT -> TypedAmount.Fiat(text)
+}
+
+/** What an amount field's chip switches [this] to. */
+fun AmountUnit.other(): AmountUnit = when (this) {
+    AmountUnit.XMR -> AmountUnit.FIAT
+    AmountUnit.FIAT -> AmountUnit.XMR
+}
 
 /**
  * A payment Confirm opens on before its fee is in: what Rust checked of
@@ -212,33 +222,33 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     // its unit; an empty one opens as Rust has it already (in money while there's a price), drawn whole at once.
     val blank = prices?.blankEntry
     val filled = draft != null && draft.amount.isNotBlank()
-    var inFiat by remember { mutableStateOf(if (filled) draft.inFiat else blank?.inFiat ?: false) }
-    var entry by remember { mutableStateOf(blank?.takeIf { it.inFiat == inFiat }) }
+    var unit by remember { mutableStateOf(if (filled) draft.unit else blank?.typedIn ?: AmountUnit.XMR) }
+    var entry by remember { mutableStateOf(blank?.takeIf { it.typedIn == unit }) }
     var defaulted by remember { mutableStateOf(filled || blank?.canSwitch == true) }
     // Money typed when the price went, kept aside until one comes.
     var heldMoney by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(wallet, prices, balance, amount, inFiat) {
+    LaunchedEffect(wallet, prices, balance, amount, unit) {
         if (wallet == null) return@LaunchedEffect
-        val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
+        val e = model.amountEntry(typedAmount(amount, unit)) ?: return@LaunchedEffect
         // A price come since it opened: in money, the field's words with it at once rather than a round later.
-        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; entry = model.amountEntry(amount, true); inFiat = true; return@LaunchedEffect }
+        if (e.canSwitch && !defaulted && amount.isBlank() && unit == AmountUnit.XMR) { defaulted = true; entry = model.amountEntry(TypedAmount.Fiat(amount)); unit = AmountUnit.FIAT; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
         // The price gone (another provider not answered yet, or over a day old): the money typed is kept
         // aside, never read as XMR, and put back once a price comes.
-        if (e.canSwitch && heldMoney != null && amount.isBlank() && !inFiat) { amount = heldMoney!!; heldMoney = null; inFiat = true; return@LaunchedEffect }
-        if (!inFiat && amount.isNotBlank()) heldMoney = null
-        if (!e.canSwitch && inFiat) { if (amount.isNotBlank()) heldMoney = amount; inFiat = false; amount = ""; return@LaunchedEffect }
+        if (e.canSwitch && heldMoney != null && amount.isBlank() && unit == AmountUnit.XMR) { amount = heldMoney!!; heldMoney = null; unit = AmountUnit.FIAT; return@LaunchedEffect }
+        if (unit == AmountUnit.XMR && amount.isNotBlank()) heldMoney = null
+        if (!e.canSwitch && unit == AmountUnit.FIAT) { if (amount.isNotBlank()) heldMoney = amount; unit = AmountUnit.XMR; amount = ""; return@LaunchedEffect }
         entry = e
     }
     // Rust's word on what the field holds now; none while it's behind (the chip just tapped), so Review waits.
-    val current = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }
+    val current = entry?.takeIf { it.forText == amount && it.forTypedIn == unit }
 
     // The price toast's cog opens Price from over this: Back finds the form as filled, pulled up.
     DisposableEffect(nav) {
         val keep = {
             val money = heldMoney
             if (open || to.isNotBlank() || amount.isNotBlank() || money != null) {
-                nav.replace(Screen.Send(draft = SendDraft(to, money ?: amount, money != null || inFiat, note, filledFrom, lastRead, open)))
+                nav.replace(Screen.Send(draft = SendDraft(to, money ?: amount, if (money != null) AmountUnit.FIAT else unit, note, filledFrom, lastRead, open)))
             }
         }
         nav.keepForm = keep
@@ -251,15 +261,15 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
      * Opens Confirm on the payment. [scanned]: straight from a code with an amount, never typed here, so Back finds
      * Send empty on the camera (the code it read not taken again); otherwise the form as filled.
      */
-    fun review(address: String, typed: String, fiat: Boolean, withNote: String?, scanned: Boolean = false) {
+    fun review(address: String, typed: String, typedIn: AmountUnit, withNote: String?, scanned: Boolean = false) {
         busy = true
         error = null
         scope.launch {
             // Checked without asking the node, so Confirm opens at once (Round 9 › 3b) and the fee comes in on it.
-            runCatching { model.preview(address, typedAmount(typed, fiat), filledFrom) }
+            runCatching { model.preview(address, typedAmount(typed, typedIn), filledFrom) }
                 .onSuccess {
                     if (nav.current is Screen.Send) {
-                        val filled = SendDraft(address, typed, fiat, withNote ?: "", filledFrom, lastRead)
+                        val filled = SendDraft(address, typed, typedIn, withNote ?: "", filledFrom, lastRead)
                         val under = if (scanned) SendDraft(to = "", read = lastRead, open = false) else filled
                         nav.back(); nav.go(Screen.Send(draft = under)); nav.go(Screen.Confirm(note = withNote, pending = PendingSend(it, filled)))
                     }
@@ -294,9 +304,9 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                 // Filled too, so a payment that can't be prepared (not enough ready) shows what was asked.
                 fill(taken.to, taken.note, taken.code)
                 amount = taken.amount
-                inFiat = false
+                unit = AmountUnit.XMR
                 defaulted = true
-                review(taken.to, taken.amount, false, taken.note.ifEmpty { null }, scanned = true)
+                review(taken.to, taken.amount, AmountUnit.XMR, taken.note.ifEmpty { null }, scanned = true)
             }
         }
     }
@@ -527,10 +537,10 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                                         // The text, unit and Rust's word on them change together.
                                         scope.launch {
                                             val w = wallet ?: return@launch
-                                            val toFiat = !inFiat
-                                            val switched = w.convertAmount(amount, toFiat)
-                                            val e = model.amountEntry(switched, toFiat) ?: return@launch
-                                            amount = switched; inFiat = toFiat; entry = e
+                                            val to = unit.other()
+                                            val switched = w.convertAmount(amount, to)
+                                            val e = model.amountEntry(typedAmount(switched, to)) ?: return@launch
+                                            amount = switched; unit = to; entry = e
                                         }
                                     },
                                 )
@@ -543,7 +553,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                             ErrorText(error)
                             PrimaryButton(if (busy) "Getting the fee…" else "Review", enabled = !busy && toValid && current?.sendable == true, onClick = {
                                 val e = current ?: return@PrimaryButton
-                                review(to.trim(), amount, e.inFiat, note.trim().ifEmpty { null })
+                                review(to.trim(), amount, e.typedIn, note.trim().ifEmpty { null })
                             })
                         }
                     } else {

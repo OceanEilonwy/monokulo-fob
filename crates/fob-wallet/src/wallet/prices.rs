@@ -198,27 +198,28 @@ impl Wallet {
         Some((fiat::value(atomic, c.price, &fiat::currency(&c.currency)), crate::price_alert::old(c.at, now)))
     }
 
-    /// An amount field for `text`, typed in money (`in_fiat`) or XMR: in
+    /// An amount field for `typed`, in money or XMR: in
     /// money only with a currency besides XMR and a price from within the
     /// day, saying when it's from once it's aged (`clock`, the phone's).
     /// Money typed against a price 5 minutes old or more has the price
     /// task ask (at most once a minute), a failure shown as the user's; so
     /// does the field with no price at all (opened or typed in, the field
     /// then in XMR), while a currency is chosen.
-    pub async fn amount_field(&self, text: &str, in_fiat: bool, clock: Clock) -> price::AmountField {
+    pub async fn amount_field(&self, typed: amount::Typed<'_>, clock: Clock) -> price::AmountField {
         let (wanted, shown) = {
             let state = self.inner.state.lock().await;
             (state.prices.code().map(fiat::currency), state.price_cache.shown(&state.prices, clock.now).cloned())
         };
         let stale = shown.as_ref().is_some_and(|c| clock.now.saturating_sub(c.at) >= price::REFRESH);
-        if wanted.is_some() && (shown.is_none() || stale && in_fiat && !text.trim().is_empty()) {
+        let money_typed = typed.unit() == amount::Unit::Fiat && !typed.text().trim().is_empty();
+        if wanted.is_some() && (shown.is_none() || stale && money_typed) {
             let mut last = self.inner.typed_asked.lock().expect("price lock");
             if clock.now.saturating_sub(*last) >= price::PULL_REFRESH {
                 *last = clock.now;
                 self.ask_prices(crate::price_alert::Asked::Typing);
             }
         }
-        Self::with_field_price(wanted, shown, clock, |price| price::amount_field(text, in_fiat, price))
+        Self::with_field_price(wanted, shown, clock, |price| price::amount_field(typed, price))
     }
 
     /// The amount field as a form opens it, blank: in money while there's a
@@ -250,52 +251,51 @@ impl Wallet {
         make(price)
     }
 
-    /// An amount field's text as typed, the other way: money to XMR (`to_fiat`
-    /// false) or XMR to money, for switching the field. Blank, or nothing to
+    /// An amount field's text as typed, the other way: money to XMR or
+    /// XMR to money (`to`), for switching the field. Blank, or nothing to
     /// convert with, gives blank.
-    pub async fn convert_amount(&self, text: &str, to_fiat: bool) -> String {
+    pub async fn convert_amount(&self, text: &str, to: amount::Unit) -> String {
         let Some((currency, p)) = self.price_now().await else { return String::new() };
-        if to_fiat {
-            amount::parse(text).map(|a| fiat::plain(fiat::to_minor(a, p, &currency), &currency)).unwrap_or_default()
-        } else {
-            fiat::parse(text, &currency).ok().and_then(|m| fiat::to_atomic(m, p, &currency)).map(amount::format).unwrap_or_default()
+        match to {
+            amount::Unit::Fiat => amount::parse(text).map(|a| fiat::plain(fiat::to_minor(a, p, &currency), &currency)).unwrap_or_default(),
+            amount::Unit::Xmr => fiat::parse(text, &currency).ok().and_then(|m| fiat::to_atomic(m, p, &currency)).map(amount::format).unwrap_or_default(),
         }
     }
 
     /// An amount field's text as XMR (atomic units): typed in XMR, or in
-    /// money (`in_fiat`) converted at the current price, with the money as
+    /// money converted at the current price, with the money as
     /// written ("$20.00"). Throws when it isn't an amount, or there's no
     /// price to convert with.
-    pub async fn typed_amount(&self, text: &str, in_fiat: bool) -> Result<(u64, Option<String>)> {
-        let (atomic, fiat) = self.typed(text, in_fiat).await?;
+    pub async fn typed_amount(&self, typed: amount::Typed<'_>) -> Result<(u64, Option<String>)> {
+        let (atomic, fiat) = self.typed(typed).await?;
         Ok((atomic, fiat.map(|(text, _)| text)))
     }
 
     /// As [`typed_amount`](Wallet::typed_amount), the money with its
     /// currency's code.
-    pub(super) async fn typed(&self, text: &str, in_fiat: bool) -> Result<(u64, Option<(String, String)>)> {
-        let text = text.trim();
-        if !in_fiat {
-            return Ok((amount::parse(text)?, None));
-        }
+    pub(super) async fn typed(&self, typed: amount::Typed<'_>) -> Result<(u64, Option<(String, String)>)> {
+        let text = match typed {
+            amount::Typed::Xmr(text) => return Ok((amount::parse(text.trim())?, None)),
+            amount::Typed::Fiat(text) => text.trim(),
+        };
         let (currency, p) = self.price_now().await.ok_or(FobError::Screen(ScreenError::NoPriceToConvert))?;
         let minor = fiat::parse(text, &currency)?;
         Ok((fiat::to_atomic(minor, p, &currency).ok_or(FobError::Monero(MoneroError::BadAmount))?, Some((fiat::format(minor, &currency), currency.code))))
     }
 
     /// Builds a payment of an amount as Send's field took it: typed in
-    /// XMR, or in money (`in_fiat`) converted at the current price, the
+    /// XMR, or in money converted at the current price, the
     /// conversion the field's line showed. Otherwise as
     /// [`prepare`](Wallet::prepare).
-    pub async fn prepare_typed(&self, to: &str, amount_text: &str, in_fiat: bool, note: Option<String>, code: Option<&uri::PaymentRequest>) -> Result<Prepared> {
-        let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
+    pub async fn prepare_typed(&self, to: &str, typed: amount::Typed<'_>, note: Option<String>, code: Option<&uri::PaymentRequest>) -> Result<Prepared> {
+        let (atomic, _) = self.typed_amount(typed).await?;
         self.prepare(to, atomic, note, code).await
     }
 
     /// [`preview`](Wallet::preview) of an amount as Send's field took it,
     /// converted as [`prepare_typed`](Wallet::prepare_typed) converts it.
-    pub async fn preview_typed(&self, to: &str, amount_text: &str, in_fiat: bool, code: Option<&uri::PaymentRequest>) -> Result<Preview> {
-        let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
+    pub async fn preview_typed(&self, to: &str, typed: amount::Typed<'_>, code: Option<&uri::PaymentRequest>) -> Result<Preview> {
+        let (atomic, _) = self.typed_amount(typed).await?;
         self.preview(to, atomic, code)
     }
 

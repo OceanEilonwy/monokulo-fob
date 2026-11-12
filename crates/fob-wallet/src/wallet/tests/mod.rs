@@ -13,6 +13,7 @@ mod sync;
 use super::*;
 
 use crate::price_alert::Asked;
+use fob_monero::amount::{Typed, Unit};
 use coin::{Coin, Hold, KeyImage, TxHash};
 
 /// The phone's clock now, at UTC.
@@ -83,8 +84,8 @@ impl Wallet {
         fob_words::catch_up::zmq_text(&status.zmq, status.zmq_endpoint.as_deref())
     }
 
-    pub(super) async fn said_field(&self, text: &str, in_fiat: bool, clock: Clock) -> fob_words::prices::Field {
-        fob_words::prices::field(self.amount_field(text, in_fiat, clock).await)
+    pub(super) async fn said_field(&self, typed: Typed<'_>, clock: Clock) -> fob_words::prices::Field {
+        fob_words::prices::field(self.amount_field(typed, clock).await)
     }
 
     pub(super) async fn said_payment(&self, tx: &str, clock: Clock) -> Option<fob_words::activity::Detail> {
@@ -133,7 +134,7 @@ async fn a_used_wallet(path: &Path) -> Wallet {
     wallet.set_profile("Henry", Some(fob_codes::names::test_webp(300, 96))).await.unwrap();
     wallet.share_profile().await.unwrap();
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), note: Some("Neighbour".into()), photo: Some(fob_codes::names::test_webp(300, 96)), ..Default::default() }).await.unwrap();
-    wallet.make_request(Some(sam.id), Some("0.5"), false, Some("Tickets")).await.unwrap();
+    wallet.make_request(Some(sam.id), Some(Typed::Xmr("0.5")), Some("Tickets")).await.unwrap();
     let mut state = wallet.inner.state.lock().await;
     let spent = Coin::Spent { ki: KeyImage::Known([0xaa; 32]), tx: tx_hash("bb"), height: 12 };
     state.outputs.push(Owned { subaddress: 1, coinbase: true, unlock_block: 77, ..received("in", 1_700_000_000, u64::MAX) }.with_coin(spent));

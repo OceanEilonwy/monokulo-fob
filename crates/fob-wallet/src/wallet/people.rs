@@ -238,20 +238,19 @@ impl Wallet {
 
     /// Makes a request, when Share or Copy is pressed on Receive (never by
     /// opening it): on a subaddress no one has had, for `contact` (or no
-    /// one), asking `amount_text` (in money when `in_fiat`, converted at the
+    /// one), asking `amount` (in XMR, or in money converted at the
     /// current price as the field's line showed) with `note`, its code
     /// naming the profile while requests carry it. The same ask again, while
     /// nothing has come to the last one, gives the last one again
     /// ([`requests::Book::same_again`]). Returns it with its code.
-    pub async fn make_request(&self, contact: Option<u64>, amount_text: Option<&str>, in_fiat: bool, note: Option<&str>) -> Result<(requests::Request, ReceiveCode)> {
+    pub async fn make_request(&self, contact: Option<u64>, amount: Option<amount::Typed<'_>>, note: Option<&str>) -> Result<(requests::Request, ReceiveCode)> {
         let rows = self.activity().await;
-        let typed = amount_text.map(str::trim).filter(|a| !a.is_empty());
-        let asked = match typed {
+        let asked = match amount.and_then(amount::Typed::trimmed) {
             None => None,
             Some(t) => {
-                let (xmr, fiat) = self.typed(t, in_fiat).await?;
+                let (xmr, fiat) = self.typed(t).await?;
                 Some(requests::Asked {
-                    typed: t.to_owned(),
+                    typed: t.text().to_owned(),
                     unit: fiat.as_ref().map(|(_, code)| code.clone()).unwrap_or_else(|| "XMR".into()),
                     xmr,
                     fiat: fiat.map(|(text, _)| text),
@@ -398,15 +397,14 @@ impl Wallet {
         .await
     }
 
-    /// Receive's payment code for `address`, with an amount typed in XMR or,
-    /// when `in_fiat`, in money (the code still asks in XMR, converted at
-    /// the current price), and a note for the payer.
-    pub async fn receive_code(&self, address: &str, amount_text: Option<&str>, in_fiat: bool, note: Option<&str>) -> Result<ReceiveCode> {
-        let typed = amount_text.map(str::trim).filter(|a| !a.is_empty());
-        let (xmr, fiat) = match typed {
+    /// Receive's payment code for `address`, with an amount typed in XMR or
+    /// in money (the code still asks in XMR, converted at the current
+    /// price), and a note for the payer.
+    pub async fn receive_code(&self, address: &str, amount: Option<amount::Typed<'_>>, note: Option<&str>) -> Result<ReceiveCode> {
+        let (xmr, fiat) = match amount.and_then(amount::Typed::trimmed) {
             None => (None, None),
             Some(t) => {
-                let (xmr, fiat) = self.typed_amount(t, in_fiat).await?;
+                let (xmr, fiat) = self.typed_amount(t).await?;
                 (Some(xmr), fiat)
             }
         };
