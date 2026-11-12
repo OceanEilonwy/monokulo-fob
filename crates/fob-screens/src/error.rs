@@ -26,6 +26,17 @@ pub enum ScreenError {
     NoPriceToConvert,
     NotEnoughFunds { available: u64, needed: u64 },
     NoSuchPayment,
+    /// A keyed request needs a receive account other than 0 (decision 418).
+    NoReceiveAccount,
+    /// A keyed request with no amount: its tag would be all it asked.
+    RequestNeedsAmount,
+    /// A keyed request's key given again for another amount.
+    RequestKeyTaken,
+    NoSuchRequest,
+    /// Account 0 is the wallet's own; an account's label can't be blank.
+    NoSuchAccount,
+    AccountLabelEmpty,
+    AccountLabelTooLong { max: usize },
     Code(CodeError),
     Monero(MoneroError),
 }

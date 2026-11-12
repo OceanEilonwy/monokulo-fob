@@ -21,7 +21,7 @@ pub mod trezor;
 pub mod wallet;
 
 pub use fob_chain::{fetch, light, node, transport, zmq};
-pub use fob_codes::{ndef, pay, qr, receipt, swap, uri};
+pub use fob_codes::{connect, ndef, pay, qr, receipt, swap, uri};
 pub use fob_monero::{address, amount, fiat, network, pattern};
 pub use fob_price as price;
 pub use fob_scanner as scanning;
@@ -40,6 +40,7 @@ pub use error::{FobError, Result};
 pub use keys::SeedKind;
 pub use network::{Network, ZmqStatus};
 pub use wallet::{Activity, Balance, CodePreview, Direction, Prepared, Preview, Retried, SyncListener, SyncStatus, Wallet, preview_wallet_code, restore_point};
+pub use wallet::{Account, AccountPayment, AccountView, Ask, Connected, Granted, Incoming, KeyedRequest, Unexpected};
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()

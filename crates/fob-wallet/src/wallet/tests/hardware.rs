@@ -165,7 +165,7 @@ async fn a_trezor_wallet_s_outputs_wait_for_their_key_images() {
 
     let (block, tx_key) = block_paying(&wallet.inner.keys, 7_000_000_000, 10);
     let hashes = [block.block.hash()];
-    let (scanner, prefilter) = wallet.scanner(10);
+    let (scanner, prefilter) = wallet.scanner(&keyed::Watch::first(10));
     let (results, _) = scan::scan(&scanner, &prefilter, vec![block], &hashes, false);
     let scanned = results.into_iter().next().unwrap().unwrap();
     assert_eq!(scanned.found.len(), 1);
@@ -237,7 +237,7 @@ async fn a_rewind_remembers_what_the_device_said_of_the_coins_it_dropped() {
     wallet.inner.state.lock().await.node = url;
     let (block, _) = block_paying(&wallet.inner.keys, 5_000_000_000, 10);
     let hashes = [block.block.hash()];
-    let (scanner, prefilter) = wallet.scanner(10);
+    let (scanner, prefilter) = wallet.scanner(&keyed::Watch::first(10));
     let scanned = || scan::scan(&scanner, &prefilter, vec![block.clone()], &hashes, false).0.into_iter().next().unwrap().unwrap();
     let find = async |scanned: scan::Scanned| {
         let mut state = wallet.inner.state.lock().await;
@@ -301,7 +301,7 @@ async fn a_pool_spend_from_the_node_is_asked_about_again() {
     wallet.inner.state.lock().await.node = url;
     let (block, _) = block_paying(&wallet.inner.keys, 5_000_000_000, 10);
     let hashes = [block.block.hash()];
-    let (scanner, prefilter) = wallet.scanner(10);
+    let (scanner, prefilter) = wallet.scanner(&keyed::Watch::first(10));
     let (results, _) = scan::scan(&scanner, &prefilter, vec![block], &hashes, false);
     {
         let mut state = wallet.inner.state.lock().await;

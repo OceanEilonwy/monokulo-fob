@@ -4085,3 +4085,85 @@ together.
      `connect::check_vectors(connect::VECTORS)` runs them, in Fob's tests
      and in Till's; the X25519, HKDF and identicon steps were also checked
      against OpenSSL and Python's hashlib when the file was made.
+
+418. **fob-wallet as a library: a receive account, keyed requests on a pool
+     of addresses, amount tags.** For an app that watches a wallet (Till's
+     view-key mode), not for Fob's own screens, whose requests keep a fresh
+     address each in account 0 and no tag.
+     - `set_receive_account(n)` (saved; 0, the default, turns keyed
+       requests off). Scanning watches account 0 as before and, in each
+       other account, as far as it needs: the receive account's pool plus
+       10 (`POOL_MARGIN`), 200 past the highest paid in an account with a
+       label or a payment, and 10 past every keyed request's index. The
+       scanner is kept and grown account by account (`Watch`), and a batch
+       that turns out to need more is scanned again, as account 0's
+       lookahead always was. A light server is told every account's range
+       with `upsert_subaddrs`, and outputs it lists in other accounts are
+       held to the same checks (`light_output_at`).
+     - Every coin keeps its account (`outputs.account`, database version
+       12; files from before are all account 0), and the pool keeps other
+       accounts' parts apart, so another account's index never names one of
+       account 0's requests, notes or shares, and never moves account 0's
+       Receive on. Its payments show in Activity with the account's label.
+     - `request_payment(Ask { key, atomic, expires_at, note })` returns the
+       request made with `key` if there is one (another amount with the
+       same key is refused), else takes the longest-free address of the
+       receive account's pool: indexes 1 to 50 (`POOL_SIZE`) never used
+       come first, then the one whose requests all released earliest, a
+       request releasing its address 24 hours (`LATE_WINDOW`) after it
+       expired or was cancelled; with none free, one index past the
+       highest. Its amount is `atomic + tag`, `tag = SHA3-256("fob amount
+       tag v1" ‖ len(tag id) ‖ tag id ‖ key)` read little-endian, mod 10⁶
+       piconero; the tag id is random, made once per wallet file. The
+       requests live in the `keyed_requests` table.
+     - Matching, per transaction and address (outputs of one transaction to
+       one address count as one): exact when the amount is a request's,
+       the newest made before it came winning a tie; partial when it's no
+       request's, less than asked, and exactly one request was open on the
+       address when it came; otherwise unexpected, flagged as a foreign tag
+       when its last six digits aren't zero and aren't a tag this wallet
+       made. A smaller payment from another wallet sharing the account can
+       still pass as a partial payment of the one request open there: the
+       rules are the proposal's (Till's `docs/view-key-mode.md` §5.3), and
+       the foreign-tag warning is what shows a shared account.
+     - `request_payments(id)` gives each payment in full (`Incoming`:
+       transaction, amount, height or none in the pool, confirmations,
+       double spent, exact). A pool payment to a request's address is
+       remembered after it leaves the pool; not mined within 10 blocks, it's
+       double spent. `unexpected_payments()` lists the rest.
+       `cancel_request(id)` ends one early.
+     - `SyncListener::on_requests(ids)` (empty by default, so Fob's
+       listeners are unchanged) hears which requests' payments changed,
+       confirmations included, after each round of the sync loop and after
+       `catch_up()` (Manual Sync's `FromLast` and then the pool, run in the
+       caller's task, no sync loop needed) and `look_at_pool()`. `listen()`
+       sets the listener without starting the loop.
+     - `restore_watching(path, key, keys, height)` makes a wallet from keys
+       that can't spend, as `Restored::view_only_from_words` gives.
+     - The `usb` feature (Trezor over libusb) stays off unless asked, and
+       `vendored-openssl` (decision 415) can be turned off: Till builds
+       fob-wallet with neither.
+
+419. **Labelled accounts, and Connect to Fob in the wallet.** Accounts
+     besides 0 can have a label (`add_account`, `rename_account`), and
+     `accounts()` lists account 0 and every account labelled, paid or
+     connected, each with its balance (`account_balance`: its coins, its
+     share of the pool; change not yet mined is account 0's) and its
+     payments in (`account_activity`). `next_account()` is past every
+     account labelled, paid, connected, keyed or set to receive in, so two
+     apps connected through one Fob never share an account.
+     `connect_app(request, label, account, wallet name, share node, share
+     prices)` checks the network, makes the account (or gives `account`
+     again on a reconnect, which `connected_before` finds by app and name),
+     remembers the app (`connected_apps`), and seals the grant (decision
+     417) with the tip as restore height, the wallet's id (random, made the
+     first time it's asked), and, when the app asked and the switch is on,
+     the node (with its pin if self-signed) or the light server, and the
+     price provider and currency. `forget_app` drops its line, and the
+     label once no app uses the account; the access stays, as a view key
+     can't be taken back. Not built yet: **Sweep to main** (moving an
+     account's coins to account 0). A payment already spends coins of every
+     account and its change comes back to account 0, so an account's
+     takings reach the main account with the next payment; a sweep of one
+     account alone needs coin selection by account in `prepare`, left for
+     the round that builds Fob's accounts screens.

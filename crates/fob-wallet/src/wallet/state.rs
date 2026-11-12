@@ -13,7 +13,12 @@ pub(super) struct Owned {
     pub(super) height: u64,
     pub(super) time: u64,
     pub(super) amount: u64,
+    /// Its address's index within `account`.
     pub(super) subaddress: u32,
+    /// The account its address is in: 0, Fob's own, unless an account was
+    /// made for an app (decision 419) or a receive account set (418).
+    #[serde(default)]
+    pub(super) account: u32,
     pub(super) coinbase: bool,
     /// Its transaction's unlock time as Monero writes it: a block (a mined
     /// reward's is 60 blocks on), so it can't be spent before the chain has
@@ -244,6 +249,40 @@ pub(super) struct State {
     /// reminds until it is, even if Fob was closed during the backup step.
     #[serde(default)]
     pub(super) backup_pending: bool,
+    /// The account keyed requests take their addresses in, and whose pool
+    /// scanning watches (decision 418): 0, Fob's own, until an app using
+    /// fob-wallet as a library sets one.
+    #[serde(default)]
+    pub(super) receive_account: u32,
+    /// Random, made the first time a keyed request needs it: what this
+    /// wallet's amount tags are made from, so another wallet sharing the
+    /// account makes others.
+    #[serde(default)]
+    pub(super) tag_id: Option<String>,
+    /// Fob's own id for this wallet, random, made the first time an app
+    /// connects: what a reconnect is told by.
+    #[serde(default)]
+    pub(super) wallet_id: Option<String>,
+    /// Accounts besides 0, each with its label (decision 419).
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) accounts: Vec<accounts::Account>,
+    /// Apps given view access through Connect to Fob, each with its account.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) connections: Vec<accounts::Connected>,
+    /// Requests made with an idempotency key, oldest first (decision 418).
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) keyed: Vec<keyed::KeyedRequest>,
+    #[serde(default)]
+    pub(super) keyed_next_id: u64,
+    /// For accounts besides 0, the highest index a light wallet server has
+    /// been told to watch, by account.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub(super) light_accounts_sent: Vec<(u32, u32)>,
+    /// The highest index found paid in each account besides 0, worked out
+    /// from `outputs` when the wallet opens and kept up as coins are found:
+    /// how far scanning watches there.
+    #[serde(skip)]
+    pub(super) found_in: std::collections::BTreeMap<u32, u32>,
 }
 
 /// Where a wallet's syncing comes from, as the wallet file says it.

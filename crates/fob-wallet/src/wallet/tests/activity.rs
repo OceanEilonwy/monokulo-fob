@@ -91,7 +91,7 @@ async fn long_history(path: &Path, rows: u32, contacts: u32, requests: u32) -> W
     drop(state);
     let mut pool = wallet.inner.pool.lock().expect("pool lock");
     for i in 0..5 {
-        pool.insert(hash_of(4, i), Pooled { seen: base + u64::from(rows) * 1_000, parts: vec![(1_000 + i % requests.max(1), XMR / 3)] });
+        pool.insert(hash_of(4, i), Pooled { seen: base + u64::from(rows) * 1_000, parts: vec![(1_000 + i % requests.max(1), XMR / 3)], accounts: vec![] });
     }
     drop(pool);
     wallet
@@ -437,9 +437,9 @@ async fn activity_is_the_same_as_before_for_every_kind_of_row() {
     }
     {
         let mut pool = wallet.inner.pool.lock().expect("pool lock");
-        pool.insert(tx_hex("self-pooled"), Pooled { seen: t + 700, parts: vec![(7, XMR / 3)] });
-        pool.insert(tx_hex("both"), Pooled { seen: t + 700, parts: vec![(2_000, XMR)] });
-        pool.insert(tx_hex("on-its-way"), Pooled { seen: t + 800, parts: vec![(2_000, XMR / 4), (2_002, XMR / 5)] });
+        pool.insert(tx_hex("self-pooled"), Pooled { seen: t + 700, parts: vec![(7, XMR / 3)], accounts: vec![] });
+        pool.insert(tx_hex("both"), Pooled { seen: t + 700, parts: vec![(2_000, XMR)], accounts: vec![] });
+        pool.insert(tx_hex("on-its-way"), Pooled { seen: t + 800, parts: vec![(2_000, XMR / 4), (2_002, XMR / 5)], accounts: vec![] });
     }
     same_as_before(&wallet, "as it is").await;
     // Nothing changed: the same rows, shared.
@@ -479,7 +479,7 @@ async fn a_version_10_database_opens_with_the_same_activity() {
     assert!(before.iter().any(|r| r.receipt.is_some()));
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
-    old.execute_batch(&format!("PRAGMA key = \"x'{}'\"; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;", hex::encode([1u8; 32]))).unwrap();
+    old.execute_batch(&format!("PRAGMA key = \"x'{}'\"; {BACK_TO_VERSION_11} ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;", hex::encode([1u8; 32]))).unwrap();
     drop(old);
     let upgraded = Wallet::open(&path, [1; 32]).unwrap();
     assert_eq!(canonical(upgraded.activity().await.to_vec()), before);

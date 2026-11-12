@@ -106,6 +106,13 @@ pub fn screen(e: &ScreenError) -> String {
             format!("not enough unlocked money: {} available, {} needed", amount::format(*available), amount::format(*needed))
         }
         ScreenError::NoSuchPayment => "that payment was already sent or has expired".into(),
+        ScreenError::NoReceiveAccount => "set an account to receive in first".into(),
+        ScreenError::RequestNeedsAmount => "a request needs an amount".into(),
+        ScreenError::RequestKeyTaken => "that request was already made for another amount".into(),
+        ScreenError::NoSuchRequest => "there's no such request".into(),
+        ScreenError::NoSuchAccount => "there's no such account".into(),
+        ScreenError::AccountLabelEmpty => "An account needs a name.".into(),
+        ScreenError::AccountLabelTooLong { max } => format!("An account's name can be up to {max} characters."),
         ScreenError::Code(e) => code(e),
         ScreenError::Monero(e) => monero(*e),
     }

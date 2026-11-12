@@ -277,7 +277,11 @@ pub(super) fn build(state: &State, pool: &HashMap<String, Pooled>) -> Vec<Activi
         });
         let row = &mut rows[at];
         row.amount = row.amount.saturating_add(output.amount);
-        add_part(&mut row.parts, output.subaddress, output.amount);
+        // Another account's index names none of account 0's requests,
+        // notes or shares.
+        if output.account == 0 {
+            add_part(&mut row.parts, output.subaddress, output.amount);
+        }
     }
     // Those still in the pool, in the order of their hashes so the same
     // pool is the same rows.
@@ -295,7 +299,7 @@ pub(super) fn build(state: &State, pool: &HashMap<String, Pooled>) -> Vec<Activi
                 let outputs = own_of(&row.tx);
                 row.pieces = outputs.iter().map(|o| o.amount).collect();
                 row.needed = outputs.iter().map(|o| state.needed(o)).max().unwrap_or(UNLOCK);
-                row.subaddress = row.subaddress.or(outputs.first().map(|o| o.subaddress));
+                row.subaddress = row.subaddress.or(outputs.iter().find(|o| o.account == 0).map(|o| o.subaddress));
                 // A request's address: its note, and who it was for.
                 match row.subaddress.and_then(|s| request_at.get(&s)) {
                     Some(request) => {
@@ -303,6 +307,10 @@ pub(super) fn build(state: &State, pool: &HashMap<String, Pooled>) -> Vec<Activi
                         let payer = request.payer(&row.tx, row.time).and_then(|id| contact_by_id.get(&id));
                         row.contact = payer.map(|c| c.name.clone());
                         row.contact_id = payer.map(|c| c.id);
+                    }
+                    // Money to an account made for an app: its label.
+                    None if row.subaddress.is_none() => {
+                        row.note = outputs.first().and_then(|o| state.accounts.iter().find(|a| a.index == o.account)).map(|a| a.label.clone());
                     }
                     None => row.note = row.subaddress.and_then(|s| state.notes.get(&s)).cloned(),
                 }

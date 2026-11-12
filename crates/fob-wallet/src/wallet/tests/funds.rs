@@ -10,6 +10,7 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
         time: 1_000 + height,
         amount,
         subaddress: 0,
+        account: 0,
         coinbase,
         unlock_block: if coinbase { height + 60 } else { 0 },
         key: tx.into(),
