@@ -292,8 +292,12 @@ struct Inner {
     /// byte count and certificate, read by each sync report without
     /// waiting on `rpc`, which a connection being made holds.
     link: std::sync::Mutex<Option<(node::Setting, Transport)>>,
-    /// Blocks being fetched ahead of the scanner.
+    /// Blocks being fetched ahead of the scanner. A sync step takes it out
+    /// while it waits on the node, so nothing waits on this lock for that.
     pipeline: Mutex<Option<Pipeline>>,
+    /// Bumped by each [`reset_pipeline`](Wallet::reset_pipeline): a sync
+    /// step doesn't put back a pipeline reset while it had it out.
+    pipeline_resets: AtomicU64,
     /// The scanner, with how far it watches: 200 addresses are slow to work
     /// out again for every batch.
     scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scanner::Prefilter>)>>,

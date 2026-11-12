@@ -184,12 +184,16 @@ impl Wallet {
             Batch::of(rpc.contiguous_scannable_blocks(0..=0).await.map_err(node_err)?)
         } else {
             // Keep fetching ahead while this step scans: reuse the pipeline
-            // if it's where the wallet is, else start one to the tip.
-            let mut pipeline = self.inner.pipeline.lock().await;
-            if pipeline.as_ref().is_none_or(|p| p.next != start || p.next > p.end) {
-                *pipeline = Some(Pipeline::start(transport.clone(), adaptive.clone(), start, tip - 1));
-            }
-            let running = pipeline.as_mut().expect("just started");
+            // if it's where the wallet is, else start one to the tip. Taken
+            // out while it waits, so a rewind needn't wait on the node too.
+            let (mut running, resets) = {
+                let mut pipeline = self.inner.pipeline.lock().await;
+                let running = match pipeline.take() {
+                    Some(p) if p.next == start && p.next <= p.end => p,
+                    _ => Pipeline::start(transport.clone(), adaptive.clone(), start, tip - 1),
+                };
+                (running, self.inner.pipeline_resets.load(Ordering::Relaxed))
+            };
             // A slow node can keep this waiting for minutes, each request
             // retried several times: the app hears how long.
             let asked = Instant::now();
@@ -204,16 +208,17 @@ impl Wallet {
             };
             self.set_status(|s| s.waiting_seconds = 0);
             match batch {
-                Ok(batch) if !batch.blocks.is_empty() => batch,
-                Ok(_) => {
-                    // Ran out before the tip moved on: start again next step.
-                    *pipeline = None;
-                    return Ok(true);
+                Ok(batch) if !batch.blocks.is_empty() => {
+                    // Back for the next step, unless reset meanwhile (a rewind, say).
+                    let mut pipeline = self.inner.pipeline.lock().await;
+                    if self.inner.pipeline_resets.load(Ordering::Relaxed) == resets {
+                        *pipeline = Some(running);
+                    }
+                    batch
                 }
-                Err(e) => {
-                    *pipeline = None;
-                    return Err(node_err(e));
-                }
+                // Ran out before the tip moved on: start again next step.
+                Ok(_) => return Ok(true),
+                Err(e) => return Err(node_err(e)),
             }
         };
         // A reorganisation shows as a first block that doesn't follow the last
@@ -221,7 +226,7 @@ impl Wallet {
         if let (Some((_, hash)), Some(first)) = (&recent, blocks.first())
             && hex::encode(first.block.header.previous) != *hash
         {
-            *self.inner.pipeline.lock().await = None;
+            self.reset_pipeline().await;
             self.on_reorg(&rpc).await?;
             return Ok(true);
         }
@@ -278,7 +283,7 @@ impl Wallet {
             drop(state);
         }
         if watch_further {
-            *self.inner.pipeline.lock().await = None;
+            self.reset_pipeline().await;
         }
         self.refresh_status().await;
         Ok(more)
@@ -475,8 +480,17 @@ impl Wallet {
         // A pool payment's coins just freed above are marked again by the
         // next look at the pool, which looks at every transaction afresh.
         self.inner.pool_seen.lock().expect("pool lock").clear();
-        *self.inner.pipeline.lock().await = None;
-        self.save_state(&state)
+        let saved = self.save_releasing(state);
+        // The state let go first: nothing waits on it while this waits.
+        self.reset_pipeline().await;
+        saved
+    }
+
+    /// Drops the blocks being fetched ahead, those a sync step has out included.
+    pub(super) async fn reset_pipeline(&self) {
+        let mut pipeline = self.inner.pipeline.lock().await;
+        self.inner.pipeline_resets.fetch_add(1, Ordering::Relaxed);
+        *pipeline = None;
     }
 
     /// Tells `listener` where syncing is, measuring this catch-up's `pace`
@@ -808,7 +822,6 @@ impl Wallet {
     /// (contacts, notes, what was sent), and comes back with what's on the chain.
     pub async fn scan_again(&self) -> Result<()> {
         let start = self.inner.state.lock().await.restore_height.unwrap_or(0);
-        *self.inner.pipeline.lock().await = None;
         self.rewind(start, None).await?;
         self.ask_to_scan(ScanTitle::WholeWallet, start).await;
         self.sync_now().await;

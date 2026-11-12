@@ -82,6 +82,7 @@ impl Wallet {
                 rpc: Mutex::new(None),
                 link: std::sync::Mutex::new(None),
                 pipeline: Mutex::new(None),
+                pipeline_resets: AtomicU64::new(0),
                 scanner: std::sync::Mutex::new(None),
                 gpu_checked: AtomicBool::new(false),
                 quiet_checked: std::sync::Mutex::new(None),

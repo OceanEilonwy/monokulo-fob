@@ -162,7 +162,6 @@ impl Wallet {
             }
             ScanRequest::FromLast => {
                 // What pulls found past Last scan is put right as this passes it.
-                *self.inner.pipeline.lock().await = None;
                 self.rewind(next_block, newest_hash).await?;
                 self.ask_to_scan(ScanTitle::FromLast, next_block).await;
                 return Ok(None);
@@ -180,7 +179,6 @@ impl Wallet {
         };
         match manual::scan_plan(from, to, next_block, tip) {
             ScanPlan::Rewind(from) => {
-                *self.inner.pipeline.lock().await = None;
                 self.rewind(from, None).await?;
                 self.inner.state.lock().await.lower_start(from);
                 self.ask_to_scan(title, from).await;
