@@ -14,6 +14,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import uniffi.fob.ConnectAnswer
+import uniffi.fob.ConnectWallet
 import android.text.format.DateFormat
 import com.monokulo.fob.ui.PriceToastState
 import com.monokulo.fob.ui.ThemeChoice
@@ -1186,12 +1191,78 @@ class WalletModel(private val app: Application) {
         scope.launch { wallet.cancel(prepared.id) }
     }
 
+    // Connect to Fob (decision 422): the screens' calls, each wallet's apps kept in the sealed list after a change.
+
+    /** The wallets an app on [network] can be connected to, none of them opened. */
+    suspend fun connectWallets(network: Network): List<ConnectWallet> {
+        val book = book()
+        return withContext(Dispatchers.IO) { book.connectWallets(network) }
+    }
+
+    /**
+     * Wallet [file], open: the one open already, or opened in its place (moving network with it) as Wallets'
+     * switch does. Throws why it couldn't open.
+     */
+    suspend fun openWallet(file: String): FobWallet {
+        _wallet.value?.let { if (_current.value?.file == file) return it }
+        listChanged(book())
+        _openError.value = null
+        switchWallet(file)
+        val (wallet, problem) = withTimeout(OPEN_WAIT_MS) {
+            combine(_wallet, _current, _openError) { wallet, current, problem -> Triple(wallet, current, problem) }
+                .first { (wallet, current, problem) -> problem != null || (wallet != null && current?.file == file) }
+        }.let { (wallet, _, problem) -> wallet to problem }
+        if (problem != null || wallet == null) throw IllegalStateException(problem ?: "Fob couldn't open that wallet.")
+        return wallet
+    }
+
+    /** A new wallet named [name] on [network], made as Welcome's Create makes one and opened in place of any open. */
+    suspend fun createOn(network: Network, name: String) {
+        checkWalletName(name)
+        if (network != _network.value) {
+            closeOpen()
+            moveTo(network)
+        }
+        pendingName = name
+        create()
+    }
+
+    /**
+     * Give access, in the wallet open: makes [label]'s account (or gives [account] again, on a reconnect) and seals
+     * the answer for request [text]; the sealed list then notes the wallet's apps.
+     */
+    suspend fun connectApp(text: String, label: String, account: UInt?, shareNode: Boolean, sharePrices: Boolean): ConnectAnswer {
+        val wallet = requireNotNull(_wallet.value)
+        val entry = requireNotNull(_current.value)
+        val answer = wallet.connectApp(text, label, account, entry.name, shareNode, sharePrices)
+        noteConnections(entry.file, wallet)
+        return answer
+    }
+
+    /** Forget: the app's line and, once no app uses it, its account's name. Its view access stays. */
+    suspend fun forgetApp(id: ULong) {
+        val wallet = requireNotNull(_wallet.value)
+        val entry = requireNotNull(_current.value)
+        wallet.forgetApp(id)
+        noteConnections(entry.file, wallet)
+    }
+
+    private suspend fun noteConnections(file: String, wallet: FobWallet) {
+        val book = book()
+        runCatching { book.noteConnections(file, wallet) }
+        listChanged(book)
+    }
+
+    /** Sweep to main: account [index]'s coins ready to spend, paid to the main address, for Confirm. */
+    suspend fun prepareSweep(index: UInt): Prepared = requireNotNull(_wallet.value).prepareSweep(index)
 
     private companion object {
         /** About a day of blocks. */
         const val FAR_BEHIND = 720u
         /** The least time the price toast says "Trying again…". */
         const val RETRY_SHOWN_MS = 800L
+        /** The longest Connect to Fob waits for a chosen wallet to open. */
+        const val OPEN_WAIT_MS = 60_000L
     }
 }
 

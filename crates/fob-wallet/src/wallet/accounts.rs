@@ -74,6 +74,16 @@ pub struct Granted {
     pub label: String,
 }
 
+/// What Give access can share besides the view key, for the consent
+/// screen's switches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shares {
+    /// The node's address, or the light server's when syncing through one.
+    pub node: Option<String>,
+    /// The price provider's name and the currency's code.
+    pub prices: Option<(String, String)>,
+}
+
 fn clean_label(label: &str) -> Result<String> {
     let label = label.trim();
     if label.is_empty() {
@@ -274,6 +284,17 @@ impl Wallet {
     pub async fn connected_before(&self, request: &connect::Request) -> Option<Connected> {
         let state = self.inner.state.lock().await;
         state.connections.iter().rev().find(|c| c.app == request.app && c.name == request.name).cloned()
+    }
+
+    /// What the consent screen's switches would share, as
+    /// [`connect_app`](Wallet::connect_app) shares it: the node's or light
+    /// server's address, and the price provider's name and currency (none
+    /// without a currency, as nothing is shared then).
+    pub async fn connect_shares(&self) -> Shares {
+        let state = self.inner.state.lock().await;
+        let node = if state.sync_mode == SyncMode::Light { state.light_url.clone() } else { Some(state.node.clone()).filter(|n| !n.is_empty()) };
+        let prices = state.prices.currency.clone().map(|currency| (state.prices.provider.name().to_owned(), currency));
+        Shares { node, prices }
     }
 
     /// Says yes to `request`: makes the account (or, with `account`, gives

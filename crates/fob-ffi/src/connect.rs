@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use fob_wallet::{amount, connect};
+use fob_wallet::{amount, connect, words::connect as w};
 
 use crate::{FobError, FobWallet, Network, QrCode, Result, WalletList};
 
@@ -275,6 +275,181 @@ impl FobWallet {
         let qr = connect::answer_qr(&granted.answer).map_err(invalid)?;
         Ok(ConnectAnswer { qr: QrCode { size: qr.size, dark: qr.dark }, open_link: request.callback.is_some(), answer: granted.answer, account: granted.account, label: granted.label })
     }
+
+    /// What the consent screen's switches would share, each as its line
+    /// ("node.example.com:18089", "Kraken · AUD"); none hides its switch.
+    pub async fn connect_shares(&self) -> ConnectShares {
+        let shares = self.inner.connect_shares().await;
+        ConnectShares {
+            node: shares.node.as_deref().map(w::node_line),
+            prices: shares.prices.as_ref().map(|(provider, currency)| w::prices_line(provider, currency)),
+        }
+    }
+}
+
+/// The consent screen's switch lines.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectShares {
+    pub node: Option<String>,
+    pub prices: Option<String>,
+}
+
+/// The words of the connect screens for a request from `app` on `device`
+/// (fob-words' `connect`).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectWords {
+    pub title: String,
+    pub choose: String,
+    pub new_wallet: String,
+    pub new_account: String,
+    pub connected_apps: String,
+    /// How many connected apps the chosen wallet names before "and N more".
+    pub apps_shown: u32,
+    pub go_on: String,
+    pub not_now: String,
+    pub device_line: String,
+    pub new_wallet_title: String,
+    pub wallet_name: String,
+    pub why_write: String,
+    pub show_words: String,
+    pub written: String,
+    pub make_wallet: String,
+    pub give_access: String,
+    /// "Till on Pixel 8 gets its own account in " **wallet** ".".
+    pub gets_before: String,
+    pub gets_after: String,
+    pub account_name: String,
+    pub can_see: String,
+    pub cant_spend: String,
+    pub wallet_wide: String,
+    pub share_node: String,
+    pub share_prices: String,
+    pub use_again: String,
+    pub give: String,
+    pub from_device: String,
+    pub from_code: String,
+    pub same_pattern: String,
+    pub different: String,
+    pub they_match: String,
+    pub no_match: String,
+    pub show_this: String,
+    pub show_how: String,
+    pub for_pattern: String,
+    pub done: String,
+}
+
+#[uniffi::export]
+pub fn connect_words(app: String, device: String) -> ConnectWords {
+    let (gets_before, gets_after) = w::gets_account(&app, &device);
+    ConnectWords {
+        title: w::title(&app),
+        choose: w::choose(&app),
+        new_wallet: w::NEW_WALLET.into(),
+        new_account: w::NEW_ACCOUNT.into(),
+        connected_apps: w::CONNECTED_APPS.into(),
+        apps_shown: w::APPS_SHOWN as u32,
+        go_on: w::CONTINUE.into(),
+        not_now: w::NOT_NOW.into(),
+        device_line: w::device_line(&device),
+        new_wallet_title: w::NEW_WALLET_TITLE.into(),
+        wallet_name: w::WALLET_NAME.into(),
+        why_write: w::why_write(&app),
+        show_words: w::SHOW_WORDS.into(),
+        written: w::WRITTEN.into(),
+        make_wallet: w::MAKE_WALLET.into(),
+        give_access: w::give_access(&app),
+        gets_before,
+        gets_after,
+        account_name: w::ACCOUNT_NAME.into(),
+        can_see: w::can_see(&app),
+        cant_spend: w::cant_spend(&app),
+        wallet_wide: w::wallet_wide(&app),
+        share_node: w::SHARE_NODE.into(),
+        share_prices: w::SHARE_PRICES.into(),
+        use_again: w::USE_AGAIN.into(),
+        give: w::GIVE.into(),
+        from_device: w::from_device(&app, &device),
+        from_code: w::FROM_CODE.into(),
+        same_pattern: w::same_pattern(&device),
+        different: w::different(&device),
+        they_match: w::MATCH.into(),
+        no_match: w::NO_MATCH.into(),
+        show_this: w::show_this(&device),
+        show_how: w::show_how(&device),
+        for_pattern: w::for_pattern(&device),
+        done: w::DONE.into(),
+    }
+}
+
+/// "12 connected" under a wallet's name; none for no apps.
+#[uniffi::export]
+pub fn connect_count(n: u32) -> Option<String> {
+    w::connected(n as usize)
+}
+
+/// "and 9 more".
+#[uniffi::export]
+pub fn connect_more(n: u32) -> String {
+    w::more(n as usize)
+}
+
+/// "Account 13 · Till (Corner Café)".
+#[uniffi::export]
+pub fn connect_new_account(account: u32, label: String) -> String {
+    w::new_account(account, &label)
+}
+
+/// "Write down its 16 words first".
+#[uniffi::export]
+pub fn connect_write_down(words: u32) -> String {
+    w::write_down(words as usize)
+}
+
+/// Settings › Connected apps, in words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectedAppsWords {
+    pub title: String,
+    pub intro: String,
+    pub none: String,
+    pub sweep: String,
+    pub forget: String,
+    pub cancel: String,
+}
+
+#[uniffi::export]
+pub fn connected_apps_words() -> ConnectedAppsWords {
+    ConnectedAppsWords {
+        title: w::APPS_TITLE.into(),
+        intro: w::APPS_INTRO.into(),
+        none: w::NO_APPS.into(),
+        sweep: w::SWEEP.into(),
+        forget: w::FORGET.into(),
+        cancel: w::CANCEL.into(),
+    }
+}
+
+/// Settings' row: "Till (Corner Café)", "3 apps", "None".
+#[uniffi::export]
+pub fn connected_apps_row(n: u32, first: Option<String>) -> String {
+    w::apps_row(n as usize, first.as_deref())
+}
+
+/// "Corner Café iPad · connected 12 Nov", the date as the app writes it.
+#[uniffi::export]
+pub fn connected_app_line(device: String, date: String) -> String {
+    w::app_line(&device, &date)
+}
+
+/// "Account 2 · 0.31 XMR".
+#[uniffi::export]
+pub fn connected_account_line(account: u32, total: String) -> String {
+    w::account_line(account, &total)
+}
+
+/// Forget's dialog: its title and what it says.
+#[uniffi::export]
+pub fn connected_forget(label: String, app: String) -> Vec<String> {
+    vec![w::forget_title(&label), w::forget_text(&app)]
 }
 
 #[cfg(test)]
@@ -293,5 +468,17 @@ mod tests {
         assert!(read.identicon.ink.starts_with('#'));
         assert_eq!(asker.open(&connect_declined(text).unwrap()), Ok(connect::Answer::Declined));
         assert!(matches!(connect_request("monero:4abc".into()), Err(FobError::Invalid { .. })));
+    }
+
+    #[test]
+    fn the_screens_words_name_the_app_and_the_other_device() {
+        let words = connect_words("Till".into(), "Corner Café iPad".into());
+        assert_eq!(words.choose, "Choose a wallet for Till");
+        assert_eq!(words.same_pattern, "Does the iPad show this pattern?");
+        assert_eq!(words.gets_before, "Till on Corner Café iPad gets its own account in ");
+        assert_eq!(words.apps_shown, 3);
+        assert_eq!(connect_count(0), None);
+        assert_eq!(connect_new_account(13, "Till (Corner Café)".into()), "Account 13 · Till (Corner Café)");
+        assert_eq!(connected_forget("Till (Corner Café)".into(), "Till".into()).len(), 2);
     }
 }

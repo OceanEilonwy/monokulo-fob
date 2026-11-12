@@ -190,6 +190,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     val balance by model.balance.collectAsState()
     val prices by model.prices.collectAsState()
     val clipboard = LocalClipboard.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     // The node is asked what a payment needs while the form is filled, not after Review is pressed.
     LaunchedEffect(wallet) { wallet?.warmUpSend() }
@@ -286,6 +287,12 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
      */
     fun take(text: String, asProfile: Boolean = true) {
         if (busy) return
+        // Another device asking to connect (Connect to Fob's two-device way): its own screens, the pattern first.
+        if (uniffi.fob.isConnectRequest(text)) {
+            notice = null
+            com.monokulo.fob.ConnectActivity.openScanned(context, text)
+            return
+        }
         fun fill(address: String, says: String, code: ScannedCode) {
             notice = null
             error = null
@@ -320,7 +327,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
     fun read(text: String) {
         if (busy || text == lastRead) return
         lastRead = text
-        if (open && to.isNotBlank() && !isProfileCode(network, text)) {
+        if (open && to.isNotBlank() && !isProfileCode(network, text) && !uniffi.fob.isConnectRequest(text)) {
             codeAsksFirst(network, to, text)?.let { pending = text to it }
             return
         }

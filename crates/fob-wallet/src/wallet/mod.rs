@@ -21,7 +21,7 @@ mod tests;
 mod tracked;
 
 pub use crate::activity::{Activity, Direction};
-pub use accounts::{Account, AccountPayment, AccountView, Connected, Granted, MAX_LABEL};
+pub use accounts::{Account, AccountPayment, AccountView, Connected, Granted, Shares, MAX_LABEL};
 pub use keyed::{Ask, Incoming, KeyedRequest, LATE_WINDOW, POOL_SIZE, TAG_MODULUS, Unexpected, tag_for};
 pub use crate::catch_up::{ScanProgress, SyncStatus};
 #[cfg(test)]

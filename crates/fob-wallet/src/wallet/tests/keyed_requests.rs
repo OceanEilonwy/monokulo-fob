@@ -229,6 +229,10 @@ async fn connect_to_fob_makes_an_account_and_hands_over_the_view_key() {
     let asker = Asker::new("Till", "Corner Café", "Corner Café iPad", Network::Stagenet, Want { node: true, prices: true }, None).unwrap();
     let request = connect::Request::parse(&asker.request().to_uri()).unwrap();
     assert_eq!(wallet.connected_before(&request).await, None);
+    // The consent screen's switches show what would be shared.
+    let shares = wallet.connect_shares().await;
+    assert_eq!(shares.node.as_deref(), Some("https://node.example:38081"));
+    assert_eq!(shares.prices.as_ref().map(|(_, currency)| currency.as_str()), Some("AUD"));
     let granted = wallet.connect_app(&request, &request.label(), None, "Corner Café", true, true).await.unwrap();
     assert_eq!((granted.account, granted.label.as_str()), (1, "Till (Corner Café)"));
     let Answer::Granted(grant) = asker.open(&granted.answer).unwrap() else { panic!("granted") };

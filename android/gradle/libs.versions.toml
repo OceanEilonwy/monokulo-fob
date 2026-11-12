@@ -16,6 +16,9 @@ biometric = "1.1.0"
 # codes Compose's permission launcher uses: asking for the camera crashed.
 fragment = "1.8.9"
 junit = "4.13.2"
+# The screenshot test's (androidTest only), as Monokular's.
+test-runner = "1.7.0"
+espresso = "3.7.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
@@ -36,6 +39,10 @@ camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax"
 lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 junit = { module = "junit:junit", version.ref = "junit" }
+compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "test-runner" }
+androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "espresso" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
