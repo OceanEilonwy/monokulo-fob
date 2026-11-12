@@ -3938,6 +3938,26 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
 408. **Payments cross the FFI typed.** A scanned code is parsed once into a
      `ScannedCode` object that the form and confirm keep, and `prepare` and
      `preview` take a `TypedAmount` (`Xmr` or `Fiat`) instead of text and
+     an `in_fiat` flag. `amount_entry`, `receive_code` and `make_request`
+     still take the flag.
+
+409. **The `Scanner` reads only the transactions the prefilter flags.**
+     `Scanner::scan` takes a block by value, so a flagged block was copied
+     whole. monokulo-8ar's `Prefilter::flag_txs` now names the transactions
+     in a block that may pay (or `Txs::All` for one it can't vouch for), and
+     `look_for_money` copies only those. The miner transaction is copied only
+     if it is flagged, and otherwise becomes one with no outputs. The
+     `Scanner` numbers each RingCT output from the block's first index plus
+     every RingCT output before it, so the transactions left out before the
+     first one kept move that index on. Those left out between two kept ones
+     become one stand-in v2 transaction with as many outputs and no extra,
+     which the `Scanner` passes over. Tests hold the outputs and global
+     indexes found to those found reading the whole block. Unfiltered (no
+     GPU, or too few keys), the block is still copied whole. On 200 mainnet
+     blocks from 3,797,000 (40 transactions each), the copy went from 29 µs
+     to 0.45 µs a block with one transaction flagged. A `Scanner` that
+     borrowed the block would need no copy at all (issue #41).
+
      an `in_fiat` flag. Decision 410 takes the flag out of the rest.
 
 410. **An amount's unit is a type all the way down** (finishes 408).
