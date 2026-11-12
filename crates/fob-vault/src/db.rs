@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 10;
+const VERSION: i32 = 11;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -146,6 +146,9 @@ const SENT: Table = Table {
         ("released", Bool),
         // Since version 6.
         ("signed", Text),
+        // Since version 11: the receipt as Activity shows it, read once when
+        // the payment was recorded (the wallet's `ReceiptView`, as JSON).
+        ("receipt_view", Json),
     ],
 };
 const NOTES: Table = Table { name: "notes", columns: &[("subaddress", Int), ("note", Text)] };
@@ -193,6 +196,12 @@ const SHARES: Table = Table {
 const CUSTOM_NODES: Table = Table { name: "custom_nodes", columns: &[("url", Text), ("self_signed", Bool)] };
 
 const TABLES: [&Table; 14] = [&WALLET, &RECENT, &OUTPUTS, &SPENDS, &SENT, &NOTES, &PRICE_CURRENT, &PRICE_HISTORY, &PRICE_RECORDS, &CONTACTS, &REQUESTS, &PROFILE, &SHARES, &CUSTOM_NODES];
+
+/// What reads a payment's ORF receipt JSON into the view Activity shows,
+/// as JSON: `None` for one that doesn't read. The database doesn't read
+/// receipts itself; the wallet hands this over for the upgrade to version
+/// 11, which fills `sent.receipt_view` from `sent.receipt`.
+pub type ReceiptViewer = fn(&str) -> Option<String>;
 
 /// A coin's state as version 10 keeps it in `coin`, from what version 9
 /// kept of it: the key image in hex, if any, and `spent_in`. Nothing in
@@ -545,8 +554,9 @@ impl Db {
     }
 
     /// The database at `path`, brought up to this layout, refusing one with the
-    /// wrong key or from a newer Fob.
-    pub fn open(path: &Path, key: &[u8; 32]) -> Result<Db> {
+    /// wrong key or from a newer Fob. `viewer` reads a receipt, for the
+    /// upgrade to version 11.
+    pub fn open(path: &Path, key: &[u8; 32], viewer: ReceiptViewer) -> Result<Db> {
         let mut connection = Self::connect(path, key)?;
         let mut version: i32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(failed)?;
         if version == 1 {
@@ -624,6 +634,26 @@ impl Db {
             upgrade.execute_batch("PRAGMA user_version = 10;").map_err(failed)?;
             upgrade.commit().map_err(failed)?;
             version = 10;
+        }
+        if version == 10 {
+            // Each payment's receipt as Activity shows it, read once here and
+            // never again (decision 411). One transaction: a crash leaves
+            // version 10 whole, to do again on the next open.
+            let upgrade = connection.transaction().map_err(failed)?;
+            upgrade.execute_batch("ALTER TABLE sent ADD COLUMN receipt_view TEXT;").map_err(failed)?;
+            let receipts: Vec<(i64, String)> = {
+                let mut statement = upgrade.prepare("SELECT pos, receipt FROM sent WHERE receipt IS NOT NULL").map_err(failed)?;
+                let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(failed)?;
+                rows.collect::<std::result::Result<_, _>>().map_err(failed)?
+            };
+            for (pos, receipt) in receipts {
+                if let Some(view) = viewer(&receipt) {
+                    upgrade.execute("UPDATE sent SET receipt_view = ?1 WHERE pos = ?2", rusqlite::params![view, pos]).map_err(failed)?;
+                }
+            }
+            upgrade.execute_batch("PRAGMA user_version = 11;").map_err(failed)?;
+            upgrade.commit().map_err(failed)?;
+            version = 11;
         }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));
@@ -740,6 +770,45 @@ mod tests {
         hex::encode(bytes)
     }
 
+    fn no_receipts(_: &str) -> Option<String> {
+        None
+    }
+
+    /// Version 10 had no receipt views: opening it as version 11 reads each
+    /// payment's receipt into one, leaves a payment without a receipt (or
+    /// with one that doesn't read) without, and is done once.
+    #[test]
+    fn a_version_10_file_opens_with_each_receipt_read() {
+        let dir = std::env::temp_dir().join(format!("fob-db-v10-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.db");
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
+        let connection = db.connection;
+        connection.execute_batch("ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;").unwrap();
+        connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
+        for (pos, receipt) in [(0, Some("good")), (1, None), (2, Some("bad"))] {
+            connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time, receipt) VALUES (?1, ?2, 1, 1, 0, 1, ?3)", rusqlite::params![pos, hash(&format!("p{pos}")), receipt]).unwrap();
+        }
+        connection.close().unwrap();
+        fn viewer(receipt: &str) -> Option<String> {
+            (receipt == "good").then(|| r#"{"merchant":"Corner Café"}"#.to_owned())
+        }
+        let reopened = Db::open(&path, &[7; 32], viewer).unwrap();
+        let version: i32 = reopened.connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 11);
+        let state = reopened.load().unwrap();
+        let views: Vec<&Value> = state["sent"].as_array().unwrap().iter().map(|s| &s["receipt_view"]).collect();
+        assert_eq!(views, [&json!({"merchant": "Corner Café"}), &Value::Null, &Value::Null]);
+        // Opening it again is no upgrade: the viewer isn't asked.
+        reopened.close().unwrap();
+        fn never(_: &str) -> Option<String> {
+            panic!("asked again")
+        }
+        Db::open(&path, &[7; 32], never).unwrap().close().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Version 9 kept a coin's state in `key_image` and `spent_in`: nothing,
     /// a hash (on the chain, a payment of ours, or the pool, told apart by
     /// the other tables), one of two words for a device sync's finding.
@@ -753,7 +822,7 @@ mod tests {
         let keys = Keys::generate(Network::Stagenet).keys;
         let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
         let connection = db.connection;
-        connection.execute_batch("ALTER TABLE outputs DROP COLUMN coin; PRAGMA user_version = 9;").unwrap();
+        connection.execute_batch("ALTER TABLE outputs DROP COLUMN coin; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 9;").unwrap();
         connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
         connection.execute("INSERT INTO spends (pos, tx, height, time, fee) VALUES (0, ?1, 42, 1, 1)", [hash("spend")]).unwrap();
         connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time) VALUES (0, ?1, 1, 1, 0, 1)", [hash("ours")]).unwrap();
@@ -774,9 +843,9 @@ mod tests {
         }
         connection.close().unwrap();
 
-        let reopened = Db::open(&path, &[7; 32]).unwrap();
+        let reopened = Db::open(&path, &[7; 32], no_receipts).unwrap();
         let version: i32 = reopened.connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, VERSION);
         let state = reopened.load().unwrap();
         let coins: Vec<&Value> = state["outputs"].as_array().unwrap().iter().map(|o| &o["coin"]).collect();
         let known = json!({ "Known": image });
@@ -794,7 +863,7 @@ mod tests {
         }
         // Opening it again is no upgrade.
         reopened.close().unwrap();
-        Db::open(&path, &[7; 32]).unwrap().close().unwrap();
+        Db::open(&path, &[7; 32], no_receipts).unwrap().close().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

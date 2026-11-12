@@ -71,6 +71,19 @@ pub struct Request {
     pub name: Option<String>,
 }
 
+impl Request {
+    /// The contact payment `tx` to this request's address (at `time`) is
+    /// from: the one it was for, unless it was deleted before it came.
+    pub fn payer(&self, tx: &str, time: u64) -> Option<u64> {
+        let before_delete = match (&self.deleted, &self.paid_before_delete) {
+            (None, _) => true,
+            (Some(_), Some(paid)) => paid.iter().any(|t| t == tx),
+            (Some(deleted), None) => time <= *deleted,
+        };
+        self.contact.filter(|_| before_delete)
+    }
+}
+
 /// A request about to be made.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
@@ -113,12 +126,12 @@ impl Book {
     /// one its request was for, unless the request was deleted before it
     /// came.
     pub fn payer(&self, subaddress: u32, tx: &str, time: u64) -> Option<u64> {
-        let before_delete = |r: &&Request| match (&r.deleted, &r.paid_before_delete) {
-            (None, _) => true,
-            (Some(_), Some(paid)) => paid.iter().any(|t| t == tx),
-            (Some(deleted), None) => time <= *deleted,
-        };
-        self.at(subaddress).filter(before_delete).and_then(|r| r.contact)
+        self.at(subaddress)?.payer(tx, time)
+    }
+
+    /// Every request, deleted or not, oldest first.
+    pub fn all(&self) -> &[Request] {
+        &self.requests
     }
 
     /// The newest request, when it's what `draft` would make again (the
@@ -439,7 +452,6 @@ mod tests {
             confirmations: 3,
             needed: UNLOCK,
             receipt: None,
-            receipt_json: None,
             price: price.map(|p| Record { currency: "USD".into(), price: p, provider: "Kraken".into(), at: time, daily: false }),
             subaddress: Some(subaddress),
             pieces: vec![amount],

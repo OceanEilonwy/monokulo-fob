@@ -298,7 +298,6 @@ mod tests {
             confirmations,
             needed: UNLOCK,
             receipt: None,
-            receipt_json: None,
             price: None,
             subaddress: None,
             pieces: vec![],
@@ -366,14 +365,14 @@ mod tests {
     fn lines_read_like_the_designs() {
         let at = |h: u64, m: u64| NOW - 12 * HOUR + h * HOUR + m * 60;
         let mut paid = activity(Direction::Out, 142_100_000_000, at(9, 12), 20);
-        paid.receipt = Some(receipt(3));
+        paid.receipt = Some(std::sync::Arc::new(receipt(3)));
         let mut sent = activity(Direction::Out, 500_000_000_000, at(10, 15), 20);
         sent.to = Some("86Ux3m9Pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7kQa".into());
         let arriving = activity(Direction::In, 653_000_000_000, at(8, 40), 3);
         let mut on_the_way = activity(Direction::In, 1_000_000_000_000, at(11, 5), 0);
         on_the_way.height = None;
         let mut confirming = activity(Direction::Out, 1, at(7, 0), 4);
-        confirming.receipt = Some(receipt(1));
+        confirming.receipt = Some(std::sync::Arc::new(receipt(1)));
 
         let rows = by_day(vec![sent, paid, arriving, on_the_way, confirming], vec![], clock(0)).remove(0).rows;
         let shown: Vec<_> = rows.iter().map(|r| (r.title.as_str(), r.line.as_str(), r.amount.as_str(), r.fiat.as_deref())).collect();
@@ -439,7 +438,7 @@ mod tests {
         let mut priced = activity(Direction::In, 500_000_000_000, NOW - HOUR, 20);
         priced.price = Some(record(166_060_000));
         let mut paid = activity(Direction::Out, 142_100_000_000, NOW - 2 * HOUR, 20);
-        paid.receipt = Some(receipt(3));
+        paid.receipt = Some(std::sync::Arc::new(receipt(3)));
         paid.price = Some(record(95_000_000));
         let unpriced = activity(Direction::In, 1, NOW - 3 * HOUR, 20);
         let rows = by_day(vec![priced, paid, unpriced], vec![], clock(0)).remove(0).rows;
@@ -552,7 +551,7 @@ mod tests {
         let address = |end: char| format!("86Ux{}7kQ{end}", "q".repeat(87));
         let paid = |to: String, amount: u64, time: u64| Activity { to: Some(to), ..activity(Direction::Out, amount, time, 20) };
         let mut cafe = paid(address('a'), 142_100_000_000, NOW - HOUR);
-        cafe.receipt = Some(receipt(3));
+        cafe.receipt = Some(std::sync::Arc::new(receipt(3)));
         let mut sam = paid(address('b'), 100_000_000_000, NOW - 4 * DAY);
         sam.note = Some("Lunch money".into());
         let mut mum = paid(address('c'), 300_000_000_000, NOW - 28 * DAY);

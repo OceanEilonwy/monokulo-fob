@@ -14,7 +14,7 @@ pub struct Row {
     pub name: String,
     /// The avatar's letter, without a photo.
     pub initial: String,
-    pub photo: Option<Vec<u8>>,
+    pub photo_key: Option<String>,
     pub send_address: Option<String>,
     /// On Contacts: "Lunch money · paid 27 Oct", "Paid 3 Oct", the note,
     /// or "Not paid yet". On Send's sheet: the last payment, as Paid
@@ -23,7 +23,7 @@ pub struct Row {
 }
 
 pub fn row(r: contacts::Row) -> Row {
-    Row { id: r.id, name: r.name, initial: r.initial, photo: r.photo, send_address: r.send_address, line: line(&r.line) }
+    Row { id: r.id, name: r.name, initial: r.initial, photo_key: r.photo_key, send_address: r.send_address, line: line(&r.line) }
 }
 
 fn line(line: &ContactLine) -> String {
@@ -331,7 +331,6 @@ mod tests {
             confirmations: 20,
             needed: UNLOCK,
             receipt: None,
-            receipt_json: None,
             price: None,
             subaddress: None,
             pieces: vec![],
@@ -405,7 +404,7 @@ mod tests {
         let (sam, code, stranger, shop) = (address(1), address(2), address(3), address(4));
         book.add(Network::Stagenet, Draft { send_address: Some(sam.clone()), also_paid_at: vec![code.clone()], ..draft("Sam") }, NOW).unwrap();
         let mut bought = paid(&shop, 1, NOW - 6 * DAY);
-        bought.receipt = Some(ReceiptView {
+        bought.receipt = Some(std::sync::Arc::new(ReceiptView {
             merchant: "Kiosk".into(),
             issued: String::new(),
             lines: vec![],
@@ -414,7 +413,7 @@ mod tests {
             total: "$33.21".into(),
             currency: "USD".into(),
             total_value: 33.21,
-        });
+        }));
         let split = Activity { split: Some(3), ..paid(&address(5), 1, NOW) };
         let rows = [paid(&sam, 1, NOW), paid(&code, 1, NOW), paid(&stranger, 1_000_000_000, NOW - DAY), bought, paid(&stranger, 1, NOW - 9 * DAY), split];
         let shown: Vec<_> = unsaved(&book, &rows, clock()).into_iter().map(|p| (p.address, p.name, p.line)).collect();

@@ -165,6 +165,11 @@ impl Book {
         self.shares.iter().find(|s| s.subaddress == subaddress)
     }
 
+    /// Every share, oldest first.
+    pub fn shares(&self) -> &[Share] {
+        &self.shares
+    }
+
     /// Copy link or Share pressed on a share's screen: it's now that kind,
     /// the last pressed. A share made by touching phones stays one: who it
     /// went to is what it's listed by. Returns whether it changed.

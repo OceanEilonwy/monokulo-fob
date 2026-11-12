@@ -350,7 +350,7 @@ fn the_api_s_times_read_back() {
 /// A state fresh from a wallet, for `reconcile` alone.
 fn fresh() -> (Wallet, State) {
     let wallet = Wallet::create(&dir(&format!("light-fresh-{}", OsRng.next_u32())), [1; 32], Network::Stagenet).unwrap();
-    let state = wallet.inner.state.try_lock().unwrap().clone();
+    let state = State::clone(&wallet.inner.state.try_lock().unwrap());
     (wallet, state)
 }
 
@@ -412,7 +412,7 @@ fn sent_payment(tx: &str) -> Sent {
         change: 0,
         time: 1,
         height: None,
-        receipt: None,
+        receipt: None, receipt_view: None,
         note: None,
         pieces: None,
         not_confirmed: false,
@@ -633,7 +633,7 @@ async fn a_spend_s_fee_is_the_server_s_or_not_known() {
     without[3].fee = None;
     reconcile(keys, &mut state, &answer(without, 400_000), &HashMap::new(), 5).unwrap();
     assert_eq!(state.spends[0].fee, 0);
-    *wallet.inner.state.lock().await = state.clone();
+    wallet.inner.state.lock().await.set(state.clone());
     let rows = wallet.activity().await;
     let out = rows.iter().find(|r| r.direction == Direction::Out).unwrap();
     assert_eq!(out.fee, None, "no fee claimed");
@@ -643,7 +643,7 @@ async fn a_spend_s_fee_is_the_server_s_or_not_known() {
     let done = reconcile(keys, &mut state, &answer(chain.listed.clone(), 400_000), &HashMap::new(), 6).unwrap();
     assert!(done.changed);
     assert_eq!(state.spends[0].fee, 1000);
-    *wallet.inner.state.lock().await = state;
+    wallet.inner.state.lock().await.set(state);
     let rows = wallet.activity().await;
     let out = rows.iter().find(|r| r.direction == Direction::Out).unwrap();
     assert_eq!(out.fee, Some(1000));

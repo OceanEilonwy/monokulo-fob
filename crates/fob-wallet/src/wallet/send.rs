@@ -278,10 +278,22 @@ impl Wallet {
         let since = now.saturating_sub(split::LOOKBACK);
         let sent: HashSet<&str> = state.sent.iter().map(|s| s.tx.as_str()).collect();
         let mut spent: HashSet<&str> = HashSet::new();
+        // What each transaction spent and got back, added up once rather
+        // than looked for among every output per spend.
+        let mut inputs: HashMap<[u8; 32], u64> = HashMap::new();
+        let mut back: HashMap<&str, u64> = HashMap::new();
+        for output in &state.outputs {
+            if let Some(tx) = output.coin.tx() {
+                let total = inputs.entry(tx).or_default();
+                *total = total.saturating_add(output.amount);
+            }
+            let total = back.entry(output.tx.as_str()).or_default();
+            *total = total.saturating_add(output.amount);
+        }
         // A restored wallet's spends: the inputs less change and fee, as in Activity.
         let spends = state.spends.iter().filter(|s| !sent.contains(s.tx.as_str()) && spent.insert(&s.tx)).map(|spend| {
-            let inputs = amount::total(state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount));
-            let change = amount::total(state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount));
+            let inputs = hash_bytes(&spend.tx).and_then(|hash| inputs.get(&hash)).copied().unwrap_or(0);
+            let change = back.get(spend.tx.as_str()).copied().unwrap_or(0);
             (spend.time, inputs.saturating_sub(change).saturating_sub(spend.fee))
         });
         state
@@ -466,6 +478,7 @@ impl Wallet {
             change: back.saturating_sub(fee),
             time: now(),
             height: None,
+            receipt_view: state::receipt_view(out.receipt.as_deref()),
             receipt: out.receipt,
             note: out.note,
             pieces: out.pieces,

@@ -147,7 +147,7 @@ async fn a_payment_the_node_never_heard_of_waits_a_day_then_its_coins_can_be_rel
     }
     assert_eq!(wallet.balance().await.total, before + coin - 7, "the coin back, the change it was to bring gone");
     assert!(wallet.release_payment(tx).await.is_err(), "once");
-    let row = wallet.activity().await.into_iter().find(|a| a.tx == *tx).unwrap();
+    let row = wallet.activity().await.iter().find(|a| a.tx == *tx).cloned().unwrap();
     assert!(row.released);
     // Not asked about any more.
     assert!(Wallet::unsettled_sent(&*wallet.inner.state.lock().await).iter().all(|(hash, _)| hash != tx));
