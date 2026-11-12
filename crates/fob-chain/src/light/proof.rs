@@ -189,7 +189,9 @@ pub fn unix_time(text: &str) -> Option<u64> {
     let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
     let mut t = time.split(':').map(|p| p.split('.').next().unwrap_or("").parse::<i64>());
     let (h, min, s) = (t.next()?.ok()?, t.next()?.ok()?, t.next().and_then(|s| s.ok()).unwrap_or(0));
-    if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+    // The server writes these, so bound them before the sums below: a year
+    // past 9999 or an hour of 2^63 would overflow.
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&day) || !(0..24).contains(&h) || !(0..60).contains(&min) || !(0..=60).contains(&s) {
         return None;
     }
     // Days from the civil date (Howard Hinnant's algorithm).

@@ -136,3 +136,12 @@ fn a_proof_that_doesn_t_fit_is_broken() {
     wrong_amount.receives[0].amount = lws::Amount(1);
     assert_eq!(check(&wrong_amount).unwrap_err(), Broken::Output);
 }
+
+#[test]
+fn a_time_out_of_range_is_no_time() {
+    assert_eq!(unix_time("1970-01-01T00:00:00Z"), Some(0));
+    assert_eq!(unix_time("9999-12-31T23:59:60Z"), Some(253_402_300_800));
+    for text in ["9999999999999-01-01T00:00:00Z", "2020-01-01T9223372036854775807:00:00Z", "2020-01-01T00:9223372036854775807:00Z", "2020-01-01T00:00:9223372036854775807Z", "2020-01-01T24:00:00Z", "1969-12-31T23:59:59Z", "2020-01-01T-1:00:00Z"] {
+        assert_eq!(unix_time(text), None, "{text}");
+    }
+}
