@@ -33,6 +33,8 @@ android {
         // A release build is given these by CI (.github/workflows/release.yml).
         versionCode = (project.findProperty("fobVersionCode") as String?)?.toInt() ?: 1
         versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.19"
+        // The screenshot test (scripts/screenshots.sh) draws screens on an emulator.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // Only the ABIs fob-ffi is built for, in the universal APK too: with the 32-bit libraries the dependencies carry, a
@@ -160,4 +162,11 @@ dependencies {
     // JNA as an AAR for the app: it carries JNA's own native library.
     implementation("${libs.jna.get()}@aar")
     debugImplementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.test.manifest)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.junit)
+    // ui-test-junit4's own runner and Espresso reflect on InputManager.getInstance, gone in Android 16: these run there.
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.espresso.core)
 }
