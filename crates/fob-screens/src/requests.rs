@@ -7,9 +7,11 @@
 //! Every word the request screens, Activity's request lines and a
 //! contact's "Requests · Sam pays you" say is written here.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::{activity::{self, Activity}, clock::{self, Clock}, contacts, error::ScreenError, error::Result};
+use crate::{activity::{self, Activity, Direction}, clock::{self, Clock}, contacts, error::ScreenError, error::Result};
 use fob_monero::{amount, fiat};
 use fob_codes::uri;
 
@@ -130,7 +132,7 @@ impl Book {
             && newest.note == clean_note(draft.note.as_deref())
             && newest.name == draft.name.as_deref().and_then(contacts::clean_name)
             && asked(&newest.asked) == asked(&draft.asked);
-        (same && payments(newest, rows).is_empty()).then_some(newest)
+        (same && parts(newest, rows).is_empty()).then_some(newest)
     }
 
     /// Makes a request. Its address must be one no request has had.
@@ -163,7 +165,7 @@ impl Book {
         match self.requests.iter_mut().find(|r| r.id == id && r.deleted.is_none()) {
             Some(r) => {
                 r.deleted = Some(now);
-                r.paid_before_delete = Some(payments(r, rows).into_iter().map(|a| a.tx).collect());
+                r.paid_before_delete = Some(parts(r, rows).into_iter().map(|(a, _)| a.tx.clone()).collect());
                 true
             }
             None => false,
@@ -178,21 +180,64 @@ pub fn payments(request: &Request, rows: &[Activity]) -> Vec<Activity> {
     rows.iter().filter_map(|a| a.part(request.subaddress)).collect()
 }
 
+/// [`payments`] without copying them: each payment to `request`'s address
+/// with its part there.
+fn parts<'a>(request: &Request, rows: &'a [Activity]) -> Vec<(&'a Activity, u64)> {
+    rows.iter().filter_map(|a| Some((a, a.part_amount(request.subaddress)?))).collect()
+}
+
+/// The payments in, by the address they came to, each with its part there,
+/// in the order of `rows`: looked up once for a screen's many requests,
+/// rather than every row read again for each.
+struct Paid<'a>(HashMap<u32, Vec<(&'a Activity, u64)>>);
+
+impl<'a> Paid<'a> {
+    fn of(rows: &'a [Activity]) -> Paid<'a> {
+        let mut by: HashMap<u32, Vec<(&'a Activity, u64)>> = HashMap::new();
+        for a in rows.iter().filter(|a| a.direction == Direction::In) {
+            match a.parts.as_slice() {
+                [] => {
+                    if let Some(subaddress) = a.subaddress {
+                        by.entry(subaddress).or_default().push((a, a.amount));
+                    }
+                }
+                parts => {
+                    for (i, &(subaddress, amount)) in parts.iter().enumerate() {
+                        // The first part at an address is its part, as `Activity::part` has it.
+                        if parts[..i].iter().all(|p| p.0 != subaddress) {
+                            by.entry(subaddress).or_default().push((a, amount));
+                        }
+                    }
+                }
+            }
+        }
+        Paid(by)
+    }
+
+    fn at(&self, request: &Request) -> &[(&'a Activity, u64)] {
+        self.0.get(&request.subaddress).map_or(&[], Vec::as_slice)
+    }
+}
+
 /// What `request`'s address received, or `None` while nothing has: in the
 /// money it asked in when every payment has a price in it ("$83.03"),
 /// else in XMR ("0.5 XMR").
 pub fn received(request: &Request, rows: &[Activity]) -> Option<Received> {
-    let paid = payments(request, rows);
+    received_in(request, &parts(request, rows))
+}
+
+/// [`received`], from the payments to `request`'s address and their parts.
+fn received_in(request: &Request, paid: &[(&Activity, u64)]) -> Option<Received> {
     if paid.is_empty() {
         return None;
     }
-    let atomic: u64 = paid.iter().map(|a| a.amount).sum();
+    let atomic: u64 = paid.iter().map(|(_, amount)| amount).sum();
     let xmr = format!("{} XMR", amount::format_short(atomic));
     let unit = request.asked.as_ref().filter(|a| a.fiat.is_some()).map(|a| a.unit.as_str());
     let fiat = unit.and_then(|unit| {
         let currency = fiat::currency(unit);
         let minor: Option<u64> =
-            paid.iter().map(|a| a.price.as_ref().filter(|p| p.currency == unit).map(|p| fiat::to_minor(a.amount, p.price, &currency))).sum();
+            paid.iter().map(|(a, amount)| a.price.as_ref().filter(|p| p.currency == unit).map(|p| fiat::to_minor(*amount, p.price, &currency))).sum();
         minor.map(|m| fiat::format(m, &currency))
     });
     Some(Received { atomic, text: fiat.clone().unwrap_or_else(|| xmr.clone()), xmr, fiat })
@@ -217,6 +262,11 @@ fn name<'a>(request: &Request, book: &'a contacts::Book) -> Option<&'a str> {
 
 /// A request's line in Activity, with the amount asked on the right.
 pub fn activity_row(request: &Request, book: &contacts::Book, rows: &[Activity], clock: Clock) -> activity::Row {
+    row_in(request, book, &parts(request, rows), clock)
+}
+
+/// [`activity_row`], from the payments to `request`'s address.
+fn row_in(request: &Request, book: &contacts::Book, paid: &[(&Activity, u64)], clock: Clock) -> activity::Row {
     let name = name(request, book);
     let (_, seconds) = clock::local(request.created, clock);
     activity::Row {
@@ -225,7 +275,7 @@ pub fn activity_row(request: &Request, book: &contacts::Book, rows: &[Activity],
         share: None,
         time: request.created,
         title: activity::RowTitle::Request(name.map(str::to_owned)),
-        line: activity::RowLine::Request { named: name.is_some(), note: request.note.clone(), received: received(request, rows).map(|r| r.text), time: clock::time_of_day(seconds, clock) },
+        line: activity::RowLine::Request { named: name.is_some(), note: request.note.clone(), received: received_in(request, paid).map(|r| r.text), time: clock::time_of_day(seconds, clock) },
         amount: request.asked.as_ref().map(Asked::text).unwrap_or_default(),
         fiat: request.asked.as_ref().map(|_| activity::RowFiat::Asked),
     }
@@ -235,7 +285,8 @@ pub fn activity_row(request: &Request, book: &contacts::Book, rows: &[Activity],
 pub fn activity_rows(requests: &Book, book: &contacts::Book, rows: &[Activity], clock: Clock) -> Vec<activity::Row> {
     let mut lines: Vec<&Request> = requests.live().collect();
     lines.sort_by_key(|r| std::cmp::Reverse((r.created, r.id)));
-    lines.into_iter().map(|r| activity_row(r, book, rows, clock)).collect()
+    let paid = Paid::of(rows);
+    lines.into_iter().map(|r| row_in(r, book, paid.at(r), clock)).collect()
 }
 
 /// A request's own screen.
@@ -297,6 +348,7 @@ pub struct CardLine {
 pub fn on_card(contact: u64, requests: &Book, rows: &[Activity], clock: Clock) -> Vec<CardLine> {
     let mut theirs: Vec<&Request> = requests.live().filter(|r| r.contact == Some(contact)).collect();
     theirs.sort_by_key(|r| std::cmp::Reverse((r.created, r.id)));
+    let paid = Paid::of(rows);
     theirs
         .into_iter()
         .map(|r| CardLine {
@@ -305,7 +357,7 @@ pub fn on_card(contact: u64, requests: &Book, rows: &[Activity], clock: Clock) -
             note: r.note.clone(),
             subaddress: r.subaddress,
             when: clock::when(r.created, clock),
-            received: received(r, rows).map(|g| g.text),
+            received: received_in(r, paid.at(r)).map(|g| g.text),
             asked: r.asked.as_ref().map(Asked::text),
         })
         .collect()
@@ -314,7 +366,8 @@ pub fn on_card(contact: u64, requests: &Book, rows: &[Activity], clock: Clock) -
 /// A contact's requests in a line, for Share's sheet.
 pub fn summary(contact: u64, requests: &Book, rows: &[Activity]) -> contacts::ContactLine {
     let theirs: Vec<&Request> = requests.live().filter(|r| r.contact == Some(contact)).collect();
-    let paid = theirs.iter().filter(|r| !payments(r, rows).is_empty()).count();
+    let paid_in = Paid::of(rows);
+    let paid = theirs.iter().filter(|r| !paid_in.at(r).is_empty()).count();
     contacts::ContactLine::Requests { paid, waiting: theirs.len() - paid }
 }
 
@@ -323,7 +376,21 @@ pub fn summary(contact: u64, requests: &Book, rows: &[Activity]) -> contacts::Co
 pub fn sheet(book: &contacts::Book, requests: &Book, rows: &[Activity]) -> Vec<contacts::Row> {
     let mut all: Vec<&contacts::Contact> = book.all().iter().collect();
     all.sort_by_cached_key(|c| (c.name.to_lowercase(), c.id));
-    all.into_iter().map(|c| contacts::row(c, summary(c.id, requests, rows))).collect()
+    // Each contact's requests, paid or waiting, from one look at them all.
+    let paid = Paid::of(rows);
+    let mut counts: HashMap<u64, (usize, usize)> = HashMap::new();
+    for r in requests.live() {
+        if let Some(contact) = r.contact {
+            let (paid_n, waiting) = counts.entry(contact).or_default();
+            if paid.at(r).is_empty() { *waiting += 1 } else { *paid_n += 1 }
+        }
+    }
+    all.into_iter()
+        .map(|c| {
+            let (paid, waiting) = counts.get(&c.id).copied().unwrap_or_default();
+            contacts::row(c, contacts::ContactLine::Requests { paid, waiting })
+        })
+        .collect()
 }
 
 /// A request's payment code: its address, the XMR it asked for, its note,
@@ -456,6 +523,33 @@ mod tests {
         // Only the newest: an older one alike isn't given again.
         requests.add(Draft { note: Some("Other".into()), ..ask(2) }, NOW + 1).unwrap();
         assert!(requests.same_again(&ask(3), &[]).is_none());
+    }
+
+    /// Activity's lines, a card's and Share's sheet look the payments up
+    /// once for every request, and come to what each request alone does,
+    /// a transaction paying two requests each one's part.
+    #[test]
+    fn many_requests_come_to_what_each_alone_does() {
+        let keys = keys();
+        let clock = Clock { now: NOW, utc_offset: 0, hours_24: true };
+        let mut contacts = contacts::Book::default();
+        let sam = contacts.add(Network::Stagenet, contacts::new_contact(&keys.address(0), Some("Sam")), NOW).unwrap();
+        let mut requests = Book::default();
+        for sub in 1..=4 {
+            requests.add(draft(&keys, sub, Some(sam.id), None, usd("80", 481_700_000_000)), NOW + u64::from(sub)).unwrap();
+        }
+        let mut both = paid_in(2, 3 * XMR, NOW + HOUR, Some(166_060_000));
+        both.parts = vec![(2, XMR), (3, 2 * XMR), (2, 7)];
+        let rows = [paid_in(1, XMR / 2, NOW + HOUR, Some(166_060_000)), both, paid_in(1, XMR / 4, NOW + 2 * HOUR, None)];
+        let mut live: Vec<&Request> = requests.live().collect();
+        live.sort_by_key(|r| std::cmp::Reverse((r.created, r.id)));
+        let alone: Vec<activity::Row> = live.iter().map(|r| activity_row(r, &contacts, &rows, clock)).collect();
+        assert_eq!(activity_rows(&requests, &contacts, &rows, clock), alone);
+        let card = on_card(sam.id, &requests, &rows, clock);
+        assert_eq!(card.iter().map(|l| l.received.clone()).collect::<Vec<_>>(), live.iter().map(|r| received(r, &rows).map(|g| g.text)).collect::<Vec<_>>());
+        assert_eq!(card[1].received.as_deref(), Some("$332.12"), "its part only: 2 XMR");
+        assert_eq!(summary(sam.id, &requests, &rows), contacts::ContactLine::Requests { paid: 3, waiting: 1 });
+        assert_eq!(sheet(&contacts, &requests, &rows)[0].line, contacts::ContactLine::Requests { paid: 3, waiting: 1 });
     }
 
     #[test]
