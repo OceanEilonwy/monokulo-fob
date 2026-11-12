@@ -28,7 +28,7 @@ use monero_wallet::{
     ed25519::Point,
     interface::{EvaluateUnlocked, InterfaceError, ProvidesBlockchainMeta, ProvidesUnvalidatedDecoys, TransactionsError},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::transport::{Daemon, Transport};
 use monero_daemon_rpc::HttpTransport;
@@ -43,6 +43,10 @@ const TIP_FOR: Duration = Duration::from_secs(10);
 
 /// How far behind the file may fall before it's written again: about a day.
 const WRITE_EVERY: usize = 720;
+
+/// How many rings may hold a copy of the distribution at once: each is 8
+/// bytes a block, tens of megabytes, and lives through the ring's round trips.
+const COPIES: usize = 3;
 
 /// The cumulative RingCT output count at each block from `start`.
 struct Distribution {
@@ -140,7 +144,11 @@ fn write_file(path: &Path, bytes: Vec<u8>) -> bool {
 }
 
 /// The node, with the output distribution kept between payments.
-#[derive(Clone)]
+///
+/// A clone is for choosing one ring. monero-oxide takes its own copy of the
+/// whole distribution for each, tens of megabytes, and every ring of a
+/// payment is chosen at once, so a clone holds one of [`COPIES`] places from
+/// its first copy until it's dropped, and further rings wait for a place.
 pub struct Decoys {
     daemon: Daemon,
     transport: Transport,
@@ -149,12 +157,40 @@ pub struct Decoys {
     /// The chain tip a payment has just asked the node for. Choosing each
     /// input's decoys asks again, a round trip apiece, for the same answer.
     tip: Arc<std::sync::Mutex<Option<(Instant, usize)>>>,
+    copies: Arc<Semaphore>,
+    /// This clone's place, once it's taken a copy.
+    place: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+}
+
+impl Clone for Decoys {
+    fn clone(&self) -> Decoys {
+        Decoys {
+            daemon: self.daemon.clone(),
+            transport: self.transport.clone(),
+            cache: self.cache.clone(),
+            file: self.file.clone(),
+            tip: self.tip.clone(),
+            copies: self.copies.clone(),
+            place: std::sync::Mutex::new(None),
+        }
+    }
 }
 
 impl Decoys {
     /// The file is read when first needed, not here.
     pub fn new(daemon: Daemon, transport: Transport, file: PathBuf) -> Decoys {
-        Decoys { daemon, transport, cache: Arc::default(), file: Arc::new(file), tip: Arc::default() }
+        let copies = Arc::new(Semaphore::new(COPIES));
+        Decoys { daemon, transport, cache: Arc::default(), file: Arc::new(file), tip: Arc::default(), copies, place: std::sync::Mutex::new(None) }
+    }
+
+    /// Takes a place for a copy of the distribution, unless this clone has one.
+    async fn take_place(&self) -> Result<(), InterfaceError> {
+        if self.place.lock().expect("place lock").is_some() {
+            return Ok(());
+        }
+        let permit = self.copies.clone().acquire_owned().await.map_err(|_| InterfaceError::InternalError("no place for decoys".into()))?;
+        self.place.lock().expect("place lock").get_or_insert(permit);
+        Ok(())
     }
 
     /// Takes `tip`, just asked of the node, as the tip for the next few seconds.
@@ -361,6 +397,7 @@ impl ProvidesUnvalidatedDecoys for Decoys {
                 Some(t) => t.ok_or_else(bad)?,
                 None => self.daemon.latest_block_number().await?,
             };
+            self.take_place().await?;
             self.update(to).await?;
             let cache = self.cache.lock().await;
             let d = cache.distribution.as_ref().ok_or_else(|| InterfaceError::InternalError("no distribution".into()))?;
@@ -548,6 +585,27 @@ mod tests {
         Distribution::new(100, vec![5, 4]).write(&file);
         assert!(Distribution::read(&file).is_none());
         std::fs::remove_file(file).unwrap();
+    }
+
+    /// Each ring's clone holds a place from its first copy of the
+    /// distribution until it's dropped: only [`COPIES`] copies at once.
+    #[tokio::test]
+    async fn only_a_few_rings_copy_the_distribution_at_once() {
+        let file = std::env::temp_dir().join(format!("fob-decoys-copies-{}", std::process::id()));
+        let node = distribution_node(0, 10).await;
+        let decoys = decoys(node, &file).await;
+        let rings: Vec<Decoys> = (0..COPIES).map(|_| decoys.clone()).collect();
+        for ring in &rings {
+            assert_eq!(ProvidesUnvalidatedDecoys::ringct_output_distribution(ring, 0..=209).await.unwrap().len(), 110);
+            // A ring asks again on its own place.
+            assert_eq!(ProvidesUnvalidatedDecoys::ringct_output_distribution(ring, 0..=209).await.unwrap().len(), 110);
+        }
+        let another = decoys.clone();
+        let waiting = tokio::time::timeout(Duration::from_millis(100), ProvidesUnvalidatedDecoys::ringct_output_distribution(&another, 0..=209)).await;
+        assert!(waiting.is_err(), "a fourth ring waits");
+        drop(rings);
+        assert_eq!(ProvidesUnvalidatedDecoys::ringct_output_distribution(&another, 0..=209).await.unwrap().len(), 110);
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]
