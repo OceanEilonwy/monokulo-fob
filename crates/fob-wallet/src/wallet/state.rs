@@ -64,6 +64,12 @@ pub(super) struct Sent {
     pub(super) height: Option<u64>,
     /// The ORF receipt JSON from the payment code.
     pub(super) receipt: Option<String>,
+    /// That receipt as Activity shows it, read once when the payment was
+    /// recorded and kept (decision 411): a receipt never changes, so it's
+    /// never parsed again. `None` without a receipt, or with one that
+    /// doesn't read. Since version 11 of the database.
+    #[serde(default)]
+    pub(super) receipt_view: Option<Arc<ReceiptView>>,
     /// The payment code's description (`tx_description`), if it had one.
     #[serde(default)]
     pub(super) note: Option<String>,
@@ -468,12 +474,37 @@ impl State {
         }
     }
 
+    /// Gives each payment with a receipt but no view its view: one recorded
+    /// before views were kept, from the sealed file before the database.
+    /// Whether any changed.
+    pub(super) fn fill_receipt_views(&mut self) -> bool {
+        let mut filled = false;
+        for sent in self.sent.iter_mut().filter(|s| s.receipt_view.is_none() && s.receipt.is_some()) {
+            sent.receipt_view = receipt_view(sent.receipt.as_deref());
+            filled |= sent.receipt_view.is_some();
+        }
+        filled
+    }
+
     /// A scan from before the wallet's first block makes that its first block.
     pub(super) fn lower_start(&mut self, from: u64) {
         if self.restore_height.is_none_or(|start| from < start) {
             self.restore_height = Some(from);
         }
     }
+}
+
+/// The receipt JSON `json` as Activity shows it: the view kept beside a
+/// payment, made once.
+pub(super) fn receipt_view(json: Option<&str>) -> Option<Arc<ReceiptView>> {
+    let receipt = serde_json::from_str::<orf_codec::Receipt>(json?).ok()?;
+    Some(Arc::new(ReceiptView::from(&receipt)))
+}
+
+/// [`receipt_view`] as the database keeps it, for its upgrade to version
+/// 11: the view's JSON.
+pub(super) fn receipt_view_json(json: &str) -> Option<String> {
+    serde_json::to_string(&*receipt_view(Some(json))?).ok()
 }
 
 /// A list that may be kept as nothing (a column added later) read as empty.

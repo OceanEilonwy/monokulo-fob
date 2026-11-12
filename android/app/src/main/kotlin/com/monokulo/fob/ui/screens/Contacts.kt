@@ -64,6 +64,7 @@ import com.monokulo.fob.Screen
 import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.ContactAvatar
 import com.monokulo.fob.ui.BottomSheet
 import com.monokulo.fob.ui.Card
 import com.monokulo.fob.ui.EdgeButton
@@ -128,7 +129,7 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
             val rows = saved
             when {
                 rows == null -> {}
-                rows.isNotEmpty() -> Card { rows.forEach { c -> ContactListRow(c) { nav.go(Screen.Contact(c.id)) } } }
+                rows.isNotEmpty() -> Card { rows.forEach { c -> ContactListRow(c, model::contactPhoto) { nav.go(Screen.Contact(c.id)) } } }
                 any -> Text("No contact has that in its name or note.", color = Fob.muted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 8.dp))
                 else -> Card(padding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
                     Text(
@@ -155,13 +156,13 @@ fun ContactsScreen(model: WalletModel, nav: Nav) {
 
 /** A saved contact: avatar, name, Rust's line and a chevron. */
 @Composable
-private fun ContactListRow(c: ContactRow, onClick: () -> Unit) {
+private fun ContactListRow(c: ContactRow, photo: suspend (ULong) -> ByteArray?, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {}.padding(horizontal = 20.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Avatar(c.name, c.initial, c.photo, 36.dp)
+        ContactAvatar(c.name, c.initial, c.id, c.photoKey, 36.dp, photo)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(c.name, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(c.line, color = Fob.muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

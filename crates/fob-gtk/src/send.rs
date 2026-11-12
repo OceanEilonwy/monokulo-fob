@@ -6,7 +6,7 @@ use std::sync::Arc;
 use fob_app::{
     Engine,
     form::{self, Amount, Taken},
-    views::{AmountEntry, Network, Screens, TypedAmount},
+    views::{AmountEntry, AmountUnit, Network, Screens},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -233,11 +233,11 @@ impl SimpleComponent for Send {
                 }
             }
             Input::Switch => {
-                self.amount.in_fiat = !self.amount.in_fiat;
+                self.amount.unit = self.amount.unit.other();
                 // Rust gives the same amount in the other unit; the field shows it.
-                let (engine, text, to_fiat, sender) = (self.engine.clone(), self.amount.text.clone(), self.amount.in_fiat, sender.clone());
+                let (engine, text, to, sender) = (self.engine.clone(), self.amount.text.clone(), self.amount.unit, sender.clone());
                 relm4::spawn(async move {
-                    let converted = engine.read(move |wallet, _| async move { wallet.convert_amount(text, to_fiat).await }).await;
+                    let converted = engine.read(move |wallet, _| async move { wallet.convert_amount(text, to).await }).await;
                     if let Some(converted) = converted {
                         sender.input(Input::Converted(converted));
                     }
@@ -245,7 +245,7 @@ impl SimpleComponent for Send {
             }
             Input::Entry(view) => {
                 // Behind what's typed by now: a newer answer is on its way.
-                if view.0.for_text != self.amount.text || view.0.for_in_fiat != self.amount.in_fiat {
+                if view.0.for_text != self.amount.text || view.0.for_typed_in != self.amount.unit {
                     return;
                 }
                 let can_switch = view.0.can_switch;
@@ -306,11 +306,11 @@ impl Send {
         self.amount_row.set_text("");
         self.filling = false;
         self.code = None;
-        self.amount = Amount::new(self.entry.as_ref().is_some_and(|View(e)| e.in_fiat));
+        self.amount = Amount::new(self.entry.as_ref().map_or(AmountUnit::Xmr, |View(e)| e.typed_in));
     }
 
     fn can_review(&self) -> bool {
-        !self.busy && form::address_is_valid(network(&self.engine), &self.to.text()) && self.entry.as_ref().is_some_and(|View(e)| e.sendable && e.for_text == self.amount.text && e.for_in_fiat == self.amount.in_fiat)
+        !self.busy && form::address_is_valid(network(&self.engine), &self.to.text()) && self.entry.as_ref().is_some_and(|View(e)| e.sendable && e.for_text == self.amount.text && e.for_typed_in == self.amount.unit)
     }
 
     fn set_amount_field(&mut self) {
@@ -320,9 +320,9 @@ impl Send {
     }
 
     fn ask_entry(&self, sender: &ComponentSender<Self>) {
-        let (engine, text, in_fiat, sender) = (self.engine.clone(), self.amount.text.clone(), self.amount.in_fiat, sender.clone());
+        let (engine, amount, sender) = (self.engine.clone(), self.amount.typed(), sender.clone());
         relm4::spawn(async move {
-            let entry = engine.read(move |wallet, clock| async move { wallet.amount_entry(text, in_fiat, clock.now, clock.utc_offset, clock.hours_24).await }).await;
+            let entry = engine.read(move |wallet, clock| async move { wallet.amount_entry(amount, clock.now, clock.utc_offset, clock.hours_24).await }).await;
             if let Some(entry) = entry {
                 sender.input(Input::Entry(View(entry.into())));
             }
@@ -356,7 +356,7 @@ impl Send {
             Taken::Review { to, amount, note, code } => {
                 self.put(&to, &note, code);
                 self.amount.text = amount;
-                self.amount.in_fiat = false;
+                self.amount.unit = AmountUnit::Xmr;
                 self.set_amount_field();
                 self.ask_entry(sender);
                 self.review(sender);
@@ -377,9 +377,7 @@ impl Send {
         self.busy = true;
         self.error = None;
         let note = Some(self.note.text().to_string()).filter(|n| !n.trim().is_empty());
-        let text = self.amount.text.clone();
-        let amount = if self.amount.in_fiat { TypedAmount::Fiat { text } } else { TypedAmount::Xmr { text } };
-        let filled = Filled { to: self.to.text().trim().to_owned(), amount, note, code: self.code.clone() };
+        let filled = Filled { to: self.to.text().trim().to_owned(), amount: self.amount.typed(), note, code: self.code.clone() };
         let (engine, sender) = (self.engine.clone(), sender.clone());
         relm4::spawn(async move {
             let asked = filled.clone();

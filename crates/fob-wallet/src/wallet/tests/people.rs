@@ -40,8 +40,8 @@ async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
     assert!(wallet.edit_contact(sam.id, contacts::Draft { name: String::new(), ..Default::default() }).await.is_err());
     {
         let mut state = wallet.inner.state.lock().await;
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, receipt_view: None, note: Some("Lunch".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, receipt_view: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
         wallet.save_state(&state).unwrap();
     }
     let reopened = Wallet::open(&path, [1; 32]).unwrap();
@@ -81,7 +81,7 @@ async fn the_paid_screen_offers_to_save_whoever_a_payment_went_to() {
         change: 0,
         time,
         height: None,
-        receipt: None,
+        receipt: None, receipt_view: None,
         note: Some("Pizza".into()),
         pieces: None,
         back: vec![],
@@ -138,46 +138,51 @@ async fn a_request_is_made_only_on_share_each_on_an_address_no_one_had() {
     // Opening Receive and building its code makes nothing.
     let own = wallet.receive_address().await.unwrap();
     assert_eq!(own, address(1));
-    wallet.receive_code(&own, Some("0.5"), false, Some("Bike")).await.unwrap();
+    wallet.receive_code(&own, Some(Typed::Xmr("0.5")), Some("Bike")).await.unwrap();
     assert!(wallet.inner.state.lock().await.requests.live().next().is_none());
     // Splits have the next one; a request skips it.
     assert_eq!(wallet.split_address().await.unwrap(), address(2));
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), ..Default::default() }).await.unwrap();
-    let (first, code) = wallet.make_request(Some(sam.id), Some("0.5"), false, Some(" Concert tickets ")).await.unwrap();
+    let (first, code) = wallet.make_request(Some(sam.id), Some(Typed::Xmr("0.5")), Some(" Concert tickets ")).await.unwrap();
     assert_eq!((first.subaddress, first.address.as_str(), first.contact), (3, address(3).as_str(), Some(sam.id)));
     assert_eq!(code.uri, format!("monero:{}?tx_amount=0.5&tx_description=Concert%20tickets", address(3)));
     assert_eq!((code.headline.as_deref(), code.detail.as_deref()), (Some("0.5 XMR"), Some("Concert tickets")));
     // Receive keeps its own; its "New address" never gives a request's.
     assert_eq!((wallet.receive_address().await.unwrap(), wallet.receive_index().await), (own.clone(), 1));
     assert_eq!(wallet.new_receive_address().await.unwrap(), address(4));
-    let (second, _) = wallet.make_request(None, None, false, None).await.unwrap();
+    let (second, _) = wallet.make_request(None, None, None).await.unwrap();
     assert_eq!((second.subaddress, second.contact, second.note, second.asked), (5, None, None, None));
     assert_eq!(wallet.receive_address().await.unwrap(), address(4));
     // A deleted contact can't be asked; nothing is made.
-    assert!(wallet.make_request(Some(99), None, false, None).await.is_err());
-    assert!(wallet.make_request(None, Some("abc"), false, None).await.is_err());
+    assert!(wallet.make_request(Some(99), None, None).await.is_err());
+    assert!(wallet.make_request(None, Some(Typed::Xmr("abc")), None).await.is_err());
     assert_eq!(wallet.inner.state.lock().await.requests.live().count(), 2);
     // Kept in the file, as made.
     let again = Wallet::open(&path, [1; 32]).unwrap();
     assert_eq!(again.receive_address().await.unwrap(), address(4));
     assert_eq!(again.request_code(first.id).await.unwrap(), code);
     // The same ask again while nothing came to it (Share, then Copy; a second tap): the same request.
-    let (same, same_code) = again.make_request(None, None, false, None).await.unwrap();
+    let (same, same_code) = again.make_request(None, None, None).await.unwrap();
     assert_eq!((same.id, same.subaddress), (second.id, 5));
     assert_eq!(same_code.uri, format!("monero:{}", address(5)));
     // Once something came to it, a new one.
     again.inner.state.lock().await.outputs.push(Owned { subaddress: 5, ..received("paid", now(), 1) });
-    assert_eq!(again.make_request(None, None, false, None).await.unwrap().0.subaddress, 6);
-    assert_eq!(again.make_request(None, None, false, Some("Bike")).await.unwrap().0.subaddress, 7);
+    assert_eq!(again.make_request(None, None, None).await.unwrap().0.subaddress, 6);
+    assert_eq!(again.make_request(None, None, Some("Bike")).await.unwrap().0.subaddress, 7);
     assert_eq!(again.inner.state.lock().await.requests.live().count(), 4);
 }
 
 #[tokio::test]
 async fn a_request_asked_in_money_keeps_what_it_came_to_then() {
     let wallet = Wallet::create(&dir("request-fiat"), [1; 32], Network::Stagenet).unwrap();
-    assert!(matches!(wallet.make_request(None, Some("80"), true, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
+    assert!(matches!(wallet.make_request(None, Some(Typed::Fiat("80")), None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
+    // Money typed as nothing but space asks nothing, so needs no price.
+    let address = wallet.receive_address().await.unwrap();
+    assert_eq!(wallet.receive_code(&address, Some(Typed::Fiat("  ")), None).await.unwrap().uri, format!("monero:{address}"));
+    let (blank, _) = wallet.make_request(None, Some(Typed::Fiat(" ")), None).await.unwrap();
+    assert_eq!(blank.asked, None);
     wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), Asked::Background, now()).await.unwrap();
-    let (request, code) = wallet.make_request(None, Some("80"), true, Some("Concert tickets")).await.unwrap();
+    let (request, code) = wallet.make_request(None, Some(Typed::Fiat("80")), Some("Concert tickets")).await.unwrap();
     let asked = request.asked.clone().unwrap();
     assert_eq!((asked.typed.as_str(), asked.unit.as_str(), asked.xmr, asked.fiat.as_deref()), ("80", "USD", 481_750_000_000, Some("$80.00")));
     assert_eq!((code.headline.as_deref(), code.detail.as_deref()), (Some("$80.00"), Some("0.48175 XMR · Concert tickets")));
@@ -194,8 +199,8 @@ async fn a_request_shows_what_came_and_once_deleted_its_address_still_receives_u
     let t = now();
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), ..Default::default() }).await.unwrap();
-    let (request, _) = wallet.make_request(Some(sam.id), Some("0.5"), false, Some("Pizza")).await.unwrap();
-    let (other, _) = wallet.make_request(Some(sam.id), None, false, None).await.unwrap();
+    let (request, _) = wallet.make_request(Some(sam.id), Some(Typed::Xmr("0.5")), Some("Pizza")).await.unwrap();
+    let (other, _) = wallet.make_request(Some(sam.id), None, None).await.unwrap();
     assert_eq!(wallet.said_request_contacts().await[0].line, "2 requests waiting");
     let to_request = |tx: &str, time: u64, amount: u64| Owned { subaddress: request.subaddress, ..received(tx, time, amount) };
     wallet.inner.state.lock().await.outputs.push(to_request("first", t - 60, XMR / 4));
@@ -247,8 +252,8 @@ async fn one_transaction_paying_two_requests_credits_each_its_own_part() {
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let sam = wallet.add_contact(contacts::Draft { name: "Sam".into(), ..Default::default() }).await.unwrap();
     let jo = wallet.add_contact(contacts::Draft { name: "Jo".into(), ..Default::default() }).await.unwrap();
-    let (for_sam, _) = wallet.make_request(Some(sam.id), None, false, Some("Rent")).await.unwrap();
-    let (for_jo, _) = wallet.make_request(Some(jo.id), None, false, Some("Bills")).await.unwrap();
+    let (for_sam, _) = wallet.make_request(Some(sam.id), None, Some("Rent")).await.unwrap();
+    let (for_jo, _) = wallet.make_request(Some(jo.id), None, Some("Bills")).await.unwrap();
     let received_by = |id: u64| {
         let wallet = wallet.clone();
         async move { wallet.said_request(id, clock).await.unwrap().received }
@@ -260,7 +265,7 @@ async fn one_transaction_paying_two_requests_credits_each_its_own_part() {
     );
     assert_eq!(received_by(for_sam.id).await, "0.5 XMR");
     assert_eq!(received_by(for_jo.id).await, "0.25 XMR");
-    let row = wallet.activity().await.into_iter().find(|r| r.tx == "batch").unwrap();
+    let row = wallet.activity().await.iter().find(|r| r.tx == "batch").cloned().unwrap();
     assert_eq!((row.amount, row.parts.len()), (XMR / 2 + XMR / 4 + 7, 3));
     assert!(wallet.inner.state.lock().await.requests.at(0).is_none(), "the main address is no request's");
     // Mined: the same, from its outputs.
@@ -445,20 +450,20 @@ async fn only_the_share_just_made_swaps_and_only_until_its_address_goes_out() {
 #[tokio::test]
 async fn requests_carry_the_profile_s_name_while_the_switch_is_on() {
     let wallet = Wallet::create(&dir("profile-name-in-requests"), [1; 32], Network::Stagenet).unwrap();
-    let (bare, code) = wallet.make_request(None, None, false, None).await.unwrap();
+    let (bare, code) = wallet.make_request(None, None, None).await.unwrap();
     assert!(!code.uri.contains("recipient_name"));
     assert!(wallet.set_name_in_requests(true).await.is_err(), "no profile yet");
     wallet.set_profile("Henry", None).await.unwrap();
-    let (_, code) = wallet.make_request(None, Some("0.5"), false, None).await.unwrap();
+    let (_, code) = wallet.make_request(None, Some(Typed::Xmr("0.5")), None).await.unwrap();
     assert_eq!(code.uri, format!("monero:{}?tx_amount=0.5&recipient_name=Henry", wallet.inner.keys.address(2)));
     // A request's code again is the one that went out: no name added since, none taken away after.
     assert!(!wallet.request_code(bare.id).await.unwrap().uri.contains("recipient_name"));
-    let (named, _) = wallet.make_request(None, None, false, Some("Named")).await.unwrap();
+    let (named, _) = wallet.make_request(None, None, Some("Named")).await.unwrap();
     wallet.set_profile("Hen", None).await.unwrap();
     assert!(wallet.request_code(named.id).await.unwrap().uri.contains("recipient_name=Henry"));
     wallet.set_name_in_requests(false).await.unwrap();
     assert!(wallet.request_code(named.id).await.unwrap().uri.contains("recipient_name=Henry"));
-    assert!(!wallet.make_request(None, None, false, None).await.unwrap().1.uri.contains("recipient_name"));
+    assert!(!wallet.make_request(None, None, None).await.unwrap().1.uri.contains("recipient_name"));
     assert!(!wallet.profile().await.unwrap().name_in_requests);
 }
 

@@ -9,8 +9,9 @@
 //! block order, under the lock.
 //!
 //! [`crate::Prefilter`] goes first, on the GPU, and finds the few blocks that
-//! could hold the wallet's money. Only those cost a scanner's time. When it
-//! doesn't filter (no GPU that can, or too small a batch), every block does.
+//! could hold the wallet's money, and the transactions in them that could.
+//! Only those cost a scanner's time. When it doesn't filter (no GPU that can,
+//! or too small a batch), every block does, whole.
 
 use std::sync::{
     Mutex,
@@ -19,8 +20,15 @@ use std::sync::{
 
 use std::collections::HashMap;
 
-use crate::Prefilter;
-use monero_wallet::{Scanner, WalletOutput, block::Block, extra::Extra, interface::ScannableBlock, transaction::{Input, Transaction}};
+use crate::{Prefilter, Txs};
+use monero_wallet::{
+    Scanner, WalletOutput,
+    block::Block,
+    ed25519::CompressedPoint,
+    extra::Extra,
+    interface::ScannableBlock,
+    transaction::{Input, Output, Pruned, Timelock, Transaction, TransactionPrefix},
+};
 
 /// Fewer blocks than this aren't worth starting threads for: a wallet near the
 /// tip sees one or two at a time.
@@ -101,15 +109,79 @@ fn seen(block: &ScannableBlock, hash: &[u8; 32]) -> Scanned {
     Scanned { height: block.block.number() as u64, time: block.block.header.timestamp, hash: hex::encode(hash), miner_tx: String::new(), txs, found: vec![], tx_keys: HashMap::new() }
 }
 
-/// Finds the money in a block that may hold some. The `Scanner` takes the
-/// block, and frees it: a copy, made and freed on this thread, as freeing the
-/// fetched block here would fight the other threads over the allocator
-/// (decision 350).
-fn look_for_money(scanner: &mut Scanner, block: &ScannableBlock, scanned: &mut Scanned) -> Result<(), String> {
+/// The part of `block` the `Scanner` reads for `txs`: those transactions, each
+/// at the global output indexes it has in `block`, or all of `block`.
+///
+/// The `Scanner` numbers a transaction's RingCT outputs from the block's first
+/// RingCT output index plus every RingCT output before it in the block, the
+/// miner transaction's first (`InternalScanner::scan` in monero-wallet 0.2). So
+/// the RingCT outputs of the transactions left out before the first one kept
+/// move that index on, and those of the ones left out between two kept ones
+/// become a stand-in: a v2 transaction of as many outputs, with no extra, which
+/// the `Scanner` passes over for having no key. A miner transaction left out is
+/// one of no outputs and no extra, as a block must have one.
+pub(crate) fn flagged_part(block: &ScannableBlock, txs: &Txs) -> ScannableBlock {
+    let Txs::These(_) = txs else { return block.clone() };
+    flagged_txs(block, txs).unwrap_or_else(|| block.clone())
+}
+
+/// [`flagged_part`] for [`Txs::These`], or `None` for a block it can't take
+/// apart, which the `Scanner` then reads whole.
+fn flagged_txs(block: &ScannableBlock, txs: &Txs) -> Option<ScannableBlock> {
+    if block.block.transactions.len() != block.transactions.len() {
+        return None;
+    }
+    let ringct = |v2: bool, prefix: &TransactionPrefix| if v2 { prefix.outputs.len() as u64 } else { 0 };
+    let mut first_index = block.output_index_for_first_ringct_output;
+    // RingCT outputs left out since the last transaction kept, and whether one has been.
+    let mut skipped = 0u64;
+    let mut kept_any = false;
+    let miner = block.block.miner_transaction();
+    let miner = if txs.has(0) {
+        kept_any = true;
+        miner.clone()
+    } else {
+        skipped = ringct(matches!(miner, Transaction::V2 { .. }), miner.prefix());
+        let prefix = TransactionPrefix { additional_timelock: Timelock::None, inputs: vec![Input::Gen(block.block.number())], outputs: vec![], extra: vec![] };
+        Transaction::V2 { prefix, proofs: None }
+    };
+    let mut hashes = vec![];
+    let mut transactions = vec![];
+    for (i, (hash, tx)) in block.block.transactions.iter().zip(&block.transactions).enumerate() {
+        if !txs.has(i + 1) {
+            skipped = skipped.checked_add(ringct(matches!(tx, Transaction::V2 { .. }), tx.prefix()))?;
+            continue;
+        }
+        if skipped > 0 {
+            if kept_any {
+                let filler = Output { amount: None, key: CompressedPoint::IDENTITY, view_tag: None };
+                let prefix = TransactionPrefix { additional_timelock: Timelock::None, inputs: vec![], outputs: vec![filler; usize::try_from(skipped).ok()?], extra: vec![] };
+                hashes.push([0; 32]);
+                transactions.push(Transaction::<Pruned>::V2 { prefix, proofs: None });
+            } else if let Some(index) = &mut first_index {
+                *index = index.checked_add(skipped)?;
+            }
+            skipped = 0;
+        }
+        kept_any = true;
+        hashes.push(*hash);
+        transactions.push(tx.clone());
+    }
+    let block = Block::new(block.block.header.clone(), miner, hashes)?;
+    Some(ScannableBlock { block, transactions, output_index_for_first_ringct_output: first_index })
+}
+
+/// Finds the money in a block that may hold some, reading the transactions
+/// `txs` flags. The `Scanner` takes the block, and frees it: a copy of those
+/// transactions (or, unfiltered, of the whole block), made and freed on this
+/// thread, as freeing the fetched block here would fight the other threads over
+/// the allocator (decision 350). A `Scanner` that borrowed the block would need
+/// no copy at all: issue #41.
+fn look_for_money(scanner: &mut Scanner, block: &ScannableBlock, txs: &Txs, scanned: &mut Scanned) -> Result<(), String> {
     let miner = block.block.miner_transaction().hash();
     scanned.miner_tx = hex::encode(miner);
     let height = scanned.height;
-    scanned.found = scanner.scan(block.clone()).map_err(|e| format!("scanning block {height}: {e:?}"))?.ignore_additional_timelock();
+    scanned.found = scanner.scan(flagged_part(block, txs)).map_err(|e| format!("scanning block {height}: {e:?}"))?.ignore_additional_timelock();
     // Each found output's transaction keys, which a hardware wallet needs.
     for output in &scanned.found {
         let hash = output.transaction();
@@ -135,10 +207,10 @@ fn threads(blocks: usize, cores: usize) -> usize {
     if blocks < WORTH_THREADS { 1 } else { cores.saturating_sub(1).clamp(1, MAX_THREADS).min(blocks) }
 }
 
-/// Which of `count` blocks the `Scanner` reads: those the prefilter flags, or all
-/// of them when it didn't filter.
-fn to_read(flags: Option<Vec<bool>>, count: usize) -> Vec<bool> {
-    flags.unwrap_or_else(|| vec![true; count])
+/// What of `count` blocks the `Scanner` reads: the transactions the prefilter
+/// flags, or every block whole when it didn't filter.
+fn to_read(flags: Option<Vec<Txs>>, count: usize) -> Vec<Txs> {
+    flags.unwrap_or_else(|| vec![Txs::All; count])
 }
 
 /// Scans `blocks`, whose hashes are `hashes`, giving each one's result in the order
@@ -158,12 +230,12 @@ pub fn scan_from(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<Scannable
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads = threads(count, cores);
     if threads == 1 {
-        let flags = to_read(prefilter.flag(&blocks, threads, min_keys), count);
+        let flags = to_read(prefilter.flag_txs(&blocks, threads, min_keys), count);
         let mut clone = None;
-        let results = blocks.iter().zip(hashes).zip(flags).map(|((block, hash), flagged)| {
+        let results = blocks.iter().zip(hashes).zip(flags).map(|((block, hash), txs)| {
             let mut scanned = seen(block, hash);
-            if flagged {
-                look_for_money(clone.get_or_insert_with(|| scanner.clone()), block, &mut scanned)?;
+            if txs.flagged() {
+                look_for_money(clone.get_or_insert_with(|| scanner.clone()), block, &txs, &mut scanned)?;
             }
             Ok(scanned)
         });
@@ -183,11 +255,11 @@ pub fn scan_from(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<Scannable
                 }
             });
         }
-        to_read(prefilter.flag(&blocks, threads, min_keys), count)
+        to_read(prefilter.flag_txs(&blocks, threads, min_keys), count)
     });
 
     // Almost no block is flagged, and most filtered scans start no threads here.
-    let flagged: Vec<usize> = flags.iter().enumerate().filter_map(|(i, flagged)| flagged.then_some(i)).collect();
+    let flagged: Vec<usize> = flags.iter().enumerate().filter_map(|(i, txs)| txs.flagged().then_some(i)).collect();
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..threads.min(flagged.len()) {
@@ -196,7 +268,7 @@ pub fn scan_from(scanner: &Scanner, prefilter: &Prefilter, blocks: Vec<Scannable
                 while let Some(&i) = flagged.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let mut slot = results[i].lock().expect("scan slot");
                     if let Some(Ok(scanned)) = &mut *slot
-                        && let Err(e) = look_for_money(&mut scanner, &blocks[i], scanned)
+                        && let Err(e) = look_for_money(&mut scanner, &blocks[i], &flags[i], scanned)
                     {
                         *slot = Some(Err(e));
                     }
@@ -218,8 +290,8 @@ mod tests {
 
     #[test]
     fn unfiltered_the_scanner_reads_every_block() {
-        assert_eq!(to_read(None, 3), [true, true, true]);
-        assert_eq!(to_read(Some(vec![false, true]), 2), [false, true]);
+        assert_eq!(to_read(None, 3), [Txs::All, Txs::All, Txs::All]);
+        assert_eq!(to_read(Some(vec![Txs::Clear, Txs::These(vec![2])]), 2), [Txs::Clear, Txs::These(vec![2])]);
     }
 
     #[test]

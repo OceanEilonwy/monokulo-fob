@@ -26,7 +26,7 @@ async fn main() {
             while wallet.sync_step().await.unwrap() {}
             let b = wallet.balance().await;
             println!("synced to {}: total {} unlocked {}", wallet.status().scanned, amount::format(b.total), amount::format(b.unlocked));
-            for a in wallet.activity().await {
+            for a in wallet.activity().await.iter() {
                 println!("{:?} {} {} conf {}", a.direction, amount::format(a.amount), a.tx, a.confirmations);
             }
         }

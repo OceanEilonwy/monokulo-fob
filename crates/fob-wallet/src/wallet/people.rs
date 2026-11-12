@@ -13,6 +13,11 @@ impl Wallet {
         self.inner.state.lock().await.contacts.get(id).cloned()
     }
 
+    /// A contact's photo alone, for the row whose `photo_key` names it.
+    pub async fn contact_photo(&self, id: u64) -> Option<Vec<u8>> {
+        self.inner.state.lock().await.contacts.get(id)?.photo.clone()
+    }
+
     /// A contact's card, or `None` once it's deleted.
     pub async fn contact_card(&self, id: u64, clock: Clock) -> Option<contacts::Card> {
         let rows = self.activity().await;
@@ -20,14 +25,20 @@ impl Wallet {
         state.contacts.get(id).map(|c| contacts::card(c, &state.requests, &rows, clock))
     }
 
-    /// What the screens list, from one look at the activity (it parses
-    /// every receipt): Home's Activity, by day, with every payment, request
-    /// and share of your profile; Contacts and its "Paid, not saved"; Send's
-    /// sheet's contacts (with a send address, the most recently paid first)
-    /// and the people paid before.
-    pub async fn lists(&self, clock: Clock) -> Lists {
+    /// What the screens list, from one look at the activity: Home's
+    /// Activity, by day, with every payment, request and share of your
+    /// profile; Contacts and its "Paid, not saved"; Send's sheet's contacts
+    /// (with a send address, the most recently paid first) and the people
+    /// paid before. Kept, as the activity is, until the wallet changes or
+    /// the day does (decision 412).
+    pub async fn lists(&self, clock: Clock) -> Arc<Lists> {
         let rows = self.activity().await;
         let state = self.inner.state.lock().await;
+        // Of the clock, the lists use only which day it is and how times are written.
+        let key = ListsKey { rows: rows.clone(), state: state.generation(), today: clock::local(clock.now, clock).0, utc_offset: clock.utc_offset, hours_24: clock.hours_24 };
+        if let Some((_, lists)) = self.inner.lists.lock().expect("lists lock").as_ref().filter(|(k, _)| *k == key) {
+            return lists.clone();
+        }
         let mut lines = requests::activity_rows(&state.requests, &state.contacts, &rows, clock);
         lines.extend(profile::activity_rows(&state.profile, clock));
         lines.sort_by_key(|l| std::cmp::Reverse(l.time));
@@ -39,7 +50,9 @@ impl Wallet {
             days: vec![],
         };
         drop(state);
-        Lists { days: activity::by_day(rows, lines, clock), ..lists }
+        let lists = Arc::new(Lists { days: activity::by_day(rows.to_vec(), lines, clock), ..lists });
+        *self.inner.lists.lock().expect("lists lock") = Some((key, lists.clone()));
+        lists
     }
 
     /// The name a request's code carries (`recipient_name`): the profile's,
@@ -238,20 +251,19 @@ impl Wallet {
 
     /// Makes a request, when Share or Copy is pressed on Receive (never by
     /// opening it): on a subaddress no one has had, for `contact` (or no
-    /// one), asking `amount_text` (in money when `in_fiat`, converted at the
+    /// one), asking `amount` (in XMR, or in money converted at the
     /// current price as the field's line showed) with `note`, its code
     /// naming the profile while requests carry it. The same ask again, while
     /// nothing has come to the last one, gives the last one again
     /// ([`requests::Book::same_again`]). Returns it with its code.
-    pub async fn make_request(&self, contact: Option<u64>, amount_text: Option<&str>, in_fiat: bool, note: Option<&str>) -> Result<(requests::Request, ReceiveCode)> {
+    pub async fn make_request(&self, contact: Option<u64>, amount: Option<amount::Typed<'_>>, note: Option<&str>) -> Result<(requests::Request, ReceiveCode)> {
         let rows = self.activity().await;
-        let typed = amount_text.map(str::trim).filter(|a| !a.is_empty());
-        let asked = match typed {
+        let asked = match amount.and_then(amount::Typed::trimmed) {
             None => None,
             Some(t) => {
-                let (xmr, fiat) = self.typed(t, in_fiat).await?;
+                let (xmr, fiat) = self.typed(t).await?;
                 Some(requests::Asked {
-                    typed: t.to_owned(),
+                    typed: t.text().to_owned(),
                     unit: fiat.as_ref().map(|(_, code)| code.clone()).unwrap_or_else(|| "XMR".into()),
                     xmr,
                     fiat: fiat.map(|(text, _)| text),
@@ -398,15 +410,14 @@ impl Wallet {
         .await
     }
 
-    /// Receive's payment code for `address`, with an amount typed in XMR or,
-    /// when `in_fiat`, in money (the code still asks in XMR, converted at
-    /// the current price), and a note for the payer.
-    pub async fn receive_code(&self, address: &str, amount_text: Option<&str>, in_fiat: bool, note: Option<&str>) -> Result<ReceiveCode> {
-        let typed = amount_text.map(str::trim).filter(|a| !a.is_empty());
-        let (xmr, fiat) = match typed {
+    /// Receive's payment code for `address`, with an amount typed in XMR or
+    /// in money (the code still asks in XMR, converted at the current
+    /// price), and a note for the payer.
+    pub async fn receive_code(&self, address: &str, amount: Option<amount::Typed<'_>>, note: Option<&str>) -> Result<ReceiveCode> {
+        let (xmr, fiat) = match amount.and_then(amount::Typed::trimmed) {
             None => (None, None),
             Some(t) => {
-                let (xmr, fiat) = self.typed_amount(t, in_fiat).await?;
+                let (xmr, fiat) = self.typed_amount(t).await?;
                 (Some(xmr), fiat)
             }
         };
@@ -421,5 +432,22 @@ impl Wallet {
             },
             _ => ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail },
         })
+    }
+}
+
+/// What the screens' lists were built from: the activity (the same rows,
+/// not rows alike), the wallet's requests, contacts and profile as they
+/// were, and the clock's day and way of writing times.
+pub(super) struct ListsKey {
+    rows: Arc<[Activity]>,
+    state: u64,
+    today: i64,
+    utc_offset: i32,
+    hours_24: bool,
+}
+
+impl PartialEq for ListsKey {
+    fn eq(&self, other: &ListsKey) -> bool {
+        Arc::ptr_eq(&self.rows, &other.rows) && (self.state, self.today, self.utc_offset, self.hours_24) == (other.state, other.today, other.utc_offset, other.hours_24)
     }
 }

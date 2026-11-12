@@ -7,27 +7,27 @@ async fn a_restored_wallet_hands_out_past_the_other_phone_s_addresses_and_watche
     // The other phone was paid at its request on 60, found so far; it may have handed out more, unpaid.
     restored.inner.state.lock().await.outputs.push(Owned { subaddress: 60, ..received("old", 1, XMR) });
     restored.inner.state.lock().await.receive_index = 60;
-    let (first, _) = restored.make_request(None, None, false, Some("Rent")).await.unwrap();
+    let (first, _) = restored.make_request(None, None, Some("Rent")).await.unwrap();
     assert_eq!(first.subaddress, 60 + RESTORE_SKIP + 1);
-    let (share_free, _) = restored.make_request(None, None, false, Some("Bills")).await.unwrap();
+    let (share_free, _) = restored.make_request(None, None, Some("Bills")).await.unwrap();
     assert_eq!(share_free.subaddress, first.subaddress + 1);
     // Scanning on finds another of the other phone's, paid at 80: the next new one goes past it too.
     restored.inner.state.lock().await.outputs.push(Owned { subaddress: 80, ..received("old-80", 1, XMR) });
-    let (after, _) = restored.make_request(None, None, false, Some("Gas")).await.unwrap();
+    let (after, _) = restored.make_request(None, None, Some("Gas")).await.unwrap();
     assert_eq!(after.subaddress, 80 + RESTORE_SKIP + 1);
     // A payment to one of the other phone's old request addresses (say 70) is no new request's.
     restored.inner.state.lock().await.outputs.push(Owned { subaddress: 70, ..received("to-old-request", 2, XMR) });
-    let row = restored.activity().await.into_iter().find(|r| r.tx == "to-old-request").unwrap();
+    let row = restored.activity().await.iter().find(|r| r.tx == "to-old-request").cloned().unwrap();
     assert_eq!((row.note, row.contact), (None, None));
     // Paid at what this wallet handed out: no further jump.
     restored.inner.state.lock().await.outputs.push(Owned { subaddress: after.subaddress, ..received("mine", 3, XMR) });
-    assert_eq!(restored.make_request(None, None, false, Some("Water")).await.unwrap().0.subaddress, after.subaddress + 1);
+    assert_eq!(restored.make_request(None, None, Some("Water")).await.unwrap().0.subaddress, after.subaddress + 1);
     // Nothing found: new ones start past the skip anyway.
     let empty = Wallet::restore_words(&dir("restore-empty"), [1; 32], Network::Stagenet, &words, Some(0)).unwrap();
-    assert_eq!(empty.make_request(None, None, false, None).await.unwrap().0.subaddress, RESTORE_SKIP + 1);
+    assert_eq!(empty.make_request(None, None, None).await.unwrap().0.subaddress, RESTORE_SKIP + 1);
     // A wallet made here skips nothing.
     let made = Wallet::create(&dir("restore-none"), [1; 32], Network::Stagenet).unwrap();
-    assert_eq!(made.make_request(None, None, false, None).await.unwrap().0.subaddress, 1);
+    assert_eq!(made.make_request(None, None, None).await.unwrap().0.subaddress, 1);
     // Scanning watches 200 past the highest handed out or paid: 150 unpaid requests or shares in a row past the
     // last paid one are still found by a restore, and a payment found moves the edge on.
     assert_eq!(Wallet::watched(60), 260);
@@ -66,7 +66,7 @@ async fn reading_a_restored_wallet_s_receive_address_hands_nothing_out() {
     let own = 60 + RESTORE_SKIP + 1;
     assert_eq!(restored.receive_address().await.unwrap(), restored.inner.keys.address(own));
     assert_eq!(restored.shown_receive_address().await, Some((restored.inner.keys.address(own), own)));
-    assert_eq!(restored.make_request(None, None, false, None).await.unwrap().0.subaddress, own + 1);
+    assert_eq!(restored.make_request(None, None, None).await.unwrap().0.subaddress, own + 1);
     // A wallet made here reads none until Receive first opens, then that one.
     let made = Wallet::create(&dir("restore-read-made"), [1; 32], Network::Stagenet).unwrap();
     assert_eq!(made.shown_receive_address().await, None);

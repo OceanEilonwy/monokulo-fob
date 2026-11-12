@@ -1,6 +1,6 @@
 //! Receive: this wallet's address as a code, with an amount and note if asked.
 
-use fob_app::{Engine, views::{ContactRow, ReceiveCode, Screens}};
+use fob_app::{Engine, views::{ContactRow, ReceiveCode, Screens, TypedAmount}};
 use relm4::{
     adw::{self, prelude::*},
     gtk,
@@ -225,12 +225,12 @@ impl Receive {
     /// Asks Rust for the code with what's typed.
     fn ask(&self, sender: &ComponentSender<Self>) {
         let Some(address) = self.address.clone() else { return };
-        let amount = Some(self.amount.text().to_string()).filter(|a| !a.trim().is_empty());
+        let amount = Some(self.amount.text().to_string()).filter(|a| !a.trim().is_empty()).map(|text| TypedAmount::Xmr { text });
         let note = Some(self.note.text().to_string()).filter(|n| !n.trim().is_empty());
         let (engine, sender) = (self.engine.clone(), sender.clone());
         relm4::spawn(async move {
             let asked = address.clone();
-            let code = engine.read(move |wallet, _| async move { wallet.receive_code(address, amount, false, note).await }).await;
+            let code = engine.read(move |wallet, _| async move { wallet.receive_code(address, amount, note).await }).await;
             match code {
                 Some(Ok(code)) => sender.input(Input::Code(asked, View(code.into()))),
                 Some(Err(e)) => sender.input(Input::Failed(e.to_string())),
@@ -250,11 +250,11 @@ impl Receive {
 
     fn make_request(&self, sender: &ComponentSender<Self>) {
         let contact = (self.who.selected() as usize).checked_sub(1).and_then(|i| self.people.get(i).copied());
-        let amount = Some(self.amount.text().to_string()).filter(|a| !a.trim().is_empty());
+        let amount = Some(self.amount.text().to_string()).filter(|a| !a.trim().is_empty()).map(|text| TypedAmount::Xmr { text });
         let note = Some(self.note.text().to_string()).filter(|n| !n.trim().is_empty());
         let (engine, sender) = (self.engine.clone(), sender.clone());
         relm4::spawn(async move {
-            match engine.change(move |wallet| async move { wallet.make_request(contact, amount, false, note).await }).await {
+            match engine.change(move |wallet| async move { wallet.make_request(contact, amount, note).await }).await {
                 Ok(made) => sender.input(Input::Made(made.id)),
                 Err(e) => sender.input(Input::Failed(e.to_string())),
             }

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.fob.AmountEntry
+import uniffi.fob.AmountUnit
 
 /** Two arrows, one up and one down: the amount field's switch. */
 private const val SWAP = "M7 4v14M3 14l4 4 4-4 M17 20V6M13 10l4-4 4 4"
@@ -78,7 +79,7 @@ fun AmountField(value: String, onChange: (String) -> Unit, entry: AmountEntry?, 
             entry?.sign?.let { sign ->
                 // Manrope has no ɱ (U+0271): XMR's sign is drawn in the system font, as bold.
                 Text(
-                    sign, style = style.copy(color = Fob.muted, fontFamily = if (entry.inFiat) Manrope else FontFamily.Default),
+                    sign, style = style.copy(color = Fob.muted, fontFamily = if (entry.typedIn == AmountUnit.FIAT) Manrope else FontFamily.Default),
                     modifier = Modifier.widthIn(min = 18.dp).clearAndSetSemantics {},
                 )
             }
@@ -130,7 +131,7 @@ fun BigAmount(value: String, onChange: (String) -> Unit, entry: AmountEntry?, on
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
             entry?.sign?.let { sign ->
                 Text(
-                    sign, style = style.copy(color = Fob.muted, fontFamily = if (entry.inFiat) Manrope else FontFamily.Default, fontSize = 30.sp),
+                    sign, style = style.copy(color = Fob.muted, fontFamily = if (entry.typedIn == AmountUnit.FIAT) Manrope else FontFamily.Default, fontSize = 30.sp),
                     modifier = Modifier.padding(end = 4.dp).clearAndSetSemantics {},
                 )
             }

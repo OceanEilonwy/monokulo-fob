@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{Network, PaymentRequest, Result};
+use crate::{AmountUnit, Network, PaymentRequest, Result, TypedAmount};
 use fob_wallet::{uri, words::errors::{NotTaken, code_not_taken}};
 
 /// A payment code as read, once: its address, amount, name and receipt
@@ -110,14 +110,19 @@ pub fn to_is_valid(network: Network, to: String) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Amount {
     pub text: String,
-    pub in_fiat: bool,
+    pub unit: AmountUnit,
     held_money: Option<String>,
 }
 
 impl Amount {
     /// Starts in the unit the blank field opens in.
-    pub fn new(in_fiat: bool) -> Amount {
-        Amount { in_fiat, ..Amount::default() }
+    pub fn new(unit: AmountUnit) -> Amount {
+        Amount { unit, ..Amount::default() }
+    }
+
+    /// What's typed, in its unit, as Rust takes it.
+    pub fn typed(&self) -> TypedAmount {
+        TypedAmount::new(self.text.clone(), self.unit)
     }
 
     /// What a price being available now does to the field. Returns whether it
@@ -125,21 +130,21 @@ impl Amount {
     pub fn price_is(&mut self, can_switch: bool) -> bool {
         if can_switch
             && self.text.trim().is_empty()
-            && !self.in_fiat
+            && self.unit == AmountUnit::Xmr
             && let Some(money) = self.held_money.take()
         {
             self.text = money;
-            self.in_fiat = true;
+            self.unit = AmountUnit::Fiat;
             return true;
         }
-        if !self.in_fiat && !self.text.trim().is_empty() {
+        if self.unit == AmountUnit::Xmr && !self.text.trim().is_empty() {
             self.held_money = None;
         }
-        if !can_switch && self.in_fiat {
+        if !can_switch && self.unit == AmountUnit::Fiat {
             if !self.text.trim().is_empty() {
                 self.held_money = Some(std::mem::take(&mut self.text));
             }
-            self.in_fiat = false;
+            self.unit = AmountUnit::Xmr;
             return true;
         }
         false
@@ -200,25 +205,25 @@ mod tests {
 
     #[test]
     fn money_typed_is_kept_when_the_price_goes_and_never_read_as_xmr() {
-        let mut a = Amount::new(true);
+        let mut a = Amount::new(AmountUnit::Fiat);
         a.text = "20".into();
         assert!(!a.price_is(true), "a price, nothing to do");
         assert!(a.price_is(false));
-        assert_eq!((a.text.as_str(), a.in_fiat), ("", false), "not 20 XMR");
+        assert_eq!(a.typed(), TypedAmount::Xmr { text: "".into() }, "not 20 XMR");
         assert!(a.is_filled());
         assert!(a.price_is(true));
-        assert_eq!((a.text.as_str(), a.in_fiat), ("20", true), "back when a price comes");
+        assert_eq!(a.typed(), TypedAmount::Fiat { text: "20".into() }, "back when a price comes");
     }
 
     #[test]
     fn typing_xmr_meanwhile_lets_the_money_go() {
-        let mut a = Amount::new(true);
+        let mut a = Amount::new(AmountUnit::Fiat);
         a.text = "20".into();
         a.price_is(false);
         a.text = "0.5".into();
         assert!(!a.price_is(false));
         a.text.clear();
         assert!(!a.price_is(true), "what was typed since replaced it");
-        assert_eq!((a.text.as_str(), a.in_fiat), ("", false));
+        assert_eq!((a.text.as_str(), a.unit), ("", AmountUnit::Xmr));
     }
 }

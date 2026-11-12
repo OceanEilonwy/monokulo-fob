@@ -97,6 +97,7 @@ import com.monokulo.fob.ui.reason
 import com.monokulo.fob.ui.short
 import kotlinx.coroutines.launch
 import uniffi.fob.AddressGroup
+import uniffi.fob.AmountUnit
 import uniffi.fob.Prepared
 import uniffi.fob.QrCode
 import uniffi.fob.Receipt
@@ -105,6 +106,7 @@ import uniffi.fob.SaveOffer
 import uniffi.fob.Shortfall
 import uniffi.fob.Contact
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.ContactAvatar
 import androidx.compose.ui.text.style.TextOverflow
 import uniffi.fob.ContactRow
 import com.monokulo.fob.ui.BottomSheet
@@ -112,6 +114,7 @@ import com.monokulo.fob.ui.SheetHandle
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.semantics.heading
+import uniffi.fob.TypedAmount
 import uniffi.fob.addressGroups
 import uniffi.fob.fitReceiveNote
 import uniffi.fob.qrCode
@@ -141,10 +144,10 @@ import com.monokulo.fob.ui.rememberTouchState
  * Receive's form as typed, kept on the back stack while New contact (from
  * Share's sheet) is open, so it comes back filled.
  */
-data class ReceiveDraft(val amount: String, val inFiat: Boolean, val note: String)
+data class ReceiveDraft(val amount: String, val unit: AmountUnit, val note: String)
 
 /** What the code was made from. */
-private data class Asked(val amount: String, val inFiat: Boolean, val note: String)
+private data class Asked(val amount: String, val unit: AmountUnit, val note: String)
 
 /**
  * Receive (Round 2 › Receive; Round 5 › "Share asks who it's for",
@@ -176,8 +179,8 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     // Opened blank as Rust has it already (in money while there's a price), so the field's sign, chip and line are
     // there on the first frame; a form filled before keeps its unit.
     val blank = prices?.blankEntry
-    var inFiat by remember { mutableStateOf(screen.draft?.inFiat ?: blank?.inFiat ?: false) }
-    var entry by remember { mutableStateOf(blank?.takeIf { it.inFiat == inFiat }) }
+    var unit by remember { mutableStateOf(screen.draft?.unit ?: blank?.typedIn ?: AmountUnit.XMR) }
+    var entry by remember { mutableStateOf(blank?.takeIf { it.typedIn == unit }) }
     var defaulted by remember { mutableStateOf(screen.draft != null || blank?.canSwitch == true) }
     // Money typed when the price went, kept aside until one comes.
     var heldMoney by remember { mutableStateOf<String?>(null) }
@@ -203,33 +206,33 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
     LaunchedEffect(choosing) { if (choosing) people = model.requestContacts() }
     // The price toast's cog opens Price from over this: Back finds the form as typed.
     DisposableEffect(nav) {
-        val keep = { nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note))) }
+        val keep = { nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, if (heldMoney != null) AmountUnit.FIAT else unit, note))) }
         nav.keepForm = keep
         onDispose { if (nav.keepForm === keep) nav.keepForm = null }
     }
     // A new price comes with a new balance. In money by default while there's one.
-    LaunchedEffect(wallet, prices, balance, amount, inFiat) {
+    LaunchedEffect(wallet, prices, balance, amount, unit) {
         if (wallet == null) return@LaunchedEffect
-        val e = model.amountEntry(amount, inFiat) ?: return@LaunchedEffect
+        val e = model.amountEntry(typedAmount(amount, unit)) ?: return@LaunchedEffect
         // A price come since it opened: in money, the field's words with it at once rather than a round later.
-        if (e.canSwitch && !defaulted && amount.isBlank() && !inFiat) { defaulted = true; entry = model.amountEntry(amount, true); inFiat = true; return@LaunchedEffect }
+        if (e.canSwitch && !defaulted && amount.isBlank() && unit == AmountUnit.XMR) { defaulted = true; entry = model.amountEntry(TypedAmount.Fiat(amount)); unit = AmountUnit.FIAT; return@LaunchedEffect }
         if (e.canSwitch) defaulted = true
         // The price gone (another provider not answered yet, or over a day old): the money typed is kept
         // aside, never read as XMR, and put back once a price comes.
-        if (e.canSwitch && heldMoney != null && amount.isBlank() && !inFiat) { amount = heldMoney!!; heldMoney = null; inFiat = true; return@LaunchedEffect }
-        if (!inFiat && amount.isNotBlank()) heldMoney = null
-        if (!e.canSwitch && inFiat) { if (amount.isNotBlank()) heldMoney = amount; inFiat = false; amount = ""; return@LaunchedEffect }
+        if (e.canSwitch && heldMoney != null && amount.isBlank() && unit == AmountUnit.XMR) { amount = heldMoney!!; heldMoney = null; unit = AmountUnit.FIAT; return@LaunchedEffect }
+        if (unit == AmountUnit.XMR && amount.isNotBlank()) heldMoney = null
+        if (!e.canSwitch && unit == AmountUnit.FIAT) { if (amount.isNotBlank()) heldMoney = amount; unit = AmountUnit.XMR; amount = ""; return@LaunchedEffect }
         entry = e
     }
     // What's typed, in the unit Rust last said it's in; none while Rust is behind (the chip just tapped), so
     // nothing is made, copied or shared from an amount read in the wrong unit.
-    val asked = entry?.takeIf { it.forText == amount && it.forInFiat == inFiat }?.let { Asked(amount, it.inFiat, note) }
+    val asked = entry?.takeIf { it.forText == amount && it.forTypedIn == unit }?.let { Asked(amount, it.typedIn, note) }
     // Keyed on the price too: a new one makes the code again, so it asks what the field and Share say.
     LaunchedEffect(wallet, address, asked, prices?.priceAt) {
         val w = wallet ?: return@LaunchedEffect
         val a = address ?: return@LaunchedEffect
         val q = asked ?: return@LaunchedEffect
-        code = runCatching { w.receiveCode(a, q.amount, q.inFiat, q.note) }.getOrNull()
+        code = runCatching { w.receiveCode(a, typedAmount(q.amount, q.unit), q.note) }.getOrNull()
     }
     // A note typed for Receive's own code goes with its address, kept when the screen or the address changes.
     val latestNote by rememberUpdatedState(note)
@@ -313,10 +316,10 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
                         // The text, unit and Rust's word on them change together.
                         scope.launch {
                             val w = wallet ?: return@launch
-                            val toFiat = !inFiat
-                            val switched = w.convertAmount(amount, toFiat)
-                            val e = model.amountEntry(switched, toFiat) ?: return@launch
-                            amount = switched; inFiat = toFiat; entry = e
+                            val to = unit.other()
+                            val switched = w.convertAmount(amount, to)
+                            val e = model.amountEntry(typedAmount(switched, to)) ?: return@launch
+                            amount = switched; unit = to; entry = e
                         }
                     },
                 )
@@ -327,12 +330,13 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (choosing) {
             WhoForPicker(
                 people,
+                model::contactPhoto,
                 onDismiss = { choosing = false },
                 onPick = { p -> choosing = false; forId = p.id },
                 onNew = {
                     choosing = false
                     // Back from New contact, Receive comes back filled, with them chosen.
-                    nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, heldMoney != null || inFiat, note)))
+                    nav.replace(Screen.Receive(forId, ReceiveDraft(heldMoney ?: amount, if (heldMoney != null) AmountUnit.FIAT else unit, note)))
                     nav.go(Screen.ContactEdit(forRequest = true))
                 },
                 onNoName = { choosing = false; forId = null; forContact = null },
@@ -374,7 +378,7 @@ private fun WhoForField(contact: Contact?, loading: Boolean, onClick: () -> Unit
  * match what's typed, then New contact; No one in particular is pinned under the list.
  */
 @Composable
-private fun WhoForPicker(people: List<ContactRow>, onDismiss: () -> Unit, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
+private fun WhoForPicker(people: List<ContactRow>, photo: suspend (ULong) -> ByteArray?, onDismiss: () -> Unit, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
     BackHandler(onBack = onDismiss)
     var search by remember { mutableStateOf("") }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
@@ -390,7 +394,7 @@ private fun WhoForPicker(people: List<ContactRow>, onDismiss: () -> Unit, onPick
                             Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button) { onPick(p) }.padding(horizontal = 20.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
-                            Avatar(p.name, p.initial, p.photo, 36.dp)
+                            ContactAvatar(p.name, p.initial, p.id, p.photoKey, 36.dp, photo)
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                 Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(p.line, color = Fob.muted, fontSize = 12.5.sp)
@@ -601,7 +605,7 @@ fun ConfirmScreen(
         if (prepared != null || pending == null) return@LaunchedEffect
         val d = pending.draft
         while (true) {
-            val result = runCatching { model.prepare(d.to, typedAmount(d.amount, d.inFiat), screen.note, d.code) }
+            val result = runCatching { model.prepare(d.to, typedAmount(d.amount, d.unit), screen.note, d.code) }
             result.onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it, note = typedNote.ifBlank { null })) else model.cancelLater(it) }
             val lacking = result.exceptionOrNull() as? uniffi.fob.FobException.NotEnoughFunds
             if (lacking == null) {

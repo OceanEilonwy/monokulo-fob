@@ -16,6 +16,7 @@ mod state;
 mod sync;
 #[cfg(test)]
 mod tests;
+mod tracked;
 
 pub use crate::activity::{Activity, Direction};
 pub use crate::catch_up::{ScanProgress, SyncStatus};
@@ -25,6 +26,7 @@ use manual_sync::{CoinsSaid,SentLookup, key_images_spent, sent_lookup, still_mis
 use send::turned_down;
 use state::{ChainSpend, CoinId, Owned, Sent, State, SyncMode, confirmations, default_incoming_scan_blocks, default_settled_confirmations, hash_bytes};
 use sync::{Unpublished, publish_failure};
+use tracked::Tracked;
 #[cfg(test)]
 use sync::{ReorgReach, reorg_reach};
 
@@ -194,6 +196,7 @@ pub struct Balance {
 }
 
 /// What the screens list, read together by [`Wallet::lists`].
+#[derive(Clone)]
 pub struct Lists {
     /// Home's Activity.
     pub days: Vec<activity::Day>,
@@ -286,7 +289,8 @@ struct Inner {
     /// The wallet's database.
     path: PathBuf,
     keys: Keys,
-    state: Mutex<State>,
+    /// What the wallet holds; its generation says when it last changed.
+    state: Mutex<Tracked<State>>,
     rpc: Mutex<Option<(node::Setting, Connection)>>,
     /// The transport the connection above was made with, and its node: its
     /// byte count and certificate, read by each sync report without
@@ -347,7 +351,12 @@ struct Inner {
     /// Payments to this wallet still in the node's pool: amount, when seen
     /// and the subaddress paid, by transaction. Not saved: the pool is
     /// asked again after every block.
-    pool: std::sync::Mutex<HashMap<String, Pooled>>,
+    pool: std::sync::Mutex<Tracked<HashMap<String, Pooled>>>,
+    /// The activity as last built, and the lists the screens show from it,
+    /// each with what it was built from: given again until that changes
+    /// (decision 412).
+    activity: std::sync::Mutex<Option<funds::Built>>,
+    lists: std::sync::Mutex<Option<(people::ListsKey, Arc<Lists>)>>,
     /// Pool transactions already looked at, so each is fetched once.
     pool_seen: std::sync::Mutex<HashSet<String>>,
     /// The last block scanned, to scan pool transactions against.

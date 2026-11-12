@@ -366,7 +366,12 @@ impl Wallet {
             }
             match reconcile_checked(&self.inner.keys, &mut state, &answer, &checked, &pool_before, now(), &vouched.known) {
                 Ok(mut done) => {
-                    *self.inner.pool.lock().expect("pool lock") = std::mem::take(&mut done.pool);
+                    // Only a pool that changed is a change: the activity is kept until one is.
+                    let mut pool = self.inner.pool.lock().expect("pool lock");
+                    if **pool != done.pool {
+                        pool.set(std::mem::take(&mut done.pool));
+                    }
+                    drop(pool);
                     // 5. Prices for payments newly seen, as the node's step records them.
                     let priced = self.record_prices(&mut state);
                     if done.changed || priced {

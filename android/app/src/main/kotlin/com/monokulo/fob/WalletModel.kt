@@ -603,14 +603,14 @@ class WalletModel(private val app: Application) {
     }
 
     /**
-     * An amount field's words for [text], in money when [inFiat], every word
+     * An amount field's words for [amount], typed in XMR or money, every word
      * from Rust; null without a wallet. Money typed against an old price has
      * Rust ask again, a failure coming as the toast.
      */
-    suspend fun amountEntry(text: String, inFiat: Boolean): AmountEntry? {
+    suspend fun amountEntry(amount: TypedAmount): AmountEntry? {
         val wallet = _wallet.value ?: return null
         val (seconds, offset, hours24) = clock()
-        return wallet.amountEntry(text, inFiat, seconds, offset, hours24)
+        return wallet.amountEntry(amount, seconds, offset, hours24)
     }
 
     /** Keeps the note typed on Receive with the address it was for; outlives the screen. */
@@ -1067,6 +1067,9 @@ class WalletModel(private val app: Application) {
 
     /** Share's sheet: every contact, each with its requests in a line. */
     suspend fun requestContacts(): List<ContactRow> = _wallet.value?.requestContacts() ?: emptyList()
+
+    /** A contact's photo, for the avatar a row names by its photo key. */
+    suspend fun contactPhoto(id: ULong): ByteArray? = _wallet.value?.contactPhoto(id)
 
     /** Saves your name and photo; throws what Rust refused. */
     suspend fun setProfile(name: String, photo: ByteArray?): Profile {

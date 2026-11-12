@@ -79,6 +79,36 @@ pub fn avatar(size: i32, name: &str, photo: Option<&[u8]>) -> adw::Avatar {
     avatar
 }
 
+thread_local! {
+    /// Contacts' photos as drawn, by the key a row names each by: fetched
+    /// and decoded once a run, not with every redraw (decision 414).
+    static PHOTOS: std::cell::RefCell<std::collections::HashMap<String, gdk::Texture>> = Default::default();
+}
+
+/// A contact's avatar in a list: their photo, named by `key` (a row's
+/// `photo_key`), drawn from those already decoded or fetched once by `id`
+/// and kept; the initial meanwhile, and without one.
+pub fn contact_avatar(engine: &fob_app::Engine, size: i32, name: &str, id: u64, key: Option<&str>) -> adw::Avatar {
+    let avatar = adw::Avatar::new(size, Some(name), true);
+    let Some(key) = key else { return avatar };
+    if let Some(texture) = PHOTOS.with(|p| p.borrow().get(key).cloned()) {
+        avatar.set_custom_image(Some(&texture));
+        return avatar;
+    }
+    let (engine, key, weak) = (engine.clone(), key.to_owned(), avatar.downgrade());
+    relm4::spawn_local(async move {
+        let Some(photo) = engine.read(move |wallet, _| async move { wallet.contact_photo(id).await }).await.flatten() else { return };
+        let Some((width, height, pixels)) = fob_app::picture::photo_pixels(&photo) else { return };
+        let bytes = gtk::glib::Bytes::from_owned(pixels);
+        let texture: gdk::Texture = gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, width as usize * 4).upcast();
+        PHOTOS.with(|p| p.borrow_mut().insert(key, texture.clone()));
+        if let Some(avatar) = weak.upgrade() {
+            avatar.set_custom_image(Some(&texture));
+        }
+    });
+    avatar
+}
+
 /// A row of Activity, opening what it's about.
 pub fn activity_row(view: &views::ActivityRow, go: impl Fn(Go) + 'static) -> adw::ActionRow {
     let row = self::row(&view.title, &view.line);

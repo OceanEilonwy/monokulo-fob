@@ -46,7 +46,7 @@ private fun key(photo: ByteArray) = "${photo.contentHashCode()}:${photo.size}"
  * picture you pick to make it from goes through Android's decoder (Photo.kt),
  * since you chose that picture yourself.
  */
-private fun photoBitmap(photo: ByteArray): ImageBitmap? = runCatching {
+private fun photoBitmap(photo: ByteArray, key: String = key(photo)): ImageBitmap? = runCatching {
     val pixels = decodePhoto(photo) ?: return@runCatching null
     val width = pixels.width.toInt()
     val height = pixels.height.toInt()
@@ -60,7 +60,24 @@ private fun photoBitmap(photo: ByteArray): ImageBitmap? = runCatching {
         (rgba[at + 3].toInt() and 0xff shl 24) or (rgba[at].toInt() and 0xff shl 16) or (rgba[at + 1].toInt() and 0xff shl 8) or (rgba[at + 2].toInt() and 0xff)
     }
     Bitmap.createBitmap(colors, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
-}.getOrNull()?.also { decoded.put(key(photo), it) }
+}.getOrNull()?.also { decoded.put(key, it) }
+
+/**
+ * A contact's avatar in a list row ([Avatar] otherwise), the photo named by
+ * the row's [photoKey] and fetched by [id] through [photo] only when it isn't
+ * decoded already (decision 414). Inside a row that says the name, it reads
+ * nothing to TalkBack.
+ */
+@Composable
+fun ContactAvatar(name: String, initial: String, id: ULong, photoKey: String?, size: Dp, photo: suspend (ULong) -> ByteArray?, modifier: Modifier = Modifier) {
+    // A row names its contact's photo by a key, and the bytes cross from
+    // Rust once per key, not with every row of every refresh: fetched and
+    // decoded off the main thread, then drawn from the cache.
+    val image by produceState(photoKey?.let { decoded.get(it) }, photoKey) {
+        value = photoKey?.let { k -> decoded.get(k) ?: withContext(Dispatchers.Default) { photo(id)?.let { photoBitmap(it, k) } } }
+    }
+    AvatarOf(name, initial, image, size, modifier, describe = false, fill = Fob.sunken)
+}
 
 /**
  * A contact's avatar (Shared › "Contact avatar"): their photo in a circle,
@@ -75,7 +92,11 @@ fun Avatar(name: String, initial: String, photo: ByteArray?, size: Dp, modifier:
     val image by produceState(photo?.let { decoded.get(key(it)) }, photo) {
         value = photo?.let { p -> decoded.get(key(p)) ?: withContext(Dispatchers.Default) { photoBitmap(p) } }
     }
-    val shown = image
+    AvatarOf(name, initial, image, size, modifier, describe, fill)
+}
+
+@Composable
+private fun AvatarOf(name: String, initial: String, shown: ImageBitmap?, size: Dp, modifier: Modifier, describe: Boolean, fill: Color) {
     val label = if (shown != null) "$name's photo" else name
     Box(
         modifier.size(size).clip(CircleShape).background(fill)

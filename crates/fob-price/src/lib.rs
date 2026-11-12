@@ -45,7 +45,7 @@ use std::{future::Future, ops::Range, sync::LazyLock, time::Duration};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use fob_monero::{amount::{self, ATOMIC_PER_XMR}, fiat::{Currency, MICRO, Record, currencies, currency, parse, rate, to_atomic, value}, network::is_onion};
+use fob_monero::{amount::{self, ATOMIC_PER_XMR, Typed, Unit}, fiat::{Currency, MICRO, Record, currencies, currency, parse, rate, to_atomic, value}, network::is_onion};
 use crate::{error::PriceError, error::Result};
 
 /// How often the current price is asked while Fob is on screen.
@@ -731,8 +731,9 @@ pub(crate) fn micro_number(n: &Value) -> Option<u64> {
 /// unit that switches it while there's a price, and what's under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AmountField {
-    /// Typing in money: there's a price and the field is switched to it.
-    pub in_fiat: bool,
+    /// What it's typed in: money only while there's a price and the field
+    /// is switched to it.
+    pub typed_in: Unit,
     /// Before what's typed: "$", "€", or "ɱ" for XMR; none for a currency
     /// without a symbol, which the chip names.
     pub sign: Option<String>,
@@ -751,7 +752,7 @@ pub struct AmountField {
     /// still what it holds (a switch changes both before a new one comes),
     /// so nothing is sent or shared from one that's behind.
     pub for_text: String,
-    pub for_in_fiat: bool,
+    pub for_typed_in: Unit,
 }
 
 /// What's under an amount field.
@@ -795,14 +796,15 @@ pub enum FieldPrice<'a> {
 /// The field as a form opens it, nothing typed: in money while there's a
 /// `price`, else XMR, so a screen draws it whole on its first frame.
 pub fn blank_field(price: FieldPrice) -> AmountField {
-    amount_field("", matches!(price, FieldPrice::At(..)), price)
+    let unit = if matches!(price, FieldPrice::At(..)) { Unit::Fiat } else { Unit::Xmr };
+    amount_field(Typed::new("", unit), price)
 }
 
-/// The field for `text` typed in money (`in_fiat`) or XMR, at `price` when
-/// there is one (without, it takes XMR only).
-pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField {
-    let (for_text, for_in_fiat) = (text.to_owned(), in_fiat);
-    let text = text.trim();
+/// The field for `typed`, in money or XMR, at `price` when there is one
+/// (without, it takes XMR only).
+pub fn amount_field(typed: Typed, price: FieldPrice) -> AmountField {
+    let (for_text, for_typed_in) = (typed.text().to_owned(), typed.unit());
+    let text = typed.text().trim();
     let (missing, age) = match price {
         FieldPrice::Missing(c) => (Some(c), None),
         FieldPrice::At(_, _, age) => (None, age),
@@ -812,23 +814,24 @@ pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField
         FieldPrice::At(c, p, _) => Some((c, p)),
         _ => None,
     };
-    let in_fiat = in_fiat && price.is_some();
+    let typed_in = if price.is_some() { typed.unit() } else { Unit::Xmr };
+    let fiat = typed_in == Unit::Fiat;
     // "US dollars", "XMR".
-    let unit_name = |fiat: bool| match price {
-        Some((c, _)) if fiat && c.plural.is_empty() => c.code.clone(),
-        Some((c, _)) if fiat => c.plural.to_owned(),
+    let unit_name = |unit: Unit| match price {
+        Some((c, _)) if unit == Unit::Fiat && c.plural.is_empty() => c.code.clone(),
+        Some((c, _)) if unit == Unit::Fiat => c.plural.to_owned(),
         _ => "XMR".to_owned(),
     };
     // What it comes to in XMR, the way Send converts it.
     let atomic = match price {
-        Some((c, p)) if in_fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)),
+        Some((c, p)) if fiat => parse(text, c).ok().and_then(|m| to_atomic(m, p, c)),
         _ => amount::parse(text).ok(),
     };
     let under = match price {
         Some((c, p)) if text.is_empty() => UnderField::Rate { rate: rate(p, c), from: age.cloned() },
         _ if !text.is_empty() && atomic.is_none() => UnderField::NotAnAmount,
         Some((c, p)) => UnderField::Converts {
-            to: if in_fiat { format!("{} XMR", amount::format(atomic.unwrap_or(0))) } else { value(atomic.unwrap_or(0), p, c) },
+            to: if fiat { format!("{} XMR", amount::format(atomic.unwrap_or(0))) } else { value(atomic.unwrap_or(0), p, c) },
             rate: rate(p, c),
             from: age.cloned(),
         },
@@ -836,22 +839,22 @@ pub fn amount_field(text: &str, in_fiat: bool, price: FieldPrice) -> AmountField
         None => missing.map_or(UnderField::Nothing, |c| UnderField::NoPrice { code: c.code.clone() }),
     };
     AmountField {
-        in_fiat,
+        typed_in,
         sendable: atomic.is_some_and(|a| a > 0),
         sign: match price {
-            Some((c, _)) if in_fiat => c.symbol.map(str::to_owned),
+            Some((c, _)) if fiat => c.symbol.map(str::to_owned),
             _ => Some(amount::SIGN.to_owned()),
         },
         unit: match price {
-            Some((c, _)) if in_fiat => c.code.clone(),
+            Some((c, _)) if fiat => c.code.clone(),
             _ => "XMR".into(),
         },
         can_switch: price.is_some(),
         under,
-        unit_name: unit_name(in_fiat),
-        other_unit_name: price.map(|_| unit_name(!in_fiat)),
+        unit_name: unit_name(typed_in),
+        other_unit_name: price.map(|_| unit_name(typed_in.other())),
         for_text,
-        for_in_fiat,
+        for_typed_in,
     }
 }
 
@@ -1169,11 +1172,11 @@ mod tests {
     fn a_field_says_what_it_converts_to_without_words() {
         let usd = currency("USD");
         let at = FieldPrice::At(&usd, 166_100_000, None);
-        assert_eq!(amount_field("", true, at).under, UnderField::Rate { rate: rate(166_100_000, &usd), from: None });
-        assert_eq!(amount_field("1", false, at).under, UnderField::Converts { to: "$166.10".into(), rate: rate(166_100_000, &usd), from: None });
-        assert_eq!(amount_field("nope", false, at).under, UnderField::NotAnAmount);
-        assert_eq!(amount_field("1", false, FieldPrice::Missing(&usd)).under, UnderField::NoPrice { code: "USD".into() });
-        assert_eq!(amount_field("1", false, FieldPrice::None).under, UnderField::Nothing);
+        assert_eq!(amount_field(Typed::Fiat(""), at).under, UnderField::Rate { rate: rate(166_100_000, &usd), from: None });
+        assert_eq!(amount_field(Typed::Xmr("1"), at).under, UnderField::Converts { to: "$166.10".into(), rate: rate(166_100_000, &usd), from: None });
+        assert_eq!(amount_field(Typed::Xmr("nope"), at).under, UnderField::NotAnAmount);
+        assert_eq!(amount_field(Typed::Xmr("1"), FieldPrice::Missing(&usd)).under, UnderField::NoPrice { code: "USD".into() });
+        assert_eq!(amount_field(Typed::Xmr("1"), FieldPrice::None).under, UnderField::Nothing);
         let list = currency_list(None, None, "zzzz");
         assert_eq!(list.no_match.as_deref(), Some("zzzz"));
     }

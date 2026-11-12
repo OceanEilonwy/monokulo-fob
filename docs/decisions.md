@@ -3938,5 +3938,70 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
 408. **Payments cross the FFI typed.** A scanned code is parsed once into a
      `ScannedCode` object that the form and confirm keep, and `prepare` and
      `preview` take a `TypedAmount` (`Xmr` or `Fiat`) instead of text and
+     an `in_fiat` flag. Decision 410 takes the flag out of the rest.
+
+409. **The `Scanner` reads only the transactions the prefilter flags.**
+     `Scanner::scan` takes a block by value, so a flagged block was copied
+     whole. monokulo-8ar's `Prefilter::flag_txs` now names the transactions
+     in a block that may pay (or `Txs::All` for one it can't vouch for), and
+     `look_for_money` copies only those. The miner transaction is copied only
+     if it is flagged, and otherwise becomes one with no outputs. The
+     `Scanner` numbers each RingCT output from the block's first index plus
+     every RingCT output before it, so the transactions left out before the
+     first one kept move that index on. Those left out between two kept ones
+     become one stand-in v2 transaction with as many outputs and no extra,
+     which the `Scanner` passes over. Tests hold the outputs and global
+     indexes found to those found reading the whole block. Unfiltered (no
+     GPU, or too few keys), the block is still copied whole. On 200 mainnet
+     blocks from 3,797,000 (40 transactions each), the copy went from 29 µs
+     to 0.45 µs a block with one transaction flagged. A `Scanner` that
+     borrowed the block would need no copy at all (issue #41).
+
+410. **An amount's unit is a type all the way down** (finishes 408).
+     `amount_entry`, `receive_code` and `make_request` take a
+     `TypedAmount` (optional where the amount is), `convert_amount` takes
+     the `AmountUnit` to convert to, and the amount field's record says
+     `typed_in` and `for_typed_in` as an `AmountUnit`. Below the FFI the
+     core's `amount::Typed` (`Xmr(&str)` or `Fiat(&str)`) and
+     `amount::Unit` carry it through fob-wallet and fob-price, so text and
+     its unit can't come apart or be swapped. Nothing behaves differently:
+     blank text still asks nothing, and money typed with no price is still
+     read as XMR by the field and refused by a payment.
+
      an `in_fiat` flag. `amount_entry`, `receive_code` and `make_request`
      still take the flag.
+
+411. **A sent payment's receipt is read once, when it's recorded, and kept**
+     (docs/activity-storage.md). `Sent.receipt_view` holds the
+     `ReceiptView`, in the database's `sent.receipt_view` column (version
+     11, whose upgrade reads every receipt already recorded in its one
+     transaction); Activity and the coins' sources read it and never parse
+     the receipt JSON again. A receipt that doesn't read has no view, as
+     Activity showed none for it before.
+
+412. **Activity is built once per change, in one pass.** The state and the
+     pool live in a `Tracked` wrapper whose every mutable borrow takes a
+     new generation, so no change can go unnoticed; `activity()` returns
+     the same `Arc<[Activity]>` until either changes, and `lists()` the
+     same `Arc<Lists>` until then or the calendar day changes. A rebuild
+     looks each thing up in a map made once (coins spent by a transaction,
+     its own outputs, requests, shares and contacts by address), not by
+     searching everything per row. `Activity.receipt` is an
+     `Arc<ReceiptView>`; `Activity.receipt_json`, which nothing read, is
+     gone. Rows of the same block and time now come in a fixed order (the
+     order their first output was found; the pool's by hash) rather than a
+     map's.
+
+413. **Activity stays in memory, not in a table** (supersedes the
+     suggestion in the round-2 review). The state in memory is the truth
+     and the database lags it while catching up and never holds the pool;
+     Home needs every row anyway; derived rows would double what each save
+     writes through SQLCipher and need a schema version whenever how
+     they're worked out changes. SQLite keeps what's immutable and costly
+     to derive (411); memory keeps what one pass rebuilds in milliseconds.
+
+414. **A contact's photo crosses the FFI once per photo, not with every
+     row.** A contact row carries `photo_key` (its id and a hash of the
+     bytes) and `contact_photo(id)` gives the bytes; Android's
+     `ContactAvatar` and GTK's `contact_avatar` keep the decoded image by
+     key, so an edited photo, with a new key, is fetched again.

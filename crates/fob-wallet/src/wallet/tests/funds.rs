@@ -27,7 +27,7 @@ async fn coins_are_found_ready_or_piece_by_piece_not_yet() {
         change,
         time: 5_000,
         height,
-        receipt: None,
+        receipt: None, receipt_view: None,
         note: None,
         pieces: None,
         back: vec![],
@@ -120,7 +120,7 @@ async fn notes_go_with_payments_in_and_out() {
         let mut state = wallet.inner.state.lock().await;
         state.outputs.push(received("in", t, XMR / 2));
         state.outputs.push(Owned { key: "in-2".into(), output: "2".into(), ..received("in", t, XMR / 4) });
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: 1, fee: 1, change: 0, time: t, height: None, receipt: None, receipt_view: None, note: Some("Rent".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
     }
     let clock = Clock { now: t, utc_offset: 0, hours_24: true };
     let shown = wallet.said_payment("in", clock).await.unwrap();

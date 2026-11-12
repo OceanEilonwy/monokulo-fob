@@ -12,7 +12,7 @@ async fn a_payment_seen_now_keeps_the_price_of_the_moment() {
     {
         let mut state = wallet.inner.state.lock().await;
         state.outputs.push(received("in", t - 120, XMR / 2));
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, receipt_view: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
         assert!(wallet.record_prices(&mut state));
         wallet.save_state(&state).unwrap();
     }
@@ -21,7 +21,7 @@ async fn a_payment_seen_now_keeps_the_price_of_the_moment() {
     assert_eq!(price_of(&activity, "out"), Some((166_060_000, false)));
     // Kept in the wallet file, with who priced it.
     let again = Wallet::open(&wallet.inner.path, [1; 32]).unwrap();
-    let record = again.activity().await.into_iter().find(|a| a.tx == "in").unwrap().price.unwrap();
+    let record = again.activity().await.iter().find(|a| a.tx == "in").cloned().unwrap().price.unwrap();
     assert_eq!((record.currency.as_str(), record.provider.as_str(), record.at), ("USD", "Kraken", t));
     // Asked again only after 5 minutes (a minute when pulled).
     assert!(!wallet.refresh_prices_from(&fake, Asked::Background, t + 299).await.unwrap());
@@ -285,15 +285,15 @@ async fn an_old_price_keeps_amounts_with_its_age_and_one_over_a_day_turns_money_
     let at = |now| Clock { now, utc_offset: 0, hours_24: true };
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
     // Just asked: the rate.
-    assert_eq!(wallet.said_field("20", true, at(t)).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+    assert_eq!(wallet.said_field(Typed::Fiat("20"), at(t)).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
     // A refresh missed: when it's from, money still typed.
-    let f = wallet.said_field("20", true, at(t + price::AGED)).await;
-    assert!(f.in_fiat && f.can_switch);
+    let f = wallet.said_field(Typed::Fiat("20"), at(t + price::AGED)).await;
+    assert!(f.typed_in == Unit::Fiat && f.can_switch);
     let from = fob_words::prices::from_when(&crate::price_alert::age(t, at(t + price::AGED)).unwrap());
     assert_eq!(f.line, Some(format!("≈ 0.1204 XMR · {from}")));
     // Over a day: XMR only, saying why.
-    let f = wallet.said_field("20", true, at(t + price::SHOWN)).await;
-    assert!(!f.in_fiat && !f.can_switch);
+    let f = wallet.said_field(Typed::Fiat("20"), at(t + price::SHOWN)).await;
+    assert!(f.typed_in == Unit::Xmr && !f.can_switch);
     assert_eq!(f.line.as_deref(), Some("No USD price now · type the amount in XMR"));
 }
 
@@ -344,11 +344,11 @@ async fn receive_s_code_and_field_agree_after_a_new_price() {
     let t = now();
     wallet.refresh_prices_from(&FakePrices::new(100_000_000, vec![]), Asked::Background, t - 20 * 3600).await.unwrap();
     let old = wallet.price_at(t).await;
-    assert_eq!(wallet.receive_code(&address, Some("20"), true, None).await.unwrap().detail.as_deref(), Some("0.2 XMR"));
+    assert_eq!(wallet.receive_code(&address, Some(Typed::Fiat("20")), None).await.unwrap().detail.as_deref(), Some("0.2 XMR"));
     wallet.refresh_prices_from(&FakePrices::new(200_000_000, vec![]), Asked::Typing, t).await.unwrap();
     assert_ne!(wallet.price_at(t).await, old, "a new price is told apart");
-    let field = wallet.said_field("20", true, clock_now()).await;
-    let code = wallet.receive_code(&address, Some("20"), true, None).await.unwrap();
+    let field = wallet.said_field(Typed::Fiat("20"), clock_now()).await;
+    let code = wallet.receive_code(&address, Some(Typed::Fiat("20")), None).await.unwrap();
     assert_eq!(field.line.as_deref(), Some("≈ 0.1 XMR · 1 XMR = $200.00"));
     assert_eq!(code.detail.as_deref(), Some("0.1 XMR"));
     assert_eq!(code.uri, format!("monero:{address}?tx_amount=0.1"));
@@ -362,17 +362,17 @@ async fn with_no_price_the_field_asks_for_one() {
     let t = now();
     let at = |now| Clock { now, utc_offset: 0, hours_24: true };
     let asked = || wallet.inner.prices_asked.lock().unwrap().take();
-    let f = wallet.amount_field("", false, at(t)).await;
+    let f = wallet.amount_field(Typed::Xmr(""), at(t)).await;
     assert!(!f.can_switch);
     assert_eq!(asked(), Some(Asked::Typing), "opening asks");
-    wallet.amount_field("0.5", false, at(t + 30)).await;
+    wallet.amount_field(Typed::Xmr("0.5"), at(t + 30)).await;
     assert_eq!(asked(), None, "not again within the minute");
-    wallet.amount_field("0.55", false, at(t + 60)).await;
+    wallet.amount_field(Typed::Xmr("0.55"), at(t + 60)).await;
     assert_eq!(asked(), Some(Asked::Typing));
     // XMR only: never.
     wallet.set_currency(None).await.unwrap();
     asked();
-    wallet.amount_field("1", false, at(t + 600)).await;
+    wallet.amount_field(Typed::Xmr("1"), at(t + 600)).await;
     assert_eq!(asked(), None);
 }
 
@@ -385,14 +385,14 @@ async fn the_blank_field_follows_the_price_and_asks_nothing() {
     let at = |now| Clock { now, utc_offset: 0, hours_24: true };
     let asked = || wallet.inner.prices_asked.lock().unwrap().take();
     let f = wallet.blank_amount_field(at(t)).await;
-    assert!(!f.in_fiat && !f.can_switch);
+    assert!(f.typed_in == Unit::Xmr && !f.can_switch);
     assert_eq!(asked(), None, "no price, still no lookup");
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
     let f = wallet.blank_amount_field(at(t)).await;
-    assert!(f.in_fiat && f.can_switch);
-    assert_eq!(f, wallet.amount_field("", true, at(t)).await, "the same as the form's own");
+    assert!(f.typed_in == Unit::Fiat && f.can_switch);
+    assert_eq!(f, wallet.amount_field(Typed::Fiat(""), at(t)).await, "the same as the form's own");
     // Over a day old: XMR again.
-    assert!(!wallet.blank_amount_field(at(t + price::SHOWN)).await.in_fiat);
+    assert_eq!(wallet.blank_amount_field(at(t + price::SHOWN)).await.typed_in, Unit::Xmr);
     assert_eq!(asked(), None);
 }
 
@@ -404,17 +404,17 @@ async fn money_typed_against_an_old_price_asks_again_at_most_once_a_minute() {
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
     let asked = || wallet.inner.prices_asked.lock().unwrap().take();
     // A fresh price, XMR typed, or nothing typed: no lookup.
-    wallet.amount_field("20", true, at(t + 60)).await;
-    wallet.amount_field("0.5", false, at(t + price::REFRESH)).await;
-    wallet.amount_field(" ", true, at(t + price::REFRESH)).await;
+    wallet.amount_field(Typed::Fiat("20"), at(t + 60)).await;
+    wallet.amount_field(Typed::Xmr("0.5"), at(t + price::REFRESH)).await;
+    wallet.amount_field(Typed::Fiat(" "), at(t + price::REFRESH)).await;
     assert_eq!(asked(), None);
     // Money typed against a price 5 minutes old: asked, as typing.
-    wallet.amount_field("20", true, at(t + price::REFRESH)).await;
+    wallet.amount_field(Typed::Fiat("20"), at(t + price::REFRESH)).await;
     assert_eq!(asked(), Some(Asked::Typing));
     // The next key within the minute: not again.
-    wallet.amount_field("205", true, at(t + price::REFRESH + 59)).await;
+    wallet.amount_field(Typed::Fiat("205"), at(t + price::REFRESH + 59)).await;
     assert_eq!(asked(), None);
-    wallet.amount_field("2050", true, at(t + price::REFRESH + 60)).await;
+    wallet.amount_field(Typed::Fiat("2050"), at(t + price::REFRESH + 60)).await;
     assert_eq!(asked(), Some(Asked::Typing));
 }
 
@@ -423,30 +423,30 @@ async fn receive_takes_an_amount_in_money_and_asks_in_xmr() {
     let wallet = Wallet::create(&dir("receive-fiat"), [1; 32], Network::Stagenet).unwrap();
     let address = wallet.receive_address().await.unwrap();
     // No price yet: XMR only.
-    assert!(!wallet.amount_field("", true, clock_now()).await.can_switch);
-    assert!(matches!(wallet.receive_code(&address, Some("20"), true, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
+    assert!(!wallet.amount_field(Typed::Fiat(""), clock_now()).await.can_switch);
+    assert!(matches!(wallet.receive_code(&address, Some(Typed::Fiat("20")), None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
-    let field = wallet.said_field("20", true, clock_now()).await;
-    assert_eq!((field.sign.as_deref(), field.unit.as_str(), field.in_fiat), (Some("$"), "USD", true));
+    let field = wallet.said_field(Typed::Fiat("20"), clock_now()).await;
+    assert_eq!((field.sign.as_deref(), field.unit.as_str(), field.typed_in), (Some("$"), "USD", Unit::Fiat));
     // What the field says the code asks for is what it asks for.
     assert_eq!(field.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
 
-    let code = wallet.receive_code(&address, Some("20"), true, Some("Coffee beans")).await.unwrap();
+    let code = wallet.receive_code(&address, Some(Typed::Fiat("20")), Some("Coffee beans")).await.unwrap();
     assert_eq!(code.uri, format!("monero:{address}?tx_amount=0.1204&tx_description=Coffee%20beans"));
     assert_eq!(code.headline.as_deref(), Some("$20.00"));
     assert_eq!(code.detail.as_deref(), Some("0.1204 XMR · Coffee beans"));
     // In XMR, as before.
-    let code = wallet.receive_code(&address, Some("0.5"), false, None).await.unwrap();
+    let code = wallet.receive_code(&address, Some(Typed::Xmr("0.5")), None).await.unwrap();
     assert_eq!((code.headline.as_deref(), code.detail), (Some("0.5 XMR"), None));
-    assert!(wallet.receive_code(&address, Some("20.123"), true, None).await.is_err());
+    assert!(wallet.receive_code(&address, Some(Typed::Fiat("20.123")), None).await.is_err());
     // Switching the field converts what's typed.
-    assert_eq!(wallet.convert_amount("20", false).await, "0.1204");
-    assert_eq!(wallet.convert_amount("0.1204", true).await, "20.00");
-    assert_eq!(wallet.convert_amount("", true).await, "");
+    assert_eq!(wallet.convert_amount("20", Unit::Xmr).await, "0.1204");
+    assert_eq!(wallet.convert_amount("0.1204", Unit::Fiat).await, "20.00");
+    assert_eq!(wallet.convert_amount("", Unit::Fiat).await, "");
     // XMR only: no money at all.
     wallet.set_currency(None).await.unwrap();
-    assert_eq!(wallet.amount_field("20", true, clock_now()).await.unit, "XMR");
-    assert_eq!(wallet.convert_amount("20", false).await, "");
+    assert_eq!(wallet.amount_field(Typed::Fiat("20"), clock_now()).await.unit, "XMR");
+    assert_eq!(wallet.convert_amount("20", Unit::Xmr).await, "");
 }
 
 #[tokio::test]
@@ -454,18 +454,18 @@ async fn send_takes_an_amount_in_money_at_the_current_price() {
     let wallet = Wallet::create(&dir("send-fiat"), [1; 32], Network::Stagenet).unwrap();
     let address = wallet.receive_address().await.unwrap();
     // No price: XMR only.
-    assert_eq!(wallet.typed_amount(" 0.5 ", false).await.unwrap(), (XMR / 2, None));
-    assert!(matches!(wallet.typed_amount("20", true).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
-    assert!(matches!(wallet.prepare_typed(&address, "20", true, None, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
+    assert_eq!(wallet.typed_amount(Typed::Xmr(" 0.5 ")).await.unwrap(), (XMR / 2, None));
+    assert!(matches!(wallet.typed_amount(Typed::Fiat("20")).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
+    assert!(matches!(wallet.prepare_typed(&address, Typed::Fiat("20"), None, None).await, Err(FobError::Screen(ScreenError::NoPriceToConvert))));
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, now()).await.unwrap();
     // The XMR the field's line showed for it.
-    assert_eq!(wallet.said_field("20", true, clock_now()).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
-    assert_eq!(wallet.typed_amount("20", true).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
-    assert!(matches!(wallet.typed_amount("20.123", true).await, Err(FobError::Monero(MoneroError::BadAmount))));
+    assert_eq!(wallet.said_field(Typed::Fiat("20"), clock_now()).await.line.as_deref(), Some("≈ 0.1204 XMR · 1 XMR = $166.10"));
+    assert_eq!(wallet.typed_amount(Typed::Fiat("20")).await.unwrap(), (120_400_000_000, Some("$20.00".into())));
+    assert!(matches!(wallet.typed_amount(Typed::Fiat("20.123")).await, Err(FobError::Monero(MoneroError::BadAmount))));
     // Converted before the address and amount are checked, as prepare checks them.
-    assert!(matches!(wallet.prepare_typed("86Ux", "20", true, None, None).await, Err(FobError::Monero(MoneroError::BadAddress(_)))));
-    assert!(matches!(wallet.prepare_typed(&address, "0", true, None, None).await, Err(FobError::Monero(MoneroError::BadAmount))));
-    assert!(matches!(wallet.prepare_typed(&address, "abc", false, None, None).await, Err(FobError::Monero(MoneroError::BadAmount))));
+    assert!(matches!(wallet.prepare_typed("86Ux", Typed::Fiat("20"), None, None).await, Err(FobError::Monero(MoneroError::BadAddress(_)))));
+    assert!(matches!(wallet.prepare_typed(&address, Typed::Fiat("0"), None, None).await, Err(FobError::Monero(MoneroError::BadAmount))));
+    assert!(matches!(wallet.prepare_typed(&address, Typed::Xmr("abc"), None, None).await, Err(FobError::Monero(MoneroError::BadAmount))));
 }
 
 #[tokio::test]
@@ -586,7 +586,7 @@ async fn a_payment_is_priced_only_at_its_first_time() {
     let t = now();
     wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), Asked::Background, t).await.unwrap();
     let mut state = wallet.inner.state.lock().await;
-    state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 1, time: t - 900 * DAY, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+    state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 1, time: t - 900 * DAY, height: None, receipt: None, receipt_view: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
     state.outputs.push(received("out", t, 1));
     state.outputs.push(received("in", t, XMR));
     assert!(wallet.record_prices(&mut state));

@@ -216,7 +216,7 @@ impl Contacts {
         }
         for contact in rows {
             let row = widgets::row(&contact.name, &contact.line);
-            row.add_prefix(&widgets::avatar(32, &contact.name, contact.photo.as_deref()));
+            row.add_prefix(&widgets::contact_avatar(&self.engine, 32, &contact.name, contact.id, contact.photo_key.as_deref()));
             row.set_activatable(true);
             let (id, sender) = (contact.id, sender.clone());
             row.connect_activated(move |_| sender.input(Input::Open(id)));
