@@ -13,7 +13,7 @@ fob-monero = { path = "../fob-monero" }
 fob-price = { path = "../fob-price" }
 fob-scanner = { path = "../fob-scanner" }
 fob-screens = { path = "../fob-screens" }
-fob-vault = { path = "../fob-vault" }
+fob-vault = { path = "../fob-vault", default-features = false }
 zeroize = "1"
 
 [dev-dependencies]

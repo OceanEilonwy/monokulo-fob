@@ -13,20 +13,19 @@ fob-monero = { path = "../fob-monero" }
 fob-price = { path = "../fob-price" }
 fob-scanner = { path = "../fob-scanner" }
 fob-screens = { path = "../fob-screens" }
-fob-vault = { path = "../fob-vault" }
+fob-vault = { path = "../fob-vault", default-features = false }
 fob-words = { path = "../fob-words" }
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "3823b28b20bb82faaa826c7a7432aadf7112b371" }
-# The wallet's database, encrypted. OpenSSL comes from source, for every ABI alike.
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
+# The wallet's database, encrypted. OpenSSL comes from source, for every ABI
+# alike, behind the `vendored-openssl` feature (decision 415).
+rusqlite = { version = "0.42.0", features = ["bundled-sqlcipher"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 hex = "0.4"
 curve25519-dalek = "4"
 zeroize = "1"
-# Random sequences of events against the coin model's invariants (wallet/coin.rs).
-proptest = "1.6"
 rand_core = { version = "0.6", features = ["getrandom"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 sha3 = "0.10"
@@ -39,8 +38,13 @@ chacha20poly1305 = "0.10"
 rusb = { version = "0.9", features = ["vendored"], optional = true }
 
 [features]
+default = ["vendored-openssl"]
 # The desktop's Trezor link over libusb.
 usb = ["rusb"]
+# SQLCipher's libcrypto built from source (openssl-src) into the library. An
+# app that brings its own (Till vendors it in till-ffi, or uses CommonCrypto on
+# Apple) turns default features off (decision 415).
+vendored-openssl = ["rusqlite/bundled-sqlcipher-vendored-openssl", "fob-vault/vendored-openssl"]
 
 [dev-dependencies]
 fob-chain = { path = "../fob-chain", features = ["test-support"] }

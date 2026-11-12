@@ -4005,3 +4005,26 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      bytes) and `contact_photo(id)` gives the bytes; Android's
      `ContactAvatar` and GTK's `contact_avatar` keep the decoded image by
      key, so an edited photo, with a new key, is fetched again.
+
+## Fob as a library (November 2026)
+
+Monokular's Till links fob-wallet for its view-key mode
+(monokulo-till `docs/view-key-mode.md`), so the two workspaces must build
+together.
+
+415. **One version of each shared crate, the newest; OpenSSL is a feature.**
+     rusqlite moves to 0.42 (libsqlite3-sys 0.40), the newest, and Till
+     moves with it: `libsqlite3-sys` links `sqlite3`, and a build may hold
+     only one version. reqwest moves to 0.13, which dropped
+     `rustls-tls-webpki-roots`; fob-chain and fob-price take
+     `rustls-no-provider` and hand every client their own rustls config on
+     ring with webpki's roots (fob-price used reqwest's built-in one until
+     now), so nothing reaches rustls-platform-verifier, which on Android
+     needs the JVM. SQLCipher's libcrypto built from source is fob-vault's
+     and fob-wallet's `vendored-openssl` feature, on by default, so Fob's
+     own builds are unchanged; Till turns default features off and keeps
+     its own way (till-ffi vendors OpenSSL on Android, CommonCrypto on
+     Apple; Till's core.md decision 150), since one build can link only one
+     libcrypto. fob-words, which fob-wallet depends on, takes fob-vault
+     without default features so the feature stays fob-wallet's to set.
+     proptest is fob-wallet's dev-dependency only.

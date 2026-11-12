@@ -8,7 +8,12 @@ publish = false
 
 [dependencies]
 fob-monero = { path = "../fob-monero" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
+# rustls without a crypto provider of reqwest's choosing: Fob hands every
+# client its own rustls config, on ring with webpki's roots (decision 415).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2"] }
+# The TLS config handed to reqwest, as fob-chain's (decision 415).
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+webpki-roots = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
