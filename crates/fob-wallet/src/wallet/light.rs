@@ -608,7 +608,10 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
         }
     }
 
-    // Received.
+    // Received, only at a subaddress the wallet watches, as the node's scan
+    // finds them: the server holds the view key, so it can make an output
+    // at any index, and Receive would move on past it.
+    let watched = Wallet::watched(state.receive_index);
     for tx in &mined {
         let height = tx.height.unwrap_or_default();
         let hash = hex::encode(tx.hash.0);
@@ -621,7 +624,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
             if state.outputs.iter().any(|o| o.key == key) {
                 continue;
             }
-            let Some(output) = checked_output(keys, tx, received, height, unlock_block) else {
+            let Some(output) = (received.recipient.min_i <= watched).then(|| checked_output(keys, tx, received, height, unlock_block)).flatten() else {
                 refused += 1;
                 continue;
             };

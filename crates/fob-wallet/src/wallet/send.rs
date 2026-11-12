@@ -327,7 +327,7 @@ impl Wallet {
         let index = match state.split_index {
             Some(index) => index,
             None => {
-                let index = state.receive_index + 1;
+                let index = state.receive_index.saturating_add(1);
                 state.split_index = Some(index);
                 self.save_state(&state)?;
                 index

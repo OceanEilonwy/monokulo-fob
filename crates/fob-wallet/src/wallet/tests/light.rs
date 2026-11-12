@@ -473,6 +473,28 @@ fn an_output_that_isn_t_the_wallet_s_is_refused() {
     assert_eq!((done.refused, state.outputs.len(), done.unchecked), (1, 1, 1));
 }
 
+/// The server holds the view key, so it can make a genuine output at any
+/// subaddress: one past what the wallet watches is refused, and Receive
+/// doesn't move on to it.
+#[test]
+fn an_output_past_the_addresses_watched_is_refused() {
+    let (wallet, mut state) = fresh();
+    let keys = &wallet.inner.keys;
+    let before = state.receive_index;
+    for sub in [u32::MAX, Wallet::watched(before) + 1] {
+        let (_, hash, paid) = transaction(keys, Some((XMR, sub)), &[]);
+        let done = reconcile(keys, &mut state, &answer(vec![listed(hash, Some(300_000), vec![received(&paid.unwrap(), 9)], vec![])], 400_000), &HashMap::new(), 1).unwrap();
+        assert_eq!(done.refused, 1);
+        assert!(state.outputs.is_empty());
+        assert_eq!(state.receive_index, before);
+    }
+    // At the edge of what's watched: taken.
+    let edge = Wallet::watched(before);
+    let (_, hash, paid) = transaction(keys, Some((XMR, edge)), &[]);
+    let done = reconcile(keys, &mut state, &answer(vec![listed(hash, Some(300_000), vec![received(&paid.unwrap(), 9)], vec![])], 400_000), &HashMap::new(), 1).unwrap();
+    assert_eq!((done.refused, state.outputs.len(), state.receive_index), (0, 1, edge));
+}
+
 /// An amount that doesn't open the commitment the server gives: the whole
 /// answer is refused, nothing in the wallet changes, the sync stops with
 /// words, and the Light server screen and the chip say so.
