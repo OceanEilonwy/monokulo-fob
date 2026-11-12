@@ -4161,12 +4161,7 @@ together.
      the node (with its pin if self-signed) or the light server, and the
      price provider and currency. `forget_app` drops its line, and the
      label once no app uses the account; the access stays, as a view key
-     can't be taken back. Not built yet: **Sweep to main** (moving an
-     account's coins to account 0). A payment already spends coins of every
-     account and its change comes back to account 0, so an account's
-     takings reach the main account with the next payment; a sweep of one
-     account alone needs coin selection by account in `prepare`, left for
-     the round that builds Fob's accounts screens.
+     can't be taken back. Sweep to main is decision 421.
 
 420. **Connect to Fob over the FFI, and each wallet's apps in the sealed
      list.** fob-ffi's `connect.rs` gives Fob's screens what they need and
@@ -4183,3 +4178,16 @@ together.
      app gets, which `note_connections` copies from the open wallet after
      an app is connected or forgotten. The wallet's own file stays what's
      true; the list only follows it.
+
+421. **Sweep to main.** `prepare_sweep(account)` spends every coin of that
+     account ready to spend, paying the main address everything less a fee
+     guess, so what the real fee leaves comes back as change to the same
+     address; the guess grows to the fee monero-oxide says it needs. It's
+     an ordinary prepared payment, confirmed and sent with `send`, noted
+     with the account's label. Any payment still spends coins of every
+     account, its change coming back to account 0. A wallet whose spend key
+     is on a Trezor can't sweep, and its payments leave other accounts'
+     coins alone: the device's signing is given account 0's subaddress
+     index only. Coins made by hand in tests don't read as monero-oxide's,
+     so the tests cover which coins a sweep takes and what it refuses; the
+     transaction itself is built as every payment's is.

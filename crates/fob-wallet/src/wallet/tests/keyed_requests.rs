@@ -264,3 +264,28 @@ async fn connect_to_fob_makes_an_account_and_hands_over_the_view_key() {
     }
     assert!(!wallet.accounts().await.iter().any(|a| a.index == 1 && a.label.is_some()));
 }
+
+#[tokio::test]
+async fn sweep_to_main_takes_only_the_account_s_coins_ready_to_spend() {
+    let wallet = Wallet::create(&dir("sweep"), [1; 32], Network::Stagenet).unwrap();
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.tip = 1_000;
+        state.outputs.push(paid_at("main", 0, 1, 5 * XMR, 100));
+        state.outputs.push(paid_at("till-old", 2, 3, 2 * XMR, 100).with_coin(Coin::Free { ki: KeyImage::Known([2; 32]) }));
+        state.outputs.push(paid_at("till-new", 2, 4, XMR, 995).with_coin(Coin::Free { ki: KeyImage::Known([3; 32]) }));
+        state.outputs.push(paid_at("other-till", 3, 1, 7 * XMR, 100).with_coin(Coin::Free { ki: KeyImage::Known([4; 32]) }));
+    }
+    // Made by hand, the outputs don't read as monero-oxide's: what counts
+    // here is which are picked, so this checks the filter on the ids.
+    let state = wallet.inner.state.lock().await;
+    let ready: Vec<&str> = state.spendable_coins().iter().map(|(i, _)| &state.outputs[*i]).filter(|o| o.account == 2).map(|o| o.tx.as_str()).collect();
+    assert_eq!(ready, ["till-old"], "the new coin isn't ready, and other accounts aren't swept");
+    drop(state);
+    assert_eq!(wallet.prepare_sweep(0).await.unwrap_err(), FobError::Screen(ScreenError::NoSuchAccount));
+    assert!(matches!(wallet.prepare_sweep(5).await, Err(FobError::Screen(ScreenError::NotEnoughFunds { available: 0, .. }))));
+    let full = Keys::from_words(Network::Stagenet, &wallet.seed_words().unwrap().1).unwrap().keys;
+    let watching = Wallet::restore_watching(&dir("sweep-watch"), [1; 32], Keys::view_only(Network::Stagenet, &full.primary_address(), &full.view_key_hex()).unwrap(), None).unwrap();
+    assert_eq!(watching.prepare_sweep(2).await.unwrap_err(), FobError::Vault(VaultError::ViewOnly));
+    assert_eq!(Wallet::restore_watching(&dir("sweep-spend"), [1; 32], full, None).err(), Some(FobError::Vault(VaultError::BadKey)));
+}

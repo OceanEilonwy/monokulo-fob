@@ -227,6 +227,13 @@ impl FobWallet {
             .collect()
     }
 
+    /// Sweep to main: account `index`'s coins ready to spend, paid to the
+    /// main address, for the confirm screen; sent with `send` as any payment.
+    pub async fn prepare_sweep(&self, index: u32) -> Result<crate::Prepared> {
+        let p = self.inner.prepare_sweep(index).await?;
+        Ok(crate::prepared(&self.inner, p).await)
+    }
+
     /// Settings → Connected apps.
     pub async fn connected_apps(&self) -> Vec<ConnectedApp> {
         let accounts = self.inner.accounts().await;

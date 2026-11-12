@@ -139,7 +139,9 @@ impl Wallet {
             // the device needs to sign, must be known too.
             let ready = |o: &Owned| o.coin.is_free() && confirmations(&state, o.height) >= state.needed(o);
             let spendable = state.spendable_coins();
-            let signable = |i: &usize| device.is_none() || state.outputs[*i].tx_key.is_some();
+            // A device signs for account 0's addresses only, so another
+            // account's coins wait for a wallet that holds its spend key.
+            let signable = |i: &usize| device.is_none() || (state.outputs[*i].tx_key.is_some() && state.outputs[*i].account == 0);
             let unsynced = state.outputs.iter().filter(|o| ready(o)).count()
                 - spendable.iter().map(|(i, _)| i).filter(|i| signable(i)).count();
             let mut candidates: Vec<(CoinId, u64, WalletOutput)> = spendable
@@ -258,6 +260,89 @@ impl Wallet {
             },
         );
         Ok(Prepared { id, to: to.to_owned(), amount, fee, receipt: receipt.as_ref().map(ReceiptView::from), split: vec![], pieces })
+    }
+
+    /// The coins Sweep to main spends: every one of account `index` ready
+    /// to spend now, largest first.
+    pub(super) fn sweep_coins(state: &State, index: u32) -> Vec<(CoinId, u64, WalletOutput)> {
+        let mut coins: Vec<(CoinId, u64, WalletOutput)> = state
+            .spendable_coins()
+            .iter()
+            .map(|(i, _)| &state.outputs[*i])
+            .filter(|o| o.account == index)
+            .filter_map(|o| {
+                let bytes = hex::decode(&o.output).ok()?;
+                Some((o.id(), o.amount, WalletOutput::read(&mut bytes.as_slice()).ok()?))
+            })
+            .collect();
+        coins.sort_by_key(|c| std::cmp::Reverse(c.1));
+        coins
+    }
+
+    /// Sweep to main (decision 421): every coin of account `index` (1 or
+    /// more) ready to spend, paid to this wallet's main address, less the
+    /// fee, for the confirm screen and [`send`](Wallet::send) as any
+    /// payment. Not for a wallet whose spend key is on a device, which signs
+    /// for account 0 only.
+    pub async fn prepare_sweep(&self, index: u32) -> Result<Prepared> {
+        if index == 0 {
+            return Err(FobError::Screen(ScreenError::NoSuchAccount));
+        }
+        self.spendable()?;
+        if self.inner.keys.device().is_some() {
+            return Err(FobError::Send("a hardware wallet can't sweep another account".into()));
+        }
+        let (chosen, label) = {
+            let state = self.inner.state.lock().await;
+            (Self::sweep_coins(&state, index), state.accounts.iter().find(|a| a.index == index).map(|a| a.label.clone()))
+        };
+        let total = amount::total(chosen.iter().map(|c| c.1));
+        if chosen.is_empty() {
+            return Err(FobError::Screen(ScreenError::NotEnoughFunds { available: 0, needed: 1 }));
+        }
+        let (fee_rate, source) = self.send_source().await?;
+        let network = self.network();
+        let to = self.inner.keys.primary_address();
+        let main = MoneroAddress::from_str(network.monero(), &to).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
+        let with_decoys = self.rings(&source, chosen.iter().map(|c| c.2.clone()).collect()).await?;
+        let change = Change::new(self.inner.keys.view_pair(), None);
+        // Everything less a fee guess; what the real fee leaves over comes
+        // back as change, to the same main address.
+        let mut fee_guess = fee_rate.calculate_fee_from_weight(1_600 + 900 * chosen.len() as u64) as u64;
+        let (signable, amount) = loop {
+            let Some(amount) = total.checked_sub(fee_guess).filter(|a| *a > 0) else {
+                return Err(FobError::Screen(ScreenError::NotEnoughFunds { available: total, needed: fee_guess.saturating_add(1) }));
+            };
+            let mut outgoing_view = Zeroizing::new([0u8; 32]);
+            OsRng.fill_bytes(outgoing_view.as_mut());
+            match SignableTransaction::new(RctType::ClsagBulletproofPlus, outgoing_view, with_decoys.clone(), vec![(main, amount)], change.clone(), vec![], fee_rate) {
+                Ok(signable) => break (signable, amount),
+                Err(SendError::NotEnoughFunds { necessary_fee: Some(needed), .. }) if needed > fee_guess => fee_guess = needed,
+                Err(SendError::NotEnoughFunds { .. }) => fee_guess = fee_guess.saturating_mul(2),
+                Err(e) => return Err(FobError::Send(format!("{e:?}"))),
+            }
+        };
+        let fee = signable.necessary_fee();
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        self.inner.prepared.lock().await.insert(
+            id,
+            PreparedTx {
+                signable,
+                plan: None,
+                out: Outgoing {
+                    to: to.clone(),
+                    amount,
+                    inputs: chosen.iter().map(|c| c.0.clone()).collect(),
+                    input_total: total,
+                    receipt: None,
+                    note: label,
+                    recipient_name: None,
+                    pieces: None,
+                    back: vec![],
+                },
+            },
+        );
+        Ok(Prepared { id, to, amount, fee, receipt: None, split: vec![], pieces: None })
     }
 
     /// The notes Split up offers, in money at the current price when there
