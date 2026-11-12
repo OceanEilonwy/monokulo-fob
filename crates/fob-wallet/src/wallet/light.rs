@@ -176,7 +176,7 @@ impl Wallet {
                 }
             }
         }
-        *self.inner.pipeline.lock().await = None;
+        self.reset_pipeline().await;
         self.inner.pool.lock().expect("pool lock").clear();
         self.inner.pool_seen.lock().expect("pool lock").clear();
         *self.inner.light.lock().expect("light lock") = None;
@@ -195,7 +195,7 @@ impl Wallet {
         self.stop_sync();
         *self.inner.rpc.lock().await = None;
         *self.inner.link.lock().expect("link lock") = None;
-        *self.inner.pipeline.lock().await = None;
+        self.reset_pipeline().await;
         *self.inner.light.lock().expect("light lock") = None;
         *self.inner.node_verdict.lock().expect("node lock") = None;
         let status = self.set_status(|s| {

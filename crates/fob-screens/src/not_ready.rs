@@ -136,7 +136,7 @@ pub fn summarise(pieces: Vec<Piece>, ready: u64, last_block_time: u64, clock: Cl
         return None;
     }
     let from = counting_from(last_block_time, clock.now);
-    let total: u64 = pieces.iter().map(|p| p.amount).sum();
+    let total = amount::total(pieces.iter().map(|p| p.amount));
     let done: f64 = pieces.iter().map(|p| p.amount as f64 * p.confirmations as f64 / p.needed as f64).sum();
     let progress = (done / total as f64).clamp(0.0, 1.0);
     let mut views: Vec<PieceView> = pieces
@@ -168,7 +168,7 @@ pub fn summarise(pieces: Vec<Piece>, ready: u64, last_block_time: u64, clock: Cl
         ready,
         all_ready,
         seconds_left,
-        sums: vec![sum(SumKind::Ready, ready), sum(SumKind::NotReady { coins: views.len() }, total), sum(SumKind::All, ready + total)],
+        sums: vec![sum(SumKind::Ready, ready), sum(SumKind::NotReady { coins: views.len() }, total), sum(SumKind::All, ready.saturating_add(total))],
         price_age: None,
         progress: progress as f32,
         segments: coin_bar::segments(&[ready], &views),
@@ -237,7 +237,7 @@ pub struct Coins {
 /// missed a refresh, beside the ready sum.
 pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unlock: u64, price: Option<(&fiat::Currency, u64)>, age: Option<fiat::PriceAge>, clock: Clock) -> Coins {
     let worth = |atomic: u64| price.map(|(currency, p)| fiat::value(atomic, p, currency));
-    let ready_total: u64 = ready.iter().map(|p| p.amount).sum();
+    let ready_total = amount::total(ready.iter().map(|p| p.amount));
     let mut ready_coins: Vec<CoinView> = ready
         .into_iter()
         .filter(|p| p.amount > 0)
@@ -255,7 +255,7 @@ pub fn coins(ready: Vec<Piece>, not_ready: Vec<Piece>, last_block_time: u64, unl
     let count = ready_coins.len() + pieces.len();
     let segments = coin_bar::segments(&ready_coins.iter().map(|c| c.atomic).collect::<Vec<_>>(), &pieces);
     Coins {
-        held: (count > 0).then(|| Held { amount: amount::format_short(ready_total + not_ready_total), coins: count, minutes: unlock * BLOCK_SECONDS / 60 }),
+        held: (count > 0).then(|| Held { amount: amount::format_short(ready_total.saturating_add(not_ready_total)), coins: count, minutes: unlock * BLOCK_SECONDS / 60 }),
         ready: ready_total,
         not_ready: not_ready_total,
         progress,

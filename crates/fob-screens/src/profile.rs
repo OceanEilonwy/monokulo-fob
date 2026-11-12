@@ -247,7 +247,7 @@ pub fn swap_code(profile: Option<&Profile>, share: &Share) -> String {
 pub fn received(share: &Share, rows: &[Activity]) -> Option<String> {
     let paid: Vec<(&Activity, u64)> = rows.iter().filter_map(|a| Some((a, a.part_amount(share.subaddress)?))).collect();
     let (first, _) = paid.first()?;
-    let atomic: u64 = paid.iter().map(|(_, amount)| amount).sum();
+    let atomic = amount::total(paid.iter().map(|(_, amount)| *amount));
     let unit = first.price.as_ref().map(|p| p.currency.clone());
     let fiat = unit.and_then(|unit| {
         let currency = fiat::currency(&unit);
