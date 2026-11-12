@@ -101,21 +101,26 @@ fn seen(block: &ScannableBlock, hash: &[u8; 32]) -> Scanned {
     Scanned { height: block.block.number() as u64, time: block.block.header.timestamp, hash: hex::encode(hash), miner_tx: String::new(), txs, found: vec![], tx_keys: HashMap::new() }
 }
 
-/// Finds the money in a block that may hold some.
+/// Finds the money in a block that may hold some. The `Scanner` takes the
+/// block, and frees it: a copy, made and freed on this thread, as freeing the
+/// fetched block here would fight the other threads over the allocator
+/// (decision 350).
 fn look_for_money(scanner: &mut Scanner, block: &ScannableBlock, scanned: &mut Scanned) -> Result<(), String> {
-    scanned.miner_tx = hex::encode(block.block.miner_transaction().hash());
+    let miner = block.block.miner_transaction().hash();
+    scanned.miner_tx = hex::encode(miner);
     let height = scanned.height;
     scanned.found = scanner.scan(block.clone()).map_err(|e| format!("scanning block {height}: {e:?}"))?.ignore_additional_timelock();
     // Each found output's transaction keys, which a hardware wallet needs.
     for output in &scanned.found {
-        let tx = hex::encode(output.transaction());
+        let hash = output.transaction();
+        let tx = hex::encode(hash);
         if scanned.tx_keys.contains_key(&tx) {
             continue;
         }
-        let extra = if tx == scanned.miner_tx {
+        let extra = if hash == miner {
             Some(&block.block.miner_transaction().prefix().extra)
         } else {
-            block.block.transactions.iter().position(|h| hex::encode(h) == tx).and_then(|i| block.transactions.get(i)).map(|t| &t.prefix().extra)
+            block.block.transactions.iter().position(|h| *h == hash).and_then(|i| block.transactions.get(i)).map(|t| &t.prefix().extra)
         };
         if let Some(keys) = extra.and_then(|e| tx_keys(e)) {
             scanned.tx_keys.insert(tx, keys);
