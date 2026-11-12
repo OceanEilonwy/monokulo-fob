@@ -34,7 +34,7 @@ pub fn segments(ready: &[u64], waiting: &[PieceView]) -> Vec<Segment> {
     let room = MAX_SEGMENTS.saturating_sub(waiting.len()).max(1);
     if out.len() > room {
         let rest = out.split_off(room - 1);
-        out.push(Segment { atomic: rest.iter().map(|s| s.atomic).sum(), progress: None, coins: rest.len() as u32 });
+        out.push(Segment { atomic: fob_monero::amount::total(rest.iter().map(|s| s.atomic)), progress: None, coins: rest.len() as u32 });
     }
     // Waiting pieces past the cap (only with more than 23 not ready at
     // once) share the last segment likewise, at their weighted progress.
@@ -42,7 +42,7 @@ pub fn segments(ready: &[u64], waiting: &[PieceView]) -> Vec<Segment> {
     let (shown, rest) = if waiting.len() <= keep { (waiting, &[][..]) } else { waiting.split_at(keep - 1) };
     out.extend(shown.iter().map(|p| Segment { atomic: p.atomic, progress: Some(p.progress.clamp(0.0, 1.0)), coins: 1 }));
     if !rest.is_empty() {
-        let atomic: u64 = rest.iter().map(|p| p.atomic).sum();
+        let atomic = fob_monero::amount::total(rest.iter().map(|p| p.atomic));
         let done: f64 = rest.iter().map(|p| p.atomic as f64 * f64::from(p.progress.clamp(0.0, 1.0))).sum();
         let progress = if atomic == 0 { 0.0 } else { (done / atomic as f64) as f32 };
         out.push(Segment { atomic, progress: Some(progress), coins: rest.len() as u32 });

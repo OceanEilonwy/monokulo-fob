@@ -8,9 +8,9 @@ impl Wallet {
     /// and the fee. Nothing leaves the wallet until [`send`](Wallet::send).
     /// `note` (typed, or the payment code's description) is kept with the
     /// payment once sent; `code` is the payment code the form was filled
-    /// from, if any, whose name and receipt go with it as
+    /// from, as read, if any, whose name and receipt go with it as
     /// [`uri::code_terms`] says.
-    pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
+    pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&uri::PaymentRequest>) -> Result<Prepared> {
         self.spendable()?;
         let (destination, terms) = self.payment_terms(to, amount, code)?;
         let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
@@ -20,20 +20,20 @@ impl Wallet {
     /// What [`prepare`](Wallet::prepare) would pay, checked as it checks
     /// it, without asking the node: the confirm screen shows it at once
     /// while the fee is worked out.
-    pub fn preview(&self, to: &str, amount: u64, code: Option<&str>) -> Result<Preview> {
+    pub fn preview(&self, to: &str, amount: u64, code: Option<&uri::PaymentRequest>) -> Result<Preview> {
         let (_, terms) = self.payment_terms(to, amount, code)?;
         Ok(Preview { to: to.trim().to_owned(), amount, receipt: terms.receipt.as_ref().map(ReceiptView::from) })
     }
 
     /// `to` as an address on this wallet's network, `amount` more than
     /// nothing, and what `code` gives the payment.
-    pub(super) fn payment_terms(&self, to: &str, amount: u64, code: Option<&str>) -> Result<(MoneroAddress, uri::CodeTerms)> {
+    pub(super) fn payment_terms(&self, to: &str, amount: u64, code: Option<&uri::PaymentRequest>) -> Result<(MoneroAddress, uri::CodeTerms)> {
         let network = self.network();
         let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
         if amount == 0 {
             return Err(FobError::Monero(MoneroError::BadAmount));
         }
-        Ok((destination, uri::code_terms(network, to, amount, code)))
+        Ok((destination, uri::code_terms(to, amount, code)))
     }
 
     /// Asks the node its fee rate, keeping it for Split up's estimate.
@@ -129,7 +129,7 @@ impl Wallet {
         recipient_name: Option<String>,
         pieces: Option<u32>,
     ) -> Result<Prepared> {
-        let amount: u64 = payments.iter().map(|p| p.1).sum();
+        let amount = amount::total(payments.iter().map(|p| p.1));
         let device = self.inner.keys.device();
         let (mut candidates, available, unsynced) = {
             let state = self.inner.state.lock().await;
@@ -152,7 +152,7 @@ impl Wallet {
                 })
                 .collect();
             candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
-            let available = candidates.iter().map(|c| c.1).sum::<u64>();
+            let available = amount::total(candidates.iter().map(|c| c.1));
             (candidates, available, unsynced)
         };
         let not_enough = |needed: u64| {
@@ -173,9 +173,9 @@ impl Wallet {
         let guess = |inputs: usize| fee_rate.calculate_fee_from_weight((1_600 + 900 * inputs as u64).max(split::weight(inputs, outputs))) as u64;
         let mut chosen = vec![];
         let mut total = 0;
-        while total < amount + guess(chosen.len().max(1)) && !candidates.is_empty() {
+        while total < amount.saturating_add(guess(chosen.len().max(1))) && !candidates.is_empty() {
             let c = candidates.remove(0);
-            total += c.1;
+            total = total.saturating_add(c.1);
             chosen.push(c);
         }
         // Every input's ring at once.
@@ -196,10 +196,10 @@ impl Wallet {
                 Ok(signable) => break signable,
                 Err(SendError::NotEnoughFunds { necessary_fee, .. }) => {
                     if candidates.is_empty() {
-                        return Err(not_enough(amount + necessary_fee.unwrap_or(0)));
+                        return Err(not_enough(amount.saturating_add(necessary_fee.unwrap_or(0))));
                     }
                     let c = candidates.remove(0);
-                    total += c.1;
+                    total = total.saturating_add(c.1);
                     with_decoys.extend(self.rings(&source, vec![c.2.clone()]).await?);
                     chosen.push(c);
                 }
@@ -215,8 +215,9 @@ impl Wallet {
                 // more weight covers it, and is what the device shows.
                 let weight = fee_rate.calculate_weight_from_fee(fee).unwrap_or(0) as u64 + trezor::sign::WEIGHT_MARGIN;
                 fee = u64::try_from(fee_rate.calculate_fee_from_weight(weight)).map_err(|_| FobError::Send("the fee is too large".into()))?;
-                if total < amount + fee {
-                    return Err(not_enough(amount + fee));
+                let needed = amount.checked_add(fee).ok_or_else(|| FobError::Send("the payment is too large".into()))?;
+                if total < needed {
+                    return Err(not_enough(needed));
                 }
                 let network = self.network();
                 let change_address = MoneroAddress::from_str(network.monero(), &self.inner.keys.primary_address()).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
@@ -279,8 +280,8 @@ impl Wallet {
         let mut spent: HashSet<&str> = HashSet::new();
         // A restored wallet's spends: the inputs less change and fee, as in Activity.
         let spends = state.spends.iter().filter(|s| !sent.contains(s.tx.as_str()) && spent.insert(&s.tx)).map(|spend| {
-            let inputs: u64 = state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount).sum();
-            let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
+            let inputs = amount::total(state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount));
+            let change = amount::total(state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount));
             (spend.time, inputs.saturating_sub(change).saturating_sub(spend.fee))
         });
         state
@@ -327,7 +328,7 @@ impl Wallet {
         let index = match state.split_index {
             Some(index) => index,
             None => {
-                let index = state.receive_index + 1;
+                let index = state.receive_index.saturating_add(1);
                 state.split_index = Some(index);
                 self.save_state(&state)?;
                 index
@@ -370,9 +371,12 @@ impl Wallet {
             return Err(FobError::TrezorNeeded);
         }
         let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
-        let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
-        let tx = prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
+        // The unsealed key goes as soon as it has signed, before the broadcast waits.
+        let tx = {
+            let spend = self.inner.keys.spend()?;
+            prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?
+        };
         let hash = tx.hash();
         let signed = hex::encode(tx.serialize());
         let publish = self.publishing(tx).await;
@@ -550,17 +554,33 @@ impl Wallet {
     /// XMR only; a payment with nothing to go on stays without, and gets
     /// one if the history later has its day. Returns whether any was
     /// recorded.
+    ///
+    /// It runs with every sync step, so it copies nothing for a payment
+    /// priced already: the times as [`payment_times`](Wallet::payment_times)
+    /// gives them (a payment's first one), borrowed in place.
     pub(super) fn record_prices(&self, state: &mut State) -> bool {
-        let Some(code) = state.prices.currency.clone() else { return false };
+        let State { sent, spends, outputs, prices, price_cache, price_records, .. } = state;
+        let Some(code) = prices.currency.as_deref() else { return false };
+        let pool = self.inner.pool.lock().expect("pool lock");
+        let sent = sent.iter().map(|s| (s.tx.as_str(), s.time));
+        let spent = spends.iter().map(|s| (s.tx.as_str(), s.time));
+        let received = outputs.iter().map(|o| (o.tx.as_str(), o.time));
+        let pooled = pool.iter().map(|(tx, p)| (tx.as_str(), p.seen));
+        // Those with nothing to go on, at their first time: not tried again at a later one.
+        let mut unpriced: HashSet<&str> = HashSet::new();
         let mut recorded = false;
-        for (tx, time) in self.payment_times(state) {
-            let records = state.price_records.get(&tx);
-            if records.is_some_and(|r| r.iter().any(|r| r.currency == code)) {
+        for (tx, time) in sent.chain(spent).chain(received).chain(pooled) {
+            if price_records.get(tx).is_some_and(|r| r.iter().any(|r| r.currency == code)) || unpriced.contains(tx) {
                 continue;
             }
-            if let Some(record) = state.price_cache.value_at(&state.prices, time) {
-                state.price_records.entry(tx).or_default().push(record);
-                recorded = true;
+            match price_cache.value_at(prices, time) {
+                Some(record) => {
+                    price_records.entry(tx.to_owned()).or_default().push(record);
+                    recorded = true;
+                }
+                None => {
+                    unpriced.insert(tx);
+                }
             }
         }
         recorded

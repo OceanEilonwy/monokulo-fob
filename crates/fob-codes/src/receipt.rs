@@ -3,6 +3,7 @@
 use fob_monero::fiat;
 use orf_codec::Receipt;
 use serde::{Deserialize, Serialize};
+use crate::names;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReceiptLine {
@@ -178,36 +179,56 @@ fn quantity(q: f64) -> String {
     if q.fract() == 0.0 { format!("{}", q as i64) } else { format!("{q}") }
 }
 
+/// How long a receipt's merchant, line or time can be on Confirm.
+const TEXT_MAX: usize = 80;
+
+/// Receipt text as Confirm shows it: cleaned as names and notes are (no
+/// bidi overrides, invisible or control characters, line breaks), trimmed
+/// and cut, since it comes in the same untrusted code.
+fn shown(text: &str) -> String {
+    let kept = names::clean(text);
+    let cut: String = kept.trim().chars().take(TEXT_MAX).collect();
+    cut.trim_end().to_owned()
+}
+
+/// A receipt's currency: three ASCII letters, else "XXX" (no currency),
+/// which nothing prices, so the receipt can't be checked.
+fn currency_code(code: &str) -> String {
+    let code = code.trim();
+    if code.len() == 3 && code.bytes().all(|b| b.is_ascii_alphabetic()) { code.to_owned() } else { "XXX".to_owned() }
+}
+
 impl From<&Receipt> for ReceiptView {
     fn from(r: &Receipt) -> Self {
+        let currency = currency_code(&r.currency);
         let lines = r
             .line_items
             .iter()
             .map(|item| ReceiptLine {
                 label: if item.quantity == 1.0 {
-                    item.description.clone()
+                    shown(&item.description)
                 } else {
-                    format!("{} × {}", quantity(item.quantity), item.description)
+                    shown(&format!("{} × {}", quantity(item.quantity), item.description))
                 },
-                amount: money(item.line_total, &r.currency),
+                amount: money(item.line_total, &currency),
             })
             .collect();
-        let item_count = r.line_items.iter().map(|i| if i.quantity.fract() == 0.0 { i.quantity.max(1.0) as u32 } else { 1 }).sum();
+        let item_count = r.line_items.iter().map(|i| if i.quantity.fract() == 0.0 { i.quantity.max(1.0) as u32 } else { 1 }).fold(0u32, u32::saturating_add);
         let tax = r
             .tax
             .as_ref()
             .and_then(|t| t.tax_lines.as_ref())
             .map(|lines| lines.iter().map(|l| l.tax_amount).sum::<f64>())
             .filter(|t| *t != 0.0)
-            .map(|t| money(t, &r.currency));
+            .map(|t| money(t, &currency));
         ReceiptView {
-            merchant: r.merchant.display_name.clone().unwrap_or_else(|| r.merchant.legal_name.clone()),
-            issued: r.receipt.issue_timestamp.clone(),
+            merchant: r.merchant.display_name.as_deref().map(shown).filter(|m| !m.is_empty()).unwrap_or_else(|| shown(&r.merchant.legal_name)),
+            issued: shown(&r.receipt.issue_timestamp),
             lines,
             item_count,
             tax,
-            total: money(r.total, &r.currency),
-            currency: r.currency.clone(),
+            total: money(r.total, &currency),
+            currency,
             total_value: r.total,
         }
     }
@@ -358,5 +379,58 @@ mod tests {
         let checked = check(&view(1200.0, "JPY"), XMR / 20, Some(&usd), Some(160 * fiat::MICRO), None);
         assert_eq!(checked.total, "¥1,200");
         assert_eq!(checked.other_currency.as_deref(), Some("JPY"));
+    }
+
+    /// Quantities come from whoever made the code: huge ones top out
+    /// rather than overflowing the count.
+    #[test]
+    fn huge_quantities_dont_overflow_the_item_count() {
+        let receipt: Receipt = serde_json::from_str(
+            r##"{
+              "orf_version": "0.1.0",
+              "receipt": { "receipt_id": "1", "issue_timestamp": "2026-10-31T09:12:00Z", "receipt_type": "sale" },
+              "merchant": { "legal_name": "Shop", "country_code": "US" },
+              "line_items": [
+                { "description": "A", "quantity": 3e9, "unit_price": 0, "line_total": 0 },
+                { "description": "B", "quantity": 3e9, "unit_price": 0, "line_total": 0 }
+              ],
+              "total": 0,
+              "currency": "USD"
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(ReceiptView::from(&receipt).item_count, u32::MAX);
+    }
+
+    /// The receipt comes in the same untrusted code as the name and note,
+    /// and is cleaned as they are: nothing that reorders, hides or breaks
+    /// lines, nothing longer than Confirm can show, and a currency that's a
+    /// code or none.
+    #[test]
+    fn a_receipt_s_text_is_cleaned_like_names_and_notes() {
+        let receipt: Receipt = serde_json::from_str(&format!(
+            r##"{{
+              "orf_version": "0.1.0",
+              "receipt": {{ "receipt_id": "1", "issue_timestamp": "2026-10-31\nT09:12:00Z", "receipt_type": "sale" }},
+              "merchant": {{ "legal_name": "Shop Ltd", "display_name": "\u202e\u200b", "country_code": "US" }},
+              "line_items": [
+                {{ "description": "Tea\u202e 00.0$ :latoT\r\nmatches", "quantity": 1, "unit_price": 1, "line_total": 1 }},
+                {{ "description": "{long}", "quantity": 2, "unit_price": 1, "line_total": 2 }}
+              ],
+              "total": 3,
+              "currency": "USD\u202e<b>much more</b>"
+            }}"##,
+            long = "a".repeat(500)
+        ))
+        .unwrap();
+        let view = ReceiptView::from(&receipt);
+        assert_eq!(view.merchant, "Shop Ltd", "a display name that cleans to nothing falls back");
+        assert_eq!(view.issued, "2026-10-31T09:12:00Z");
+        assert_eq!(view.lines[0].label, "Tea 00.0$ :latoTmatches");
+        assert_eq!(view.lines[1].label.chars().count(), TEXT_MAX);
+        assert_eq!(view.currency, "XXX");
+        assert_eq!(view.total, "3.00 XXX");
+        let aud = fiat::currency("AUD");
+        assert_eq!(disagrees(&view, XMR, 240 * fiat::MICRO, &aud), None, "can't be checked");
     }
 }

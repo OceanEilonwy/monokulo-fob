@@ -601,7 +601,7 @@ fun ConfirmScreen(
         if (prepared != null || pending == null) return@LaunchedEffect
         val d = pending.draft
         while (true) {
-            val result = runCatching { model.prepare(d.to, d.amount, d.inFiat, screen.note, d.code) }
+            val result = runCatching { model.prepare(d.to, typedAmount(d.amount, d.inFiat), screen.note, d.code) }
             result.onSuccess { if (nav.current === screen) nav.replace(screen.copy(prepared = it, note = typedNote.ifBlank { null })) else model.cancelLater(it) }
             val lacking = result.exceptionOrNull() as? uniffi.fob.FobException.NotEnoughFunds
             if (lacking == null) {

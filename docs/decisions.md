@@ -21,8 +21,8 @@ Calls made while building the first version, with why. Newest last.
    `monero-seed` is an empty placeholder, and upstream pulls `std-shims`
    from serai's unpinned git branch. Only their `Cargo.toml` changed.
 4. **ORF receipts through Monokular's `orf-codec`**, as a git dependency
-   pinned to `e104a17` of OceanEilonwy/monokular. Licence: GPL-3.0-only to
-   match it.
+   pinned to `3823b28` of OceanEilonwy/monokular (now monokulo-till), the
+   hardened revision. Licence: GPL-3.0-only to match it.
 5. **Fob has no Monokulo features**: no Monokulo node, connect codes or
    dashboard links. Only the look comes from the Monokulo family.
 
@@ -3896,3 +3896,47 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      nothing when tapped (the Coins chip is beside it), on the desktop it
      opens Coins as the line it replaces did, and that line still shows once
      every coin is ready. The Coins screen draws the same bar on both.
+
+
+## Security and performance review (November 2026)
+
+403. **A light wallet server can't move Receive past the addresses Fob
+     watches.** The server holds the view key, so it can make an output at
+     any subaddress index that opens as the wallet's. An output past
+     `watched(receive_index)`, taken once per poll, is refused and counted
+     as refused, and `MOST_ADDRESSES` (100,000) caps what Receive hands out
+     and what a node scan watches, so a server's `u32::MAX` neither wraps
+     Receive back onto addresses already handed out nor makes node mode
+     register billions of subaddresses.
+
+404. **The node is asked about a light wallet server's proofs only for the
+     wallet's own transactions, and at most 8 windows a poll** (extends
+     decision 385). A proof needs no proof-of-work, so made-up blocks were
+     enough to make every poll fetch the chain's hashes. A height is wanted
+     only for a receive that opens as the wallet's or a spend of one of its
+     key images; when the node gave a different block and the chain didn't
+     move, nothing more is asked until the server's answer changes. A
+     restore with payments in more windows is checked over a few polls.
+
+405. **A login is never sent over plain http.** A node URL with `user:pass@`
+     and `http://` (or a bare host:port, which still means http) is refused
+     unless the host is localhost, loopback, private or link-local, with a
+     message saying to write `https://`.
+
+406. **A picture of a code may be a GIF of one frame only.** `picture_fits`
+     reads a GIF block by block and refuses one with more than one frame, a
+     frame outside its logical screen, or a block it doesn't know, before
+     gdk-pixbuf sees it in the process holding the keys.
+
+407. **The decoy distribution is written to disk once it is about a day
+     (720 blocks) behind, not at every block,** and the cached file is
+     spliced onto fresh data only where the node's base matches. Rewriting
+     18-30 MB at every block was 13-20 GB of flash a day. At most three
+     rings hold a copy of the distribution at once, since the
+     monero-interface trait hands each ring its own `Vec`.
+
+408. **Payments cross the FFI typed.** A scanned code is parsed once into a
+     `ScannedCode` object that the form and confirm keep, and `prepare` and
+     `preview` take a `TypedAmount` (`Xmr` or `Fiat`) instead of text and
+     an `in_fiat` flag. `amount_entry`, `receive_code` and `make_request`
+     still take the flag.

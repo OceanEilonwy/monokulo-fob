@@ -188,3 +188,19 @@ fn a_failure_of_this_device_is_told_apart_from_the_node_s() {
     let offline = FobError::Node("InterfaceError(\"dns error: failed to lookup address information\")".into());
     assert_eq!(sync_failure(&offline, None, false), ("Address not found".into(), false));
 }
+
+/// A rewind that has to wait for the pipeline lets go of the state first,
+/// so the screens and everything else don't wait with it.
+#[tokio::test]
+async fn a_rewind_waiting_on_the_pipeline_leaves_the_state_free() {
+    let wallet = Wallet::create(&dir("rewind-pipeline"), [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.next_block = 500;
+    let held = wallet.inner.pipeline.lock().await;
+    let rewinding = wallet.clone();
+    let rewind = tokio::spawn(async move { rewinding.rewind(100, None).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(wallet.inner.state.try_lock().expect("the state is free").next_block, 100);
+    drop(held);
+    rewind.await.unwrap().unwrap();
+    assert_eq!(wallet.inner.pipeline_resets.load(Ordering::Relaxed), 1);
+}

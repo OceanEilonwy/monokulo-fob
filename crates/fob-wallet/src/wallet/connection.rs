@@ -188,7 +188,7 @@ impl Wallet {
         self.stop_sync();
         *self.inner.rpc.lock().await = None;
         *self.inner.link.lock().expect("link lock") = None;
-        *self.inner.pipeline.lock().await = None;
+        self.reset_pipeline().await;
         // The pin was forgotten above, so neither node's distribution is
         // trusted any more: the one left may have lied, and the one chosen
         // (again, after its key changed, say) may have been someone else.

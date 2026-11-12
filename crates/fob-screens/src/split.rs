@@ -104,7 +104,7 @@ pub struct Budget {
 
 impl Budget {
     pub fn spendable(&self) -> u64 {
-        self.outputs.iter().sum()
+        amount::total(self.outputs.iter().copied())
     }
 
     fn fee_for(&self, inputs: usize, pieces: u32) -> u64 {
@@ -121,10 +121,10 @@ impl Budget {
         sorted.sort_unstable_by(|a, b| b.cmp(a));
         let mut total = 0u64;
         for (i, output) in sorted.iter().enumerate() {
-            total += output;
+            total = total.saturating_add(*output);
             let fee = self.fee_for(i + 1, pieces);
-            if total >= value + fee {
-                return (fee, Some(total - value - fee + sorted[i + 1..].iter().sum::<u64>()));
+            if total >= value.saturating_add(fee) {
+                return (fee, Some((total - value - fee).saturating_add(amount::total(sorted[i + 1..].iter().copied()))));
             }
         }
         (self.fee_for(sorted.len(), pieces), None)
@@ -140,7 +140,7 @@ fn pieces(counts: &[u32]) -> u32 {
 }
 
 fn value(notes: &[Note], counts: &[u32]) -> u64 {
-    notes.iter().zip(counts).map(|(n, c)| n.atomic * u64::from(*c)).sum()
+    amount::total(notes.iter().zip(counts).map(|(n, c)| n.atomic.saturating_mul(u64::from(*c))))
 }
 
 /// `counts` as long as `notes`, any extra dropped.

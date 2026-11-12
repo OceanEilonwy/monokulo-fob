@@ -577,3 +577,20 @@ async fn an_old_file_s_currency_first_stays_and_xmr_never_swaps() {
     old.set_currency(Some("EUR")).await.unwrap();
     assert!(Wallet::open(&path, [1; 32]).unwrap().price_settings().await.fiat_first);
 }
+
+/// A payment is priced at its first time (when it was sent, before its
+/// change came back): with nothing to go on then, not at a later one.
+#[tokio::test]
+async fn a_payment_is_priced_only_at_its_first_time() {
+    let wallet = Wallet::create(&dir("price-first-time"), [1; 32], Network::Stagenet).unwrap();
+    let t = now();
+    wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), Asked::Background, t).await.unwrap();
+    let mut state = wallet.inner.state.lock().await;
+    state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 1, time: t - 900 * DAY, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+    state.outputs.push(received("out", t, 1));
+    state.outputs.push(received("in", t, XMR));
+    assert!(wallet.record_prices(&mut state));
+    assert!(!state.price_records.contains_key("out"));
+    assert!(state.price_records.contains_key("in"));
+    assert!(!wallet.record_prices(&mut state), "nothing new");
+}

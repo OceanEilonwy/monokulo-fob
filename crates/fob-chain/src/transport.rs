@@ -310,7 +310,8 @@ fn tls(accept_any: bool, seen: Seen, pin: Pin) -> Result<rustls::ClientConfig, S
 
 impl Transport {
     /// A transport to the node at `url` (`http://host:port` or `https://…`;
-    /// user:pass@ in the URL is sent as Basic auth). With `self_signed`,
+    /// user:pass@ in the URL is sent as Basic auth, and refused over plain
+    /// http off this device and private networks). With `self_signed`,
     /// an https node's certificate isn't verified (see [`Verifier`]).
     /// An onion node is refused here too, whatever path led to it (an
     /// older wallet file, say): there's no Tor to reach it through.
@@ -324,6 +325,7 @@ impl Transport {
     pub fn pinned(url: &str, self_signed: bool, pin: Option<[u8; 32]>) -> Result<Transport, InterfaceError> {
         crate::node::reachable(url).map_err(|e| InterfaceError::InternalError(match e {
             crate::error::EndpointProblem::Onion => crate::node::ONION_REFUSED.to_owned(),
+            crate::error::EndpointProblem::PlainLogin => crate::node::PLAIN_LOGIN_REFUSED.to_owned(),
             other => format!("{other:?}"),
         }))?;
         let certificate = Seen::default();

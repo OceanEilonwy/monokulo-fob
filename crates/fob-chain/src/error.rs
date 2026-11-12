@@ -6,6 +6,9 @@ pub enum EndpointProblem {
     Unreadable(String),
     /// On an onion service: no Tor yet, and looking it up would leak it.
     Onion,
+    /// A login (`user:pass@`) over plain http to a host off this device and
+    /// private networks: anyone on the way could read it.
+    PlainLogin,
     ZmqEmpty,
     ZmqNotTcp,
     /// More than a host and port.

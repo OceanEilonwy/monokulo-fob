@@ -8,19 +8,19 @@ impl Wallet {
         let device = self.inner.keys.device().is_some();
         let mut balance = Balance::default();
         for output in state.outputs.iter().filter(|o| o.coin.is_free()) {
-            balance.total += output.amount;
+            balance.total = balance.total.saturating_add(output.amount);
             if confirmations(&state, output.height) >= state.needed(output) {
-                balance.unlocked += output.amount;
+                balance.unlocked = balance.unlocked.saturating_add(output.amount);
                 if device && output.coin.key_image().is_none() {
-                    balance.unsynced += output.amount;
+                    balance.unsynced = balance.unsynced.saturating_add(output.amount);
                 }
             }
         }
         for sent in state.sent.iter().filter(|s| s.height.is_none() && !s.released) {
-            balance.total += sent.change;
+            balance.total = balance.total.saturating_add(sent.change);
         }
         for pooled in self.inner.pool.lock().expect("pool lock").values() {
-            balance.total += pooled.amount();
+            balance.total = balance.total.saturating_add(pooled.amount());
         }
         balance
     }
@@ -80,7 +80,7 @@ impl Wallet {
         // Both halves from one look at the wallet, so they always add up.
         let (ready, pieces, last_block_time) = self.coin_pieces().await;
         let coins: Vec<u64> = ready.iter().map(|p| p.amount).collect();
-        let mut summary = not_ready::summarise(pieces, coins.iter().sum(), last_block_time, clock)?;
+        let mut summary = not_ready::summarise(pieces, amount::total(coins.iter().copied()), last_block_time, clock)?;
         summary.segments = fob_screens::coin_bar::segments(&coins, &summary.pieces);
         if let Some((currency, p)) = self.price_now().await {
             for sum in &mut summary.sums {
@@ -136,8 +136,8 @@ impl Wallet {
             if !outgoing.insert(&spend.tx) {
                 continue;
             }
-            let spent: u64 = state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount).sum();
-            let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
+            let spent = amount::total(state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount));
+            let change = amount::total(state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount));
             rows.push(Activity {
                 not_confirmed: false,
                 released: false,
@@ -191,7 +191,7 @@ impl Wallet {
                 shared: None,
                 parts: vec![],
             });
-            row.amount += output.amount;
+            row.amount = row.amount.saturating_add(output.amount);
             add_part(&mut row.parts, output.subaddress, output.amount);
         }
         rows.extend(incoming.into_values());
@@ -255,7 +255,7 @@ impl Wallet {
                     // Sent to one of its own addresses: more came back than the change, in a block
                     // or still in the pool. What came back is still this wallet's; only the fee left.
                     if let Some(sent) = sent.filter(|s| s.pieces.is_none()) {
-                        let mined: u64 = state.outputs.iter().filter(|o| o.tx == row.tx).map(|o| o.amount).sum();
+                        let mined = amount::total(state.outputs.iter().filter(|o| o.tx == row.tx).map(|o| o.amount));
                         let pooled = self.inner.pool.lock().expect("pool lock").get(&row.tx).map_or(0, Pooled::amount);
                         if mined.max(pooled) > sent.change {
                             row.to_self = true;

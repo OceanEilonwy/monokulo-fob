@@ -2260,21 +2260,23 @@ impl FobWallet {
         Ok(self.inner.set_fiat_first(fiat_first).await?)
     }
 
-    /// Builds a payment for the confirm screen. `amount` is text as typed
-    /// in the amount field, in money when `in_fiat` (converted at the
-    /// current price) or XMR. `note` (typed on Send, or the payment code's
-    /// description) is kept with the payment. `code` is the payment code
-    /// the form was filled from, as read: its name goes with the payment
-    /// while `to` is its address, its receipt while the amount is its too.
-    pub async fn prepare(&self, to: String, amount: String, in_fiat: bool, note: Option<String>, code: Option<String>) -> Result<Prepared> {
-        let p = self.inner.prepare_typed(&to, &amount, in_fiat, note, code.as_deref()).await?;
+    /// Builds a payment for the confirm screen. `amount` is as typed in the
+    /// amount field: in money (converted at the current price) or XMR.
+    /// `note` (typed on Send, or the payment code's description) is kept
+    /// with the payment. `code` is the payment code the form was filled
+    /// from, as read: its name goes with the payment while `to` is its
+    /// address, its receipt while the amount is its too.
+    pub async fn prepare(&self, to: String, amount: TypedAmount, note: Option<String>, code: Option<Arc<form::ScannedCode>>) -> Result<Prepared> {
+        let (text, in_fiat) = amount.parts();
+        let p = self.inner.prepare_typed(&to, text, in_fiat, note, code.as_deref().map(form::ScannedCode::request)).await?;
         Ok(prepared(&self.inner, p).await)
     }
 
     /// What [`prepare`](FobWallet::prepare) would pay, checked the same,
     /// without asking the node: Confirm shows it at once, the fee to come.
-    pub async fn preview(&self, to: String, amount: String, in_fiat: bool, code: Option<String>) -> Result<PaymentPreview> {
-        let p = self.inner.preview_typed(&to, &amount, in_fiat, code.as_deref()).await?;
+    pub async fn preview(&self, to: String, amount: TypedAmount, code: Option<Arc<form::ScannedCode>>) -> Result<PaymentPreview> {
+        let (text, in_fiat) = amount.parts();
+        let p = self.inner.preview_typed(&to, text, in_fiat, code.as_deref().map(form::ScannedCode::request)).await?;
         // Only a price already kept: the preview asks nothing.
         let receipt = match p.receipt {
             Some(r) => Some(Receipt::checked(&self.inner, r, p.amount, false).await),
@@ -3040,16 +3042,39 @@ pub fn name_meet_code(network: Network, text: String, name: String) -> Result<St
 /// Reads a scanned or pasted payment code.
 #[uniffi::export]
 pub fn parse_payment(network: Network, text: String) -> Result<PaymentRequest> {
-    let r = uri::parse_payment(network.into(), &text)?;
-    Ok(PaymentRequest {
-        amount_text: r.amount.map(exact),
-        receipt_json: r.receipt.as_ref().and_then(receipt::to_json),
-        receipt: r.receipt.as_ref().map(|receipt| receipt::ReceiptView::from(receipt).into()),
-        address: r.address,
-        amount: r.amount,
-        recipient_name: r.recipient_name,
-        description: r.description,
-    })
+    Ok(uri::parse_payment(network.into(), &text)?.into())
+}
+
+impl From<uri::PaymentRequest> for PaymentRequest {
+    fn from(r: uri::PaymentRequest) -> Self {
+        PaymentRequest {
+            amount_text: r.amount.map(exact),
+            receipt_json: r.receipt.as_ref().and_then(receipt::to_json),
+            receipt: r.receipt.as_ref().map(|receipt| receipt::ReceiptView::from(receipt).into()),
+            address: r.address,
+            amount: r.amount,
+            recipient_name: r.recipient_name,
+            description: r.description,
+        }
+    }
+}
+
+/// An amount as the amount field took it: typed in XMR, or in money that
+/// Rust converts at the current price.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum TypedAmount {
+    Xmr { text: String },
+    Fiat { text: String },
+}
+
+impl TypedAmount {
+    /// The text, and whether it's money.
+    fn parts(&self) -> (&str, bool) {
+        match self {
+            TypedAmount::Xmr { text } => (text, false),
+            TypedAmount::Fiat { text } => (text, true),
+        }
+    }
 }
 
 /// Receive's payment code and the words around it.

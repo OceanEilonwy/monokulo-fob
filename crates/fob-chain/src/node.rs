@@ -46,11 +46,39 @@ const BLOCK_SECONDS: u64 = 120;
 /// answers which onion service this wallet uses.
 pub const ONION_REFUSED: &str = "onion node refused";
 
+/// Marks a refused plain-http login the same way [`ONION_REFUSED`] does.
+pub const PLAIN_LOGIN_REFUSED: &str = "plain http login refused";
+
 /// Refuses a node Fob can't reach without leaking it: one on an onion
-/// service. Checked before anything connects (or looks a name up).
+/// service, or one whose login would cross the network in the clear (plain
+/// http to anything but this device or a private network). `host:port`
+/// means http, as most nodes serve, so a login there needs `https://`.
+/// Checked before anything connects (or looks a name up).
 pub fn reachable(url: &str) -> Result<(), EndpointProblem> {
     let parsed = reqwest::Url::parse(&normalize(url)).map_err(|_| EndpointProblem::Unreadable(url.to_owned()))?;
-    if is_onion(parsed.host_str().unwrap_or("")) { Err(EndpointProblem::Onion) } else { Ok(()) }
+    let host = parsed.host_str().unwrap_or("");
+    if is_onion(host) {
+        return Err(EndpointProblem::Onion);
+    }
+    let login = !parsed.username().is_empty() || parsed.password().is_some();
+    if login && parsed.scheme() == "http" && !is_local(host) {
+        return Err(EndpointProblem::PlainLogin);
+    }
+    Ok(())
+}
+
+/// Whether `host` is this device or on a private network: where a login
+/// over plain http stays off the internet.
+fn is_local(host: &str) -> bool {
+    use std::net::IpAddr;
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+        Err(_) => false,
+    }
 }
 
 /// A node address as people type it: `host:port` gets `http://`, no trailing slash.
@@ -292,6 +320,7 @@ pub fn sync_failure(text: &str, certificate: Option<Result<(), CertProblem>>, se
     match Failure::refused(certificate, self_signed) {
         Some(refused) => refused,
         None if text.contains(ONION_REFUSED) => Failure::Onion,
+        None if text.contains(PLAIN_LOGIN_REFUSED) => Failure::PlainLogin,
         None if text.starts_with("InvalidInterface(") || text.starts_with("scanning") => Failure::Unreadable,
         None => Failure::from_text(text),
     }
@@ -301,6 +330,8 @@ pub fn sync_failure(text: &str, certificate: Option<Result<(), CertProblem>>, se
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     Onion,
+    /// A login that would go over plain http.
+    PlainLogin,
     BadAddress,
     /// The certificate didn't verify (and the node isn't marked to accept that).
     Certificate(CertProblem),
@@ -396,6 +427,7 @@ impl Live {
     fn new(node: &Setting, pin: Option<[u8; 32]>) -> Result<Live, Failure> {
         match reachable(&node.url) {
             Err(EndpointProblem::Onion) => return Err(Failure::Onion),
+            Err(EndpointProblem::PlainLogin) => return Err(Failure::PlainLogin),
             Err(_) => return Err(Failure::BadAddress),
             Ok(()) => {}
         }

@@ -114,7 +114,9 @@ import uniffi.fob.PaymentPreview
 import com.monokulo.fob.ui.NfcMark
 import com.monokulo.fob.ui.rememberPayReading
 import com.monokulo.fob.ui.rememberTouchState
+import uniffi.fob.ScannedCode
 import uniffi.fob.ScannedProfile
+import uniffi.fob.TypedAmount
 import uniffi.fob.isProfileCode
 import uniffi.fob.Taken
 import uniffi.fob.codeAsksFirst
@@ -134,20 +136,23 @@ private const val CORNERS = "M8 64V24a16 16 0 0 1 16-16h40 M216 8h40a16 16 0 0 1
 /**
  * Send's form as it was filled: kept on the back stack under Confirm so
  * Back returns to it, its note the one Confirm showed. [code] is the
- * payment code it was filled from, whose name and receipt Rust keeps with
- * the payment as long as they still apply; [read] is the last code the
- * camera saw, not taken again while it still sees it. [open]: the form
- * pulled up; folded, Send opens on the camera.
+ * payment code it was filled from, as Rust read it, whose name and receipt
+ * Rust keeps with the payment as long as they still apply; [read] is the
+ * last code the camera saw, not taken again while it still sees it.
+ * [open]: the form pulled up; folded, Send opens on the camera.
  */
 data class SendDraft(
     val to: String,
     val amount: String = "",
     val inFiat: Boolean = false,
     val note: String = "",
-    val code: String? = null,
+    val code: ScannedCode? = null,
     val read: String? = null,
     val open: Boolean = true,
 )
+
+/** [text] as Rust takes it: typed in money when [inFiat], else XMR. */
+fun typedAmount(text: String, inFiat: Boolean): TypedAmount = if (inFiat) TypedAmount.Fiat(text) else TypedAmount.Xmr(text)
 
 /**
  * A payment Confirm opens on before its fee is in: what Rust checked of
@@ -251,7 +256,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
         error = null
         scope.launch {
             // Checked without asking the node, so Confirm opens at once (Round 9 › 3b) and the fee comes in on it.
-            runCatching { model.preview(address, typed, fiat, filledFrom) }
+            runCatching { model.preview(address, typedAmount(typed, fiat), filledFrom) }
                 .onSuccess {
                     if (nav.current is Screen.Send) {
                         val filled = SendDraft(address, typed, fiat, withNote ?: "", filledFrom, lastRead)
@@ -270,24 +275,24 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
      */
     fun take(text: String, asProfile: Boolean = true) {
         if (busy) return
-        fun fill(address: String, says: String) {
+        fun fill(address: String, says: String, code: ScannedCode) {
             notice = null
             error = null
             pending = null
             to = address
             note = says
-            filledFrom = text
+            filledFrom = code
         }
         when (val taken = takeCode(network, text, asProfile)) {
             is Taken.Profile -> scope.launch { runCatching { wallet?.scannedProfile(text) }.onSuccess { s -> if (s != null) { profile = text to s; notice = null; open = false } }.onFailure { notice = it.reason() } }
             is Taken.Refused -> notice = taken.v1
             is Taken.Fill -> {
-                fill(taken.to, taken.note)
+                fill(taken.to, taken.note, taken.code)
                 open = true
             }
             is Taken.Review -> {
                 // Filled too, so a payment that can't be prepared (not enough ready) shows what was asked.
-                fill(taken.to, taken.note)
+                fill(taken.to, taken.note, taken.code)
                 amount = taken.amount
                 inFiat = false
                 defaulted = true

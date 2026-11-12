@@ -90,11 +90,15 @@ fn pow10(n: u32) -> u128 {
 }
 
 /// `atomic` XMR in the currency's smallest unit (cents) at `price`, rounded
-/// half up.
+/// half up. The most a `u64` holds if it's more: the price comes from a
+/// provider, which could give an absurd one.
 pub fn to_minor(atomic: u64, price: u64, currency: &Currency) -> u64 {
-    let num = atomic as u128 * price as u128 * pow10(currency.decimals);
     let den = ATOMIC_PER_XMR as u128 * MICRO as u128;
-    u64::try_from((num + den / 2) / den).unwrap_or(u64::MAX)
+    (atomic as u128 * price as u128)
+        .checked_mul(pow10(currency.decimals))
+        .and_then(|num| num.checked_add(den / 2))
+        .and_then(|num| u64::try_from(num / den).ok())
+        .unwrap_or(u64::MAX)
 }
 
 /// The XMR, in atomic units, worth `minor` at `price`: as few decimals as
@@ -110,7 +114,7 @@ pub fn to_atomic(minor: u64, price: u64, currency: &Currency) -> Option<u64> {
     let exact = u64::try_from((num + den / 2) / den).ok()?;
     for decimals in 4..12 {
         let step = 10u64.pow(12 - decimals);
-        let rounded = (exact + step / 2) / step * step;
+        let Some(rounded) = exact.checked_add(step / 2).map(|e| e / step * step) else { break };
         if rounded > 0 && to_minor(rounded, price, currency) == minor {
             return Some(rounded);
         }
@@ -312,6 +316,16 @@ mod tests {
         assert_eq!(rate(166_060_000, &usd()), "1 XMR = $166.06");
         // A whole wallet at a silly price stays in range.
         assert_eq!(to_minor(18_400_000 * XMR, 1_000_000 * MICRO, &usd()), 1_840_000_000_000_000);
+        // An absurd price from a provider: the most there is, not a wrapped one.
+        assert_eq!(to_minor(u64::MAX, u64::MAX, &currency("KWD")), u64::MAX);
+        assert_eq!(to_minor(1_000_000 * XMR, u64::MAX, &currency("BHD")), u64::MAX);
+    }
+
+    #[test]
+    fn fiat_near_the_most_there_is_converts_without_overflowing() {
+        let jpy = currency("JPY");
+        assert_eq!(to_atomic(u64::MAX, 1_000_000_000_000_000_000, &jpy), Some(u64::MAX));
+        assert_eq!(to_atomic(u64::MAX, 1, &jpy), None);
     }
 
     #[test]

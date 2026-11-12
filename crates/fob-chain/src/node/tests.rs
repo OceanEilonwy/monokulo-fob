@@ -336,6 +336,24 @@ fn onion_hosts_are_known_by_name() {
     assert_eq!(reachable("node.example:18081"), Ok(()));
 }
 
+/// A login goes over https, or plain http only to this device or a
+/// private network: anywhere else anyone on the way could read it.
+#[tokio::test]
+async fn a_login_over_plain_http_is_refused() {
+    for url in ["user:pw@node.example:18089", "http://user@node.example:18089", "http://user:pw@8.8.8.8:18081"] {
+        assert_eq!(reachable(url), Err(EndpointProblem::PlainLogin), "{url}");
+    }
+    for url in ["https://user:pw@node.example:18089", "node.example:18089", "user:pw@127.0.0.1:18081", "user:pw@192.168.1.5:18081", "user:pw@localhost:18081", "http://u:p@[fd00::1]:18081", "u:p@169.254.1.2:18081"] {
+        assert_eq!(reachable(url), Ok(()), "{url}");
+    }
+    let checked = check(Network::Stagenet, &node("user:pw@node.example:38081"), None, 0, NOW, &|_| {}).await;
+    assert_eq!(rows(&checked)[0], (Step::Answers, failed(Failure::PlainLogin), Mark::Fail));
+    assert_eq!(on_network(Network::Stagenet, &node("user:pw@node.example:38081")).await, Err(SwitchRefused::Endpoint(EndpointProblem::PlainLogin)));
+    let err = Transport::new("http://user:pw@node.example:38081", false).err().expect("refused");
+    assert!(format!("{err:?}").contains(PLAIN_LOGIN_REFUSED), "{err:?}");
+    assert_eq!(sync_failure(&format!("{err:?}"), None, false), Failure::PlainLogin);
+}
+
 /// Refused before anything connects or looks the name up: a resolver
 /// would hear which onion service the wallet uses.
 #[tokio::test]

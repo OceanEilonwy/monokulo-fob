@@ -1,10 +1,12 @@
 //! Send's form. What a code does to it and how money survives a price going
 //! are `fob_app::form`'s rules; every word is Rust's.
 
+use std::sync::Arc;
+
 use fob_app::{
     Engine,
     form::{self, Amount, Taken},
-    views::{AmountEntry, Network, Screens},
+    views::{AmountEntry, Network, Screens, TypedAmount},
 };
 use relm4::{
     adw::{self, prelude::*},
@@ -45,7 +47,7 @@ pub struct Send {
     engine: Engine,
     amount: Amount,
     entry: Option<View<AmountEntry>>,
-    code: Option<String>,
+    code: Option<Arc<form::ScannedCode>>,
     busy: bool,
     error: Option<String>,
     to: adw::EntryRow,
@@ -362,7 +364,7 @@ impl Send {
         }
     }
 
-    fn put(&mut self, to: &str, note: &str, code: String) {
+    fn put(&mut self, to: &str, note: &str, code: Arc<form::ScannedCode>) {
         self.filling = true;
         self.to.set_text(to);
         self.note.set_text(note);
@@ -375,11 +377,13 @@ impl Send {
         self.busy = true;
         self.error = None;
         let note = Some(self.note.text().to_string()).filter(|n| !n.trim().is_empty());
-        let filled = Filled { to: self.to.text().trim().to_owned(), amount: self.amount.text.clone(), in_fiat: self.amount.in_fiat, note, code: self.code.clone() };
+        let text = self.amount.text.clone();
+        let amount = if self.amount.in_fiat { TypedAmount::Fiat { text } } else { TypedAmount::Xmr { text } };
+        let filled = Filled { to: self.to.text().trim().to_owned(), amount, note, code: self.code.clone() };
         let (engine, sender) = (self.engine.clone(), sender.clone());
         relm4::spawn(async move {
             let asked = filled.clone();
-            let preview = engine.read(move |wallet, _| async move { wallet.preview(asked.to, asked.amount, asked.in_fiat, asked.code).await }).await;
+            let preview = engine.read(move |wallet, _| async move { wallet.preview(asked.to, asked.amount, asked.code).await }).await;
             match preview {
                 Some(Ok(preview)) => sender.input(Input::Reviewed(View(preview.into()), filled)),
                 Some(Err(e)) => sender.input(Input::Failed(e.to_string())),

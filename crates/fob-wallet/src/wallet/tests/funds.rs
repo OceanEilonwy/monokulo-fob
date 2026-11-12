@@ -178,3 +178,17 @@ async fn a_payment_the_node_gave_no_answer_for_says_so_until_it_is_mined() {
     wallet.inner.state.lock().await.sent.iter_mut().find(|s| s.tx == unsure).unwrap().height = Some(10);
     assert!(!wallet.unanswered(&unsure).await, "mined: nothing left to offer");
 }
+
+/// Amounts come from the node, which could make some up near the most a
+/// u64 holds: the balance stops there instead of wrapping to a small one.
+#[tokio::test]
+async fn amounts_a_node_made_up_add_up_to_no_more_than_a_u64_holds() {
+    let wallet = Wallet::create(&dir("huge-amounts"), [1; 32], Network::Stagenet).unwrap();
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.outputs.push(received("huge", 1, u64::MAX / 2 + 1));
+        state.outputs.push(Owned { tx: "huge".into(), key: "huger".into(), ..received("huge", 1, u64::MAX / 2 + 1) });
+    }
+    assert_eq!(wallet.balance().await.total, u64::MAX);
+    assert_eq!(wallet.activity().await[0].amount, u64::MAX, "one payment of both");
+}

@@ -11,6 +11,9 @@ use coin::{Coin, Event, Hold, KeyImage, TxHash};
 /// milliseconds as a rule, and a bounded while at worst.
 const STOP_WAIT: Duration = Duration::from_secs(2);
 
+/// The pool's transactions fetched at once.
+const POOL_CHUNK: usize = 100;
+
 /// Waits, up to `timeout`, for tasks that hold a clone of a wallet to end,
 /// aborted or finished. Safe from inside a runtime: the waiting is done on
 /// Fob's own runtime, and a worker of a multi-thread runtime steps aside
@@ -181,12 +184,16 @@ impl Wallet {
             Batch::of(rpc.contiguous_scannable_blocks(0..=0).await.map_err(node_err)?)
         } else {
             // Keep fetching ahead while this step scans: reuse the pipeline
-            // if it's where the wallet is, else start one to the tip.
-            let mut pipeline = self.inner.pipeline.lock().await;
-            if pipeline.as_ref().is_none_or(|p| p.next != start || p.next > p.end) {
-                *pipeline = Some(Pipeline::start(transport.clone(), adaptive.clone(), start, tip - 1));
-            }
-            let running = pipeline.as_mut().expect("just started");
+            // if it's where the wallet is, else start one to the tip. Taken
+            // out while it waits, so a rewind needn't wait on the node too.
+            let (mut running, resets) = {
+                let mut pipeline = self.inner.pipeline.lock().await;
+                let running = match pipeline.take() {
+                    Some(p) if p.next == start && p.next <= p.end => p,
+                    _ => Pipeline::start(transport.clone(), adaptive.clone(), start, tip - 1),
+                };
+                (running, self.inner.pipeline_resets.load(Ordering::Relaxed))
+            };
             // A slow node can keep this waiting for minutes, each request
             // retried several times: the app hears how long.
             let asked = Instant::now();
@@ -201,16 +208,17 @@ impl Wallet {
             };
             self.set_status(|s| s.waiting_seconds = 0);
             match batch {
-                Ok(batch) if !batch.blocks.is_empty() => batch,
-                Ok(_) => {
-                    // Ran out before the tip moved on: start again next step.
-                    *pipeline = None;
-                    return Ok(true);
+                Ok(batch) if !batch.blocks.is_empty() => {
+                    // Back for the next step, unless reset meanwhile (a rewind, say).
+                    let mut pipeline = self.inner.pipeline.lock().await;
+                    if self.inner.pipeline_resets.load(Ordering::Relaxed) == resets {
+                        *pipeline = Some(running);
+                    }
+                    batch
                 }
-                Err(e) => {
-                    *pipeline = None;
-                    return Err(node_err(e));
-                }
+                // Ran out before the tip moved on: start again next step.
+                Ok(_) => return Ok(true),
+                Err(e) => return Err(node_err(e)),
             }
         };
         // A reorganisation shows as a first block that doesn't follow the last
@@ -218,7 +226,7 @@ impl Wallet {
         if let (Some((_, hash)), Some(first)) = (&recent, blocks.first())
             && hex::encode(first.block.header.previous) != *hash
         {
-            *self.inner.pipeline.lock().await = None;
+            self.reset_pipeline().await;
             self.on_reorg(&rpc).await?;
             return Ok(true);
         }
@@ -254,13 +262,12 @@ impl Wallet {
             self.scan_reached(height + 1);
 
             state.recent.push((height, hash));
-            let keep = manual::keep_hashes(state.settled_confirmations);
-            while state.recent.len() > keep {
-                state.recent.remove(0);
-            }
             state.next_block = height + 1;
             state.last_block_time = time;
         }
+        // The batch's blocks in, the oldest beyond those kept go, at once.
+        let excess = state.recent.len().saturating_sub(manual::keep_hashes(state.settled_confirmations));
+        state.recent.drain(..excess);
         if last.is_some() {
             *self.inner.last_block.lock().expect("block lock") = last;
         }
@@ -270,13 +277,13 @@ impl Wallet {
         // whole file is written each time, and the chain has it if it's lost.
         let due = self.inner.saved_at.lock().expect("save lock").elapsed() >= SAVE_EVERY;
         if changed || !more || due {
-            self.save_state(&state)?;
+            self.save_releasing(state)?;
         } else {
             self.inner.unsaved.store(true, Ordering::Relaxed);
+            drop(state);
         }
-        drop(state);
         if watch_further {
-            *self.inner.pipeline.lock().await = None;
+            self.reset_pipeline().await;
         }
         self.refresh_status().await;
         Ok(more)
@@ -296,9 +303,9 @@ impl Wallet {
             .ok()
             .and_then(|v| v.get("tx_hashes").and_then(|h| serde_json::from_value(h.clone()).ok()))
             .unwrap_or_default();
-        let in_pool: HashSet<String> = hashes.iter().cloned().collect();
-        self.inner.pool.lock().expect("pool lock").retain(|tx, _| in_pool.contains(tx));
-        self.inner.pool_seen.lock().expect("pool lock").retain(|tx| in_pool.contains(tx));
+        let in_pool: HashSet<&str> = hashes.iter().map(String::as_str).collect();
+        self.inner.pool.lock().expect("pool lock").retain(|tx, _| in_pool.contains(tx.as_str()));
+        self.inner.pool_seen.lock().expect("pool lock").retain(|tx| in_pool.contains(tx.as_str()));
         {
             // A coin a pool transaction held, and the pool no longer has the
             // transaction: it left unmined (one mined in a block not yet
@@ -311,7 +318,7 @@ impl Wallet {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, o)| match o.coin {
-                    Coin::Held { hold: Hold::InPool { tx }, .. } if !in_pool.contains(&hex::encode(tx)) => Some((i, tx)),
+                    Coin::Held { hold: Hold::InPool { tx }, .. } if !in_pool.contains(hex::encode(tx).as_str()) => Some((i, tx)),
                     _ => None,
                 })
                 .collect();
@@ -324,12 +331,13 @@ impl Wallet {
             }
         }
 
-        let ours: HashSet<String> = self.inner.state.lock().await.sent.iter().map(|s| s.tx.clone()).collect();
         let new: Vec<[u8; 32]> = {
+            let state = self.inner.state.lock().await;
+            let ours: HashSet<&str> = state.sent.iter().map(|s| s.tx.as_str()).collect();
             let seen = self.inner.pool_seen.lock().expect("pool lock");
             hashes
                 .iter()
-                .filter(|h| !seen.contains(*h) && !ours.contains(*h))
+                .filter(|h| !seen.contains(*h) && !ours.contains(h.as_str()))
                 .filter_map(|h| hex::decode(h).ok()?.try_into().ok())
                 .collect()
         };
@@ -337,7 +345,7 @@ impl Wallet {
             return Ok(());
         }
         let last = self.inner.last_block.lock().expect("block lock").clone();
-        let mut block = match last {
+        let block = match last {
             Some(block) => block,
             // Opened already synced: nothing scanned yet this run.
             None => {
@@ -347,40 +355,51 @@ impl Wallet {
                 block
             }
         };
-        let txs = rpc.transactions(&new).await.map_err(|e| FobError::Node(format!("{e:?}")))?;
-        // Spending this wallet's coins, however it got there: a payment the
-        // node gave Fob no answer for, or one from another wallet with these
-        // keys. As wallet2 does, a payment in the pool holds its coins until
-        // it's mined or leaves.
-        {
-            let mut state = self.inner.state.lock().await;
-            let images = Self::key_images(&state);
-            let mut changed = false;
-            for (hash, tx) in new.iter().zip(&txs) {
-                for image in spent_images(tx) {
-                    if let Some(&i) = images.get(&image) {
-                        changed |= state.apply_at(i, Event::PoolSpend { tx: *hash });
+        let miner = block.miner_transaction().hash();
+        let receive_index = self.inner.state.lock().await.receive_index;
+        // The kept scanner: working out every watched address again is slow.
+        let (scanner, _) = self.scanner(Self::watched(receive_index));
+        // A busy pool is thousands of transactions: a chunk at a time, each
+        // seen once it's scanned, so one that fails leaves only the rest to
+        // fetch again.
+        for chunk in new.chunks(POOL_CHUNK) {
+            let (hashes, txs) = pool_transactions(rpc, chunk).await?;
+            // Spending this wallet's coins, however it got there: a payment the
+            // node gave Fob no answer for, or one from another wallet with these
+            // keys. As wallet2 does, a payment in the pool holds its coins until
+            // it's mined or leaves.
+            {
+                let mut state = self.inner.state.lock().await;
+                let images = Self::key_images(&state);
+                let mut changed = false;
+                for (hash, tx) in hashes.iter().zip(&txs) {
+                    for image in spent_images(tx) {
+                        if let Some(&i) = images.get(&image) {
+                            changed |= state.apply_at(i, Event::PoolSpend { tx: *hash });
+                        }
                     }
                 }
+                if changed {
+                    self.save_state(&state)?;
+                }
             }
-            if changed {
-                self.save_state(&state)?;
-            }
+            let mut block = block.clone();
+            block.transactions = hashes;
+            let stand_in = monero_wallet::interface::ScannableBlock {
+                block,
+                transactions: txs.into_iter().map(Into::into).collect(),
+                output_index_for_first_ringct_output: Some(0),
+            };
+            let mut scanner = scanner.clone();
+            let found = tokio::task::spawn_blocking(move || scanner.scan(stand_in))
+                .await
+                .map_err(|e| FobError::Node(format!("scanning the pool: {e}")))?
+                .map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
+            let outputs = found.ignore_additional_timelock().into_iter().filter(|o| o.transaction() != miner);
+            self.pool_found(outputs.map(|o| (hex::encode(o.transaction()), o.subaddress().map(|s| s.address()), o.commitment().amount)), now());
+            // Those that left the pool too: they're not looked for again.
+            self.inner.pool_seen.lock().expect("pool lock").extend(chunk.iter().map(hex::encode));
         }
-        let miner = block.miner_transaction().hash();
-        block.transactions = new.clone();
-        let stand_in = monero_wallet::interface::ScannableBlock {
-            block,
-            transactions: txs.into_iter().map(Into::into).collect(),
-            output_index_for_first_ringct_output: Some(0),
-        };
-        let receive_index = self.inner.state.lock().await.receive_index;
-        let mut scanner = Scanner::new(self.inner.keys.view_pair());
-        Self::watch(&mut scanner, 1, Self::watched(receive_index));
-        let found = scanner.scan(stand_in).map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
-        let outputs = found.ignore_additional_timelock().into_iter().filter(|o| o.transaction() != miner);
-        self.pool_found(outputs.map(|o| (hex::encode(o.transaction()), o.subaddress().map(|s| s.address()), o.commitment().amount)), now());
-        self.inner.pool_seen.lock().expect("pool lock").extend(new.iter().map(hex::encode));
         // A payment first seen in the pool is priced as it's seen.
         let mut state = self.inner.state.lock().await;
         if self.record_prices(&mut state) {
@@ -408,7 +427,7 @@ impl Wallet {
             let host = node::address(state.light_url.as_deref().unwrap_or(""));
             let tip = state.tip;
             // Its next block, never past the chain's (monokulo-lws already gives the next).
-            let scanned = (state.light_scanned_height + 1).min(tip.max(1));
+            let scanned = state.light_scanned_height.saturating_add(1).min(tip.max(1));
             let start = state.restore_height.unwrap_or(0);
             let network = self.network();
             drop(state);
@@ -461,8 +480,17 @@ impl Wallet {
         // A pool payment's coins just freed above are marked again by the
         // next look at the pool, which looks at every transaction afresh.
         self.inner.pool_seen.lock().expect("pool lock").clear();
-        *self.inner.pipeline.lock().await = None;
-        self.save_state(&state)
+        let saved = self.save_releasing(state);
+        // The state let go first: nothing waits on it while this waits.
+        self.reset_pipeline().await;
+        saved
+    }
+
+    /// Drops the blocks being fetched ahead, those a sync step has out included.
+    pub(super) async fn reset_pipeline(&self) {
+        let mut pipeline = self.inner.pipeline.lock().await;
+        self.inner.pipeline_resets.fetch_add(1, Ordering::Relaxed);
+        *pipeline = None;
     }
 
     /// Tells `listener` where syncing is, measuring this catch-up's `pace`
@@ -794,11 +822,35 @@ impl Wallet {
     /// (contacts, notes, what was sent), and comes back with what's on the chain.
     pub async fn scan_again(&self) -> Result<()> {
         let start = self.inner.state.lock().await.restore_height.unwrap_or(0);
-        *self.inner.pipeline.lock().await = None;
         self.rewind(start, None).await?;
         self.ask_to_scan(ScanTitle::WholeWallet, start).await;
         self.sync_now().await;
         Ok(())
+    }
+}
+
+/// The pool's transactions `hashes`, with their hashes, less any that left
+/// the pool since it named them (mined, or dropped): the node turns down
+/// the whole call for one of those, so then they're asked for one by one.
+async fn pool_transactions(rpc: &Daemon, hashes: &[[u8; 32]]) -> Result<(Vec<[u8; 32]>, Vec<monero_wallet::transaction::Transaction>)> {
+    let node_err = |e: TransactionsError| FobError::Node(format!("{e:?}"));
+    match rpc.transactions(hashes).await {
+        Ok(txs) => Ok((hashes.to_vec(), txs)),
+        Err(TransactionsError::TransactionNotFound) => {
+            let (mut found, mut txs) = (vec![], vec![]);
+            for hash in hashes {
+                match rpc.transactions(std::slice::from_ref(hash)).await {
+                    Ok(tx) => {
+                        found.push(*hash);
+                        txs.extend(tx);
+                    }
+                    Err(TransactionsError::TransactionNotFound) => {}
+                    Err(e) => return Err(node_err(e)),
+                }
+            }
+            Ok((found, txs))
+        }
+        Err(e) => Err(node_err(e)),
     }
 }
 

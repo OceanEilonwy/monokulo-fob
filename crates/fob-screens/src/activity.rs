@@ -465,14 +465,20 @@ impl Activity {
     /// its part there (all of it when it paid that address alone), or
     /// `None` when it paid that address nothing.
     pub fn part(&self, subaddress: u32) -> Option<Activity> {
+        let amount = self.part_amount(subaddress)?;
+        Some(Activity { amount, subaddress: Some(subaddress), parts: vec![(subaddress, amount)], ..self.clone() })
+    }
+
+    /// How much of this payment in came to the address at `subaddress`, as
+    /// [`part`](Activity::part) has it, without copying the payment.
+    pub fn part_amount(&self, subaddress: u32) -> Option<u64> {
         if self.direction != Direction::In {
             return None;
         }
-        let amount = match self.parts.as_slice() {
-            [] => (self.subaddress == Some(subaddress)).then_some(self.amount)?,
-            parts => parts.iter().find(|p| p.0 == subaddress)?.1,
-        };
-        Some(Activity { amount, subaddress: Some(subaddress), parts: vec![(subaddress, amount)], ..self.clone() })
+        match self.parts.as_slice() {
+            [] => (self.subaddress == Some(subaddress)).then_some(self.amount),
+            parts => parts.iter().find(|p| p.0 == subaddress).map(|p| p.1),
+        }
     }
 }
 

@@ -287,14 +287,14 @@ impl Wallet {
     /// XMR, or in money (`in_fiat`) converted at the current price, the
     /// conversion the field's line showed. Otherwise as
     /// [`prepare`](Wallet::prepare).
-    pub async fn prepare_typed(&self, to: &str, amount_text: &str, in_fiat: bool, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
+    pub async fn prepare_typed(&self, to: &str, amount_text: &str, in_fiat: bool, note: Option<String>, code: Option<&uri::PaymentRequest>) -> Result<Prepared> {
         let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
         self.prepare(to, atomic, note, code).await
     }
 
     /// [`preview`](Wallet::preview) of an amount as Send's field took it,
     /// converted as [`prepare_typed`](Wallet::prepare_typed) converts it.
-    pub async fn preview_typed(&self, to: &str, amount_text: &str, in_fiat: bool, code: Option<&str>) -> Result<Preview> {
+    pub async fn preview_typed(&self, to: &str, amount_text: &str, in_fiat: bool, code: Option<&uri::PaymentRequest>) -> Result<Preview> {
         let (atomic, _) = self.typed_amount(amount_text, in_fiat).await?;
         self.preview(to, atomic, code)
     }

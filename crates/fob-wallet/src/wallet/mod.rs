@@ -292,8 +292,12 @@ struct Inner {
     /// byte count and certificate, read by each sync report without
     /// waiting on `rpc`, which a connection being made holds.
     link: std::sync::Mutex<Option<(node::Setting, Transport)>>,
-    /// Blocks being fetched ahead of the scanner.
+    /// Blocks being fetched ahead of the scanner. A sync step takes it out
+    /// while it waits on the node, so nothing waits on this lock for that.
     pipeline: Mutex<Option<Pipeline>>,
+    /// Bumped by each [`reset_pipeline`](Wallet::reset_pipeline): a sync
+    /// step doesn't put back a pipeline reset while it had it out.
+    pipeline_resets: AtomicU64,
     /// The scanner, with how far it watches: 200 addresses are slow to work
     /// out again for every batch.
     scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scanner::Prefilter>)>>,
@@ -317,6 +321,10 @@ struct Inner {
     unsaved: AtomicBool,
     /// When the file was last saved.
     saved_at: std::sync::Mutex<Instant>,
+    /// The last state numbered for saving, under the state lock, and the
+    /// last written: an older one finishing late never overwrites a newer.
+    save_numbered: AtomicU64,
+    save_written: AtomicU64,
     /// The database, held for each write; none once the wallet has been taken
     /// off the phone, which no late save may bring back.
     db: std::sync::Mutex<Option<Db>>,
@@ -374,6 +382,9 @@ struct Inner {
     node_verdict: std::sync::Mutex<Option<(crate::node::Setting, node::Verdict)>>,
     /// The light wallet server's client, for the server chosen.
     light: std::sync::Mutex<Option<(crate::light::Setting, crate::light::LightClient)>>,
+    /// The outputs the light wallet server listed at the last poll, opened,
+    /// so the next doesn't open them again. Not saved.
+    light_opened: std::sync::Mutex<light::OpenCache>,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
 }
@@ -436,14 +447,14 @@ struct Pooled {
 
 impl Pooled {
     fn amount(&self) -> u64 {
-        self.parts.iter().map(|p| p.1).sum()
+        amount::total(self.parts.iter().map(|p| p.1))
     }
 }
 
 /// Adds `amount` paid to `subaddress` to `parts`, one entry per address.
 fn add_part(parts: &mut Vec<(u32, u64)>, subaddress: u32, amount: u64) {
     match parts.iter_mut().find(|p| p.0 == subaddress) {
-        Some(part) => part.1 += amount,
+        Some(part) => part.1 = part.1.saturating_add(amount),
         None => parts.push((subaddress, amount)),
     }
 }

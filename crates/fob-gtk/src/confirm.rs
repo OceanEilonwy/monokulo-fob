@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use fob_app::{Engine, FobError, views::{Prepared, SaveOffer, Shortfall}};
+use fob_app::{Engine, FobError, form::ScannedCode, views::{Prepared, SaveOffer, Shortfall, TypedAmount}};
 use relm4::{
     adw::{self, prelude::*},
     gtk,
@@ -20,10 +20,10 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Filled {
     pub to: String,
-    pub amount: String,
-    pub in_fiat: bool,
+    pub amount: TypedAmount,
     pub note: Option<String>,
-    pub code: Option<String>,
+    /// The payment code the form was filled from, as read.
+    pub code: Option<Arc<ScannedCode>>,
 }
 
 #[derive(Debug)]
@@ -334,7 +334,7 @@ impl Confirm {
         let round = self.round;
         let (engine, sender) = (self.engine.clone(), sender.clone());
         relm4::spawn(async move {
-            let prepared = engine.read(move |wallet, _| async move { wallet.prepare(filled.to, filled.amount, filled.in_fiat, filled.note, filled.code).await }).await;
+            let prepared = engine.read(move |wallet, _| async move { wallet.prepare(filled.to, filled.amount, filled.note, filled.code).await }).await;
             match prepared {
                 Some(Ok(prepared)) => sender.input(Input::Ready(round, View(prepared.into()))),
                 Some(Err(FobError::NotEnoughFunds { reason, needed })) => {

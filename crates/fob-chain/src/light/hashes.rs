@@ -35,6 +35,11 @@ pub const SPAN_CAP: u64 = 20_000;
 /// Past [`SPAN_CAP`], the stretch asked for each payment: the 1,000 blocks
 /// (about a day and a half) it's in, from their start.
 pub const WINDOW: u64 = 1_000;
+/// The most windows asked at one poll, each a page of up to [`PAGE`]
+/// hashes (about 320 kB): a restore with payments in more is checked over
+/// a few polls, and a server that makes up blocks costs the node at most
+/// this many pages a poll.
+pub const WINDOWS: usize = 8;
 /// The most hashes a node gives for one `/get_hashes.bin`
 /// (`BLOCKS_IDS_SYNCHRONIZING_DEFAULT_COUNT`).
 pub const PAGE: u64 = 10_000;
@@ -144,9 +149,10 @@ impl Known {
     /// in `wanted` (a height and the hash a server says is there), from
     /// what's kept, up to `tip`. `first` is the wallet's first block: where
     /// the first stretch starts. A height already kept with the hash
-    /// wanted asks nothing; one kept with another is asked again (the
-    /// chain may have been reorganised) and, still another, is the node's
-    /// word against the server's. A failure leaves what was learnt before it.
+    /// wanted asks nothing; one kept with another has the node asked
+    /// whether the chain was reorganised there and, if not, is the node's
+    /// word against the server's, and nothing more is asked. A failure
+    /// leaves what was learnt before it.
     pub async fn learn(&mut self, source: &impl Source, wanted: &BTreeMap<u64, [u8; 32]>, first: u64, tip: u64) -> Result<Asked, String> {
         let mut asked = Asked::default();
         let needed = |known: &Known| wanted.iter().filter(|(h, hash)| known.at(**h) != Some(**hash)).map(|(h, _)| *h).collect::<BTreeSet<u64>>();
@@ -169,6 +175,16 @@ impl Known {
             if !self.history.is_empty() {
                 page = Some(from);
             }
+        }
+        // A height the node gave another block for, and still does (the
+        // chain wasn't reorganised there, as the kept blocks near the tip
+        // just told): its word against the server's, which refuses the
+        // answer. Neither it nor anything else is asked until the server's
+        // answer changes, so one that makes up blocks can't have every poll
+        // ask the node for them again.
+        let recent = self.history.last().is_some_and(|(top, _)| tip.saturating_sub(*top) <= SPAN_CAP);
+        if recent && needed(self).iter().any(|h| self.blocks.contains_key(h)) {
+            return Ok(asked);
         }
         let from = self.history.last().map_or(first, |(h, _)| *h);
         let plan = plan(&needed(self), from, tip);
@@ -197,12 +213,18 @@ impl Known {
         }
 
         // Windows, for what the stretch didn't or couldn't cover.
+        // At most [`WINDOWS`] of them: the rest at the next poll.
         let mut node_height = None;
+        let mut windows = 0;
         for start in plan.windows {
             let left = needed(self).into_iter().filter(|h| !answered.contains(h) && h / WINDOW * WINDOW == start).count();
             if left == 0 || node_height.is_some_and(|height| start >= height) {
                 continue;
             }
+            if windows == WINDOWS {
+                break;
+            }
+            windows += 1;
             let page = self.start(source, start, &mut asked).await?;
             node_height = Some(page.height);
             answered.extend(self.take(&page, wanted));

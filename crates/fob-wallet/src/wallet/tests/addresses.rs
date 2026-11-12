@@ -144,3 +144,20 @@ async fn keys_page_writes_each_of_this_wallet_s_keys_where_it_belongs() {
     assert_eq!(value(1, 2), keys.public_view_key_hex());
     assert_eq!(value(1, 3), keys.public_spend_key_hex());
 }
+
+/// A damaged or server-pushed Receive index at the very top hands out no
+/// address from the start again, and scanning watches only so many.
+#[test]
+fn a_receive_index_at_the_top_neither_wraps_nor_watches_billions() {
+    let made = Wallet::create(&dir("top-index"), [1; 32], Network::Stagenet).unwrap();
+    let mut state = made.inner.state.try_lock().unwrap().clone();
+    state.receive_index = u32::MAX;
+    assert_eq!(Wallet::hand_out(&mut state), crate::wallet::addresses::MOST_ADDRESSES);
+    assert_eq!(Wallet::hand_out(&mut state), crate::wallet::addresses::MOST_ADDRESSES);
+    assert_eq!(Wallet::watched(u32::MAX), crate::wallet::addresses::MOST_ADDRESSES);
+    let mut restored = state.clone();
+    restored.restored = true;
+    restored.fresh_from = None;
+    restored.outputs.push(Owned { subaddress: u32::MAX - 1, ..received("far", 1, XMR) });
+    assert_eq!(Wallet::hand_out(&mut restored), crate::wallet::addresses::MOST_ADDRESSES);
+}

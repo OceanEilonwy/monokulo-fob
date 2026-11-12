@@ -352,7 +352,9 @@ fn to_rows(state: Value) -> Result<Rows> {
         }
         _ => Value::Null,
     });
-    let recent = rows_of(&RECENT, recent.collect())?;
+    let mut recent: Vec<Value> = recent.collect();
+    as_ring(&mut recent);
+    let recent = rows_of(&RECENT, recent)?;
     let outputs = rows_of(&OUTPUTS, list(take(&mut s, "outputs")))?;
     let spends = rows_of(&SPENDS, list(take(&mut s, "spends")))?;
     let sent = rows_of(&SENT, list(take(&mut s, "sent")))?;
@@ -412,12 +414,28 @@ fn to_rows(state: Value) -> Result<Rows> {
     Ok(vec![(&WALLET, vec![wallet]), recent, outputs, spends, sent, notes, current, history, records, contact_rows, request_rows, you, shares, custom_nodes])
 }
 
+/// The recent blocks (`{"height", "hash"}`, oldest first) placed so each
+/// sits at its height modulo how many there are: with each new block one
+/// drops off the front, and only the row it leaves is written again, not
+/// every row shifted along. Left in order unless the heights run on one by
+/// one. `from_rows` sorts them back.
+fn as_ring(recent: &mut [Value]) {
+    let heights: Option<Vec<u64>> = recent.iter().map(|r| r["height"].as_u64()).collect();
+    let Some(heights) = heights else { return };
+    let (Some(&first), len) = (heights.first(), heights.len() as u64) else { return };
+    if heights.iter().zip(first..).all(|(h, expected)| *h == expected) {
+        recent.rotate_right((first % len) as usize);
+    }
+}
+
 /// Rows read back into the state's JSON form.
 fn from_rows(mut tables: HashMap<&'static str, Vec<Map<String, Value>>>) -> Result<Value> {
     let mut take_table = |name: &str| tables.remove(name).unwrap_or_default();
     let mut w = take_table(WALLET.name).pop().ok_or_else(|| failed("the database has no wallet row"))?;
     let values = |rows: Vec<Map<String, Value>>| rows.into_iter().map(Value::Object).collect::<Vec<_>>();
-    let recent: Vec<Value> = take_table(RECENT.name).into_iter().map(|mut r| json!([take(&mut r, "height"), take(&mut r, "hash")])).collect();
+    let mut recent: Vec<Value> = take_table(RECENT.name).into_iter().map(|mut r| json!([take(&mut r, "height"), take(&mut r, "hash")])).collect();
+    // Kept as a ring (see `as_ring`): back in block order.
+    recent.sort_by_key(|pair| pair[0].as_u64());
     let notes: Map<String, Value> = take_table(NOTES.name)
         .into_iter()
         .map(|mut n| {
@@ -798,6 +816,27 @@ mod tests {
         assert_eq!(outputs[0], json!({ "tx": "a", "coin": { "Spent": { "ki": { "Known": hash("image") }, "tx": hash("spend"), "height": 7 } } }));
         assert_eq!(outputs[1], json!({ "tx": "b", "coin": { "Free": { "ki": "Unknown" } } }));
         assert_eq!(outputs[2], json!({ "tx": "c", "coin": { "Free": { "ki": "Unknown" } } }));
+    }
+
+    /// A new block writes one recent_blocks row, not every row shifted along.
+    #[test]
+    fn a_new_block_moves_one_recent_row() {
+        let window = |from: u64| -> Vec<Value> { (from..from + 100).map(|h| json!({"height": h, "hash": h.to_string()})).collect() };
+        let (mut before, mut after) = (window(1_000), window(1_001));
+        as_ring(&mut before);
+        as_ring(&mut after);
+        assert_eq!(before.iter().zip(&after).filter(|(b, a)| b != a).count(), 1);
+        // And they read back in block order.
+        let rows: Vec<Map<String, Value>> = after.into_iter().map(|r| r.as_object().unwrap().clone()).collect();
+        let mut tables = HashMap::from([(RECENT.name, rows), (WALLET.name, vec![Map::new()])]);
+        tables.insert(OUTPUTS.name, vec![]);
+        let state = from_rows(tables).unwrap();
+        let heights: Vec<u64> = state["recent"].as_array().unwrap().iter().map(|p| p[0].as_u64().unwrap()).collect();
+        assert_eq!(heights, (1_001..1_101).collect::<Vec<_>>());
+        // Heights with a gap are left as they are.
+        let mut gap = vec![json!({"height": 5, "hash": "a"}), json!({"height": 7, "hash": "b"})];
+        as_ring(&mut gap);
+        assert_eq!(gap[0]["height"], 5);
     }
 
     #[test]

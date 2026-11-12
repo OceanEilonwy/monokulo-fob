@@ -12,7 +12,7 @@ monero-wallet = "0.2"
 # Clearing torsion from transaction keys for a device's key images (decision 361).
 curve25519-dalek = { version = "4", features = ["precomputed-tables"] }
 # The prefilter itself (decisions 366, 367), pinned by rev as orf-codec is (decision 4).
-monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "1de7768" }
+monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "ad59eda" }
 
 [dev-dependencies]
 rand = "0.8"

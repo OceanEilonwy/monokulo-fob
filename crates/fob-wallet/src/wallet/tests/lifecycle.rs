@@ -395,3 +395,18 @@ async fn a_photo_saved_before_headers_were_read_is_dropped_on_opening() {
     // And saved so: opened again, it's still gone.
     assert_eq!(Wallet::open(&path, [1; 32]).unwrap().contact(jo.id).await.unwrap().photo, None);
 }
+
+/// A save written outside the state lock can finish after a newer one:
+/// it's left out, not written over the newer state.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_save_finishing_late_leaves_the_newer_one() {
+    let path = dir("save-order");
+    let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+    let mut state = wallet.inner.state.lock().await;
+    state.tip = 10;
+    let older = wallet.snapshot(&state).unwrap();
+    state.tip = 20;
+    wallet.save_releasing(state).unwrap();
+    wallet.write_state(older.0, older.1).unwrap();
+    assert_eq!(Wallet::open(&path, [1; 32]).unwrap().inner.state.lock().await.tip, 20);
+}
