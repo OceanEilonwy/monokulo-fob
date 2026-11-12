@@ -4052,3 +4052,36 @@ together.
      on the way before it returns, and its keys keep no words. `from_parts`
      and `kept_seed_words` are what fob-vault's file reads and writes
      through, now that it can't see the fields.
+
+417. **Connect to Fob, version 1, is `fob-codes`' `connect.rs`, pinned by
+     vectors.** An app asks with `fob://connect?v=1&app=…&name=…&device=…&net=…&pk=…&state=…&want=…[&cb=…]`,
+     its fields always in that order, values percent-encoded except RFC
+     3986's unreserved characters (`want` keeps its commas); `pk` (a
+     one-time X25519 key) and `state` (16 random bytes) are base64url
+     without padding. A field given twice is refused, so no reader shows one
+     value and acts on another; fields a later version adds are left out.
+     Fob answers `<cb>#v=1&state=…&epk=…&box=…`, or `fob://connected#…`
+     with no callback (the two-device way, which is also the answer's QR
+     code), and `#v=1&state=…&error=declined` for a no. The box is the
+     `Grant` as JSON, sealed with ChaCha20-Poly1305 under HKDF-SHA256 with
+     the X25519 shared secret as input, `state` as salt and
+     `"fob connect v1"` ‖ pk ‖ epk as info, so the key is bound to both
+     keys; additional data `"fob://connect v=1"`. Each key seals one box,
+     so the nonce is twelve zero bytes. A low-order key, whose shared
+     secret anyone knows, is refused. The grant carries the address, view
+     key, network, account and its label, restore height, Fob's wallet id
+     and name, and optionally Fob's node or light server (URL,
+     self-signed, pin) and price provider and currency; its view key is
+     wiped when it goes and never printed. An app refuses a grant for
+     another network than it asked. The identicon is SHA-256 of
+     `"fob connect identicon v1"` ‖ pk: bit 3r + c (each byte from its
+     least significant bit) sets row r's column c and its mirror, and the
+     hash's fifth byte modulo 8 picks one of eight fixed ink-and-paper
+     palettes, the same in light and dark, so both devices draw identical
+     pixels from data, not words. `vectors/connect-v1.json` holds three
+     cases (same device with node and prices, two devices with no
+     callback, another app with a light server): fixed secrets and state
+     to the exact request, sealed answer, decline and identicon.
+     `connect::check_vectors(connect::VECTORS)` runs them, in Fob's tests
+     and in Till's; the X25519, HKDF and identicon steps were also checked
+     against OpenSSL and Python's hashlib when the file was made.

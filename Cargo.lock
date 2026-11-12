@@ -607,18 +607,23 @@ name = "fob-codes"
 version = "0.1.19"
 dependencies = [
  "base64 0.22.1",
+ "chacha20poly1305",
  "fob-monero",
  "fob-vault",
  "hex",
+ "hkdf",
  "monero-wallet",
  "orf-codec",
  "percent-encoding",
  "qrcode",
+ "rand_core 0.6.4",
  "rqrr",
  "serde",
  "serde_json",
+ "sha2",
  "sha3",
  "unicode-normalization",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -1313,6 +1318,15 @@ name = "hex-literal"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
+
+[[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
+]
 
 [[package]]
 name = "hmac"
@@ -3842,6 +3856,18 @@ name = "writeable"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
+
+[[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "serde",
+ "zeroize",
+]
 
 [[package]]
 name = "yoke"

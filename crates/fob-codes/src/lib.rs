@@ -1,6 +1,7 @@
 //! What passes between wallets: payment, wallet and profile codes, ORF
 //! receipts, QR modules, and the NFC protocols that carry codes.
 
+pub mod connect;
 pub mod error;
 pub mod names;
 pub mod ndef;

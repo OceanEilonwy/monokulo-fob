@@ -1,0 +1,130 @@
+{
+  "about": "Connect to Fob, version 1 (fob-codes src/connect.rs). Secrets are hex; state, pk, epk and box are base64url without padding. identicon rows: '#' ink, '.' paper; palette indexes fob_codes::connect::PALETTE.",
+  "cases": [
+    {
+      "answer": "https://till.monokulo.com/fob/connected#v=1&state=oKGio6SlpqeoqaqrrK2urw&epk=ZLEBsdC-WocEvQePmJUAH8A-jp-VIvGI3RKNmEbUhGY&box=-bHZb6Z-EX2qdN4uNR6bE1iV66PSn8YGohWkOJa22FqXlqwjkBcPIbBbBh3j0RMS72oszyIbtYAn-WhdQUc8XcolaU8EmtouP5zd6HYWWjNxP50lO9YLrWzRdYyNFW9P3rAKLM6ZNvY1VIvwjewRy9G4k3KlGK-yYePdnS-oS9fMVzDpoi4cst1EWIV1wnFCrkIUtVWCYzICF_VMcgfD9PW6owh_wgiIu2kyAd6ymMj2lsDOZ8po2-ZVTBkCsmHp6zwehW0Fv5tFXzyZfNN8KOZNZjK8k6G8WUc_U3idc2k8gZcqSmvUj6rgyQ5NZVedXVdn13kiRhSXU6DU6js1XS1hP8xP3tzfXonY6UslHuLBEzVPhgGADCzs-QAppHqut99avEDN8JKeaV5f1UNSrAAYvjZm89G5jiBjf6PbVyBdYZg-o_1jx3tBntPEok-dAFG-mxmktoiJxqrDd_rFzmjjo0J-6Qjsa9uH9wLWY7scyWHu5_yg_7wbFAU9dLbaF1VS7Ak5JcG39UhFEuXADkIKGCrYdIkc8PbzqvRHYPBZuJ9mIiBZ19vsdFmt-NztjYqh2kyRfNdcdn6fTl0t7paD2y3HEd6G1sp6uXhPCGX9lAKGqv2-pgdfbcV2CTxvd11wt_4sWaTIsG4ziSVb_t8XgM7KtDlwnECgfC7ZlvhK4ou4moTE11Fd4IRNdiEz-HZHyMEf9uyivLg5ggAIpn2N5qkU0u9KtZwyZy9xqtU4XQ",
+      "app": "Till",
+      "app_secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "callback": "https://till.monokulo.com/fob/connected",
+      "declined": "https://till.monokulo.com/fob/connected#v=1&state=oKGio6SlpqeoqaqrrK2urw&error=declined",
+      "device": "Corner Café iPad",
+      "fob_secret": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "grant": {
+        "account": 13,
+        "address": "4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge",
+        "label": "Till (Corner Café)",
+        "network": "mainnet",
+        "node": {
+          "pin": "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+          "self_signed": true,
+          "url": "https://node.cornercafe.example:18089"
+        },
+        "prices": {
+          "currency": "AUD",
+          "provider": "Kraken"
+        },
+        "restore_height": 3512345,
+        "view_key": "f359631075708155cc3d92a32b75a7d02a5dcf27756707b47a2b31b21c389501",
+        "wallet_id": "6f1b0c2e9d4a47b8a3e5c7d9f0b1a2c3",
+        "wallet_name": "Corner Café"
+      },
+      "identicon": [
+        "..#..",
+        ".#.#.",
+        ".###.",
+        "#####",
+        "#.#.#"
+      ],
+      "name": "same device, node and prices shared",
+      "network": "mainnet",
+      "palette": 1,
+      "pk": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+      "request": "fob://connect?v=1&app=Till&name=Corner%20Caf%C3%A9&device=Corner%20Caf%C3%A9%20iPad&net=mainnet&pk=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&state=oKGio6SlpqeoqaqrrK2urw&want=view,node,prices&cb=https%3A%2F%2Ftill.monokulo.com%2Ffob%2Fconnected",
+      "state": "oKGio6SlpqeoqaqrrK2urw",
+      "wallet_name": "Corner Café",
+      "want": [
+        "view",
+        "node",
+        "prices"
+      ]
+    },
+    {
+      "answer": "fob://connected#v=1&state=WlpaWlpaWlpaWlpaWlpaWg&epk=OlU9dHktcn76m5pM3j2hrZPxotDAnLY5saPA_aFMviQ&box=Dn4rD5fJKLkZhBTVvPAhTzYjBgbkKWzYlUizhJ8QLhP_PTIBbfixFAM4CI3jcBk5s5EHodJW6YZbc8e897x0HYn-9hXPKdU6ptp3N6A6CPIJ1Z7XeavqYWhc_0KBtXrAtkuFRoxsltcebK5lpUrh2vUJ5vOe5kytvkoJR0kUIe8UhP8xfbub2snbc-QpQ3tgPwhK2Q6hvu8v7Ik_w6qCOodA6vWFj5UWNWaEO-jiw3zEoYfZL5OPNJzzrADrajf1hoOB6p1lUeFmETBxD2txqMIbXrfiiQLinq_q3xNnt8qgJLWIyVyfuHcNzvcy7cFxbQM6qD2VdI4lV4guAqyMq-7V0t0vDEG3AaFX4jrcqyfhyzZhX4tmNih24554hkCJBzxwNotRf9K_BkzgH9ICa4sknoF1hZQHhjIUlhPAXmu7pBxTAELquxoBsevJEtvA436WFMywierrYsxkXiZnzE8",
+      "app": "Till",
+      "app_secret": "8182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0",
+      "callback": null,
+      "declined": "fob://connected#v=1&state=WlpaWlpaWlpaWlpaWlpaWg&error=declined",
+      "device": "iPad",
+      "fob_secret": "c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0",
+      "grant": {
+        "account": 1,
+        "address": "55LTR8KniP4LQGJSPtbYDacR7dz8RBFnsfAKMaMuwUNYX6aQbBcovzDPyrQF9KXF9tVU6Xk3K8no1BywnJX6GvZX8yJsXvt",
+        "label": "Till (Kiosk)",
+        "network": "stagenet",
+        "restore_height": 2045000,
+        "view_key": "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e800",
+        "wallet_id": "00112233445566778899aabbccddeeff",
+        "wallet_name": "Kiosk"
+      },
+      "identicon": [
+        ".....",
+        ".###.",
+        ".#.#.",
+        "..#..",
+        ".###."
+      ],
+      "name": "two devices by QR code, view only",
+      "network": "stagenet",
+      "palette": 5,
+      "pk": "iDGGuAC0HVzwQpaV2ps8xPMo680YSm5IL6V4wQPwbHc",
+      "request": "fob://connect?v=1&app=Till&name=Kiosk&device=iPad&net=stagenet&pk=iDGGuAC0HVzwQpaV2ps8xPMo680YSm5IL6V4wQPwbHc&state=WlpaWlpaWlpaWlpaWlpaWg&want=view",
+      "state": "WlpaWlpaWlpaWlpaWlpaWg",
+      "wallet_name": "Kiosk",
+      "want": [
+        "view"
+      ]
+    },
+    {
+      "answer": "shopandgo://fob?x=1#v=1&state=ABEiM0RVZneImaq7zN3u_w&epk=WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns&box=rAW8FEMhRvwRoIirCKnoe-AfLrtM_8jaaYHjm1gOt7sOnge-pBYAdv2seYEzZ29aJbdMdRDldS4P5PlDEvfWFHF5g6cRKNnqtBDPaSZcvVWAmw1Z2DUstFPC6_osfyarFfN77JFDqG8Q6MaeBH54SOAF13zWBau4igy7Kd00UBPXyTOt2C3_KfvbgwaTdI_-bAU8tPOyYhbCJA0zHTahx0qb6afvFcCVD8moaDms90pN53zcSI8zMRGl1pzNk7in6QRz9zezlNb-2yjlR0wUa808MaKqy0WTOKQ3n4-c8FwxwEnnTPkXkkFA3uFr2aTXWoAqaSO3UTvugjMV273dvNCgfuI7rz1KMFoHS3eTnyTN4YWgj6VSfC_AG3PP7zkQRChuH7cqXm56zKOKWzPxzQMikFjHjFI4H_EzmOrqixR7onJovLOQlC1kBHu4T8-NGgiExLjkk2ALKoAX6BHzhsnxViuWA5yzbfxYYZ7lGWln40mq7ctRrGcvrH_coFjKI4-mvbB51Mckw1MYwh97DEguQDAHWacROofd",
+      "app": "Shop & Go",
+      "app_secret": "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
+      "callback": "shopandgo://fob?x=1",
+      "declined": "shopandgo://fob?x=1#v=1&state=ABEiM0RVZneImaq7zN3u_w&error=declined",
+      "device": "Till #2 / back bar",
+      "fob_secret": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+      "grant": {
+        "account": 2,
+        "address": "4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge",
+        "label": "Shop & Go",
+        "light": {
+          "self_signed": false,
+          "url": "https://lws.example"
+        },
+        "network": "mainnet",
+        "restore_height": 3600000,
+        "view_key": "f359631075708155cc3d92a32b75a7d02a5dcf27756707b47a2b31b21c389501",
+        "wallet_id": "ffeeddccbbaa99887766554433221100",
+        "wallet_name": "My wallet"
+      },
+      "identicon": [
+        "#.#.#",
+        "#...#",
+        "..#..",
+        ".###.",
+        ".#.#."
+      ],
+      "name": "a light wallet server shared, another app",
+      "network": "mainnet",
+      "palette": 2,
+      "pk": "TSe87jE1xJRLKNJ92Amwe-EMNRYNIBMcqn6FV1SY0Hw",
+      "request": "fob://connect?v=1&app=Shop%20%26%20Go&name=&device=Till%20%232%20%2F%20back%20bar&net=mainnet&pk=TSe87jE1xJRLKNJ92Amwe-EMNRYNIBMcqn6FV1SY0Hw&state=ABEiM0RVZneImaq7zN3u_w&want=view,node&cb=shopandgo%3A%2F%2Ffob%3Fx%3D1",
+      "state": "ABEiM0RVZneImaq7zN3u_w",
+      "wallet_name": "",
+      "want": [
+        "view",
+        "node"
+      ]
+    }
+  ],
+  "version": 1
+}
