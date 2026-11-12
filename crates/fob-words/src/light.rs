@@ -12,10 +12,6 @@ pub const SYNC_THROUGH: &str = "Sync through";
 /// Its two choices.
 pub const THROUGH_NODE: &str = "Node";
 pub const THROUGH_SERVER: &str = "Light wallet server";
-/// The Node row's subtitle while syncing through a server.
-pub const NODE_UNUSED: &str = "used again when you switch back";
-/// "Instant updates"' subtitle while syncing through a server.
-pub const ZMQ_UNUSED: &str = "The server watches the chain for you";
 /// The row and the screen.
 pub const SERVER_TITLE: &str = "Light wallet server";
 /// The screen's fields and buttons.

@@ -236,10 +236,9 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                         }
                     }
                     Divider()
-                    // Kept for switching back, unused meanwhile.
-                    if (light) SettingRow("Node", words.nodeUnused, titleColor = Fob.muted)
+                    // Only the row for the way syncing goes: the other's kept for switching back.
+                    if (light) SettingRow(words.serverTitle, lightLine ?: words.noneChosen, onClick = { nav.go(Screen.LightServer) })
                     else SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
-                    SettingRow(words.serverTitle, lightLine ?: words.noneChosen, onClick = { nav.go(Screen.LightServer) })
                     confirming?.let { on ->
                         AlertDialog(
                             onDismissRequest = { confirming = null },
@@ -259,10 +258,8 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                     val walletRefused by produceState(false) { value = model.wallet.value?.scanGpuCheckFailed() ?: false }
                     SettingRow("Scanning", remember(walletRefused) { scanEngine(walletRefused).line })
                     val manual by model.manual.collectAsState()
-                    // The server watches the chain: nothing to listen for here.
-                    if (light) SettingRow("Instant updates (ZMQ)", words.zmqUnused, titleColor = Fob.muted)
-                    // Manual Sync listens for nothing.
-                    else if (manual?.on != true) {
+                    // The server watches the chain, and Manual Sync listens for nothing.
+                    if (!light && manual?.on != true) {
                         val zmqOn = status?.zmq?.let { it !is ZmqStatus.Off } ?: false
                         SettingRow(
                             "Instant updates (ZMQ)", status?.zmqText ?: "Off", onClick = { nav.go(Screen.Zmq) },
