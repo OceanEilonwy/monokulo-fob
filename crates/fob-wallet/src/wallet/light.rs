@@ -344,8 +344,19 @@ impl Wallet {
             Err(Problem::Forbidden) => return self.waiting_for_approval().await,
             Err(e) => return Err(refused(e)),
         };
-        // 3b. The blocks its proofs name, as a node has them.
-        let vouched = self.vouch(&answer).await?;
+        // 3b. Its proofs checked and its outputs opened, off the runtime and
+        // before the state lock: what the last poll opened isn't again.
+        let last = std::mem::take(&mut *self.inner.light_opened.lock().expect("light lock"));
+        let wallet = self.clone();
+        let (answer, checked) = tokio::task::spawn_blocking(move || {
+            let (checked, opened) = check(&wallet.inner.keys, &answer, last);
+            *wallet.inner.light_opened.lock().expect("light lock") = opened;
+            (answer, checked)
+        })
+        .await
+        .map_err(|e| FobError::Node(format!("checking the server's answer: {e}")))?;
+        // 3c. The blocks its proofs name, as a node has them.
+        let vouched = self.vouch(&answer, &checked).await?;
         let pool_before = self.inner.pool.lock().expect("pool lock").clone();
         let done = {
             let mut state = self.inner.state.lock().await;
@@ -353,7 +364,7 @@ impl Wallet {
                 // Switched back while asking.
                 return Ok(false);
             }
-            match reconcile_proven(&self.inner.keys, &mut state, &answer, &pool_before, now(), &vouched.known) {
+            match reconcile_checked(&self.inner.keys, &mut state, &answer, &checked, &pool_before, now(), &vouched.known) {
                 Ok(mut done) => {
                     *self.inner.pool.lock().expect("pool lock") = std::mem::take(&mut done.pool);
                     // 5. Prices for payments newly seen, as the node's step records them.
@@ -425,24 +436,31 @@ impl Wallet {
     }
 
     /// Asks a node for the blocks the server's proofs name (each proof that
-    /// holds: one that doesn't refuses the answer in [`vet`]), over stretches
-    /// of the chain (`fob_chain::light::hashes`), from what's kept: a poll
-    /// after one that checked them asks nothing. A node that can't be
+    /// holds: one that doesn't refuses the answer in [`vet`]) for this
+    /// wallet's transactions, those paying it or spending its coins, over
+    /// stretches of the chain (`fob_chain::light::hashes`), from what's
+    /// kept: a poll after one that checked them asks nothing. A block a
+    /// server makes up for a transaction that isn't the wallet's, or past
+    /// the tip, is none of the node's business. A node that can't be
     /// reached isn't the server's fault: its outputs are taken as not
     /// checked yet, and asked about again at the next poll.
-    async fn vouch(&self, answer: &lws::AddressTxs) -> Result<Vouched> {
+    async fn vouch(&self, answer: &lws::AddressTxs, checked: &Checked) -> Result<Vouched> {
+        let (mut known, first, images) = {
+            let state = self.inner.state.lock().await;
+            (known_of(&state), state.restore_height.unwrap_or(answer.start_height), Wallet::key_images(&state))
+        };
         let mut wanted: BTreeMap<u64, [u8; 32]> = BTreeMap::new();
-        for tx in answer.transactions.iter().filter(|t| !t.mempool) {
-            if let Ok(Some(proven)) = proof::check(tx) {
+        for (t, tx) in answer.transactions.iter().enumerate() {
+            let Some(Some(Ok(Some(proven)))) = checked.proofs.get(t) else { continue };
+            let ours = checked.opened[t].iter().any(|o| matches!(o, Opened::Ours { .. })) || tx.spent_outputs.iter().any(|s| images.contains_key(&s.key_image.0) || checked.images.contains(&s.key_image.0));
+            if ours && proven.height <= answer.blockchain_height.saturating_add(TIP_SLACK) {
                 wanted.entry(proven.height).or_insert(proven.block);
             }
         }
         let (setting, pin, default) = self.proof_node().await;
-        let mut known = known_of(&*self.inner.state.lock().await);
         let before = known.clone();
         let mut reached = None;
         if !wanted.is_empty() {
-            let first = self.inner.state.lock().await.restore_height.unwrap_or(answer.start_height);
             let tip = answer.blockchain_height;
             reached = Some(match Transport::pinned(&setting.url, setting.self_signed, pin) {
                 Err(_) => false,
@@ -570,13 +588,22 @@ pub(super) fn reconcile(keys: &Keys, state: &mut State, answer: &lws::AddressTxs
 /// gives must name the block `chain` has at its height, or the answer is
 /// refused; a proof whose block `chain` doesn't have is taken, but not
 /// counted as checked.
+#[cfg(test)]
 pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::AddressTxs, pool_before: &HashMap<String, Pooled>, now: u64, chain: &Known) -> std::result::Result<Reconciled, Problem> {
-    let Tally { checked, unchecked, proven, pending } = vet(keys, answer, chain)?;
+    let (checked, _) = check(keys, answer, OpenCache::default());
+    reconcile_checked(keys, state, answer, &checked, pool_before, now, chain)
+}
+
+/// [`reconcile_proven`], with the answer already [`check`]ed: nothing here
+/// opens an output again, so it's quick under the state lock.
+pub(super) fn reconcile_checked(keys: &Keys, state: &mut State, answer: &lws::AddressTxs, opened: &Checked, pool_before: &HashMap<String, Pooled>, now: u64, chain: &Known) -> std::result::Result<Reconciled, Problem> {
+    let Tally { checked, unchecked, proven, pending } = vet(answer, opened, chain)?;
     let mut changed = false;
     let mut refused = 0;
-    let mut mined: Vec<&lws::Transaction> = answer.transactions.iter().filter(|t| !t.mempool && t.height.is_some()).collect();
-    mined.sort_by_key(|t| t.height);
-    let listed: HashSet<String> = mined.iter().map(|t| hex::encode(t.hash.0)).collect();
+    // With each one's place in the answer, for what `opened` says of it.
+    let mut mined: Vec<(usize, &lws::Transaction)> = answer.transactions.iter().enumerate().filter(|(_, t)| !t.mempool && t.height.is_some()).collect();
+    mined.sort_by_key(|(_, t)| t.height);
+    let listed: HashSet<String> = mined.iter().map(|(_, t)| hex::encode(t.hash.0)).collect();
     // Strictly below its scanned height: monokulo-lws gives the next block it will
     // scan there, monero-lws the last one it did, and either way this is scanned.
     let vouched = |height: u64| height >= answer.start_height && height < answer.scanned_height;
@@ -608,20 +635,24 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
         }
     }
 
-    // Received.
-    for tx in &mined {
+    // Received, only at a subaddress the wallet watches, as the node's scan
+    // finds them: the server holds the view key, so it can make an output
+    // at any index, and Receive would move on past it.
+    let watched = Wallet::watched(state.receive_index);
+    let mut known_keys: HashSet<String> = state.outputs.iter().map(|o| o.key.clone()).collect();
+    for &(t, tx) in &mined {
         let height = tx.height.unwrap_or_default();
         let hash = hex::encode(tx.hash.0);
         let time = tx.timestamp.as_ref().and_then(|t| unix_time(&t.0)).unwrap_or(0);
         // As Monero writes it, and as the node's scan keeps it: a block, or
         // from TIME_LOCK_FROM on a Unix time.
         let unlock_block = tx.unlock_time;
-        for received in &tx.receives {
+        for (received, opened) in tx.receives.iter().zip(&opened.opened[t]) {
             let key = hex::encode(received.public_key.0);
-            if state.outputs.iter().any(|o| o.key == key) {
+            if known_keys.contains(&key) {
                 continue;
             }
-            let Some(output) = checked_output(keys, tx, received, height, unlock_block) else {
+            let Some(output) = (received.recipient.min_i <= watched).then(|| checked_output(tx, received, opened, unlock_block)).flatten() else {
                 refused += 1;
                 continue;
             };
@@ -634,6 +665,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
                 Some(image) => KeyImage::Known(image),
                 None => KeyImage::Unknown,
             };
+            known_keys.insert(key.clone());
             state.outputs.push(Owned {
                 output: hex::encode(output.serialize()),
                 tx: hash.clone(),
@@ -656,7 +688,9 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
 
     // Spent, and sent.
     let images = Wallet::key_images(state);
-    for tx in &mined {
+    let mut spends: HashMap<String, usize> = state.spends.iter().enumerate().rev().map(|(i, s)| (s.tx.clone(), i)).collect();
+    let sent_at: HashMap<String, usize> = state.sent.iter().enumerate().rev().map(|(i, s)| (s.tx.clone(), i)).collect();
+    for &(_, tx) in &mined {
         let height = tx.height.unwrap_or_default();
         let hash = hex::encode(tx.hash.0);
         let time = tx.timestamp.as_ref().and_then(|t| unix_time(&t.0)).unwrap_or(0);
@@ -665,8 +699,9 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
         let fee = tx.fee.map_or(0, |f| f.0);
         for candidate in &tx.spent_outputs {
             let Some(&i) = images.get(&candidate.key_image.0) else { continue };
-            match state.spends.iter_mut().find(|s| s.tx == hash) {
+            match spends.get(&hash).map(|&s| &mut state.spends[s]) {
                 None => {
+                    spends.insert(hash.clone(), state.spends.len());
                     state.spends.push(ChainSpend { tx: hash.clone(), height, time, fee });
                     changed = true;
                 }
@@ -679,7 +714,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
             }
             changed |= state.apply_at(i, Event::MinedSpend { tx: tx.hash.0, height });
         }
-        if let Some(sent) = state.sent.iter_mut().find(|s| s.tx == hash)
+        if let Some(sent) = sent_at.get(&hash).map(|&s| &mut state.sent[s])
             && (sent.height != Some(height) || sent.not_confirmed || sent.released || sent.signed.is_some())
         {
             sent.height = Some(height);
@@ -704,14 +739,15 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
 
     // The pool.
     let mut pool: HashMap<String, Pooled> = HashMap::new();
-    for tx in answer.transactions.iter().filter(|t| t.mempool) {
+    let ours: HashSet<&str> = state.sent.iter().map(|s| s.tx.as_str()).chain(state.outputs.iter().map(|o| o.tx.as_str())).collect();
+    for (t, tx) in answer.transactions.iter().enumerate().filter(|(_, t)| t.mempool) {
         let hash = hex::encode(tx.hash.0);
         // A payment of this wallet's: its change isn't money coming in.
-        if state.sent.iter().any(|s| s.tx == hash) || state.outputs.iter().any(|o| o.tx == hash) {
+        if ours.contains(hash.as_str()) {
             continue;
         }
-        for received in &tx.receives {
-            if !matches!(opened(keys, tx, received, None), Opened::Ours { .. }) {
+        for (received, opened) in tx.receives.iter().zip(&opened.opened[t]) {
+            if !matches!(opened, Opened::Ours { .. }) {
                 refused += 1;
                 continue;
             }
@@ -748,7 +784,7 @@ pub(super) fn reconcile_proven(keys: &Keys, state: &mut State, answer: &lws::Add
     }
 
     // The clock.
-    let latest = mined.iter().filter(|t| vouched(t.height.unwrap_or_default())).filter_map(|t| t.timestamp.as_ref().and_then(|t| unix_time(&t.0))).filter(|&t| t <= now).max();
+    let latest = mined.iter().map(|(_, t)| t).filter(|t| vouched(t.height.unwrap_or_default())).filter_map(|t| t.timestamp.as_ref().and_then(|t| unix_time(&t.0))).filter(|&t| t <= now).max();
     if let Some(latest) = latest
         && latest > state.last_block_time
     {
@@ -784,13 +820,14 @@ pub(super) struct Tally {
 /// with different one-time keys, two outputs given one place on the chain,
 /// two blocks at one height, or a transaction in a block well past the
 /// chain's tip as the server gives it. Otherwise counts how this wallet's
-/// outputs in blocks were checked.
-pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs, chain: &Known) -> std::result::Result<Tally, Problem> {
+/// outputs in blocks were checked. The proofs and outputs are as `checked`
+/// found them.
+pub(super) fn vet(answer: &lws::AddressTxs, checked: &Checked, chain: &Known) -> std::result::Result<Tally, Problem> {
     let mut tally = Tally::default();
     let mut places: HashMap<([u8; 32], u16), [u8; 32]> = HashMap::new();
     let mut global: HashMap<u64, [u8; 32]> = HashMap::new();
     let mut blocks: HashMap<u64, [u8; 32]> = HashMap::new();
-    for tx in &answer.transactions {
+    for (t, tx) in answer.transactions.iter().enumerate() {
         let mined = (!tx.mempool).then_some(tx.height).flatten();
         if mined.is_some_and(|h| h > answer.blockchain_height.saturating_add(TIP_SLACK)) {
             return Err(Problem::Contradiction);
@@ -798,8 +835,9 @@ pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs, chain: &Known) -> std::
         // Its proof, if it has one and is in a block: it holds, and names
         // the block the node has there (`Some(true)`) or one no node has
         // vouched for yet (`Some(false)`).
-        let proven = match mined {
-            Some(_) => proof::check(tx).map_err(|_| Problem::NotOnChain)?,
+        let proven = match &checked.proofs[t] {
+            Some(Err(_)) => return Err(Problem::NotOnChain),
+            Some(Ok(proven)) => proven.as_ref(),
             None => None,
         };
         let on_chain = match &proven {
@@ -815,7 +853,7 @@ pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs, chain: &Known) -> std::
                 }
             }
         };
-        for (i, received) in tx.receives.iter().enumerate() {
+        for (received, opened) in tx.receives.iter().zip(&checked.opened[t]) {
             let key = received.public_key.0;
             if *places.entry((tx.hash.0, received.index)).or_insert(key) != key {
                 return Err(Problem::Contradiction);
@@ -823,16 +861,10 @@ pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs, chain: &Known) -> std::
             if mined.is_some() && *global.entry(received.global_index).or_insert(key) != key {
                 return Err(Problem::Contradiction);
             }
-            // With a proof, the amount is held to the chain's commitment.
-            let chain_commitment = proven.as_ref().and_then(|p| p.commitments.get(i).copied().flatten());
-            let opened = match chain_commitment {
-                Some(commitment) => opened(keys, tx, &lws::ReceivedOutput { commitment: Some(lws::Hex(commitment)), ..received.clone() }, mined),
-                None => opened(keys, tx, received, mined),
-            };
             let checked = match opened {
                 Opened::Mismatch => return Err(Problem::AmountMismatch),
                 Opened::NotOurs => continue,
-                Opened::Ours { checked, .. } => checked,
+                Opened::Ours { checked, .. } => *checked,
             };
             if mined.is_none() {
                 // In the pool: not this wallet's until mined, and proved then.
@@ -849,7 +881,103 @@ pub(super) fn vet(keys: &Keys, answer: &lws::AddressTxs, chain: &Known) -> std::
     Ok(tally)
 }
 
+/// An answer as far as it can be checked without the wallet's state, for
+/// [`vet`] and [`reconcile_checked`]: each transaction's proof (`None` in
+/// the pool), and each output it lists received, [`opened`], with a proof
+/// held to the chain's commitment. Worked out off the async runtime and
+/// before the state lock is taken: it's most of a poll's work.
+pub(super) struct Checked {
+    pub(super) proofs: Vec<Option<std::result::Result<Option<proof::Proven>, proof::Broken>>>,
+    pub(super) opened: Vec<Vec<Opened>>,
+    /// The key images of this wallet's outputs in blocks listed (none for
+    /// a device's): a transaction spending one is the wallet's too.
+    pub(super) images: HashSet<[u8; 32]>,
+}
+
+/// Everything opening a received output depends on: the same again opens
+/// the same.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct OpenKey {
+    public_key: [u8; 32],
+    tx_key: [u8; 32],
+    index: u16,
+    account: u32,
+    subaddress: u32,
+    rct: Option<[u8; 32]>,
+    amount: u64,
+    commitment: Option<[u8; 32]>,
+    compact: bool,
+    coinbase: bool,
+}
+
+/// Outputs a poll opened, with the key image of each of the wallet's, for
+/// the next not to work them out again: only those its answer listed, so it
+/// never grows past one answer.
+#[derive(Default)]
+pub(super) struct OpenCache(HashMap<OpenKey, (Opened, Option<[u8; 32]>)>);
+
+/// [`Checked`] for `answer`, opening only what `last` (the last poll's)
+/// doesn't have, with what this poll opened for the next.
+pub(super) fn check(keys: &Keys, answer: &lws::AddressTxs, mut last: OpenCache) -> (Checked, OpenCache) {
+    let mut kept = OpenCache::default();
+    let mut images = HashSet::new();
+    let mut proofs = Vec::with_capacity(answer.transactions.len());
+    let mut opens = Vec::with_capacity(answer.transactions.len());
+    for tx in &answer.transactions {
+        let mined = (!tx.mempool).then_some(tx.height).flatten();
+        let proof = mined.map(|_| proof::check(tx));
+        let mut outputs = Vec::with_capacity(tx.receives.len());
+        // One that doesn't hold refuses the answer: nothing to open.
+        if let Some(Err(_)) = proof {
+            proofs.push(proof);
+            opens.push(outputs);
+            continue;
+        }
+        let proven = proof.as_ref().and_then(|p| p.as_ref().ok()).and_then(Option::as_ref);
+        for (i, received) in tx.receives.iter().enumerate() {
+            // With a proof, the amount is held to the chain's commitment.
+            let chain = proven.and_then(|p| p.commitments.get(i).copied().flatten());
+            let commitment = chain.or(received.commitment.map(|c| c.0));
+            let key = OpenKey {
+                public_key: received.public_key.0,
+                tx_key: received.tx_pub_key.0,
+                index: received.index,
+                account: received.recipient.maj_i,
+                subaddress: received.recipient.min_i,
+                rct: received.rct.map(|r| r.0),
+                amount: received.amount.0,
+                commitment,
+                compact: mined.is_none_or(|h| h >= compact_from(keys.network)),
+                coinbase: tx.coinbase,
+            };
+            let (output, image) = match last.0.remove(&key).or_else(|| kept.0.get(&key).cloned()) {
+                Some(done) => done,
+                None => {
+                    let output = match chain {
+                        Some(_) => opened(keys, tx, &lws::ReceivedOutput { commitment: commitment.map(lws::Hex), ..received.clone() }, mined),
+                        None => opened(keys, tx, received, mined),
+                    };
+                    let image = match &output {
+                        Opened::Ours { key_offset, .. } => monero_wallet::ed25519::CompressedPoint::from(received.public_key.0).decompress().and_then(|k| keys.key_image(k, *key_offset)),
+                        _ => None,
+                    };
+                    (output, image)
+                }
+            };
+            if mined.is_some() {
+                images.extend(image);
+            }
+            kept.0.insert(key, (output.clone(), image));
+            outputs.push(output);
+        }
+        proofs.push(proof);
+        opens.push(outputs);
+    }
+    (Checked { proofs, opened: opens, images }, kept)
+}
+
 /// An output the server says this wallet received, as far as Fob can check it.
+#[derive(Clone)]
 pub(super) enum Opened {
     /// Its key isn't one this wallet's view key makes from the transaction
     /// key and index for the subaddress named, or its mask isn't the one it
@@ -916,10 +1044,10 @@ pub(super) fn opened(keys: &Keys, tx: &lws::Transaction, received: &lws::Receive
 }
 
 /// The `WalletOutput` for an output the server says this wallet received,
-/// once it checks ([`opened`]), locked as its transaction's unlock time
-/// says: a block below `TIME_LOCK_FROM`, a Unix time from it on.
-pub(super) fn checked_output(keys: &Keys, tx: &lws::Transaction, received: &lws::ReceivedOutput, height: u64, unlock_block: u64) -> Option<WalletOutput> {
-    let Opened::Ours { key_offset, mask, .. } = opened(keys, tx, received, Some(height)) else { return None };
+/// once it checks (`opened`, by [`opened`]), locked as its transaction's
+/// unlock time says: a block below `TIME_LOCK_FROM`, a Unix time from it on.
+pub(super) fn checked_output(tx: &lws::Transaction, received: &lws::ReceivedOutput, opened: &Opened, unlock_block: u64) -> Option<WalletOutput> {
+    let Opened::Ours { key_offset, mask, .. } = *opened else { return None };
     let index = u64::from(received.index);
     let payment_id = match tx.payment_id.as_ref().map(|p| p.0.as_slice()) {
         Some(id) if id.len() == 8 => Some(PaymentId::Encrypted(id.try_into().ok()?)),

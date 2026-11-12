@@ -12,10 +12,14 @@
 //! count as a varint, mostly one byte, instead of the running total in eight.
 //! The first download is several times smaller (monero-oxide has a TODO for
 //! this).
+//!
+//! The file is written again only once it's a day or so behind, not at each
+//! block: being behind only costs the next start a little more to fetch. It's
+//! read and written off the async runtime.
 
 use std::{
     ops::{Bound, RangeBounds},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,7 +28,7 @@ use monero_wallet::{
     ed25519::Point,
     interface::{EvaluateUnlocked, InterfaceError, ProvidesBlockchainMeta, ProvidesUnvalidatedDecoys, TransactionsError},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::transport::{Daemon, Transport};
 use monero_daemon_rpc::HttpTransport;
@@ -37,21 +41,55 @@ const REFETCH: usize = 30;
 /// How long a tip taken by [`Decoys::note_tip`] stands in for asking the node.
 const TIP_FOR: Duration = Duration::from_secs(10);
 
+/// How far behind the file may fall before it's written again: about a day.
+const WRITE_EVERY: usize = 720;
+
+/// How many rings may hold a copy of the distribution at once: each is 8
+/// bytes a block, tens of megabytes, and lives through the ring's round trips.
+const COPIES: usize = 3;
+
 /// The cumulative RingCT output count at each block from `start`.
 struct Distribution {
     start: usize,
     counts: Vec<u64>,
+    /// The last block the file holds, if it holds this distribution.
+    written: Option<usize>,
+}
+
+/// The distribution in memory, once the file has been read.
+#[derive(Default)]
+struct Kept {
+    read: bool,
+    distribution: Option<Distribution>,
 }
 
 impl Distribution {
+    fn new(start: usize, counts: Vec<u64>) -> Distribution {
+        Distribution { start, counts, written: None }
+    }
+
     fn end(&self) -> Option<usize> {
         (self.start + self.counts.len()).checked_sub(1)
     }
 
-    /// Whether the counts never go down, as a running total can't, and as
-    /// monero-interface refuses to choose decoys from otherwise.
+    /// Whether the counts from index `from` on never go down, as a running
+    /// total can't, and as monero-interface refuses to choose decoys from
+    /// otherwise. What came before was checked as it was kept.
+    fn increasing_from(&self, from: usize) -> bool {
+        self.counts.get(from..).is_none_or(|c| c.is_sorted())
+    }
+
+    #[cfg(test)]
     fn increasing(&self) -> bool {
-        self.counts.windows(2).all(|w| w[0] <= w[1])
+        self.increasing_from(0)
+    }
+
+    /// Whether the file is far enough behind to write again, or doesn't hold this.
+    fn behind(&self) -> bool {
+        match (self.written, self.end()) {
+            (Some(written), Some(end)) => end.saturating_sub(written) >= WRITE_EVERY,
+            _ => true,
+        }
     }
 
     /// Whether counts from block `start`, built on `base` outputs before it,
@@ -67,46 +105,92 @@ impl Distribution {
         }
     }
 
-    fn read(path: &PathBuf) -> Option<Distribution> {
+    /// The file, if it's whole and never goes down. Blocking.
+    fn read(path: &Path) -> Option<Distribution> {
         let bytes = std::fs::read(path).ok()?;
         if bytes.len() < 8 || bytes.len() % 8 != 0 {
             return None;
         }
         let mut words = bytes.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c));
         let start = usize::try_from(words.next()?).ok()?;
-        Some(Distribution { start, counts: words.collect() }).filter(Distribution::increasing)
+        let mut d = Distribution::new(start, words.collect());
+        d.written = d.end();
+        Some(d).filter(|d| d.increasing_from(0))
     }
 
-    fn write(&self, path: &PathBuf) {
+    /// The file's bytes: the start, then each count, 8 bytes apiece.
+    fn bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(8 * (self.counts.len() + 1));
         bytes.extend((self.start as u64).to_le_bytes());
         for c in &self.counts {
             bytes.extend(c.to_le_bytes());
         }
-        let tmp = path.with_extension("tmp");
-        // A cache: if it can't be written, the next payment fetches it again.
-        if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(tmp, path);
-        }
+        bytes
+    }
+
+    /// Writes the file, through a spare renamed over it. Blocking.
+    #[cfg(test)]
+    fn write(&self, path: &Path) {
+        write_file(path, self.bytes());
     }
 }
 
+/// Writes `bytes` to `path` through a spare renamed over it, so a torn write
+/// leaves the last whole file. Blocking. A cache: if it can't be written,
+/// the next payment fetches it again.
+fn write_file(path: &Path, bytes: Vec<u8>) -> bool {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(tmp, path).is_ok()
+}
+
 /// The node, with the output distribution kept between payments.
-#[derive(Clone)]
+///
+/// A clone is for choosing one ring. monero-oxide takes its own copy of the
+/// whole distribution for each, tens of megabytes, and every ring of a
+/// payment is chosen at once, so a clone holds one of [`COPIES`] places from
+/// its first copy until it's dropped, and further rings wait for a place.
 pub struct Decoys {
     daemon: Daemon,
     transport: Transport,
-    cache: Arc<Mutex<Option<Distribution>>>,
+    cache: Arc<Mutex<Kept>>,
     file: Arc<PathBuf>,
     /// The chain tip a payment has just asked the node for. Choosing each
     /// input's decoys asks again, a round trip apiece, for the same answer.
     tip: Arc<std::sync::Mutex<Option<(Instant, usize)>>>,
+    copies: Arc<Semaphore>,
+    /// This clone's place, once it's taken a copy.
+    place: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+}
+
+impl Clone for Decoys {
+    fn clone(&self) -> Decoys {
+        Decoys {
+            daemon: self.daemon.clone(),
+            transport: self.transport.clone(),
+            cache: self.cache.clone(),
+            file: self.file.clone(),
+            tip: self.tip.clone(),
+            copies: self.copies.clone(),
+            place: std::sync::Mutex::new(None),
+        }
+    }
 }
 
 impl Decoys {
+    /// The file is read when first needed, not here.
     pub fn new(daemon: Daemon, transport: Transport, file: PathBuf) -> Decoys {
-        let cached = Distribution::read(&file);
-        Decoys { daemon, transport, cache: Arc::new(Mutex::new(cached)), file: Arc::new(file), tip: Arc::default() }
+        let copies = Arc::new(Semaphore::new(COPIES));
+        Decoys { daemon, transport, cache: Arc::default(), file: Arc::new(file), tip: Arc::default(), copies, place: std::sync::Mutex::new(None) }
+    }
+
+    /// Takes a place for a copy of the distribution, unless this clone has one.
+    async fn take_place(&self) -> Result<(), InterfaceError> {
+        if self.place.lock().expect("place lock").is_some() {
+            return Ok(());
+        }
+        let permit = self.copies.clone().acquire_owned().await.map_err(|_| InterfaceError::InternalError("no place for decoys".into()))?;
+        self.place.lock().expect("place lock").get_or_insert(permit);
+        Ok(())
     }
 
     /// Takes `tip`, just asked of the node, as the tip for the next few seconds.
@@ -119,7 +203,13 @@ impl Decoys {
     /// kept is forgotten, file and all, and the whole of it fetched again,
     /// rather than every payment failing on a distribution that goes down.
     pub async fn update(&self, to: usize) -> Result<(), InterfaceError> {
-        let mut cache = self.cache.lock().await;
+        let mut kept = self.cache.lock().await;
+        if !kept.read {
+            let file = self.file.clone();
+            kept.distribution = tokio::task::spawn_blocking(move || Distribution::read(&file)).await.ok().flatten();
+            kept.read = true;
+        }
+        let cache = &mut kept.distribution;
         let mut from = match cache.as_ref().and_then(Distribution::end) {
             Some(end) if end >= to => return Ok(()),
             Some(end) => (end + 1).saturating_sub(REFETCH).max(cache.as_ref().map_or(0, |d| d.start)),
@@ -129,19 +219,27 @@ impl Decoys {
             let (base, fresh) = compressed_distribution(&self.transport, from, to).await?;
             // The node starts the distribution where RingCT began, if that's after `from`.
             let fresh_start = (to + 1).checked_sub(fresh.len()).ok_or_else(|| InterfaceError::InvalidInterface("too long a distribution".into()))?;
+            // With where what's new begins, the block before it: only from
+            // there on can the counts have gone down.
             let next = match cache.take() {
                 Some(mut kept) if from > 0 && kept.followed_by(fresh_start, base) => {
-                    kept.counts.truncate(fresh_start - kept.start);
+                    let at = fresh_start - kept.start;
+                    kept.counts.truncate(at);
                     kept.counts.extend(fresh);
-                    Some(kept)
+                    Some((kept, at.saturating_sub(1)))
                 }
                 // Only the newest blocks, and they don't fit: nothing to keep.
                 _ if from > 0 => None,
-                _ => Some(Distribution { start: fresh_start, counts: fresh }),
+                _ => Some((Distribution::new(fresh_start, fresh), 0)),
             };
             match next {
-                Some(next) if next.increasing() => {
-                    next.write(&self.file);
+                Some((mut next, checked)) if next.increasing_from(checked) => {
+                    if next.behind() {
+                        let (file, bytes) = (self.file.clone(), next.bytes());
+                        if tokio::task::spawn_blocking(move || write_file(&file, bytes)).await.unwrap_or(false) {
+                            next.written = next.end();
+                        }
+                    }
                     *cache = Some(next);
                     return Ok(());
                 }
@@ -299,9 +397,10 @@ impl ProvidesUnvalidatedDecoys for Decoys {
                 Some(t) => t.ok_or_else(bad)?,
                 None => self.daemon.latest_block_number().await?,
             };
+            self.take_place().await?;
             self.update(to).await?;
             let cache = self.cache.lock().await;
-            let d = cache.as_ref().ok_or_else(|| InterfaceError::InternalError("no distribution".into()))?;
+            let d = cache.distribution.as_ref().ok_or_else(|| InterfaceError::InternalError("no distribution".into()))?;
             if to < d.start {
                 return Ok(vec![]);
             }
@@ -453,17 +552,25 @@ mod tests {
     async fn a_distribution_that_doesnt_follow_on_is_fetched_whole() {
         let file = std::env::temp_dir().join(format!("fob-decoys-splice-{}", std::process::id()));
         // Kept from an honest node: ten outputs a block from block 100 to 199.
-        Distribution { start: 100, counts: (1..=100).map(|i| i * 10).collect() }.write(&file);
+        Distribution::new(100, (1..=100).map(|i| i * 10).collect()).write(&file);
         let honest = distribution_node(0, 10).await;
         let kept = decoys(honest.clone(), &file).await;
         kept.update(209).await.unwrap();
         assert_eq!(honest.requests(), 2, "connecting, then only the newest blocks");
-        let d = Distribution::read(&file).unwrap();
-        assert_eq!((d.start, d.counts.len(), d.counts.last()), (100, 110, Some(&1100)));
+        let in_memory = |d: &Decoys| d.cache.try_lock().unwrap().distribution.as_ref().map(|d| (d.start, d.counts.len(), *d.counts.last().unwrap()));
+        assert_eq!(in_memory(&kept), Some((100, 110, 1100)));
+        // The file is written again only once it's a day behind, not at each block.
+        let on_disk = || Distribution::read(&file).map(|d| (d.start, d.counts.len()));
+        assert_eq!(on_disk(), Some((100, 100)));
+        kept.update(199 + WRITE_EVERY - 1).await.unwrap();
+        assert_eq!(on_disk(), Some((100, 100)));
+        kept.update(199 + WRITE_EVERY).await.unwrap();
+        assert_eq!(on_disk(), Some((100, 100 + WRITE_EVERY)));
+        assert_eq!(in_memory(&kept), Some((100, 100 + WRITE_EVERY, 10 * (100 + WRITE_EVERY as u64))));
 
         // A node counting otherwise, as after one that lied: what's new doesn't
         // follow on, so all of it comes from this node.
-        Distribution { start: 100, counts: (1..=100).map(|i| i * 1_000).collect() }.write(&file);
+        Distribution::new(100, (1..=100).map(|i| i * 1_000).collect()).write(&file);
         let other = distribution_node(0, 10).await;
         let lied_to = decoys(other.clone(), &file).await;
         lied_to.update(209).await.unwrap();
@@ -475,15 +582,36 @@ mod tests {
         assert_eq!(picked.len(), 110);
 
         // A file that goes down is never read.
-        Distribution { start: 100, counts: vec![5, 4] }.write(&file);
+        Distribution::new(100, vec![5, 4]).write(&file);
         assert!(Distribution::read(&file).is_none());
         std::fs::remove_file(file).unwrap();
+    }
+
+    /// Each ring's clone holds a place from its first copy of the
+    /// distribution until it's dropped: only [`COPIES`] copies at once.
+    #[tokio::test]
+    async fn only_a_few_rings_copy_the_distribution_at_once() {
+        let file = std::env::temp_dir().join(format!("fob-decoys-copies-{}", std::process::id()));
+        let node = distribution_node(0, 10).await;
+        let decoys = decoys(node, &file).await;
+        let rings: Vec<Decoys> = (0..COPIES).map(|_| decoys.clone()).collect();
+        for ring in &rings {
+            assert_eq!(ProvidesUnvalidatedDecoys::ringct_output_distribution(ring, 0..=209).await.unwrap().len(), 110);
+            // A ring asks again on its own place.
+            assert_eq!(ProvidesUnvalidatedDecoys::ringct_output_distribution(ring, 0..=209).await.unwrap().len(), 110);
+        }
+        let another = decoys.clone();
+        let waiting = tokio::time::timeout(Duration::from_millis(100), ProvidesUnvalidatedDecoys::ringct_output_distribution(&another, 0..=209)).await;
+        assert!(waiting.is_err(), "a fourth ring waits");
+        drop(rings);
+        assert_eq!(ProvidesUnvalidatedDecoys::ringct_output_distribution(&another, 0..=209).await.unwrap().len(), 110);
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]
     fn the_cache_file_round_trips() {
         let path = std::env::temp_dir().join(format!("fob-decoys-{}", std::process::id()));
-        Distribution { start: 1_220_516, counts: vec![1, 5, 9, 14] }.write(&path);
+        Distribution::new(1_220_516, vec![1, 5, 9, 14]).write(&path);
         let back = Distribution::read(&path).unwrap();
         assert_eq!(back.end(), Some(1_220_519));
         assert_eq!((back.start, back.counts), (1_220_516, vec![1, 5, 9, 14]));

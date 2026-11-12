@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The highest subaddress ever handed out or watched: far past what anyone
+/// hands out, and few enough that watching them all is quick, so a bad
+/// value (a server's, a damaged file's) can't have scanning register
+/// billions or wrap Receive round to addresses already given out.
+pub(super) const MOST_ADDRESSES: u32 = 100_000;
+
 impl Wallet {
     pub fn can_spend(&self) -> bool {
         self.inner.keys.can_spend()
@@ -90,7 +96,8 @@ impl Wallet {
     /// Receive or a request, and never the address splits pay to. In a
     /// restored wallet, also [`RESTORE_SKIP`] past the highest the other
     /// phone was paid at, as found so far: the addresses it handed out
-    /// after that aren't known here, and aren't given out again.
+    /// after that aren't known here, and aren't given out again. At
+    /// [`MOST_ADDRESSES`], the last one again, never one from the start.
     pub(super) fn hand_out(state: &mut State) -> u32 {
         // Receive keeps the one it shows (a file from before requests
         // showed the last one handed out).
@@ -98,14 +105,15 @@ impl Wallet {
         if state.restored {
             let theirs = state.outputs.iter().map(|o| o.subaddress).filter(|s| state.fresh_from.is_none_or(|f| *s < f) && Some(*s) != state.split_index);
             if let Some(highest) = theirs.max().filter(|h| *h > 0) {
-                state.receive_index = state.receive_index.max(highest + RESTORE_SKIP);
+                state.receive_index = state.receive_index.max(highest.saturating_add(RESTORE_SKIP));
             } else if state.fresh_from.is_none() {
                 state.receive_index = state.receive_index.max(RESTORE_SKIP);
             }
         }
-        state.receive_index += 1;
+        let next = |i: u32| i.saturating_add(1).min(MOST_ADDRESSES);
+        state.receive_index = next(state.receive_index);
         if Some(state.receive_index) == state.split_index {
-            state.receive_index += 1;
+            state.receive_index = next(state.receive_index);
         }
         if state.restored {
             state.fresh_from.get_or_insert(state.receive_index);
@@ -114,14 +122,14 @@ impl Wallet {
     }
 
     /// The highest subaddress scanning watches: [`LOOKAHEAD`] past the
-    /// highest handed out or paid.
+    /// highest handed out or paid, never past [`MOST_ADDRESSES`].
     pub(super) fn watched(receive_index: u32) -> u32 {
-        receive_index.saturating_add(LOOKAHEAD)
+        receive_index.saturating_add(LOOKAHEAD).min(MOST_ADDRESSES)
     }
 
-    /// Has `scanner` watch subaddresses `from..=to` too.
+    /// Has `scanner` watch subaddresses `from..=to` too, up to [`MOST_ADDRESSES`].
     pub(super) fn watch(scanner: &mut Scanner, from: u32, to: u32) {
-        for i in from..=to {
+        for i in from..=to.min(MOST_ADDRESSES) {
             if let Some(sub) = SubaddressIndex::new(0, i) {
                 scanner.register_subaddress(sub);
             }

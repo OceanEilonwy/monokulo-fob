@@ -7,6 +7,8 @@
 //! Everything a contact screen says is written here from the contacts and
 //! the payments; the apps only draw it.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::{activity::{self, Activity, Direction}, clock::{self, Clock}, error::ScreenError, error::Result, requests};
@@ -252,6 +254,27 @@ fn paid_to<'a>(contact: &Contact, rows: &'a [Activity]) -> Vec<&'a Activity> {
     paid
 }
 
+/// Payments this wallet sent, by the address paid: just the last to each
+/// (the first in `rows` of the newest), as [`paid_to`] has it first.
+/// Looked up once for a screen's many contacts.
+fn last_paid(rows: &[Activity]) -> HashMap<&str, (usize, &Activity)> {
+    let mut last: HashMap<&str, (usize, &Activity)> = HashMap::new();
+    for (i, a) in rows.iter().enumerate().filter(|(_, a)| a.direction == Direction::Out && a.split.is_none()) {
+        let Some(to) = a.to.as_deref() else { continue };
+        let kept = last.entry(to).or_insert((i, a));
+        if a.time > kept.1.time {
+            *kept = (i, a);
+        }
+    }
+    last
+}
+
+/// The last payment to any of `contact`'s addresses, from [`last_paid`]:
+/// the newest, and of those the first in the rows.
+fn last_to<'a>(contact: &Contact, last: &HashMap<&str, (usize, &'a Activity)>) -> Option<&'a Activity> {
+    contact.addresses().filter_map(|to| last.get(to).copied()).min_by_key(|(i, a)| (std::cmp::Reverse(a.time), *i)).map(|(_, a)| a)
+}
+
 /// A contact in a list, ready to draw.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
@@ -298,10 +321,11 @@ pub fn list(book: &Book, rows: &[Activity], search: &str, clock: Clock) -> Vec<R
         .filter(|c| search.is_empty() || c.name.to_lowercase().contains(&search) || c.note.as_deref().is_some_and(|n| n.to_lowercase().contains(&search)))
         .collect();
     found.sort_by_cached_key(|c| (c.name.to_lowercase(), c.id));
+    let paid = last_paid(rows);
     found
         .into_iter()
         .map(|c| {
-            let last = paid_to(c, rows).first().map(|p| clock::day_name(p.time, clock));
+            let last = last_to(c, &paid).map(|p| clock::day_name(p.time, clock));
             let line = match (&c.note, last) {
                 (note, Some(day)) => ContactLine::Paid { note: note.clone(), day },
                 (Some(note), None) => ContactLine::Note(note.clone()),
@@ -315,8 +339,8 @@ pub fn list(book: &Book, rows: &[Activity], search: &str, clock: Clock) -> Vec<R
 /// Send's sheet: contacts with a send address, the most recently paid
 /// first (never paid ones after, by name), at most [`ON_SEND`].
 pub fn on_send(book: &Book, rows: &[Activity], clock: Clock) -> Vec<Row> {
-    let mut found: Vec<(&Contact, Option<&Activity>)> =
-        book.all().iter().filter(|c| c.send_address.is_some()).map(|c| (c, paid_to(c, rows).first().copied())).collect();
+    let paid = last_paid(rows);
+    let mut found: Vec<(&Contact, Option<&Activity>)> = book.all().iter().filter(|c| c.send_address.is_some()).map(|c| (c, last_to(c, &paid))).collect();
     found.sort_by_cached_key(|(c, last)| (std::cmp::Reverse(last.map(|l| l.time)), c.name.to_lowercase(), c.id));
     found
         .into_iter()
@@ -338,13 +362,13 @@ pub fn unsaved(book: &Book, rows: &[Activity], clock: Clock) -> Vec<activity::Pa
     let mut sent: Vec<(&Activity, &str)> =
         rows.iter().filter(|a| a.direction == Direction::Out && a.split.is_none()).filter_map(|a| Some((a, a.to.as_deref()?))).collect();
     sent.sort_by_key(|(a, _)| std::cmp::Reverse(a.time));
-    let mut seen: Vec<&str> = vec![];
+    let owned: HashSet<&str> = book.all().iter().flat_map(Contact::addresses).collect();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut out = vec![];
     for (last, to) in sent {
-        if seen.contains(&to) || book.owner(to).is_some() {
+        if owned.contains(to) || !seen.insert(to) {
             continue;
         }
-        seen.push(to);
         out.push(activity::PaidBefore {
             address: to.to_owned(),
             name: short_title(to),

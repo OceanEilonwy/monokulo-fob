@@ -245,13 +245,13 @@ pub fn swap_code(profile: Option<&Profile>, share: &Share) -> String {
 /// in when every payment has a price, else "+0.03 XMR"; `None` while
 /// nothing has.
 pub fn received(share: &Share, rows: &[Activity]) -> Option<String> {
-    let paid: Vec<Activity> = rows.iter().filter_map(|a| a.part(share.subaddress)).collect();
-    let first = paid.first()?;
-    let atomic: u64 = paid.iter().map(|a| a.amount).sum();
+    let paid: Vec<(&Activity, u64)> = rows.iter().filter_map(|a| Some((a, a.part_amount(share.subaddress)?))).collect();
+    let (first, _) = paid.first()?;
+    let atomic: u64 = paid.iter().map(|(_, amount)| amount).sum();
     let unit = first.price.as_ref().map(|p| p.currency.clone());
     let fiat = unit.and_then(|unit| {
         let currency = fiat::currency(&unit);
-        let minor: Option<u64> = paid.iter().map(|a| a.price.as_ref().filter(|p| p.currency == unit).map(|p| fiat::to_minor(a.amount, p.price, &currency))).sum();
+        let minor: Option<u64> = paid.iter().map(|(a, amount)| a.price.as_ref().filter(|p| p.currency == unit).map(|p| fiat::to_minor(*amount, p.price, &currency))).sum();
         minor.map(|m| fiat::format(m, &currency))
     });
     Some(format!("+{}", fiat.unwrap_or_else(|| format!("{} XMR", amount::format_short(atomic)))))

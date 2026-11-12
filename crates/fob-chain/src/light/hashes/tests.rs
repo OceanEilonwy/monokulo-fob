@@ -153,6 +153,25 @@ async fn a_reorganisation_is_found_and_checked_again() {
     assert_ne!(known.at(995), Some(hash(995, 0)));
 }
 
+/// A server making up blocks across the chain: at most [`WINDOWS`] pages a
+/// poll, and once the node has given another block at a height, nothing
+/// more is asked while the server keeps naming its own.
+#[tokio::test]
+async fn made_up_blocks_cost_the_node_a_few_pages_once() {
+    let node = Fake::new(chain(200_000));
+    let made_up: BTreeMap<u64, [u8; 32]> = (0..150).map(|i| (100 + i * WINDOW, hash(100 + i * WINDOW, 9))).collect();
+    let mut known = Known::default();
+    let asked = known.learn(&node, &made_up, 0, 200_000).await.unwrap();
+    assert_eq!(asked.pages, WINDOWS);
+    assert_eq!(asked.starts.len(), WINDOWS + 1, "the windows and the tip");
+    let kept = known.blocks.len();
+    assert!(kept < made_up.len() && known.blocks.iter().all(|(h, b)| *b == hash(*h, 0)), "the node's blocks");
+    // Asked again: only whether the chain was reorganised, near the tip.
+    let again = known.learn(&node, &made_up, 0, 200_000).await.unwrap();
+    assert_eq!((again.starts.len(), again.pages), (0, 1));
+    assert_eq!(known.blocks.len(), kept);
+}
+
 #[tokio::test]
 async fn a_node_that_doesn_t_answer_is_an_error_and_keeps_what_was_known() {
     let node = Fake::new(chain(100));

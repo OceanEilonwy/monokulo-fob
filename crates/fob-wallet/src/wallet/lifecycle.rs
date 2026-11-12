@@ -121,6 +121,7 @@ impl Wallet {
                 fresh_share: std::sync::Mutex::new(None),
                 node_verdict: std::sync::Mutex::new(None),
                 light: std::sync::Mutex::new(None),
+                light_opened: std::sync::Mutex::default(),
                 live_swap: std::sync::Mutex::new(std::sync::Weak::new()),
             }),
         }
