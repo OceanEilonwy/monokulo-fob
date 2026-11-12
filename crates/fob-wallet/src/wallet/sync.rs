@@ -257,13 +257,12 @@ impl Wallet {
             self.scan_reached(height + 1);
 
             state.recent.push((height, hash));
-            let keep = manual::keep_hashes(state.settled_confirmations);
-            while state.recent.len() > keep {
-                state.recent.remove(0);
-            }
             state.next_block = height + 1;
             state.last_block_time = time;
         }
+        // The batch's blocks in, the oldest beyond those kept go, at once.
+        let excess = state.recent.len().saturating_sub(manual::keep_hashes(state.settled_confirmations));
+        state.recent.drain(..excess);
         if last.is_some() {
             *self.inner.last_block.lock().expect("block lock") = last;
         }
