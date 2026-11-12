@@ -32,7 +32,7 @@ android {
         targetSdk = 37
         // A release build is given these by CI (.github/workflows/release.yml).
         versionCode = (project.findProperty("fobVersionCode") as String?)?.toInt() ?: 1
-        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.19"
+        versionName = (project.findProperty("fobVersion") as String?) ?: "0.1.21"
         // The screenshot test (scripts/screenshots.sh) draws screens on an emulator.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

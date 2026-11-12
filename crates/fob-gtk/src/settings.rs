@@ -150,18 +150,20 @@ impl SimpleComponent for Settings {
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Node",
-                                // Kept for switching back, unused meanwhile.
+                                // Only the rows for the way syncing goes: the node's kept for switching back.
                                 #[watch]
-                                set_sensitive: !model.light_on,
+                                set_visible: !model.light_on,
                                 set_activatable: true,
                                 #[watch]
-                                set_subtitle: if model.light_on { model.words.node_unused.as_str() } else { model.node_line.as_str() },
+                                set_subtitle: &model.node_line,
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Node)); },
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: &model.words.server_title,
+                                #[watch]
+                                set_visible: model.light_on,
                                 set_activatable: true,
                                 #[watch]
                                 set_subtitle: model.light_line.as_deref().unwrap_or(model.words.none_chosen.as_str()),
@@ -171,15 +173,13 @@ impl SimpleComponent for Settings {
                             add = &adw::ActionRow {
                                 set_use_markup: false,
                                 set_title: "Instant updates (ZMQ)",
-                                // Manual Sync listens for nothing.
+                                // Manual Sync listens for nothing, and the server watches the chain itself.
                                 #[watch]
-                                set_visible: !model.manual_on || model.light_on,
-                                #[watch]
-                                set_sensitive: !model.light_on,
+                                set_visible: !model.manual_on && !model.light_on,
                                 set_activatable: true,
                                 connect_activated => Input::Zmq,
                                 #[watch]
-                                set_subtitle: if model.light_on { model.words.zmq_unused.as_str() } else { model.zmq_line.as_str() },
+                                set_subtitle: &model.zmq_line,
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,

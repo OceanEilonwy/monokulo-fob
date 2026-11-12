@@ -3683,10 +3683,6 @@ pub struct LightWords {
     pub sync_through: String,
     pub through_node: String,
     pub through_server: String,
-    /// Under the Node row in light mode: "used again when you switch back".
-    pub node_unused: String,
-    /// Under Instant updates in light mode.
-    pub zmq_unused: String,
     /// "Light wallet server": the row and the screen's title.
     pub server_title: String,
     pub none_chosen: String,
@@ -3858,8 +3854,6 @@ pub fn light_words() -> LightWords {
         sync_through: w::SYNC_THROUGH.into(),
         through_node: w::THROUGH_NODE.into(),
         through_server: w::THROUGH_SERVER.into(),
-        node_unused: w::NODE_UNUSED.into(),
-        zmq_unused: w::ZMQ_UNUSED.into(),
         server_title: w::SERVER_TITLE.into(),
         none_chosen: w::NONE_CHOSEN.into(),
         url_label: w::URL_LABEL.into(),
