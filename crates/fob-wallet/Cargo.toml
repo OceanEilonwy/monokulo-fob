@@ -9,6 +9,7 @@ license.workspace = true
 monero-wallet = "0.2"
 fob-chain = { path = "../fob-chain" }
 fob-codes = { path = "../fob-codes" }
+fob-keys = { path = "../fob-keys" }
 fob-monero = { path = "../fob-monero" }
 fob-price = { path = "../fob-price" }
 fob-scanner = { path = "../fob-scanner" }

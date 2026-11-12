@@ -87,6 +87,11 @@ impl From<VaultError> for FobError {
         FobError::Vault(e)
     }
 }
+impl From<fob_keys::KeyError> for FobError {
+    fn from(e: fob_keys::KeyError) -> Self {
+        FobError::Vault(e.into())
+    }
+}
 impl From<CodeError> for FobError {
     fn from(e: CodeError) -> Self {
         FobError::Code(e)

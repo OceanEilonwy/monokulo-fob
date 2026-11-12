@@ -9,17 +9,12 @@ publish = false
 [dependencies]
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
-curve25519-dalek = "4"
+# The keys themselves, with each held on locked pages.
+fob-keys = { path = "../fob-keys", features = ["mlock"] }
 fob-monero = { path = "../fob-monero" }
 hex = "0.4"
-# mlock for the keys held in memory.
+# Hardening the process (process.rs).
 libc = "0.2"
-# The seed crates come from their repository at a fixed commit: crates.io has an empty
-# monero-seed and an unrelated polyseed. Their std-shims is serai's, from git, a second
-# copy beside monero-wallet's; nothing of it crosses the crates' interfaces.
-monero-seed = { git = "https://github.com/kayabaNerve/monero-wallet-util", rev = "797fe701a6f9e99ae614c49479bb981de1afe8ec" }
-monero-wallet = "0.2"
-polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", rev = "797fe701a6f9e99ae614c49479bb981de1afe8ec" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 # The wallet's database, encrypted. OpenSSL comes from source, for every ABI
 # alike, behind the `vendored-openssl` feature (decision 415).

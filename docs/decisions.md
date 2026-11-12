@@ -4028,3 +4028,27 @@ together.
      libcrypto. fob-words, which fob-wallet depends on, takes fob-vault
      without default features so the feature stays fob-wallet's to set.
      proptest is fob-wallet's dev-dependency only.
+
+416. **`fob-keys` holds the keys; fob-vault keeps them at rest.** `Keys`,
+     `Restored`, `SeedKind`, `Device`, seed parsing, `view_only`, the
+     address, key-image and output helpers, and the in-memory holders
+     (`Locked`, `Sealed`) move out of fob-vault into a crate with no
+     database, argon2 or file system, so Till can take it alone. fob-vault
+     keeps `StoredKeys`, the database, the passphrase and process
+     hardening, and re-exports `keys`, `locked` and `sealed` under their
+     old paths, so nothing that used them changes. Keys report a
+     `KeyError` (bad seed, bad key, view-only, bad address), which becomes
+     the same `VaultError` as before. `Locked`'s `mlock` and `MADV_DONTDUMP`
+     are fob-keys' `mlock` feature, which fob-vault turns on: without it a
+     key is still on pages of its own and wiped when it goes, and fob-keys
+     calls no libc itself (getrandom still uses it underneath). Addresses
+     come from any account (`address_at(account, index)`,
+     `subaddress(SubaddressIndex)`), a light server's outputs are checked
+     in any account (`light_output_at`), and a device's transaction key is
+     found for an output in any account, not only 0.
+     `Restored::view_only_from_words(network, words)` gives the view key and
+     public spend key of a seed phrase; it takes the words in a
+     `Zeroizing<String>` and wipes them, the spend key and every copy made
+     on the way before it returns, and its keys keep no words. `from_parts`
+     and `kept_seed_words` are what fob-vault's file reads and writes
+     through, now that it can't see the fields.

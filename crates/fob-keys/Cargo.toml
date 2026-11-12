@@ -1,0 +1,32 @@
+[package]
+name = "fob-keys"
+description = "A wallet's keys and seed phrases, its addresses in any account, and the secrets held in memory."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Each key held in memory on locked pages (mlock), left out of core dumps.
+# fob-vault turns it on; without it a key is still wiped when it goes
+# (decision 416).
+mlock = ["dep:libc"]
+
+[dependencies]
+chacha20poly1305 = "0.10"
+curve25519-dalek = "4"
+fob-monero = { path = "../fob-monero" }
+hex = "0.4"
+libc = { version = "0.2", optional = true }
+# The seed crates come from their repository at a fixed commit: crates.io has an empty
+# monero-seed and an unrelated polyseed. Their std-shims is serai's, from git, a second
+# copy beside monero-wallet's; nothing of it crosses the crates' interfaces.
+monero-seed = { git = "https://github.com/kayabaNerve/monero-wallet-util", rev = "797fe701a6f9e99ae614c49479bb981de1afe8ec" }
+monero-wallet = "0.2"
+polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", rev = "797fe701a6f9e99ae614c49479bb981de1afe8ec" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+zeroize = "1"
+
+[dev-dependencies]
+libc = "0.2"

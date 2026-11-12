@@ -22,7 +22,7 @@ use rand_core::{OsRng, RngCore};
 use zeroize::Zeroizing;
 
 use crate::{
-    error::{Result, VaultError},
+    error::{Result, KeyError},
     locked::Locked,
 };
 
@@ -57,7 +57,7 @@ impl Sealed {
 
     /// The bytes it holds, in a buffer wiped when it goes.
     pub fn open(&self) -> Result<Zeroizing<Vec<u8>>> {
-        cipher().decrypt(Nonce::from_slice(&self.nonce), self.bytes.as_slice()).map(Zeroizing::new).map_err(|_| VaultError::BadKey)
+        cipher().decrypt(Nonce::from_slice(&self.nonce), self.bytes.as_slice()).map(Zeroizing::new).map_err(|_| KeyError::BadKey)
     }
 }
 
@@ -98,6 +98,6 @@ mod tests {
     fn a_changed_seal_is_refused() {
         let mut sealed = Sealed::seal(&[1; 32]);
         sealed.bytes[0] ^= 1;
-        assert!(matches!(sealed.open(), Err(VaultError::BadKey)));
+        assert!(matches!(sealed.open(), Err(KeyError::BadKey)));
     }
 }

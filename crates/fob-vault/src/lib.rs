@@ -5,9 +5,10 @@ pub mod db;
 pub mod error;
 pub mod files;
 pub mod keys;
-pub mod locked;
 pub mod passphrase;
 pub mod process;
-pub mod sealed;
 pub mod store;
 pub mod wallets;
+
+// Moved to fob-keys (decision 416), kept here under their old names.
+pub use fob_keys::{locked, sealed};

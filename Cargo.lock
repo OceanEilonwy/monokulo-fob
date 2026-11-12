@@ -644,6 +644,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fob-keys"
+version = "0.1.19"
+dependencies = [
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "fob-monero",
+ "hex",
+ "libc",
+ "monero-seed",
+ "monero-wallet",
+ "polyseed",
+ "rand_core 0.6.4",
+ "serde",
+ "zeroize",
+]
+
+[[package]]
 name = "fob-monero"
 version = "0.1.19"
 dependencies = [
@@ -698,13 +715,10 @@ version = "0.1.19"
 dependencies = [
  "argon2",
  "chacha20poly1305",
- "curve25519-dalek",
+ "fob-keys",
  "fob-monero",
  "hex",
  "libc",
- "monero-seed",
- "monero-wallet",
- "polyseed",
  "rand_core 0.6.4",
  "rusqlite",
  "serde",
@@ -720,6 +734,7 @@ dependencies = [
  "curve25519-dalek",
  "fob-chain",
  "fob-codes",
+ "fob-keys",
  "fob-monero",
  "fob-price",
  "fob-scanner",
