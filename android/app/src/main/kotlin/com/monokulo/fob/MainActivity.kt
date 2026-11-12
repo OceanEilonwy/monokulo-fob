@@ -186,6 +186,8 @@ sealed interface Screen {
     data object Zmq : Screen
     data object LightServer : Screen
     data object ManualSync : Screen
+    /** Settings › Connected apps: the apps this wallet gave view access to, with Forget and Sweep to main. */
+    data object ConnectedApps : Screen
 }
 
 class Nav(start: Screen) {
@@ -487,6 +489,7 @@ class MainActivity : FragmentActivity() {
             Screen.Zmq -> ZmqScreen(model, nav)
             Screen.LightServer -> LightServerScreen(model, nav)
             Screen.ManualSync -> ManualSyncScreen(model, nav)
+            Screen.ConnectedApps -> com.monokulo.fob.ui.screens.ConnectedAppsScreen(model, nav)
         }
     }
 }

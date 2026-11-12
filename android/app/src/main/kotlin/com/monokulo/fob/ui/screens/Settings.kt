@@ -176,6 +176,10 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                     you?.let { ProfileSettingRow(it.row, it.profile) { nav.go(Screen.Profile) } }
                     LeadRow(Icons.people, "Contacts", "Who you pay") { nav.go(Screen.Contacts) }
                     LeadRow(Icons.key, "Backup and keys", backupLine) { openBackup() }
+                    // The apps Connect to Fob gave view access to, by their accounts' names.
+                    val connected by androidx.compose.runtime.produceState(emptyList<String>(), wallet) { value = wallet?.connectedApps()?.map { it.label ?: it.app } ?: emptyList() }
+                    val appsWords = remember { uniffi.fob.connectedAppsWords() }
+                    LeadRow(Icons.link, appsWords.title, uniffi.fob.connectedAppsRow(connected.size.toUInt(), connected.firstOrNull())) { nav.go(Screen.ConnectedApps) }
                 }
             }
             Column {
