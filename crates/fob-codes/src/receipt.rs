@@ -192,7 +192,7 @@ impl From<&Receipt> for ReceiptView {
                 amount: money(item.line_total, &r.currency),
             })
             .collect();
-        let item_count = r.line_items.iter().map(|i| if i.quantity.fract() == 0.0 { i.quantity.max(1.0) as u32 } else { 1 }).sum();
+        let item_count = r.line_items.iter().map(|i| if i.quantity.fract() == 0.0 { i.quantity.max(1.0) as u32 } else { 1 }).fold(0u32, u32::saturating_add);
         let tax = r
             .tax
             .as_ref()
@@ -358,5 +358,26 @@ mod tests {
         let checked = check(&view(1200.0, "JPY"), XMR / 20, Some(&usd), Some(160 * fiat::MICRO), None);
         assert_eq!(checked.total, "¥1,200");
         assert_eq!(checked.other_currency.as_deref(), Some("JPY"));
+    }
+
+    /// Quantities come from whoever made the code: huge ones top out
+    /// rather than overflowing the count.
+    #[test]
+    fn huge_quantities_dont_overflow_the_item_count() {
+        let receipt: Receipt = serde_json::from_str(
+            r##"{
+              "orf_version": "0.1.0",
+              "receipt": { "receipt_id": "1", "issue_timestamp": "2026-10-31T09:12:00Z", "receipt_type": "sale" },
+              "merchant": { "legal_name": "Shop", "country_code": "US" },
+              "line_items": [
+                { "description": "A", "quantity": 3e9, "unit_price": 0, "line_total": 0 },
+                { "description": "B", "quantity": 3e9, "unit_price": 0, "line_total": 0 }
+              ],
+              "total": 0,
+              "currency": "USD"
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(ReceiptView::from(&receipt).item_count, u32::MAX);
     }
 }
