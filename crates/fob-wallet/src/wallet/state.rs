@@ -384,7 +384,7 @@ impl State {
     /// known (a device's coin waits for the device; a view-only wallet's
     /// never has one, and this is what it shows as ready).
     pub(super) fn spendable(&self) -> u64 {
-        self.outputs.iter().filter(|o| o.coin.is_free() && confirmations(self, o.height) >= self.needed(o)).map(|o| o.amount).sum()
+        amount::total(self.outputs.iter().filter(|o| o.coin.is_free() && confirmations(self, o.height) >= self.needed(o)).map(|o| o.amount))
     }
 
     /// The coins a payment may spend now, each at its place in `outputs`

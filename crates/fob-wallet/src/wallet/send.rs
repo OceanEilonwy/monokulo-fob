@@ -129,7 +129,7 @@ impl Wallet {
         recipient_name: Option<String>,
         pieces: Option<u32>,
     ) -> Result<Prepared> {
-        let amount: u64 = payments.iter().map(|p| p.1).sum();
+        let amount = amount::total(payments.iter().map(|p| p.1));
         let device = self.inner.keys.device();
         let (mut candidates, available, unsynced) = {
             let state = self.inner.state.lock().await;
@@ -152,7 +152,7 @@ impl Wallet {
                 })
                 .collect();
             candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
-            let available = candidates.iter().map(|c| c.1).sum::<u64>();
+            let available = amount::total(candidates.iter().map(|c| c.1));
             (candidates, available, unsynced)
         };
         let not_enough = |needed: u64| {
@@ -173,9 +173,9 @@ impl Wallet {
         let guess = |inputs: usize| fee_rate.calculate_fee_from_weight((1_600 + 900 * inputs as u64).max(split::weight(inputs, outputs))) as u64;
         let mut chosen = vec![];
         let mut total = 0;
-        while total < amount + guess(chosen.len().max(1)) && !candidates.is_empty() {
+        while total < amount.saturating_add(guess(chosen.len().max(1))) && !candidates.is_empty() {
             let c = candidates.remove(0);
-            total += c.1;
+            total = total.saturating_add(c.1);
             chosen.push(c);
         }
         // Every input's ring at once.
@@ -196,10 +196,10 @@ impl Wallet {
                 Ok(signable) => break signable,
                 Err(SendError::NotEnoughFunds { necessary_fee, .. }) => {
                     if candidates.is_empty() {
-                        return Err(not_enough(amount + necessary_fee.unwrap_or(0)));
+                        return Err(not_enough(amount.saturating_add(necessary_fee.unwrap_or(0))));
                     }
                     let c = candidates.remove(0);
-                    total += c.1;
+                    total = total.saturating_add(c.1);
                     with_decoys.extend(self.rings(&source, vec![c.2.clone()]).await?);
                     chosen.push(c);
                 }
@@ -215,8 +215,9 @@ impl Wallet {
                 // more weight covers it, and is what the device shows.
                 let weight = fee_rate.calculate_weight_from_fee(fee).unwrap_or(0) as u64 + trezor::sign::WEIGHT_MARGIN;
                 fee = u64::try_from(fee_rate.calculate_fee_from_weight(weight)).map_err(|_| FobError::Send("the fee is too large".into()))?;
-                if total < amount + fee {
-                    return Err(not_enough(amount + fee));
+                let needed = amount.checked_add(fee).ok_or_else(|| FobError::Send("the payment is too large".into()))?;
+                if total < needed {
+                    return Err(not_enough(needed));
                 }
                 let network = self.network();
                 let change_address = MoneroAddress::from_str(network.monero(), &self.inner.keys.primary_address()).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
@@ -279,8 +280,8 @@ impl Wallet {
         let mut spent: HashSet<&str> = HashSet::new();
         // A restored wallet's spends: the inputs less change and fee, as in Activity.
         let spends = state.spends.iter().filter(|s| !sent.contains(s.tx.as_str()) && spent.insert(&s.tx)).map(|spend| {
-            let inputs: u64 = state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount).sum();
-            let change: u64 = state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount).sum();
+            let inputs = amount::total(state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount));
+            let change = amount::total(state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount));
             (spend.time, inputs.saturating_sub(change).saturating_sub(spend.fee))
         });
         state

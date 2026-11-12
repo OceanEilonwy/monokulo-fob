@@ -436,14 +436,14 @@ struct Pooled {
 
 impl Pooled {
     fn amount(&self) -> u64 {
-        self.parts.iter().map(|p| p.1).sum()
+        amount::total(self.parts.iter().map(|p| p.1))
     }
 }
 
 /// Adds `amount` paid to `subaddress` to `parts`, one entry per address.
 fn add_part(parts: &mut Vec<(u32, u64)>, subaddress: u32, amount: u64) {
     match parts.iter_mut().find(|p| p.0 == subaddress) {
-        Some(part) => part.1 += amount,
+        Some(part) => part.1 = part.1.saturating_add(amount),
         None => parts.push((subaddress, amount)),
     }
 }

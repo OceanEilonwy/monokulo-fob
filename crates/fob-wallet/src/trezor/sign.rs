@@ -124,6 +124,11 @@ fn outputs(plan: &Plan, rng: &mut (impl RngCore + CryptoRng)) -> Result<(Vec<Des
     Ok((outputs, change))
 }
 
+/// A sum of amounts, or `None` if it's more than a `u64` holds.
+fn checked_total(amounts: impl IntoIterator<Item = u64>) -> Option<u64> {
+    amounts.into_iter().try_fold(0u64, u64::checked_add)
+}
+
 fn key_image_of(vini: &[u8]) -> Result<[u8; 32]> {
     vini.get(vini.len().saturating_sub(32)..).and_then(|k| k.try_into().ok()).ok_or_else(|| failed("the device's input is too short"))
 }
@@ -140,9 +145,10 @@ pub fn sign(session: &Session<'_>, plan: &Plan, view_key: &[u8; 32], rng: &mut (
         return Err(failed("nothing to spend"));
     }
     let (outputs, change) = outputs(plan, rng)?;
-    let total_in: u64 = plan.inputs.iter().map(|i| i.with_decoys.commitment().amount).sum();
-    let total_out: u64 = outputs.iter().map(|o| o.amount).sum();
-    if total_in != total_out + plan.fee {
+    // Checked: totals that wrapped round could seem to add up.
+    let total_in = checked_total(plan.inputs.iter().map(|i| i.with_decoys.commitment().amount));
+    let total_out = checked_total(outputs.iter().map(|o| o.amount).chain([plan.fee]));
+    if total_in.is_none() || total_in != total_out {
         return Err(failed("the payment's amounts don't add up"));
     }
     let payment_id = plan.payments.iter().find_map(|(address, _)| address.payment_id());

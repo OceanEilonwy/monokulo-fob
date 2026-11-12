@@ -76,9 +76,22 @@ pub fn grouped(whole: u64) -> String {
     out
 }
 
+/// A sum of amounts that stops at the most a `u64` holds instead of
+/// wrapping round: they come from a node or server, which could make them up.
+pub fn total(amounts: impl IntoIterator<Item = u64>) -> u64 {
+    amounts.into_iter().fold(0, u64::saturating_add)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_total_stops_at_the_most_a_u64_holds() {
+        assert_eq!(total([1, 2, 3]), 6);
+        assert_eq!(total([u64::MAX, 1, 2]), u64::MAX);
+        assert_eq!(total([]), 0);
+    }
 
     #[test]
     fn formats_like_the_designs() {
