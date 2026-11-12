@@ -34,6 +34,19 @@ pub struct Entry {
     pub file: String,
     pub name: String,
     pub network: Network,
+    /// The apps connected to it through Connect to Fob, by label, and the
+    /// account the next one gets: kept here, in the sealed list, so the
+    /// connect screen can list every wallet without opening each
+    /// (decision 419). The wallet's own file is what's true; this follows
+    /// it each time an app connects or is forgotten.
+    #[serde(default)]
+    pub apps: Vec<String>,
+    #[serde(default = "first_account")]
+    pub next_account: u32,
+}
+
+fn first_account() -> u32 {
+    1
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -137,7 +150,7 @@ impl Wallets {
             }
             let network = network_of(&file).expect("files_in keeps only wallet files");
             let name = self.next_name();
-            self.list.wallets.push(Entry { file, name, network });
+            self.list.wallets.push(Entry { file, name, network, apps: vec![], next_account: 1 });
             changed = true;
         }
         let known: Vec<String> = self.list.wallets.iter().map(|w| w.file.clone()).collect();
@@ -213,12 +226,24 @@ impl Wallets {
     pub fn add(&mut self, file: &str, name: &str) -> Result<Entry> {
         let network = network_of(file).ok_or(VaultError::NotAWalletFileName)?;
         let name = self.check_name(name)?;
-        let entry = Entry { file: file.to_owned(), name, network };
+        let entry = Entry { file: file.to_owned(), name, network, apps: vec![], next_account: 1 };
         self.list.wallets.retain(|w| w.file != file);
         self.list.wallets.push(entry.clone());
         self.list.current.insert(network.name().to_owned(), file.to_owned());
         self.save()?;
         Ok(entry)
+    }
+
+    /// Notes the apps connected to wallet `file` (their labels) and the
+    /// account the next one gets, as its file says now.
+    pub fn set_apps(&mut self, file: &str, apps: Vec<String>, next_account: u32) -> Result<()> {
+        let entry = self.list.wallets.iter_mut().find(|w| w.file == file).ok_or(VaultError::NotOnThisDevice)?;
+        if entry.apps == apps && entry.next_account == next_account {
+            return Ok(());
+        }
+        entry.apps = apps;
+        entry.next_account = next_account;
+        self.save()
     }
 
     /// Gives a wallet a new name.
@@ -299,6 +324,22 @@ mod tests {
         assert_eq!(wallets.current(Network::Mainnet).unwrap().name, "Spending");
         assert_eq!(wallets.list().len(), 2);
         assert_eq!(wallets.current(Network::Stagenet), None);
+    }
+
+    #[test]
+    fn each_wallet_s_connected_apps_outlive_the_run() {
+        let d = dir("apps");
+        let mut wallets = Wallets::open(&d, KEY).unwrap();
+        let file = wallets.new_file(Network::Mainnet);
+        touch(&d, &file);
+        let entry = wallets.add(&file, "Corner Café").unwrap();
+        assert_eq!((entry.apps.len(), entry.next_account), (0, 1));
+        wallets.set_apps(&file, vec!["Till (Front counter)".into(), "Till (Back bar)".into()], 3).unwrap();
+        assert!(wallets.set_apps("wallet-mainnet-gone", vec![], 1).is_err());
+        let wallets = Wallets::open(&d, KEY).unwrap();
+        let entry = wallets.current(Network::Mainnet).unwrap();
+        assert_eq!(entry.apps, ["Till (Front counter)", "Till (Back bar)"]);
+        assert_eq!(entry.next_account, 3);
     }
 
     #[test]

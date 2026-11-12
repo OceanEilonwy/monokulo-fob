@@ -4167,3 +4167,19 @@ together.
      takings reach the main account with the next payment; a sweep of one
      account alone needs coin selection by account in `prepare`, left for
      the round that builds Fob's accounts screens.
+
+420. **Connect to Fob over the FFI, and each wallet's apps in the sealed
+     list.** fob-ffi's `connect.rs` gives Fob's screens what they need and
+     no rules: `is_connect_request`, `connect_request` (app, name, device,
+     network, suggested label, the node and price switches asked for,
+     whether the answer goes back by link, and the identicon as 25 cells
+     with its ink and paper), `connect_declined`, and on a wallet
+     `connected_before`, `connect_app` (the sealed answer, its QR code, and
+     whether to open it as a link), `connected_apps`, `forget_app`,
+     `accounts`, `next_account`, `add_account`, `rename_account` and
+     `account_activity`. Choose a wallet lists every wallet without opening
+     any (`WalletList::connect_wallets`): each wallet's entry in the sealed
+     wallet list keeps its connected apps' labels and the account the next
+     app gets, which `note_connections` copies from the open wallet after
+     an app is connected or forgotten. The wallet's own file stays what's
+     true; the list only follows it.
