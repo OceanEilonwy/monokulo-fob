@@ -4191,3 +4191,68 @@ together.
      index only. Coins made by hand in tests don't read as monero-oxide's,
      so the tests cover which coins a sweep takes and what it refuses; the
      transaction itself is built as every payment's is.
+
+## Connect to Fob on Android (November 2026)
+
+The boards are the view-key canvas's B1 to B3, C2 and C3 (monokulo-till
+`docs/view-key-mode.md` §5.9), the designs winning where the two differ.
+
+422. **The connect screens are their own activity, drawn from data, every
+     word fob-words'.** `ConnectActivity` runs the flow: the pattern check
+     (C2, only for a code Fob's camera read), Choose a wallet (B1), New
+     wallet (B2), consent (B3) and the answer's code (C3, only when the
+     answer doesn't go back by itself). Each screen in `Connect.kt` takes
+     what it shows and says what was pressed, so the screenshot test draws
+     it from fixed data. Their words are fob-words' `connect`, over the FFI
+     as `connect_words(app, device)` and a few small functions, so the
+     desktop can say the same; nothing in them is Till's or a shop's own,
+     the app's name and device coming from the request. "The iPad" is read
+     from the request's device name ("Corner Café iPad"), else "the other
+     device". Choose a wallet lists the request's network only, "New
+     wallet" first and nothing chosen; Continue opens the chosen wallet as
+     Wallets does (`WalletModel.openWallet`), so consent can read what it
+     would share (`connect_shares`, the node's or light server's address
+     and "Kraken · AUD", a switch hidden when there's nothing to share or
+     it wasn't asked for), whether the app was connected before (then "Use
+     its account again", on), and whether the wallet looks personal (no
+     app yet and payments into account 0), the only case the wallet-wide
+     warning shows. New wallet is Fob's own create flow on one screen: the
+     name from the request, the words hidden until Show the words, which
+     makes the wallet (on the request's network) and shows its seed with
+     screenshots blocked; Make the wallet waits for "I've written the words
+     down", renames it if the name changed after, and marks the backup
+     done. The rows use the selected style (`selectedFill` with a 2dp
+     `orangeText` edge) and a radio ringed in `orangeText`, as the board.
+     Left as Fob has it rather than the board: Fob's card corners (20dp,
+     not 14), Fob's outlined text fields with their label inside, and its
+     56dp main button. The board's B2 wording "the shop's money" became
+     "this wallet's money", the screens being for any app.
+
+423. **Same phone: an explicit intent for a result, the caller's
+     certificate checked.** An app starts `ConnectActivity` with action
+     `com.monokulo.fob.action.CONNECT`, Fob's package and the request as
+     its data, by `startActivityForResult`; the answer is the result's
+     data, the sealed answer with `RESULT_OK` or the declined one with
+     `RESULT_CANCELED` (Not now, or Back from the first screen). It isn't
+     MainActivity, which is `singleTask` and so can't be started for a
+     result from another app's task. `callingActivity` names the app;
+     `KnownApps` lists each known package with the name its requests give
+     and the SHA-256 of its signing certificates, and only a match shows
+     the verified mark and the app's own icon (else a letter tile). Till's
+     release certificate isn't known here yet, so the list has Till with
+     none and Till shows unverified until the owner adds it; a debug or
+     sideloaded build is unknown too, by design. A `fob://connect` link
+     (VIEW, with no caller) opens the request's callback with the answer,
+     or with none shows C3. Fob's scanner (Send's camera) opens a request
+     it reads in the same activity, starting at the pattern check; They
+     don't match closes it with nothing sent.
+
+424. **Settings › Connected apps lists the open wallet's apps by account.**
+     Each account an app was given shows its label, number and what it
+     holds, its apps by device and the day connected, Sweep to main when
+     something in it is ready to spend (the payment opens on Confirm, as
+     any), and Forget, whose dialog says that Fob stops listing the app but
+     a view key can't be taken back, and that moving the money to a new
+     wallet is the only way to stop it. After a connect or a forget the
+     sealed list notes the wallet's apps (`note_connections`), so Choose a
+     wallet stays right without opening any wallet.

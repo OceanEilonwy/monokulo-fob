@@ -12,6 +12,11 @@
     <!-- Touch phones: swapping profiles on Share my profile. -->
     <uses-permission android:name="android.permission.NFC" />
 
+    <!-- Connect to Fob checks a known app's signing certificate (KnownApps). -->
+    <queries>
+        <package android:name="com.monokulo.till" />
+    </queries>
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
@@ -56,6 +61,27 @@
                 <action android:name="android.nfc.action.NDEF_DISCOVERED" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="monero" />
+            </intent-filter>
+        </activity>
+        <!-- Connect to Fob: another app asks for view access. By an explicit
+             intent for a result (the same phone, the caller checked), or a
+             fob://connect link; Fob's scanner opens it too. Not singleTask,
+             so a caller can start it for a result. -->
+        <activity
+            android:name=".ConnectActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="com.monokulo.fob.action.CONNECT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="fob" android:host="connect" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="fob" android:host="connect" />
             </intent-filter>
         </activity>
         <service
