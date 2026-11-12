@@ -36,11 +36,63 @@ pub const OWN_PHOTO: Limits = Limits { bytes: 32 << 20, side: 12_000, pixels: 50
 /// formats whose size it can read first: PNG, JPEG, GIF, WebP and BMP. Anything
 /// else, TIFF and the rest of gdk-pixbuf's loaders among them, is refused, as
 /// a code is never sent that way.
+///
+/// A GIF's header gives only its screen: each frame says its own size, and
+/// gdk-pixbuf decodes every frame. So a GIF passes only with one frame,
+/// inside that screen: a code is never animated.
 pub fn picture_fits(bytes: &[u8], limits: Limits) -> bool {
     if bytes.len() > limits.bytes {
         return false;
     }
-    picture_size(bytes).is_some_and(|(width, height)| width > 0 && height > 0 && width.max(height) <= limits.side && u64::from(width) * u64::from(height) <= limits.pixels)
+    let Some((width, height)) = picture_size(bytes) else { return false };
+    let fits = width > 0 && height > 0 && width.max(height) <= limits.side && u64::from(width) * u64::from(height) <= limits.pixels;
+    fits && (!bytes.starts_with(b"GIF") || gif_one_frame(bytes, width, height))
+}
+
+/// Whether a GIF, walked block by block, holds exactly one frame that lies
+/// within its `width` × `height` screen. Anything that doesn't walk is refused.
+fn gif_one_frame(bytes: &[u8], width: u32, height: u32) -> bool {
+    let le16 = |at: usize| bytes.get(at..at + 2).map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])));
+    // Data sub-blocks from `at`: where the zero-length one that ends them ends.
+    let past_blocks = |mut at: usize| -> Option<usize> {
+        loop {
+            let len = usize::from(*bytes.get(at)?);
+            at += 1 + len;
+            if len == 0 {
+                return Some(at);
+            }
+        }
+    };
+    let table = |flags: u8| if flags & 0x80 != 0 { 3 << ((flags & 7) + 1) } else { 0 };
+    let Some(&flags) = bytes.get(10) else { return false };
+    let mut at = 13 + table(flags);
+    let mut frames = 0;
+    loop {
+        match bytes.get(at) {
+            // The trailer.
+            Some(0x3b) => return frames == 1,
+            // An extension: its label, then its sub-blocks.
+            Some(0x21) => match past_blocks(at + 2) {
+                Some(next) => at = next,
+                None => return false,
+            },
+            Some(0x2c) => {
+                let (Some(left), Some(top), Some(w), Some(h), Some(&flags)) = (le16(at + 1), le16(at + 3), le16(at + 5), le16(at + 7), bytes.get(at + 9)) else { return false };
+                frames += 1;
+                if frames > 1 || left + w > width || top + h > height {
+                    return false;
+                }
+                // The local colour table, the LZW code size, then the pixels.
+                match past_blocks(at + 10 + table(flags) + 1) {
+                    Some(next) => at = next,
+                    None => return false,
+                }
+            }
+            // Cut short after its frame, it still holds only that one.
+            None => return frames == 1,
+            Some(_) => return false,
+        }
+    }
 }
 
 /// The width and height a picture's header gives, for the formats [`picture_fits`] takes.
@@ -262,6 +314,46 @@ mod tests {
         assert!(!picture_fits(b"II*\0\x08\0\0\0", OWN_PHOTO), "TIFF");
         assert!(!picture_fits(b"not a picture", OWN_PHOTO));
         assert!(!picture_fits(&[0xff, 0xd8, 0xff, 0xda], OWN_PHOTO), "a JPEG with no frame");
+    }
+
+    /// A GIF with a `width` × `height` screen and these frames (left, top,
+    /// width, height), each one pixel's worth of data.
+    fn gif(width: u16, height: u16, frames: &[(u16, u16, u16, u16)]) -> Vec<u8> {
+        let mut bytes = b"GIF89a".to_vec();
+        bytes.extend(width.to_le_bytes());
+        bytes.extend(height.to_le_bytes());
+        // A two-colour global table, then the table.
+        bytes.extend([0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+        for &(left, top, w, h) in frames {
+            // A graphic control extension, then the frame.
+            bytes.extend([0x21, 0xf9, 4, 0, 0, 0, 0, 0, 0x2c]);
+            for n in [left, top, w, h] {
+                bytes.extend(n.to_le_bytes());
+            }
+            bytes.extend([0, 2, 2, 0x44, 0x01, 0]);
+        }
+        bytes.push(0x3b);
+        bytes
+    }
+
+    /// A GIF's header gives its screen, not its frames: they're walked too.
+    #[test]
+    fn a_gif_passes_only_as_one_frame_inside_its_screen() {
+        assert!(picture_fits(&gif(32, 16, &[(0, 0, 32, 16)]), CODE_PICTURE));
+        assert!(picture_fits(&gif(32, 16, &[(4, 4, 8, 8)]), CODE_PICTURE));
+        assert!(!picture_fits(&gif(32, 16, &[(0, 0, 32, 16), (0, 0, 32, 16)]), CODE_PICTURE), "animated");
+        assert!(!picture_fits(&gif(32, 16, &[(0, 0, 65_535, 65_535)]), CODE_PICTURE), "a frame bigger than its screen");
+        assert!(!picture_fits(&gif(32, 16, &[(30, 0, 8, 8)]), CODE_PICTURE), "a frame off its screen");
+        assert!(!picture_fits(&gif(32, 16, &[]), CODE_PICTURE), "no frame");
+        let mut cut = gif(32, 16, &[(0, 0, 32, 16)]);
+        cut.truncate(cut.len() - 3);
+        assert!(!picture_fits(&cut, CODE_PICTURE), "cut inside its frame");
+        let mut odd = gif(32, 16, &[(0, 0, 32, 16)]);
+        odd.insert(odd.len() - 1, 0x99);
+        assert!(!picture_fits(&odd, CODE_PICTURE), "a block that isn't one");
+        // Hundreds of frames in a few kilobytes, the memory bomb.
+        let many: Vec<_> = (0..500).map(|_| (0, 0, 4096, 4096)).collect();
+        assert!(!picture_fits(&gif(4096, 4096, &many), CODE_PICTURE));
     }
 
     #[test]
