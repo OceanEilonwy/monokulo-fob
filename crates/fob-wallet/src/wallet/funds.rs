@@ -34,9 +34,9 @@ impl Wallet {
         let state = self.inner.state.lock().await;
         // Where a payment's own outputs came from: a split, or change named
         // as Activity titles the payment.
-        let source = |sent: &Sent| match sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok()) {
+        let source = |sent: &Sent| match &sent.receipt_view {
             _ if sent.pieces.is_some() => Source::Split,
-            Some(receipt) => Source::Change(Some(ReceiptView::from(&receipt).merchant)),
+            Some(receipt) => Source::Change(Some(receipt.merchant.clone())),
             None => Source::Change(Some(short_title(&sent.to))),
         };
         let (mut ready, mut waiting) = (vec![], vec![]);
@@ -94,192 +94,31 @@ impl Wallet {
     }
 
     /// Every payment in and out, newest first, unconfirmed ones on top.
-    pub async fn activity(&self) -> Vec<Activity> {
+    /// Built once for what the wallet holds and given again, shared, until
+    /// that changes (decision 412).
+    pub async fn activity(&self) -> Arc<[Activity]> {
         let state = self.inner.state.lock().await;
-        let mut rows = vec![];
-        let mut outgoing: HashSet<&str> = HashSet::new();
-        for sent in &state.sent {
-            outgoing.insert(&sent.tx);
-            let receipt = sent.receipt.as_deref().and_then(|j| serde_json::from_str::<orf_codec::Receipt>(j).ok());
-            rows.push(Activity {
-                not_confirmed: sent.not_confirmed,
-                released: sent.released,
-                tx: sent.tx.clone(),
-                direction: Direction::Out,
-                // A split's pieces are still this wallet's: only the fee left.
-                amount: if sent.pieces.is_some() { sent.fee } else { sent.amount },
-                fee: Some(sent.fee),
-                to: Some(sent.to.clone()),
-                height: sent.height,
-                time: sent.time,
-                confirmations: sent.height.map(|h| confirmations(&state, h)).unwrap_or(0),
-                needed: UNLOCK,
-                receipt: receipt.as_ref().map(ReceiptView::from),
-                receipt_json: sent.receipt.clone(),
-                price: None,
-                subaddress: None,
-                pieces: vec![],
-                note: None,
-                split: None,
-                to_self: false,
-                contact: None,
-                contact_id: None,
-                shared: None,
-                parts: vec![],
-            });
+        let pool = self.inner.pool.lock().expect("pool lock");
+        let key = Key { state: state.generation(), pool: pool.generation() };
+        let mut kept = self.inner.activity.lock().expect("activity lock");
+        if let Some(built) = kept.as_ref().filter(|b| b.key == key) {
+            #[cfg(test)]
+            built.check(&state, &pool);
+            return built.rows.clone();
         }
-        // Spends found on the chain that this wallet didn't send (a restored
-        // wallet): what left is the spent inputs less change and fee. A fee
-        // of 0 is one a light wallet server didn't give: not known, so the
-        // row claims none and the amount includes it.
-        for spend in &state.spends {
-            if !outgoing.insert(&spend.tx) {
-                continue;
-            }
-            let spent = amount::total(state.outputs.iter().filter(|o| o.spent_by(&spend.tx)).map(|o| o.amount));
-            let change = amount::total(state.outputs.iter().filter(|o| o.tx == spend.tx).map(|o| o.amount));
-            rows.push(Activity {
-                not_confirmed: false,
-                released: false,
-                tx: spend.tx.clone(),
-                direction: Direction::Out,
-                amount: spent.saturating_sub(change).saturating_sub(spend.fee),
-                fee: (spend.fee > 0).then_some(spend.fee),
-                to: None,
-                height: Some(spend.height),
-                time: spend.time,
-                confirmations: confirmations(&state, spend.height),
-                needed: UNLOCK,
-                receipt: None,
-                receipt_json: None,
-                price: None,
-                subaddress: None,
-                pieces: vec![],
-                note: None,
-                split: None,
-                to_self: false,
-                contact: None,
-                contact_id: None,
-                shared: None,
-                parts: vec![],
-            });
-        }
-        let mut incoming: HashMap<&str, Activity> = HashMap::new();
-        for output in state.outputs.iter().filter(|o| !outgoing.contains(o.tx.as_str())) {
-            let row = incoming.entry(&output.tx).or_insert_with(|| Activity {
-                not_confirmed: false,
-                released: false,
-                tx: output.tx.clone(),
-                direction: Direction::In,
-                amount: 0,
-                fee: None,
-                to: None,
-                height: Some(output.height),
-                time: output.time,
-                confirmations: confirmations(&state, output.height),
-                needed: UNLOCK,
-                receipt: None,
-                receipt_json: None,
-                price: None,
-                subaddress: None,
-                pieces: vec![],
-                note: None,
-                split: None,
-                to_self: false,
-                contact: None,
-                contact_id: None,
-                shared: None,
-                parts: vec![],
-            });
-            row.amount = row.amount.saturating_add(output.amount);
-            add_part(&mut row.parts, output.subaddress, output.amount);
-        }
-        rows.extend(incoming.into_values());
-        for (tx, pooled) in self.inner.pool.lock().expect("pool lock").iter() {
-            if !rows.iter().any(|r| r.tx == *tx) {
-                rows.push(Activity {
-                    not_confirmed: false,
-                    released: false,
-                    tx: tx.clone(),
-                    direction: Direction::In,
-                    amount: pooled.amount(),
-                    fee: None,
-                    to: None,
-                    height: None,
-                    time: pooled.seen,
-                    confirmations: 0,
-                    needed: UNLOCK,
-                    receipt: None,
-                    receipt_json: None,
-                    price: None,
-                    subaddress: pooled.parts.first().map(|p| p.0),
-                    pieces: vec![],
-                    note: None,
-                    split: None,
-                    to_self: false,
-                    contact: None,
-                    contact_id: None,
-                    shared: None,
-                    parts: pooled.parts.clone(),
-                });
-            }
-        }
-        for row in &mut rows {
-            if let Some(code) = state.prices.code() {
-                row.price = state.price_records.get(&row.tx).and_then(|r| r.iter().find(|r| r.currency == code)).cloned();
-            }
-            match row.direction {
-                Direction::In => {
-                    let outputs: Vec<&Owned> = state.outputs.iter().filter(|o| o.tx == row.tx).collect();
-                    row.pieces = outputs.iter().map(|o| o.amount).collect();
-                    row.needed = outputs.iter().map(|o| state.needed(o)).max().unwrap_or(UNLOCK);
-                    row.subaddress = row.subaddress.or(outputs.first().map(|o| o.subaddress));
-                    // A request's address: its note, and who it was for.
-                    match row.subaddress.and_then(|s| state.requests.at(s)) {
-                        Some(request) => {
-                            row.note = request.note.clone();
-                            row.contact_id = state.requests.payer(request.subaddress, &row.tx, row.time);
-                            row.contact = row.contact_id.and_then(|id| state.contacts.get(id)).map(|c| c.name.clone());
-                            row.contact_id = row.contact.as_ref().and(row.contact_id);
-                        }
-                        None => row.note = row.subaddress.and_then(|s| state.notes.get(&s)).cloned(),
-                    }
-                    // A share's address: "Via your profile".
-                    row.shared = row.subaddress.and_then(|s| state.profile.at(s)).map(|s| s.created);
-                }
-                Direction::Out => {
-                    row.pieces = state.outputs.iter().filter(|o| o.spent_by(&row.tx)).map(|o| o.amount).collect();
-                    let sent = state.sent.iter().find(|s| s.tx == row.tx);
-                    row.note = sent.and_then(|s| s.note.clone());
-                    row.split = sent.and_then(|s| s.pieces);
-                    // Sent to one of its own addresses: more came back than the change, in a block
-                    // or still in the pool. What came back is still this wallet's; only the fee left.
-                    if let Some(sent) = sent.filter(|s| s.pieces.is_none()) {
-                        let mined = amount::total(state.outputs.iter().filter(|o| o.tx == row.tx).map(|o| o.amount));
-                        let pooled = self.inner.pool.lock().expect("pool lock").get(&row.tx).map_or(0, Pooled::amount);
-                        if mined.max(pooled) > sent.change {
-                            row.to_self = true;
-                            row.amount = sent.fee;
-                        }
-                    }
-                    if let Some(owner) = row.to.as_deref().and_then(|to| state.contacts.owner(to)).filter(|_| row.split.is_none()) {
-                        row.contact = Some(owner.name.clone());
-                        row.contact_id = Some(owner.id);
-                    }
-                }
-            }
-        }
-        rows.sort_by_key(|r| std::cmp::Reverse((r.height.is_none(), r.height, r.time)));
+        let rows: Arc<[Activity]> = build(&state, &pool).into();
+        *kept = Some(Built { key, rows: rows.clone() });
         rows
     }
 
     /// The payment `tx` as its own screen shows it, or `None` if there's no
     /// such payment.
     pub async fn payment(&self, tx: &str, clock: Clock) -> Option<activity::Detail> {
-        let row = self.activity().await.into_iter().find(|a| a.tx == tx)?;
+        let activity = self.activity().await;
+        let row = activity.iter().find(|a| a.tx == tx)?;
         let settings = self.price_settings().await;
         let now = self.price_now().await;
-        let mut detail = activity::detail(&row, now.as_ref().map(|(c, p)| (c, *p)), settings.code().is_some(), settings.provider.name(), clock);
+        let mut detail = activity::detail(row, now.as_ref().map(|(c, p)| (c, *p)), settings.code().is_some(), settings.provider.name(), clock);
         // "Now" at an old price says how old.
         detail.rate_age = self.price_age(clock.now).await;
         Some(detail)
@@ -293,4 +132,205 @@ impl Wallet {
         let state = self.inner.state.lock().await;
         state.sent.iter().any(|s| s.tx == tx && s.signed.is_some() && s.height.is_none() && !s.released && !s.not_confirmed)
     }
+}
+
+/// What the activity was built from: the state and the pool as they were.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Key {
+    state: u64,
+    pool: u64,
+}
+
+/// The activity as last built, and what from.
+pub(super) struct Built {
+    key: Key,
+    rows: Arc<[Activity]>,
+}
+
+impl Built {
+    /// In tests, every activity given from what was kept is the activity
+    /// built afresh: a change the key missed would show here.
+    #[cfg(test)]
+    fn check(&self, state: &State, pool: &HashMap<String, Pooled>) {
+        if !MEASURING.with(|m| m.get()) {
+            assert!(*self.rows == *build(state, pool), "the activity kept is not what the wallet holds now");
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set while a test measures how long activity takes, so the check
+    /// above doesn't count.
+    pub(super) static MEASURING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A row with only what every row starts with.
+fn row(tx: &str, direction: Direction, amount: u64, height: Option<u64>, time: u64) -> Activity {
+    Activity {
+        not_confirmed: false,
+        released: false,
+        tx: tx.to_owned(),
+        direction,
+        amount,
+        fee: None,
+        to: None,
+        height,
+        time,
+        confirmations: 0,
+        needed: UNLOCK,
+        receipt: None,
+        price: None,
+        subaddress: None,
+        pieces: vec![],
+        note: None,
+        split: None,
+        to_self: false,
+        contact: None,
+        contact_id: None,
+        shared: None,
+        parts: vec![],
+    }
+}
+
+/// Every payment in and out, newest first, unconfirmed ones on top: from
+/// what the wallet holds and the pool, in one pass. Each question a row
+/// asks (the coins a payment spent, a transaction's own outputs, the
+/// request, share or contact at an address) is a map made once here, not
+/// a search of everything per row, and each receipt was read when its
+/// payment was recorded.
+pub(super) fn build(state: &State, pool: &HashMap<String, Pooled>) -> Vec<Activity> {
+    // Each transaction's own outputs, and the outputs each spent or holds,
+    // in the wallet's order.
+    let mut own: HashMap<&str, Vec<&Owned>> = HashMap::new();
+    let mut spent: HashMap<[u8; 32], Vec<&Owned>> = HashMap::new();
+    for output in &state.outputs {
+        own.entry(output.tx.as_str()).or_default().push(output);
+        if let Some(tx) = output.coin.tx() {
+            spent.entry(tx).or_default().push(output);
+        }
+    }
+    let none: Vec<&Owned> = vec![];
+    let own_of = |tx: &str| own.get(tx).unwrap_or(&none);
+    let spent_by = |tx: &str| hash_bytes(tx).and_then(|hash| spent.get(&hash)).unwrap_or(&none);
+    // The first of each, as a search from the start would find it.
+    let mut sent_by: HashMap<&str, &Sent> = HashMap::new();
+    for sent in &state.sent {
+        sent_by.entry(sent.tx.as_str()).or_insert(sent);
+    }
+    let mut request_at: HashMap<u32, &requests::Request> = HashMap::new();
+    for request in state.requests.all() {
+        request_at.entry(request.subaddress).or_insert(request);
+    }
+    let mut share_at: HashMap<u32, &profile::Share> = HashMap::new();
+    for share in state.profile.shares() {
+        share_at.entry(share.subaddress).or_insert(share);
+    }
+    let mut contact_by_id: HashMap<u64, &Contact> = HashMap::new();
+    let mut owner: HashMap<&str, &Contact> = HashMap::new();
+    for contact in state.contacts.all() {
+        contact_by_id.entry(contact.id).or_insert(contact);
+        for address in contact.addresses() {
+            owner.entry(address).or_insert(contact);
+        }
+    }
+    let code = state.prices.code();
+
+    let mut rows = vec![];
+    let mut outgoing: HashSet<&str> = HashSet::new();
+    for sent in &state.sent {
+        outgoing.insert(&sent.tx);
+        rows.push(Activity {
+            not_confirmed: sent.not_confirmed,
+            released: sent.released,
+            // A split's pieces are still this wallet's: only the fee left.
+            fee: Some(sent.fee),
+            to: Some(sent.to.clone()),
+            confirmations: sent.height.map(|h| confirmations(state, h)).unwrap_or(0),
+            receipt: sent.receipt_view.clone(),
+            ..row(&sent.tx, Direction::Out, if sent.pieces.is_some() { sent.fee } else { sent.amount }, sent.height, sent.time)
+        });
+    }
+    // Spends found on the chain that this wallet didn't send (a restored
+    // wallet): what left is the spent inputs less change and fee. A fee
+    // of 0 is one a light wallet server didn't give: not known, so the
+    // row claims none and the amount includes it.
+    for spend in &state.spends {
+        if !outgoing.insert(&spend.tx) {
+            continue;
+        }
+        let spent = amount::total(spent_by(&spend.tx).iter().map(|o| o.amount));
+        let change = amount::total(own_of(&spend.tx).iter().map(|o| o.amount));
+        rows.push(Activity {
+            fee: (spend.fee > 0).then_some(spend.fee),
+            confirmations: confirmations(state, spend.height),
+            ..row(&spend.tx, Direction::Out, spent.saturating_sub(change).saturating_sub(spend.fee), Some(spend.height), spend.time)
+        });
+    }
+    // Payments in, one row per transaction, in the order their first
+    // output was found.
+    let mut incoming: HashMap<&str, usize> = HashMap::new();
+    for output in state.outputs.iter().filter(|o| !outgoing.contains(o.tx.as_str())) {
+        let at = *incoming.entry(&output.tx).or_insert_with(|| {
+            rows.push(Activity { confirmations: confirmations(state, output.height), ..row(&output.tx, Direction::In, 0, Some(output.height), output.time) });
+            rows.len() - 1
+        });
+        let row = &mut rows[at];
+        row.amount = row.amount.saturating_add(output.amount);
+        add_part(&mut row.parts, output.subaddress, output.amount);
+    }
+    // Those still in the pool, in the order of their hashes so the same
+    // pool is the same rows.
+    let mut pooled: Vec<(&String, &Pooled)> = pool.iter().filter(|(tx, _)| !outgoing.contains(tx.as_str()) && !incoming.contains_key(tx.as_str())).collect();
+    pooled.sort_by_key(|(tx, _)| *tx);
+    for (tx, pooled) in pooled {
+        rows.push(Activity { subaddress: pooled.parts.first().map(|p| p.0), parts: pooled.parts.clone(), ..row(tx, Direction::In, pooled.amount(), None, pooled.seen) });
+    }
+    for row in &mut rows {
+        if let Some(code) = code {
+            row.price = state.price_records.get(&row.tx).and_then(|r| r.iter().find(|r| r.currency == code)).cloned();
+        }
+        match row.direction {
+            Direction::In => {
+                let outputs = own_of(&row.tx);
+                row.pieces = outputs.iter().map(|o| o.amount).collect();
+                row.needed = outputs.iter().map(|o| state.needed(o)).max().unwrap_or(UNLOCK);
+                row.subaddress = row.subaddress.or(outputs.first().map(|o| o.subaddress));
+                // A request's address: its note, and who it was for.
+                match row.subaddress.and_then(|s| request_at.get(&s)) {
+                    Some(request) => {
+                        row.note = request.note.clone();
+                        let payer = request.payer(&row.tx, row.time).and_then(|id| contact_by_id.get(&id));
+                        row.contact = payer.map(|c| c.name.clone());
+                        row.contact_id = payer.map(|c| c.id);
+                    }
+                    None => row.note = row.subaddress.and_then(|s| state.notes.get(&s)).cloned(),
+                }
+                // A share's address: "Via your profile".
+                row.shared = row.subaddress.and_then(|s| share_at.get(&s)).map(|s| s.created);
+            }
+            Direction::Out => {
+                row.pieces = spent_by(&row.tx).iter().map(|o| o.amount).collect();
+                let sent = sent_by.get(row.tx.as_str());
+                row.note = sent.and_then(|s| s.note.clone());
+                row.split = sent.and_then(|s| s.pieces);
+                // Sent to one of its own addresses: more came back than the change, in a block
+                // or still in the pool. What came back is still this wallet's; only the fee left.
+                if let Some(sent) = sent.filter(|s| s.pieces.is_none()) {
+                    let mined = amount::total(own_of(&row.tx).iter().map(|o| o.amount));
+                    let pooled = pool.get(&row.tx).map_or(0, Pooled::amount);
+                    if mined.max(pooled) > sent.change {
+                        row.to_self = true;
+                        row.amount = sent.fee;
+                    }
+                }
+                if let Some(owner) = row.to.as_deref().and_then(|to| owner.get(to)).filter(|_| row.split.is_none()) {
+                    row.contact = Some(owner.name.clone());
+                    row.contact_id = Some(owner.id);
+                }
+            }
+        }
+    }
+    rows.sort_by_key(|r| std::cmp::Reverse((r.height.is_none(), r.height, r.time)));
+    rows
 }

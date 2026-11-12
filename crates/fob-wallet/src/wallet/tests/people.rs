@@ -40,8 +40,8 @@ async fn contacts_are_kept_in_the_wallet_file_and_name_payments() {
     assert!(wallet.edit_contact(sam.id, contacts::Draft { name: String::new(), ..Default::default() }).await.is_err());
     {
         let mut state = wallet.inner.state.lock().await;
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "lunch".into(), to: sam_address.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, receipt_view: None, note: Some("Lunch".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "else".into(), to: other.clone(), amount: XMR / 10, fee: 1, change: 0, time: t - 10, height: None, receipt: None, receipt_view: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
         wallet.save_state(&state).unwrap();
     }
     let reopened = Wallet::open(&path, [1; 32]).unwrap();
@@ -81,7 +81,7 @@ async fn the_paid_screen_offers_to_save_whoever_a_payment_went_to() {
         change: 0,
         time,
         height: None,
-        receipt: None,
+        receipt: None, receipt_view: None,
         note: Some("Pizza".into()),
         pieces: None,
         back: vec![],
@@ -265,7 +265,7 @@ async fn one_transaction_paying_two_requests_credits_each_its_own_part() {
     );
     assert_eq!(received_by(for_sam.id).await, "0.5 XMR");
     assert_eq!(received_by(for_jo.id).await, "0.25 XMR");
-    let row = wallet.activity().await.into_iter().find(|r| r.tx == "batch").unwrap();
+    let row = wallet.activity().await.iter().find(|r| r.tx == "batch").cloned().unwrap();
     assert_eq!((row.amount, row.parts.len()), (XMR / 2 + XMR / 4 + 7, 3));
     assert!(wallet.inner.state.lock().await.requests.at(0).is_none(), "the main address is no request's");
     // Mined: the same, from its outputs.

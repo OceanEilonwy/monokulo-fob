@@ -78,7 +78,7 @@ impl Wallet {
             inner: Arc::new(Inner {
                 path: path.to_owned(),
                 keys,
-                state: Mutex::new(state),
+                state: Mutex::new(Tracked::new(state)),
                 rpc: Mutex::new(None),
                 link: std::sync::Mutex::new(None),
                 pipeline: Mutex::new(None),
@@ -105,7 +105,9 @@ impl Wallet {
                 listener: std::sync::Mutex::new(None),
                 zmq_task: std::sync::Mutex::new(None),
                 rounds: tokio::sync::watch::Sender::new(0),
-                pool: std::sync::Mutex::new(HashMap::new()),
+                pool: std::sync::Mutex::new(Tracked::new(HashMap::new())),
+                activity: std::sync::Mutex::new(None),
+                lists: std::sync::Mutex::new(None),
                 pool_seen: std::sync::Mutex::new(HashSet::new()),
                 last_block: std::sync::Mutex::new(None),
                 prices_task: std::sync::Mutex::new(None),
@@ -214,14 +216,16 @@ impl Wallet {
         if !path.exists() {
             Self::migrate(&path, &file_key)?;
         }
-        let mut db = Db::open(&path, &file_key)?;
+        let mut db = Db::open(&path, &file_key, state::receipt_view_json)?;
         let keys = db.keys()?;
         let saved = db.load()?;
         let mut state: State = serde_json::from_value(saved).map_err(|e| FobError::storage(e.to_string()))?;
         db.loaded(Self::state_value(&state)?)?;
-        let dropped = state.contacts.drop_bad_photos() | state.profile.drop_bad_photo();
+        let mut changed = state.contacts.drop_bad_photos() | state.profile.drop_bad_photo();
+        // A payment from the sealed file before the database has no view yet.
+        changed |= state.fill_receipt_views();
         let wallet = Wallet::from_parts(&path, db, keys.into_keys()?, state);
-        if dropped {
+        if changed {
             wallet.save_state(&wallet.inner.state.try_lock().expect("an opened wallet is not shared yet"))?;
         }
         // Best effort: one that can't go now goes on a later open.
@@ -280,7 +284,7 @@ impl Wallet {
     /// Saves like [`save_state`](Wallet::save_state), letting go of the
     /// state first: the screens and the rest of the wallet needn't wait on
     /// the write, which grows with the wallet's history.
-    pub(super) fn save_releasing(&self, state: tokio::sync::MutexGuard<'_, State>) -> Result<()> {
+    pub(super) fn save_releasing(&self, state: tokio::sync::MutexGuard<'_, Tracked<State>>) -> Result<()> {
         let (number, value) = self.snapshot(&state)?;
         drop(state);
         self.write_state(number, value)

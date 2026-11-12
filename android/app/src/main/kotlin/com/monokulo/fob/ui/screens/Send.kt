@@ -96,6 +96,7 @@ import com.monokulo.fob.WalletModel
 import com.monokulo.fob.ui.AddressPattern
 import com.monokulo.fob.ui.AmountField
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.ContactAvatar
 import com.monokulo.fob.ui.EdgeButton
 import com.monokulo.fob.ui.EdgeIconButton
 import com.monokulo.fob.ui.bottomSpace
@@ -576,7 +577,7 @@ fun SendScreen(model: WalletModel, nav: Nav, code: String?, draft: SendDraft? = 
                                     if (contacts.isEmpty()) {
                                         Text("Give a contact a send address to pay them from here.", color = Fob.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
                                     }
-                                    contacts.forEach { c -> ContactSendRow(c) { c.sendAddress?.let { to = it }; filledFrom = null; pending = null; notice = null; open = true } }
+                                    contacts.forEach { c -> ContactSendRow(c, model::contactPhoto) { c.sendAddress?.let { to = it }; filledFrom = null; pending = null; notice = null; open = true } }
                                 }
                             } else if (paid.isNotEmpty()) {
                                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -737,13 +738,13 @@ private fun PasteRow(onPaste: () -> Unit) {
 
 /** A contact on the sheet: their avatar, name and last payment; tapping fills To with their send address. */
 @Composable
-private fun ContactSendRow(c: ContactRow, onClick: () -> Unit) {
+private fun ContactSendRow(c: ContactRow, photo: suspend (ULong) -> ByteArray?, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {}.padding(4.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Avatar(c.name, c.initial, c.photo, 30.dp)
+        ContactAvatar(c.name, c.initial, c.id, c.photoKey, 30.dp, photo)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(c.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(c.line, color = Fob.muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

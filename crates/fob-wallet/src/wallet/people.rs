@@ -13,6 +13,11 @@ impl Wallet {
         self.inner.state.lock().await.contacts.get(id).cloned()
     }
 
+    /// A contact's photo alone, for the row whose `photo_key` names it.
+    pub async fn contact_photo(&self, id: u64) -> Option<Vec<u8>> {
+        self.inner.state.lock().await.contacts.get(id)?.photo.clone()
+    }
+
     /// A contact's card, or `None` once it's deleted.
     pub async fn contact_card(&self, id: u64, clock: Clock) -> Option<contacts::Card> {
         let rows = self.activity().await;
@@ -20,14 +25,20 @@ impl Wallet {
         state.contacts.get(id).map(|c| contacts::card(c, &state.requests, &rows, clock))
     }
 
-    /// What the screens list, from one look at the activity (it parses
-    /// every receipt): Home's Activity, by day, with every payment, request
-    /// and share of your profile; Contacts and its "Paid, not saved"; Send's
-    /// sheet's contacts (with a send address, the most recently paid first)
-    /// and the people paid before.
-    pub async fn lists(&self, clock: Clock) -> Lists {
+    /// What the screens list, from one look at the activity: Home's
+    /// Activity, by day, with every payment, request and share of your
+    /// profile; Contacts and its "Paid, not saved"; Send's sheet's contacts
+    /// (with a send address, the most recently paid first) and the people
+    /// paid before. Kept, as the activity is, until the wallet changes or
+    /// the day does (decision 412).
+    pub async fn lists(&self, clock: Clock) -> Arc<Lists> {
         let rows = self.activity().await;
         let state = self.inner.state.lock().await;
+        // Of the clock, the lists use only which day it is and how times are written.
+        let key = ListsKey { rows: rows.clone(), state: state.generation(), today: clock::local(clock.now, clock).0, utc_offset: clock.utc_offset, hours_24: clock.hours_24 };
+        if let Some((_, lists)) = self.inner.lists.lock().expect("lists lock").as_ref().filter(|(k, _)| *k == key) {
+            return lists.clone();
+        }
         let mut lines = requests::activity_rows(&state.requests, &state.contacts, &rows, clock);
         lines.extend(profile::activity_rows(&state.profile, clock));
         lines.sort_by_key(|l| std::cmp::Reverse(l.time));
@@ -39,7 +50,9 @@ impl Wallet {
             days: vec![],
         };
         drop(state);
-        Lists { days: activity::by_day(rows, lines, clock), ..lists }
+        let lists = Arc::new(Lists { days: activity::by_day(rows.to_vec(), lines, clock), ..lists });
+        *self.inner.lists.lock().expect("lists lock") = Some((key, lists.clone()));
+        lists
     }
 
     /// The name a request's code carries (`recipient_name`): the profile's,
@@ -419,5 +432,22 @@ impl Wallet {
             },
             _ => ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail },
         })
+    }
+}
+
+/// What the screens' lists were built from: the activity (the same rows,
+/// not rows alike), the wallet's requests, contacts and profile as they
+/// were, and the clock's day and way of writing times.
+pub(super) struct ListsKey {
+    rows: Arc<[Activity]>,
+    state: u64,
+    today: i64,
+    utc_offset: i32,
+    hours_24: bool,
+}
+
+impl PartialEq for ListsKey {
+    fn eq(&self, other: &ListsKey) -> bool {
+        Arc::ptr_eq(&self.rows, &other.rows) && (self.state, self.today, self.utc_offset, self.hours_24) == (other.state, other.today, other.utc_offset, other.hours_24)
     }
 }

@@ -282,9 +282,21 @@ pub struct Row {
     pub name: String,
     /// The avatar's letter, without a photo.
     pub initial: String,
-    pub photo: Option<Vec<u8>>,
+    /// Names the photo, if there is one, for the app to keep it drawn by:
+    /// the contact's id and a hash of the bytes, so an edited photo has a
+    /// new one. The bytes themselves are asked for by id, once.
+    pub photo_key: Option<String>,
     pub send_address: Option<String>,
     pub line: ContactLine,
+}
+
+/// What [`Row::photo_key`] says of `contact`'s photo: "7-1f3a5c…".
+pub fn photo_key(contact: &Contact) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    let photo = contact.photo.as_deref()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    photo.hash(&mut hasher);
+    Some(format!("{}-{:016x}", contact.id, hasher.finish()))
 }
 
 /// What's said about a contact under their name.
@@ -305,7 +317,7 @@ pub(crate) fn row(contact: &Contact, line: ContactLine) -> Row {
         id: contact.id,
         name: contact.name.clone(),
         initial: contact.initial(),
-        photo: contact.photo.clone(),
+        photo_key: photo_key(contact),
         send_address: contact.send_address.clone(),
         line,
     }
@@ -637,7 +649,6 @@ mod tests {
             confirmations: 20,
             needed: UNLOCK,
             receipt: None,
-            receipt_json: None,
             price: None,
             subaddress: None,
             pieces: vec![],

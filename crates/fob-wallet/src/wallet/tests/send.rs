@@ -80,7 +80,7 @@ async fn send_s_sheet_says_what_s_ready_and_who_was_paid() {
         state.outputs.push(Owned { height: 20, ..received("in", t, 2 * XMR) });
         // Not ready: not counted.
         state.outputs.push(Owned { height: 95, key: "late".into(), ..received("late", t, XMR) });
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: to.clone(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, receipt_view: None, note: Some("Lunch money".into()), pieces: None, back: vec![], recipient_name: None, signed: None });
     }
     assert_eq!(wallet.ready_line(t).await, "2 XMR ready to spend");
     wallet.refresh_prices_from(&FakePrices::new(166_100_000, vec![]), Asked::Background, t).await.unwrap();
@@ -110,7 +110,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
         change: 0,
         time,
         height: Some(20),
-        receipt: None,
+        receipt: None, receipt_view: None,
         note: None,
         pieces,
         back: vec![],
@@ -144,7 +144,7 @@ async fn split_up_learns_from_payments_and_pays_its_own_address() {
     let mut shown: Vec<u64> = wallet
         .activity()
         .await
-        .into_iter()
+        .iter()
         .filter(|a| a.direction == Direction::Out && a.split.is_none() && a.time >= since && a.amount > 0)
         .map(|a| a.amount)
         .collect();

@@ -106,6 +106,7 @@ import uniffi.fob.SaveOffer
 import uniffi.fob.Shortfall
 import uniffi.fob.Contact
 import com.monokulo.fob.ui.Avatar
+import com.monokulo.fob.ui.ContactAvatar
 import androidx.compose.ui.text.style.TextOverflow
 import uniffi.fob.ContactRow
 import com.monokulo.fob.ui.BottomSheet
@@ -329,6 +330,7 @@ fun ReceiveScreen(model: WalletModel, nav: Nav, screen: Screen.Receive) {
         if (choosing) {
             WhoForPicker(
                 people,
+                model::contactPhoto,
                 onDismiss = { choosing = false },
                 onPick = { p -> choosing = false; forId = p.id },
                 onNew = {
@@ -376,7 +378,7 @@ private fun WhoForField(contact: Contact?, loading: Boolean, onClick: () -> Unit
  * match what's typed, then New contact; No one in particular is pinned under the list.
  */
 @Composable
-private fun WhoForPicker(people: List<ContactRow>, onDismiss: () -> Unit, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
+private fun WhoForPicker(people: List<ContactRow>, photo: suspend (ULong) -> ByteArray?, onDismiss: () -> Unit, onPick: (ContactRow) -> Unit, onNew: () -> Unit, onNoName: () -> Unit) {
     BackHandler(onBack = onDismiss)
     var search by remember { mutableStateOf("") }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
@@ -392,7 +394,7 @@ private fun WhoForPicker(people: List<ContactRow>, onDismiss: () -> Unit, onPick
                             Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button) { onPick(p) }.padding(horizontal = 20.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
-                            Avatar(p.name, p.initial, p.photo, 36.dp)
+                            ContactAvatar(p.name, p.initial, p.id, p.photoKey, 36.dp, photo)
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                 Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(p.line, color = Fob.muted, fontSize = 12.5.sp)

@@ -17,7 +17,7 @@ async fn a_restored_wallet_hands_out_past_the_other_phone_s_addresses_and_watche
     assert_eq!(after.subaddress, 80 + RESTORE_SKIP + 1);
     // A payment to one of the other phone's old request addresses (say 70) is no new request's.
     restored.inner.state.lock().await.outputs.push(Owned { subaddress: 70, ..received("to-old-request", 2, XMR) });
-    let row = restored.activity().await.into_iter().find(|r| r.tx == "to-old-request").unwrap();
+    let row = restored.activity().await.iter().find(|r| r.tx == "to-old-request").cloned().unwrap();
     assert_eq!((row.note, row.contact), (None, None));
     // Paid at what this wallet handed out: no further jump.
     restored.inner.state.lock().await.outputs.push(Owned { subaddress: after.subaddress, ..received("mine", 3, XMR) });

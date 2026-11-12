@@ -1068,6 +1068,9 @@ class WalletModel(private val app: Application) {
     /** Share's sheet: every contact, each with its requests in a line. */
     suspend fun requestContacts(): List<ContactRow> = _wallet.value?.requestContacts() ?: emptyList()
 
+    /** A contact's photo, for the avatar a row names by its photo key. */
+    suspend fun contactPhoto(id: ULong): ByteArray? = _wallet.value?.contactPhoto(id)
+
     /** Saves your name and photo; throws what Rust refused. */
     suspend fun setProfile(name: String, photo: ByteArray?): Profile {
         val wallet = requireNotNull(_wallet.value)

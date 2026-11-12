@@ -4,6 +4,7 @@
 use fob_monero::{address::short_title, amount, fiat};
 use crate::clock::{self, Clock, When, day_label, day_name, local, time_of_day, when};
 use fob_codes::receipt::ReceiptView;
+use std::sync::Arc;
 
 /// One row of Activity, ready to draw: a payment, or a request to be paid
 /// (its own line, apart from the payments to it).
@@ -423,8 +424,9 @@ pub struct Activity {
     /// as its slowest output needs to be spent (60 for a mined reward, more
     /// for one locked to a later block), the not-ready card's rule.
     pub needed: u64,
-    pub receipt: Option<ReceiptView>,
-    pub receipt_json: Option<String>,
+    /// Read once, when the payment was recorded, and shared: a copy of the
+    /// row doesn't copy the receipt.
+    pub receipt: Option<Arc<ReceiptView>>,
     /// What one XMR was worth when it moved, in the currency prices are
     /// shown in; `None` with XMR only or no price to be had.
     pub price: Option<fiat::Record>,
@@ -508,7 +510,6 @@ mod tests {
             confirmations,
             needed: UNLOCK,
             receipt: None,
-            receipt_json: None,
             price: None,
             subaddress: None,
             pieces: vec![],
@@ -580,7 +581,7 @@ mod tests {
         };
         // 5 XMR at $160 is $800, whatever the payee's receipt said.
         let price = fiat::Record { currency: "USD".into(), price: 160 * fiat::MICRO, provider: "Kraken".into(), at: NOW, daily: false };
-        let paid = Activity { receipt: Some(receipt), price: Some(price), ..activity(Direction::Out, 5 * amount::ATOMIC_PER_XMR, NOW, 20) };
+        let paid = Activity { receipt: Some(Arc::new(receipt)), price: Some(price), ..activity(Direction::Out, 5 * amount::ATOMIC_PER_XMR, NOW, 20) };
         let row = payment_row(paid.clone(), clock(0));
         assert_eq!(row.fiat, Some(RowFiat::Worth("$800.00".into())));
         assert_eq!(paid_amount(&paid), "$800.00");

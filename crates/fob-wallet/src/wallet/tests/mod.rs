@@ -1,3 +1,4 @@
+mod activity;
 mod addresses;
 mod connection;
 mod funds;
@@ -58,7 +59,7 @@ pub(super) struct SaidLists {
 
 impl Wallet {
     pub(super) async fn said_lists(&self, clock: Clock) -> SaidLists {
-        let lists = self.lists(clock).await;
+        let lists = Arc::unwrap_or_clone(self.lists(clock).await);
         SaidLists {
             days: lists.days.into_iter().map(fob_words::activity::day).collect(),
             unsaved: lists.unsaved.into_iter().map(fob_words::activity::paid_before).collect(),
@@ -151,6 +152,7 @@ async fn a_used_wallet(path: &Path) -> Wallet {
         time: 1_700_000_300,
         height: Some(13),
         receipt: Some("{\"total\":\"1\"}".into()),
+        receipt_view: None,
         note: Some("Rent".into()),
         pieces: Some(2),
         back: vec![3, 4],
@@ -174,7 +176,7 @@ async fn a_used_wallet(path: &Path) -> Wallet {
 }
 
 async fn saved(wallet: &Wallet) -> serde_json::Value {
-    serde_json::to_value(&*wallet.inner.state.lock().await).unwrap()
+    serde_json::to_value(&**wallet.inner.state.lock().await).unwrap()
 }
 
 /// How often a counting node was asked for the tip and for the fee.
@@ -329,11 +331,11 @@ const XMR: u64 = amount::ATOMIC_PER_XMR;
 
 const DAY: u64 = 86_400;
 
-/// Takes a database's outputs back to version 9, for a test of the upgrade
-/// from it: the two columns that held a coin's state in pieces filled from
-/// `coin`, and `coin` dropped. Goes before `PRAGMA user_version` in the
-/// batch that takes the rest of the file back.
-const BACK_TO_VERSION_9: &str = "UPDATE outputs SET key_image = COALESCE(json_extract(coin, '$.Free.ki.Known'), json_extract(coin, '$.Held.ki.Known'), json_extract(coin, '$.Spent.ki.Known')), spent_in = COALESCE(json_extract(coin, '$.Spent.tx'), json_extract(coin, '$.Held.hold.InPool.tx'), json_extract(coin, '$.Held.hold.OurPayment.tx'), CASE WHEN json_type(coin, '$.Held.hold.DeviceChain') IS NOT NULL THEN 'spent-before-sync' WHEN json_type(coin, '$.Held.hold.DevicePool') IS NOT NULL THEN 'spent-in-pool-at-sync' END); ALTER TABLE outputs DROP COLUMN coin;";
+/// Takes a database back to version 9, for a test of the upgrade from it:
+/// version 11's receipt views dropped, the two columns that held a coin's
+/// state in pieces filled from `coin`, and `coin` dropped. Goes before
+/// `PRAGMA user_version` in the batch that takes the rest of the file back.
+const BACK_TO_VERSION_9: &str = "ALTER TABLE sent DROP COLUMN receipt_view; UPDATE outputs SET key_image = COALESCE(json_extract(coin, '$.Free.ki.Known'), json_extract(coin, '$.Held.ki.Known'), json_extract(coin, '$.Spent.ki.Known')), spent_in = COALESCE(json_extract(coin, '$.Spent.tx'), json_extract(coin, '$.Held.hold.InPool.tx'), json_extract(coin, '$.Held.hold.OurPayment.tx'), CASE WHEN json_type(coin, '$.Held.hold.DeviceChain') IS NOT NULL THEN 'spent-before-sync' WHEN json_type(coin, '$.Held.hold.DevicePool') IS NOT NULL THEN 'spent-in-pool-at-sync' END); ALTER TABLE outputs DROP COLUMN coin;";
 
 /// A transaction hash for a test, from a short name: the name's bytes,
 /// padded. What a coin's state names must be a hash, not a word.

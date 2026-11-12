@@ -673,7 +673,7 @@ fn activity(a: fob_wallet::Activity) -> Activity {
         outgoing: a.direction == fob_wallet::Direction::Out,
         amount_text: xmr(a.amount),
         tx: a.tx,
-        receipt: a.receipt.map(Into::into),
+        receipt: a.receipt.map(|r| std::sync::Arc::unwrap_or_clone(r).into()),
     }
 }
 
@@ -1911,7 +1911,8 @@ impl FobWallet {
     /// as for `payment`; `phone_lock` as for `backup_hub`.
     pub async fn screens(&self, now: u64, utc_offset: i32, hours_24: bool, phone_lock: bool) -> Screens {
         let clock = clock::Clock { now, utc_offset, hours_24 };
-        let lists = self.inner.lists(clock).await;
+        // Kept by the wallet until something changes; taken apart for the app.
+        let lists = std::sync::Arc::unwrap_or_clone(self.inner.lists(clock).await);
         let waiting = self.inner.trezor_waiting().await;
         let paid = |p: Vec<activity::PaidBefore>| p.into_iter().map(fob_wallet::words::activity::paid_before).map(|p| PaidBefore { address: p.address, name: p.name, line: p.line }).collect();
         Screens {
@@ -2395,6 +2396,13 @@ impl FobWallet {
 
     pub async fn contact(&self, id: u64) -> Option<Contact> {
         self.inner.contact(id).await.map(Into::into)
+    }
+
+    /// A contact's photo (a WebP for `decode_photo`), for a row's
+    /// `photo_key`: asked once per key and kept drawn by the app, rather
+    /// than carried in every row. None without one, or once deleted.
+    pub async fn contact_photo(&self, id: u64) -> Option<Vec<u8>> {
+        self.inner.contact_photo(id).await
     }
 
     /// A contact's card, or none once it's deleted.
@@ -3273,7 +3281,9 @@ pub struct ContactRow {
     pub id: u64,
     pub name: String,
     pub initial: String,
-    pub photo: Option<Vec<u8>>,
+    /// Names the photo (the contact's id and a hash of it), for the app to
+    /// keep it drawn by; its bytes come from `contact_photo`. None without one.
+    pub photo_key: Option<String>,
     pub send_address: Option<String>,
     /// "Lunch money · paid 27 Oct" on Contacts, "Lunch · 27 Oct" on Send.
     pub line: String,
@@ -3282,7 +3292,7 @@ pub struct ContactRow {
 impl From<contacts::Row> for ContactRow {
     fn from(r: contacts::Row) -> Self {
         let r = fob_wallet::words::contacts::row(r);
-        ContactRow { id: r.id, name: r.name, initial: r.initial, photo: r.photo, send_address: r.send_address, line: r.line }
+        ContactRow { id: r.id, name: r.name, initial: r.initial, photo_key: r.photo_key, send_address: r.send_address, line: r.line }
     }
 }
 

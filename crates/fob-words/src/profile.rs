@@ -246,7 +246,6 @@ mod tests {
             confirmations: 20,
             needed: UNLOCK,
             receipt: None,
-            receipt_json: None,
             price: price.map(|p| Record { currency: "USD".into(), price: p, provider: "Kraken".into(), at: time, daily: false }),
             subaddress: Some(subaddress),
             pieces: vec![amount],

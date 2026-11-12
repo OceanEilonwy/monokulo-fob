@@ -12,7 +12,7 @@ async fn a_payment_seen_now_keeps_the_price_of_the_moment() {
     {
         let mut state = wallet.inner.state.lock().await;
         state.outputs.push(received("in", t - 120, XMR / 2));
-        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+        state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 0, time: t, height: None, receipt: None, receipt_view: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
         assert!(wallet.record_prices(&mut state));
         wallet.save_state(&state).unwrap();
     }
@@ -21,7 +21,7 @@ async fn a_payment_seen_now_keeps_the_price_of_the_moment() {
     assert_eq!(price_of(&activity, "out"), Some((166_060_000, false)));
     // Kept in the wallet file, with who priced it.
     let again = Wallet::open(&wallet.inner.path, [1; 32]).unwrap();
-    let record = again.activity().await.into_iter().find(|a| a.tx == "in").unwrap().price.unwrap();
+    let record = again.activity().await.iter().find(|a| a.tx == "in").cloned().unwrap().price.unwrap();
     assert_eq!((record.currency.as_str(), record.provider.as_str(), record.at), ("USD", "Kraken", t));
     // Asked again only after 5 minutes (a minute when pulled).
     assert!(!wallet.refresh_prices_from(&fake, Asked::Background, t + 299).await.unwrap());
@@ -586,7 +586,7 @@ async fn a_payment_is_priced_only_at_its_first_time() {
     let t = now();
     wallet.refresh_prices_from(&FakePrices::new(166_060_000, vec![]), Asked::Background, t).await.unwrap();
     let mut state = wallet.inner.state.lock().await;
-    state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 1, time: t - 900 * DAY, height: None, receipt: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
+    state.sent.push(Sent { not_confirmed: false, released: false, tx: "out".into(), to: "86Ux".into(), amount: XMR / 10, fee: 1, change: 1, time: t - 900 * DAY, height: None, receipt: None, receipt_view: None, note: None, pieces: None, back: vec![], recipient_name: None, signed: None });
     state.outputs.push(received("out", t, 1));
     state.outputs.push(received("in", t, XMR));
     assert!(wallet.record_prices(&mut state));
