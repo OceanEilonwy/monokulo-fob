@@ -296,6 +296,9 @@ pub fn receive(address: &str, amount: Option<&str>, note: Option<&str>) -> Resul
     })
 }
 
+/// How far past the chain's estimated tip a wallet code's height may be.
+const WEEK: u64 = 7 * 24 * 3600;
+
 /// A wallet code: `monero_wallet:` with keys or seed (the form the Monero GUI
 /// and Cake Wallet show), or a code holding only seed words.
 pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
@@ -314,6 +317,12 @@ pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
         check_address(network, a)?;
     }
     let height = get(&pairs, &["height", "restore_height", "restoreheight"]).map(|h| h.parse().map_err(|_| CodeError::BadCode)).transpose()?;
+    // A height past the chain's would restore a wallet that never sees its
+    // money; a week ahead allows for a clock that's off.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if height.is_some_and(|h| h > network.height_at(now.saturating_add(WEEK))) {
+        return Err(CodeError::BadCode);
+    }
     let secret = |keys: &[&str]| get(&pairs, keys).map(|s| Zeroizing::new(s.to_owned()));
     if let Some(words) = secret(&["seed", "mnemonic_seed", "mnemonic"]) {
         return Ok(WalletCode::Words { words, height });
@@ -557,14 +566,25 @@ mod tests {
     #[test]
     fn wallet_codes_round_trip_with_keys() {
         let keys = wallet();
-        let code = wallet_code(&keys.primary_address(), keys.spend_key_hex().as_deref().map(|s| s.as_str()), &keys.view_key_hex(), 2_100_000);
+        let code = wallet_code(&keys.primary_address(), keys.spend_key_hex().as_deref().map(|s| s.as_str()), &keys.view_key_hex(), 1_700_000);
         let WalletCode::SpendKey { address, spend, view, height } = parse_wallet_code(Network::Stagenet, &code).unwrap() else {
             panic!("not a spend-key code")
         };
         assert_eq!(address.as_deref(), Some(keys.primary_address().as_str()));
         assert_eq!(*spend, *keys.spend_key_hex().unwrap());
         assert_eq!(view.as_deref().map(|v| v.as_str()), Some(keys.view_key_hex().as_str()));
-        assert_eq!(height, Some(2_100_000));
+        assert_eq!(height, Some(1_700_000));
+    }
+
+    #[test]
+    fn a_wallet_code_from_beyond_the_chain_is_refused() {
+        let keys = wallet();
+        let view = keys.view_key_hex();
+        for height in ["18446744073709551615", "99999999"] {
+            let code = format!("monero_wallet:{}?view_key={}&height={height}", keys.primary_address(), view.as_str());
+            assert!(matches!(parse_wallet_code(Network::Stagenet, &code), Err(CodeError::BadCode)), "{height}");
+        }
+        assert_eq!(Network::Mainnet.timestamp_for(u64::MAX), u64::MAX, "saturates rather than overflowing");
     }
 
     #[test]
