@@ -3938,8 +3938,7 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
 408. **Payments cross the FFI typed.** A scanned code is parsed once into a
      `ScannedCode` object that the form and confirm keep, and `prepare` and
      `preview` take a `TypedAmount` (`Xmr` or `Fiat`) instead of text and
-     an `in_fiat` flag. `amount_entry`, `receive_code` and `make_request`
-     still take the flag.
+     an `in_fiat` flag. Decision 410 takes the flag out of the rest.
 
 409. **The `Scanner` reads only the transactions the prefilter flags.**
      `Scanner::scan` takes a block by value, so a flagged block was copied
@@ -3957,8 +3956,6 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      blocks from 3,797,000 (40 transactions each), the copy went from 29 µs
      to 0.45 µs a block with one transaction flagged. A `Scanner` that
      borrowed the block would need no copy at all (issue #41).
-
-     an `in_fiat` flag. Decision 410 takes the flag out of the rest.
 
 410. **An amount's unit is a type all the way down** (finishes 408).
      `amount_entry`, `receive_code` and `make_request` take a
