@@ -554,17 +554,33 @@ impl Wallet {
     /// XMR only; a payment with nothing to go on stays without, and gets
     /// one if the history later has its day. Returns whether any was
     /// recorded.
+    ///
+    /// It runs with every sync step, so it copies nothing for a payment
+    /// priced already: the times as [`payment_times`](Wallet::payment_times)
+    /// gives them (a payment's first one), borrowed in place.
     pub(super) fn record_prices(&self, state: &mut State) -> bool {
-        let Some(code) = state.prices.currency.clone() else { return false };
+        let State { sent, spends, outputs, prices, price_cache, price_records, .. } = state;
+        let Some(code) = prices.currency.as_deref() else { return false };
+        let pool = self.inner.pool.lock().expect("pool lock");
+        let sent = sent.iter().map(|s| (s.tx.as_str(), s.time));
+        let spent = spends.iter().map(|s| (s.tx.as_str(), s.time));
+        let received = outputs.iter().map(|o| (o.tx.as_str(), o.time));
+        let pooled = pool.iter().map(|(tx, p)| (tx.as_str(), p.seen));
+        // Those with nothing to go on, at their first time: not tried again at a later one.
+        let mut unpriced: HashSet<&str> = HashSet::new();
         let mut recorded = false;
-        for (tx, time) in self.payment_times(state) {
-            let records = state.price_records.get(&tx);
-            if records.is_some_and(|r| r.iter().any(|r| r.currency == code)) {
+        for (tx, time) in sent.chain(spent).chain(received).chain(pooled) {
+            if price_records.get(tx).is_some_and(|r| r.iter().any(|r| r.currency == code)) || unpriced.contains(tx) {
                 continue;
             }
-            if let Some(record) = state.price_cache.value_at(&state.prices, time) {
-                state.price_records.entry(tx).or_default().push(record);
-                recorded = true;
+            match price_cache.value_at(prices, time) {
+                Some(record) => {
+                    price_records.entry(tx.to_owned()).or_default().push(record);
+                    recorded = true;
+                }
+                None => {
+                    unpriced.insert(tx);
+                }
             }
         }
         recorded
