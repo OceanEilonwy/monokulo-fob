@@ -39,7 +39,8 @@ import com.monokulo.fob.ui.reason
 import kotlinx.coroutines.launch
 import uniffi.fob.PaymentPreview
 import uniffi.fob.Prepared
-import uniffi.fob.parsePayment
+import uniffi.fob.ScannedCode
+import uniffi.fob.TypedAmount
 
 /**
  * Touch to pay from Home: a phone on Receive was touched, and this is
@@ -53,7 +54,9 @@ import uniffi.fob.parsePayment
 fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspend (String) -> Boolean, onClose: () -> Unit) {
     val network by model.network.collectAsState()
     val scope = rememberCoroutineScope()
-    val request = remember(code, network) { runCatching { parsePayment(network, code) }.getOrNull() }
+    // Read once: Rust keeps it as read, so preparing doesn't read it again.
+    val scanned = remember(code, network) { runCatching { ScannedCode(network, code) }.getOrNull() }
+    val request = remember(scanned) { scanned?.payment() }
     var preview by remember { mutableStateOf<PaymentPreview?>(null) }
     var prepared by remember { mutableStateOf<Prepared?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -70,7 +73,7 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         val r = request
         if (r == null) { onClose(); return@LaunchedEffect }
         if (amount == null) { onClose(); nav.go(Screen.Send(code)); return@LaunchedEffect }
-        runCatching { model.preview(r.address, amount, false, code) }.onSuccess { preview = it }.onFailure { error = it.reason() }
+        runCatching { model.preview(r.address, TypedAmount.Xmr(amount), scanned) }.onSuccess { preview = it }.onFailure { error = it.reason() }
     }
     // Then the fee comes in on it.
     // Not enough ready: what it lacks; asked again every 30 s while money on its way would cover it.
@@ -79,7 +82,7 @@ fun PayDrawer(model: WalletModel, nav: Nav, code: String, confirmIdentity: suspe
         val r = request ?: return@LaunchedEffect
         if (preview == null || amount == null) return@LaunchedEffect
         while (true) {
-            val result = runCatching { model.prepare(r.address, amount, false, r.description, code) }
+            val result = runCatching { model.prepare(r.address, TypedAmount.Xmr(amount), r.description, scanned) }
             result.onSuccess { prepared = it; short = null }
             val lacking = result.exceptionOrNull() as? uniffi.fob.FobException.NotEnoughFunds
             if (lacking == null) {

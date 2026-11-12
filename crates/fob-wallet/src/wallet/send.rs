@@ -8,9 +8,9 @@ impl Wallet {
     /// and the fee. Nothing leaves the wallet until [`send`](Wallet::send).
     /// `note` (typed, or the payment code's description) is kept with the
     /// payment once sent; `code` is the payment code the form was filled
-    /// from, if any, whose name and receipt go with it as
+    /// from, as read, if any, whose name and receipt go with it as
     /// [`uri::code_terms`] says.
-    pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&str>) -> Result<Prepared> {
+    pub async fn prepare(&self, to: &str, amount: u64, note: Option<String>, code: Option<&uri::PaymentRequest>) -> Result<Prepared> {
         self.spendable()?;
         let (destination, terms) = self.payment_terms(to, amount, code)?;
         let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
@@ -20,20 +20,20 @@ impl Wallet {
     /// What [`prepare`](Wallet::prepare) would pay, checked as it checks
     /// it, without asking the node: the confirm screen shows it at once
     /// while the fee is worked out.
-    pub fn preview(&self, to: &str, amount: u64, code: Option<&str>) -> Result<Preview> {
+    pub fn preview(&self, to: &str, amount: u64, code: Option<&uri::PaymentRequest>) -> Result<Preview> {
         let (_, terms) = self.payment_terms(to, amount, code)?;
         Ok(Preview { to: to.trim().to_owned(), amount, receipt: terms.receipt.as_ref().map(ReceiptView::from) })
     }
 
     /// `to` as an address on this wallet's network, `amount` more than
     /// nothing, and what `code` gives the payment.
-    pub(super) fn payment_terms(&self, to: &str, amount: u64, code: Option<&str>) -> Result<(MoneroAddress, uri::CodeTerms)> {
+    pub(super) fn payment_terms(&self, to: &str, amount: u64, code: Option<&uri::PaymentRequest>) -> Result<(MoneroAddress, uri::CodeTerms)> {
         let network = self.network();
         let destination = MoneroAddress::from_str(network.monero(), to.trim()).map_err(|_| FobError::Monero(MoneroError::BadAddress(network)))?;
         if amount == 0 {
             return Err(FobError::Monero(MoneroError::BadAmount));
         }
-        Ok((destination, uri::code_terms(network, to, amount, code)))
+        Ok((destination, uri::code_terms(to, amount, code)))
     }
 
     /// Asks the node its fee rate, keeping it for Split up's estimate.
