@@ -6,6 +6,9 @@
 //! failure to lock — over `RLIMIT_MEMLOCK` (64 KiB by default, room for many
 //! keys), or a system without it — isn't an error: the value is still wiped
 //! when it goes, as it was before.
+//!
+//! Without the `mlock` feature the pages are neither locked nor kept out of
+//! core dumps, and each value is only wiped when it goes.
 
 use std::{
     alloc::{self, Layout},
@@ -27,7 +30,7 @@ unsafe impl<T: Zeroize + Send> Send for Locked<T> {}
 unsafe impl<T: Zeroize + Sync> Sync for Locked<T> {}
 
 fn page_size() -> usize {
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "mlock"))]
     {
         // SAFETY: sysconf only reads a system value.
         let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -55,7 +58,7 @@ impl<T: Zeroize> Locked<T> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "mlock"))]
 fn lock(raw: *mut u8, size: usize) {
     // SAFETY: `raw..raw+size` is one live allocation of ours. Failing (EPERM,
     // ENOMEM over the limit) leaves the pages as they were: still wiped on drop.
@@ -66,10 +69,10 @@ fn lock(raw: *mut u8, size: usize) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(all(unix, feature = "mlock")))]
 fn lock(_raw: *mut u8, _size: usize) {}
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "mlock"))]
 fn unlock(raw: *mut u8, size: usize) {
     // SAFETY: as in `lock`; the pages are ours alone, so no other value's lock is undone.
     unsafe {
@@ -77,7 +80,7 @@ fn unlock(raw: *mut u8, size: usize) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(all(unix, feature = "mlock")))]
 fn unlock(_raw: *mut u8, _size: usize) {}
 
 impl<T: Zeroize> Drop for Locked<T> {
@@ -154,7 +157,7 @@ mod tests {
         assert!(keys.iter().enumerate().all(|(i, k)| k[31] == i as u8));
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(all(feature = "mlock", any(target_os = "linux", target_os = "android")))]
     #[test]
     fn its_pages_are_locked_when_the_limit_allows() {
         fn locked_kb() -> Option<u64> {

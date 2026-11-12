@@ -420,8 +420,8 @@ impl Wallet {
             if blocks.is_empty() {
                 break;
             }
-            let watching = Self::watched(self.inner.state.lock().await.receive_index);
-            let (scanner, prefilter) = self.scanner(watching);
+            let watching = self.inner.state.lock().await.watch_plan();
+            let (scanner, prefilter) = self.scanner(&watching);
             let gpu_allowed = self.gpu_allowed().await;
             let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, &hashes, gpu_allowed))
                 .await
@@ -432,7 +432,7 @@ impl Wallet {
             let mut changed = false;
             for result in results {
                 // An address further on came into use: this block again, watching for it.
-                if Self::watched(state.receive_index) > watching {
+                if !watching.covers(&state.watch_plan()) {
                     break;
                 }
                 let scanned = result.map_err(FobError::Node)?;

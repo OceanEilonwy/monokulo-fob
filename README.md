@@ -166,6 +166,10 @@ cargo run --release -p fob-wallet --example fetch_speed [node] [blocks]
   a server instead of scanning, and sending through it, Trezor wallets too (decisions 371–397). A coin's spent
   state is one type moved by one exhaustive function (`fob-wallet`'s `wallet/coin.rs`, decision 400), and the
   Trezor screens' words come from `fob-words` so both apps say the same (398).
+- `crates/fob-keys` holds a wallet's keys with nothing else (decision 416), and `fob-codes`' `connect.rs` is
+  Connect to Fob, with vectors in `crates/fob-codes/vectors/connect-v1.json` (417). Monokular's Till uses
+  `fob-wallet` as a library, without its `usb` and `vendored-openssl` features: a receive account, keyed
+  requests on a pool of addresses with amount tags, labelled accounts (decisions 415, 418–421).
 - `crates/fob-app` is what a client draws: unlocking, the open wallet, syncing.
 - `crates/fob-gtk` is the Linux desktop app, in Relm4 and libadwaita.
 - `crates/fob-ffi` is fob-wallet for Kotlin (later Swift) through UniFFI, and `android/` the Android app, a thin

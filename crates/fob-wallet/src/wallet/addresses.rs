@@ -127,15 +127,6 @@ impl Wallet {
         receive_index.saturating_add(LOOKAHEAD).min(MOST_ADDRESSES)
     }
 
-    /// Has `scanner` watch subaddresses `from..=to` too, up to [`MOST_ADDRESSES`].
-    pub(super) fn watch(scanner: &mut Scanner, from: u32, to: u32) {
-        for i in from..=to.min(MOST_ADDRESSES) {
-            if let Some(sub) = SubaddressIndex::new(0, i) {
-                scanner.register_subaddress(sub);
-            }
-        }
-    }
-
     /// Receive's address, by index: the last one it showed.
     pub(super) fn own_index(state: &State) -> u32 {
         state.receive_own.unwrap_or(state.receive_index)

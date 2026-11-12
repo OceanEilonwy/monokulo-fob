@@ -1,0 +1,644 @@
+//! A wallet's keys, and the seed phrases that hold them.
+
+use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+use monero_seed::{Language as SeedLanguage, Seed};
+use monero_wallet::{
+    WalletOutput,
+    ViewPair,
+    address::{MoneroAddress, SubaddressIndex},
+    ed25519::{Point, Scalar},
+};
+use polyseed::{Language as PolyLanguage, Polyseed};
+use rand_core::OsRng;
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+use crate::error::{KeyError, Result};
+use crate::locked::Locked;
+use crate::sealed::Sealed;
+use fob_monero::error::MoneroError;
+use fob_monero::network::Network;
+
+/// Which kind of seed phrase a wallet was made from, so Backup shows the
+/// same words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SeedKind {
+    /// 16 words with the wallet's birthday inside.
+    Polyseed,
+    /// Monero's original 25 words.
+    Classic,
+}
+
+impl SeedKind {
+    /// How many words its phrase has.
+    pub fn words(self) -> usize {
+        match self {
+            SeedKind::Polyseed => 16,
+            SeedKind::Classic => 25,
+        }
+    }
+}
+
+/// The secrets a wallet holds. A view-only wallet has no spend key.
+///
+/// The view key, needed all the time to scan, is on locked pages ([`Locked`]).
+/// The spend key and seed phrase are kept [`Sealed`] and opened only for the
+/// moment each is used: see [`sealed`](crate::sealed) for what that does and
+/// doesn't stop.
+#[derive(Clone)]
+pub struct Keys {
+    pub network: Network,
+    /// The spend key's 32 bytes.
+    spend: Option<Sealed>,
+    view: Locked<Scalar>,
+    spend_pub: Point,
+    /// The seed phrase, kept so Backup can show it again.
+    seed: Option<(SeedKind, Sealed)>,
+    /// The hardware wallet holding the spend key, if one does: then
+    /// `spend` is `None` and the device signs.
+    device: Option<Device>,
+}
+
+/// A hardware wallet holding the spend key, which never comes to the phone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Device {
+    Trezor,
+}
+
+impl Device {
+    pub fn name(self) -> &'static str {
+        match self {
+            Device::Trezor => "Trezor",
+        }
+    }
+}
+
+/// Monero's varint, as an output's index goes into its key derivation.
+fn varint(mut v: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(10);
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            return out;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// What restoring from words found: the keys and, for a Polyseed, when the
+/// wallet was made.
+pub struct Restored {
+    pub keys: Keys,
+    pub birthday: Option<u64>,
+}
+
+/// What a seed phrase holds: the spend key, the wallet's birthday for a
+/// Polyseed, and the phrase as written back, each wiped when it goes.
+struct FromWords {
+    spend: Zeroizing<Scalar>,
+    birthday: Option<u64>,
+    kind: SeedKind,
+    phrase: Zeroizing<String>,
+}
+
+/// The spend key in a seed phrase, and the wallet's birthday for a Polyseed:
+/// a 16-word Polyseed or a 25-word seed, in English, whatever the spacing
+/// and case. The words are copied only into buffers wiped when they go.
+fn spend_from_words(words: &str) -> Result<FromWords> {
+    // Each lowercased word is a copy of part of the seed, so the list is
+    // wiped too, not just the phrase made from it.
+    let lowered = Zeroizing::new(words.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>());
+    let words = Zeroizing::new(lowered.join(" "));
+    match words.split(' ').count() {
+        16 => {
+            let seed = Polyseed::from_string(PolyLanguage::English, words.clone()).map_err(|_| KeyError::BadSeed)?;
+            Ok(FromWords { spend: reduce(&seed.key()), birthday: Some(seed.birthday()), kind: SeedKind::Polyseed, phrase: seed.to_string() })
+        }
+        25 => {
+            let seed = Seed::from_string(SeedLanguage::English, words.clone()).map_err(|_| KeyError::BadSeed)?;
+            Ok(FromWords { spend: reduce(&seed.entropy()), birthday: None, kind: SeedKind::Classic, phrase: seed.to_string() })
+        }
+        _ => Err(KeyError::BadSeed),
+    }
+}
+
+impl Restored {
+    /// A view-only wallet from a seed phrase: the view key and public spend
+    /// key the words hold, and nothing more. The words (taken, so the caller
+    /// keeps no copy), the spend key and every copy made on the way are
+    /// wiped before this returns, whether it succeeds or not; the keys it
+    /// gives can't spend and keep no words. For an app that only watches a
+    /// wallet but lets someone type its seed (Till's view-key mode).
+    pub fn view_only_from_words(network: Network, words: Zeroizing<String>) -> Result<Restored> {
+        let FromWords { spend, birthday, phrase, .. } = spend_from_words(&words)?;
+        drop(phrase);
+        drop(words);
+        let view = Locked::new(Scalar::hash(*scalar_bytes(&spend)));
+        let spend_pub = public(&spend);
+        drop(spend);
+        Ok(Restored { keys: Keys { network, spend: None, view, spend_pub, seed: None, device: None }, birthday })
+    }
+}
+
+fn reduce(bytes: &[u8; 32]) -> Zeroizing<Scalar> {
+    Zeroizing::new(Scalar::from(curve25519_dalek::Scalar::from_bytes_mod_order(*bytes)))
+}
+
+fn public(secret: &Scalar) -> Point {
+    Point::from(&(*secret).into() * ED25519_BASEPOINT_TABLE)
+}
+
+fn scalar_bytes(s: &Scalar) -> Zeroizing<[u8; 32]> {
+    Zeroizing::new(<[u8; 32]>::from(*s))
+}
+
+/// A 32-byte hex key as written in wallet codes; refuses non-canonical ones.
+fn parse_scalar(hex_key: &str) -> Result<Zeroizing<Scalar>> {
+    let bytes = Zeroizing::new(hex::decode(hex_key.trim()).map_err(|_| KeyError::BadKey)?);
+    if bytes.len() != 32 {
+        return Err(KeyError::BadKey);
+    }
+    Scalar::read(&mut bytes.as_slice()).map(Zeroizing::new).map_err(|_| KeyError::BadKey)
+}
+
+fn seal_scalar(s: &Scalar) -> Sealed {
+    Sealed::seal(&*scalar_bytes(s))
+}
+
+impl Keys {
+    fn from_spend(network: Network, spend: Zeroizing<Scalar>, seed: Option<(SeedKind, Zeroizing<String>)>) -> Keys {
+        let view = Locked::new(Scalar::hash(*scalar_bytes(&spend)));
+        let seed = seed.map(|(kind, words)| (kind, Sealed::seal(words.as_bytes())));
+        Keys { network, spend_pub: public(&spend), spend: Some(seal_scalar(&spend)), view, seed, device: None }
+    }
+
+    /// The spend key, opened from its seal, or `None` for a view-only wallet.
+    fn open_spend(&self) -> Option<Zeroizing<Scalar>> {
+        let bytes = self.spend.as_ref()?.open().ok()?;
+        Scalar::read(&mut bytes.as_slice()).ok().map(Zeroizing::new)
+    }
+
+    /// A brand new wallet, with a 16-word Polyseed. Returns its birthday too.
+    pub fn generate(network: Network) -> Restored {
+        let seed = Polyseed::new(&mut OsRng, PolyLanguage::English);
+        let spend = reduce(&seed.key());
+        Restored {
+            birthday: Some(seed.birthday()),
+            keys: Keys::from_spend(network, spend, Some((SeedKind::Polyseed, seed.to_string()))),
+        }
+    }
+
+    /// Words someone typed or scanned: a 16-word Polyseed or a 25-word seed,
+    /// in English.
+    pub fn from_words(network: Network, words: &str) -> Result<Restored> {
+        let FromWords { spend, birthday, kind, phrase } = spend_from_words(words)?;
+        Ok(Restored { birthday, keys: Keys::from_spend(network, spend, Some((kind, phrase))) })
+    }
+
+    /// Keys as a wallet file keeps them, in hex: the view key, the spend
+    /// key if any, the public spend key, the seed phrase kept for Backup,
+    /// and the device holding the spend key. `fob-vault` reads its file
+    /// through this; the spend key and words are sealed at once.
+    pub fn from_parts(network: Network, view_hex: &str, spend_hex: Option<&str>, spend_pub_hex: &str, seed: Option<(SeedKind, &str)>, device: Option<Device>) -> Result<Keys> {
+        let view = parse_scalar(view_hex)?;
+        // Sealed as soon as it's read; the parsed copy is wiped here.
+        let spend = spend_hex.map(parse_scalar).transpose()?.map(|s| seal_scalar(&s));
+        let spend_pub_bytes: [u8; 32] = hex::decode(spend_pub_hex).ok().and_then(|b| b.try_into().ok()).ok_or(KeyError::BadKey)?;
+        let spend_pub = monero_wallet::ed25519::CompressedPoint::from(spend_pub_bytes).decompress().ok_or(KeyError::BadKey)?;
+        Ok(Keys {
+            network,
+            spend,
+            view: Locked::new(*view),
+            spend_pub,
+            seed: seed.map(|(kind, words)| (kind, Sealed::seal(words.as_bytes()))),
+            device,
+        })
+    }
+
+    /// The seed phrase as kept, for the wallet file: `None` for a wallet
+    /// with no words of its own (one from a spend key shows the 25 words
+    /// that encode it, made again each time, and keeps none).
+    pub fn kept_seed_words(&self) -> Option<(SeedKind, Zeroizing<String>)> {
+        self.seed.as_ref().and(self.seed_words())
+    }
+
+    /// A private spend key in hex, as in a wallet code. The view key follows
+    /// from it; if the code gave one too, it must match.
+    pub fn from_spend_key(network: Network, spend_hex: &str, view_hex: Option<&str>) -> Result<Keys> {
+        let spend = parse_scalar(spend_hex)?;
+        let keys = Keys::from_spend(network, spend, None);
+        if let Some(view_hex) = view_hex
+            && *parse_scalar(view_hex)? != *keys.view
+        {
+            return Err(KeyError::BadKey);
+        }
+        Ok(keys)
+    }
+
+    /// A view-only wallet: the primary address and its private view key.
+    pub fn view_only(network: Network, address: &str, view_hex: &str) -> Result<Keys> {
+        let address = MoneroAddress::from_str(network.monero(), address.trim()).map_err(|_| KeyError::Monero(MoneroError::BadAddress(network)))?;
+        if address.is_subaddress() {
+            return Err(KeyError::Monero(MoneroError::BadAddress(network)));
+        }
+        let view = parse_scalar(view_hex)?;
+        if public(&view) != address.view() {
+            return Err(KeyError::BadKey);
+        }
+        Ok(Keys { network, spend: None, view: Locked::new(*view), spend_pub: address.spend(), seed: None, device: None })
+    }
+
+    /// A wallet whose spend key is on a Trezor: its primary address and
+    /// private view key, as the device exports them.
+    pub fn trezor(network: Network, address: &str, view: &[u8; 32]) -> Result<Keys> {
+        let mut keys = Keys::view_only(network, address, &hex::encode(view))?;
+        keys.device = Some(Device::Trezor);
+        Ok(keys)
+    }
+
+    /// Whether this wallet can pay: with a spend key here, or on a device.
+    pub fn can_spend(&self) -> bool {
+        self.spend.is_some() || self.device.is_some()
+    }
+
+    pub fn device(&self) -> Option<Device> {
+        self.device
+    }
+
+    /// The transaction key (and the extra key at `output`'s index, if its
+    /// transaction had those) that `output` was made with, out of `keys`
+    /// and `additional` from its transaction's extra: the one whose shared
+    /// secret gives the output's key. A device needs it to make the
+    /// output's key image and to spend it.
+    pub fn tx_key_for(&self, output: &WalletOutput, keys: &[[u8; 32]], additional: Option<&[[u8; 32]]>) -> Option<([u8; 32], Option<[u8; 32]>)> {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        let index = output.index_in_transaction();
+        let spend_pub: curve25519_dalek::EdwardsPoint = match output.subaddress() {
+            Some(sub) => self.view_pair().subaddress(self.network.monero(), sub).spend().into(),
+            None => self.spend_pub.into(),
+        };
+        let view: curve25519_dalek::Scalar = (*self.view).into();
+        let made_with = |key: &[u8; 32]| {
+            let point = CompressedEdwardsY(*key).decompress()?;
+            let derivation = (point * view).mul_by_cofactor();
+            let mut data = derivation.compress().to_bytes().to_vec();
+            data.extend_from_slice(&varint(index));
+            let scalar: curve25519_dalek::Scalar = Scalar::hash(&data).into();
+            let made = &scalar * ED25519_BASEPOINT_TABLE + spend_pub;
+            (made == output.key().into()).then_some(())
+        };
+        let extra = additional.and_then(|a| a.get(index as usize)).copied();
+        if let Some(key) = keys.iter().find(|k| made_with(k).is_some()) {
+            return Some((*key, extra));
+        }
+        let extra = extra?;
+        made_with(&extra).map(|()| (keys.first().copied().unwrap_or(extra), Some(extra)))
+    }
+
+    /// [`light_output_at`](Keys::light_output_at) for a subaddress of account 0.
+    pub fn light_output(&self, tx_key: &[u8; 32], index: u64, subaddress: u32, key: &[u8; 32]) -> Option<(Scalar, Scalar)> {
+        self.light_output_at(tx_key, index, 0, subaddress, key)
+    }
+
+    /// Checks an output a light wallet server says this wallet received at
+    /// subaddress `minor` of `account`: that `key` is the one `tx_key` (the
+    /// transaction key it was derived from) makes at output `index` for this
+    /// wallet. Gives its key offset (`H_s(8aR ‖ index)`, plus the
+    /// subaddress's own `H_s("SubAddr\0" ‖ a ‖ account ‖ minor)`) and the
+    /// mask a modern output's commitment has (`H_s("commitment_mask" ‖
+    /// H_s(8aR ‖ index))`), or nothing when the key isn't this wallet's.
+    pub fn light_output_at(&self, tx_key: &[u8; 32], index: u64, account: u32, minor: u32, key: &[u8; 32]) -> Option<(Scalar, Scalar)> {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        let point = CompressedEdwardsY(*tx_key).decompress()?;
+        let view: curve25519_dalek::Scalar = (*self.view).into();
+        let mut data = Zeroizing::new((point * view).mul_by_cofactor().compress().to_bytes().to_vec());
+        data.extend_from_slice(&varint(index));
+        let shared = Scalar::hash(data.as_slice());
+        let mut offset: curve25519_dalek::Scalar = shared.into();
+        if (account, minor) != (0, 0) {
+            let mut sub = Zeroizing::new(b"SubAddr\0".to_vec());
+            sub.extend_from_slice(&<[u8; 32]>::from(*self.view));
+            sub.extend_from_slice(&account.to_le_bytes());
+            sub.extend_from_slice(&minor.to_le_bytes());
+            let derivation: curve25519_dalek::Scalar = Scalar::hash(sub.as_slice()).into();
+            offset += derivation;
+        }
+        let spend: curve25519_dalek::EdwardsPoint = self.spend_pub.into();
+        if (&offset * ED25519_BASEPOINT_TABLE + spend).compress().to_bytes() != *key {
+            return None;
+        }
+        let mask = Scalar::hash([b"commitment_mask".as_slice(), &<[u8; 32]>::from(shared)].concat());
+        Some((Scalar::from(offset), mask))
+    }
+
+    /// The spend key, opened from its seal for the caller to sign with: a copy,
+    /// wiped when the caller drops it. Keep it no longer than the signing.
+    pub fn spend(&self) -> Result<Zeroizing<Scalar>> {
+        match &self.spend {
+            None => Err(KeyError::ViewOnly),
+            Some(_) => self.open_spend().ok_or(KeyError::BadKey),
+        }
+    }
+
+    /// The view key's bytes, for the prefilter.
+    pub fn view_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(<[u8; 32]>::from(*self.view))
+    }
+
+    pub fn view_pair(&self) -> ViewPair {
+        ViewPair::new(self.spend_pub, Zeroizing::new(*self.view)).expect("a wallet's own keys make a view pair")
+    }
+
+    pub fn primary_address(&self) -> String {
+        self.view_pair().legacy_address(self.network.monero()).to_string()
+    }
+
+    /// Subaddress `index` of account 0; index 0 is the primary address.
+    pub fn address(&self, index: u32) -> String {
+        self.address_at(0, index)
+    }
+
+    /// Subaddress `index` of `account`. (0, 0) is the primary address, and
+    /// (n, 0) account n's own first address.
+    pub fn address_at(&self, account: u32, index: u32) -> String {
+        match SubaddressIndex::new(account, index) {
+            Some(sub) => self.subaddress(sub),
+            None => self.primary_address(),
+        }
+    }
+
+    /// The subaddress `index` names, account and all.
+    pub fn subaddress(&self, index: SubaddressIndex) -> String {
+        self.view_pair().subaddress(self.network.monero(), index).to_string()
+    }
+
+    /// How many words [`seed_words`](Keys::seed_words) has, without
+    /// building the phrase: `None` for a view-only wallet.
+    pub fn seed_word_count(&self) -> Option<usize> {
+        match &self.seed {
+            Some((kind, _)) => Some(kind.words()),
+            None => self.spend.as_ref().map(|_| SeedKind::Classic.words()),
+        }
+    }
+
+    /// The seed phrase to show in Backup. A wallet restored from a spend key
+    /// still has 25 words: they encode the same key.
+    pub fn seed_words(&self) -> Option<(SeedKind, Zeroizing<String>)> {
+        if let Some((kind, sealed)) = &self.seed {
+            let mut bytes = sealed.open().ok()?;
+            // Takes the opened buffer as it is, so no copy of the words is left unwiped.
+            let words = String::from_utf8(std::mem::take(&mut *bytes)).ok()?;
+            return Some((*kind, Zeroizing::new(words)));
+        }
+        let spend = self.open_spend()?;
+        Seed::from_entropy(SeedLanguage::English, scalar_bytes(&spend)).map(|s| (SeedKind::Classic, s.to_string()))
+    }
+
+    pub fn spend_key_hex(&self) -> Option<Zeroizing<String>> {
+        self.open_spend().map(|s| Zeroizing::new(hex::encode(*scalar_bytes(&s))))
+    }
+
+    pub fn view_key_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(hex::encode(*scalar_bytes(&self.view)))
+    }
+
+    /// The public spend key, as the wallet's address carries it.
+    pub fn public_spend_key_hex(&self) -> String {
+        hex::encode(self.spend_pub.compress().to_bytes())
+    }
+
+    /// The public view key, as the wallet's address carries it.
+    pub fn public_view_key_hex(&self) -> String {
+        hex::encode(public(&self.view).compress().to_bytes())
+    }
+
+    /// The key image an output with this one-time `key` and `key_offset`
+    /// shows when spent; `None` for a view-only wallet.
+    pub fn key_image(&self, key: Point, key_offset: Scalar) -> Option<[u8; 32]> {
+        let spend = self.open_spend()?;
+        let secret = Zeroizing::new((*spend).into() + key_offset.into());
+        let image = Point::from(*secret * Point::biased_hash(key.compress().to_bytes()).into());
+        Some(image.compress().to_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CLASSIC: &str = "washing thirsty occur lectures tuesday fainted toxic adapt abnormal memoir nylon mostly building \
+                           shrugged online ember northern ruby woes dauntless boil family illness inroads northern";
+
+    #[test]
+    fn the_word_count_is_the_phrase_s_without_building_it() {
+        let count = |keys: &Keys| (keys.seed_word_count(), keys.seed_words().map(|(_, w)| w.split_whitespace().count()));
+        let made = Keys::generate(Network::Stagenet).keys;
+        assert_eq!(count(&made), (Some(16), Some(16)));
+        let classic = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        assert_eq!(count(&classic), (Some(25), Some(25)));
+        // From a spend key: the 25 words that encode it.
+        let spend = Keys::from_spend_key(Network::Mainnet, &classic.spend_key_hex().unwrap(), None).unwrap();
+        assert_eq!(count(&spend), (Some(25), Some(25)));
+        let watching = Keys::view_only(Network::Mainnet, &classic.primary_address(), &classic.view_key_hex()).unwrap();
+        assert_eq!(count(&watching), (None, None));
+    }
+
+    #[test]
+    fn a_classic_seed_gives_monero_s_keys() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        assert_eq!(*keys.spend_key_hex().unwrap(), "c0af65c0dd837e666b9d0dfed62745f4df35aed7ea619b2798a709f0fe545403");
+        assert_eq!(*keys.view_key_hex(), "513ba91c538a5a9069e0094de90e927c0cd147fa10428ce3ac1afd49f63e3b01");
+        assert_eq!(keys.seed_words().unwrap().0, SeedKind::Classic);
+    }
+
+    #[test]
+    fn seed_words_are_read_whatever_the_spacing_and_case() {
+        let messy = format!("  {}\n", CLASSIC.to_uppercase().replace(' ', "   "));
+        let keys = Keys::from_words(Network::Mainnet, &messy).unwrap().keys;
+        assert_eq!(*keys.view_key_hex(), "513ba91c538a5a9069e0094de90e927c0cd147fa10428ce3ac1afd49f63e3b01");
+    }
+
+    #[test]
+    fn a_new_wallet_restores_from_its_own_polyseed() {
+        let made = Keys::generate(Network::Stagenet);
+        let (kind, words) = made.keys.seed_words().unwrap();
+        assert_eq!(kind, SeedKind::Polyseed);
+        assert_eq!(words.split(' ').count(), 16);
+        let back = Keys::from_words(Network::Stagenet, &words).unwrap();
+        assert_eq!(back.keys.primary_address(), made.keys.primary_address());
+        assert_eq!(back.birthday, made.birthday);
+        assert!(made.keys.primary_address().starts_with('5'), "stagenet addresses start with 5");
+    }
+
+    #[test]
+    fn wrong_words_are_refused() {
+        assert!(matches!(Keys::from_words(Network::Mainnet, "not a seed"), Err(KeyError::BadSeed)));
+        let swapped = CLASSIC.replacen("washing", "thirsty", 1);
+        assert!(Keys::from_words(Network::Mainnet, &swapped).is_err());
+    }
+
+    #[test]
+    fn a_spend_key_restores_the_same_wallet_and_checks_the_view_key() {
+        let seeded = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let spend = seeded.spend_key_hex().unwrap();
+        let keys = Keys::from_spend_key(Network::Mainnet, &spend, Some(&seeded.view_key_hex())).unwrap();
+        assert_eq!(keys.primary_address(), seeded.primary_address());
+        assert_eq!(keys.seed_words().unwrap().1, seeded.seed_words().unwrap().1);
+        let wrong_view = "00".repeat(32);
+        assert!(Keys::from_spend_key(Network::Mainnet, &spend, Some(&wrong_view)).is_err());
+    }
+
+    #[test]
+    fn a_view_only_wallet_sees_the_same_address_but_cannot_spend() {
+        let full = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let watch = Keys::view_only(Network::Mainnet, &full.primary_address(), &full.view_key_hex()).unwrap();
+        assert_eq!(watch.primary_address(), full.primary_address());
+        assert_eq!(watch.address(3), full.address(3));
+        assert!(!watch.can_spend());
+        assert!(watch.seed_words().is_none());
+        let other = Keys::generate(Network::Mainnet).keys;
+        assert!(Keys::view_only(Network::Mainnet, &full.primary_address(), &other.view_key_hex()).is_err());
+    }
+
+    #[test]
+    fn subaddresses_differ_from_the_primary_address() {
+        let keys = Keys::generate(Network::Stagenet).keys;
+        assert_eq!(keys.address(0), keys.primary_address());
+        assert_ne!(keys.address(1), keys.primary_address());
+        assert_ne!(keys.address(1), keys.address(2));
+    }
+
+    #[test]
+    fn keys_are_monero_s_in_full() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        // Monero's own test vector for these words.
+        let (spend, view) = (keys.spend_key_hex().unwrap(), keys.view_key_hex());
+        assert_eq!(*spend, "c0af65c0dd837e666b9d0dfed62745f4df35aed7ea619b2798a709f0fe545403");
+        assert_eq!(*view, "513ba91c538a5a9069e0094de90e927c0cd147fa10428ce3ac1afd49f63e3b01");
+        // The public keys are the ones monero-oxide puts in the address,
+        // and the secret keys times the base point.
+        let address = MoneroAddress::from_str(Network::Mainnet.monero(), &keys.primary_address()).unwrap();
+        assert_eq!(keys.public_view_key_hex(), hex::encode(address.view().compress().to_bytes()));
+        assert_eq!(keys.public_spend_key_hex(), hex::encode(address.spend().compress().to_bytes()));
+        let times_base = |hex_key: &str| hex::encode(public(&parse_scalar(hex_key).unwrap()).compress().to_bytes());
+        assert_eq!(keys.public_view_key_hex(), times_base(&view));
+        assert_eq!(keys.public_spend_key_hex(), times_base(&spend));
+        for key in [spend.to_string(), view.to_string(), keys.public_view_key_hex(), keys.public_spend_key_hex()] {
+            assert_eq!(key.len(), 64);
+        }
+        assert_eq!(keys.primary_address().len(), 95, "the whole address, not cut");
+    }
+
+    #[test]
+    fn the_spend_key_is_kept_sealed_and_opens_to_the_same_key() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let spend = keys.spend().unwrap();
+        assert_eq!(hex::encode(<[u8; 32]>::from(*spend)), "c0af65c0dd837e666b9d0dfed62745f4df35aed7ea619b2798a709f0fe545403");
+        // Neither the key nor the words are held as they are.
+        let raw = <[u8; 32]>::from(*spend);
+        let Some(sealed) = &keys.spend else { panic!("a spend key") };
+        assert!(!format!("{sealed:?}").contains("c0af"));
+        let opened = sealed.open().unwrap();
+        assert_eq!(opened.as_slice(), raw);
+        let (_, words) = keys.seed.as_ref().unwrap();
+        assert_eq!(words.open().unwrap().as_slice(), CLASSIC.split_whitespace().collect::<Vec<_>>().join(" ").as_bytes());
+        // A copy opens alike, and so do keys read back from their parts.
+        assert_eq!(*keys.clone().spend().unwrap(), *spend);
+        let (kind, kept) = keys.kept_seed_words().unwrap();
+        let back = Keys::from_parts(
+            keys.network,
+            &keys.view_key_hex(),
+            keys.spend_key_hex().as_deref().map(|s| s.as_str()),
+            &keys.public_spend_key_hex(),
+            Some((kind, &kept)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(*back.spend().unwrap(), *spend);
+        assert_eq!(back.seed_words().unwrap().1, keys.seed_words().unwrap().1);
+        // A wallet from a spend key keeps no words, as before.
+        let bare = Keys::from_spend_key(Network::Mainnet, &keys.spend_key_hex().unwrap(), None).unwrap();
+        assert!(bare.kept_seed_words().is_none());
+        assert_eq!(bare.seed_words().unwrap().1.split(' ').count(), 25);
+    }
+
+    #[test]
+    fn a_view_only_wallet_has_no_spend_key_to_open() {
+        let full = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let watch = Keys::view_only(Network::Mainnet, &full.primary_address(), &full.view_key_hex()).unwrap();
+        assert!(matches!(watch.spend(), Err(KeyError::ViewOnly)));
+        assert!(watch.key_image(full.view_pair().spend(), Scalar::hash([1; 32])).is_none());
+        assert!(full.key_image(full.view_pair().spend(), Scalar::hash([1; 32])).is_some());
+    }
+
+    #[test]
+    fn a_view_only_wallet_from_words_has_the_view_key_and_nothing_to_spend_with() {
+        let full = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let words = Zeroizing::new(format!("  {}  ", CLASSIC.to_uppercase()));
+        let watch = Restored::view_only_from_words(Network::Mainnet, words).unwrap();
+        assert_eq!(watch.birthday, None);
+        let watch = watch.keys;
+        assert_eq!(*watch.view_key_hex(), "513ba91c538a5a9069e0094de90e927c0cd147fa10428ce3ac1afd49f63e3b01");
+        assert_eq!(watch.primary_address(), full.primary_address());
+        assert_eq!(watch.address_at(3, 7), full.address_at(3, 7));
+        assert!(!watch.can_spend());
+        assert!(watch.spend_key_hex().is_none());
+        assert!(watch.seed_words().is_none() && watch.kept_seed_words().is_none());
+        assert!(matches!(watch.spend(), Err(KeyError::ViewOnly)));
+        // A Polyseed's birthday comes through.
+        let made = Keys::generate(Network::Stagenet);
+        let (_, words) = made.keys.seed_words().unwrap();
+        let watch = Restored::view_only_from_words(Network::Stagenet, words).unwrap();
+        assert_eq!(watch.birthday, made.birthday);
+        assert_eq!(watch.keys.primary_address(), made.keys.primary_address());
+        assert!(matches!(Restored::view_only_from_words(Network::Mainnet, Zeroizing::new("not a seed".into())), Err(KeyError::BadSeed)));
+    }
+
+    #[test]
+    fn addresses_come_from_any_account() {
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        assert_eq!(keys.address_at(0, 0), keys.primary_address());
+        assert_eq!(keys.address_at(0, 5), keys.address(5));
+        let first = keys.address_at(1, 0);
+        assert_ne!(first, keys.primary_address());
+        assert!(first.starts_with('8'), "an account's own address is a subaddress");
+        assert_ne!(keys.address_at(1, 1), keys.address_at(0, 1));
+        assert_ne!(keys.address_at(1, 1), keys.address_at(2, 1));
+        let sub = SubaddressIndex::new(13, 2).unwrap();
+        assert_eq!(keys.subaddress(sub), keys.address_at(13, 2));
+        // Monero's own: account 1, address 0 of these words' wallet.
+        let parsed = MoneroAddress::from_str(Network::Mainnet.monero(), &first).unwrap();
+        assert!(parsed.is_subaddress());
+    }
+
+    #[test]
+    fn a_light_server_s_output_is_checked_in_any_account() {
+        use curve25519_dalek::{Scalar as Dalek, edwards::EdwardsPoint};
+        let keys = Keys::from_words(Network::Mainnet, CLASSIC).unwrap().keys;
+        let view: Dalek = (*keys.view).into();
+        for (account, minor) in [(0u32, 0u32), (0, 4), (3, 0), (3, 9)] {
+            // The address's spend key, as monero-oxide makes it.
+            let spend: EdwardsPoint = match SubaddressIndex::new(account, minor) {
+                Some(sub) => keys.view_pair().subaddress(Network::Mainnet.monero(), sub).spend().into(),
+                None => keys.spend_pub.into(),
+            };
+            // A sender's transaction key, and the one-time key it makes at
+            // output 1: H_s(8aR ‖ 1)·G + D.
+            let r = Dalek::from_bytes_mod_order([7 + account as u8 + minor as u8; 32]);
+            let tx_key = (&r * ED25519_BASEPOINT_TABLE).compress().to_bytes();
+            let shared = (&(r * view) * ED25519_BASEPOINT_TABLE).mul_by_cofactor();
+            let mut data = shared.compress().to_bytes().to_vec();
+            data.extend_from_slice(&varint(1));
+            let offset: Dalek = Scalar::hash(&data).into();
+            let key = (&offset * ED25519_BASEPOINT_TABLE + spend).compress().to_bytes();
+            assert!(keys.light_output_at(&tx_key, 1, account, minor, &key).is_some(), "({account}, {minor})");
+            assert!(keys.light_output_at(&tx_key, 2, account, minor, &key).is_none());
+            assert!(keys.light_output_at(&tx_key, 1, account + 1, minor, &key).is_none());
+            if account == 0 {
+                assert!(keys.light_output(&tx_key, 1, minor, &key).is_some());
+            }
+        }
+    }
+}

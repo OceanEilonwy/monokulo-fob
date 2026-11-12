@@ -38,19 +38,25 @@ struct Paid {
     mask: [u8; 32],
     amount: u64,
     subaddress: u32,
+    account: u32,
 }
 
 /// An output paying `amount` to `keys`' subaddress `sub` (0: the main
 /// address) at `index`, from a fresh transaction key: the key, the view tag,
 /// the transaction key, the mask, the encrypted amount.
 fn pay(keys: &Keys, amount: u64, sub: u32, index: u16, coinbase: bool) -> (Output, Paid, Option<(Commitment, [u8; 8])>) {
-    let spend: EdwardsPoint = match SubaddressIndex::new(0, sub) {
+    pay_at(keys, amount, 0, sub, index, coinbase)
+}
+
+/// [`pay`] to subaddress `sub` of `account`.
+fn pay_at(keys: &Keys, amount: u64, account: u32, sub: u32, index: u16, coinbase: bool) -> (Output, Paid, Option<(Commitment, [u8; 8])>) {
+    let spend: EdwardsPoint = match SubaddressIndex::new(account, sub) {
         Some(s) => keys.view_pair().subaddress(keys.network.monero(), s).spend().into(),
         None => keys.view_pair().spend().into(),
     };
     let r = random_scalar();
     // To a subaddress the transaction key is r·D, to the main address r·G.
-    let big_r = if sub == 0 { &r * ED25519_BASEPOINT_TABLE } else { spend * r };
+    let big_r = if (account, sub) == (0, 0) { &r * ED25519_BASEPOINT_TABLE } else { spend * r };
     let mut data = (big_r * view_scalar(keys)).mul_by_cofactor().compress().to_bytes().to_vec();
     data.push(index as u8);
     let shared = Scalar::hash(&data);
@@ -66,7 +72,7 @@ fn pay(keys: &Keys, amount: u64, sub: u32, index: u16, coinbase: bool) -> (Outpu
         (mask, Some((Commitment { mask, amount }, encrypted)))
     };
     let output = Output { amount: coinbase.then_some(amount), key: CompressedPoint::from(key), view_tag: Some(view_tag) };
-    let paid = Paid { index, key, tx_key: big_r.compress().to_bytes(), mask: <[u8; 32]>::from(mask), amount, subaddress: sub };
+    let paid = Paid { index, key, tx_key: big_r.compress().to_bytes(), mask: <[u8; 32]>::from(mask), amount, subaddress: sub, account };
     (output, paid, encrypted)
 }
 
@@ -82,9 +88,14 @@ fn transaction(keys: &Keys, pays: Option<(u64, u32)>, images: &[[u8; 32]]) -> (T
 
 /// [`transaction`], locked as `timelock` says.
 fn locked_transaction(keys: &Keys, pays: Option<(u64, u32)>, images: &[[u8; 32]], timelock: Timelock) -> (Transaction<Pruned>, [u8; 32], Option<Paid>) {
+    transaction_at(keys, pays.map(|(amount, sub)| (amount, 0, sub)), images, timelock)
+}
+
+/// [`locked_transaction`] paying (amount, account, index).
+fn transaction_at(keys: &Keys, pays: Option<(u64, u32, u32)>, images: &[[u8; 32]], timelock: Timelock) -> (Transaction<Pruned>, [u8; 32], Option<Paid>) {
     let (output, paid, commitment, encrypted, tx_key) = match pays {
-        Some((amount, sub)) => {
-            let (output, paid, enc) = pay(keys, amount, sub, 0, false);
+        Some((amount, account, sub)) => {
+            let (output, paid, enc) = pay_at(keys, amount, account, sub, 0, false);
             let (commitment, encrypted) = enc.unwrap();
             let tx_key = paid.tx_key;
             (output, Some(paid), commitment.commit().compress(), encrypted, tx_key)
@@ -140,7 +151,7 @@ fn received(paid: &Paid, global_index: u64) -> lws::ReceivedOutput {
         tx_pub_key: lws::Hex(paid.tx_key),
         rct: Some(lws::Hex(paid.mask)),
         commitment: Some(lws::Hex(commitment_of(paid))),
-        recipient: lws::AddressMeta { maj_i: 0, min_i: paid.subaddress },
+        recipient: lws::AddressMeta { maj_i: paid.account, min_i: paid.subaddress },
     }
 }
 
@@ -189,7 +200,7 @@ fn spend_of(paid: &Paid, image: [u8; 32]) -> lws::Spend {
 
 /// The key image this wallet's spend key gives the output `paid` describes.
 fn image_of(keys: &Keys, paid: &Paid) -> [u8; 32] {
-    let (offset, _) = keys.light_output(&paid.tx_key, paid.index.into(), paid.subaddress, &paid.key).unwrap();
+    let (offset, _) = keys.light_output_at(&paid.tx_key, paid.index.into(), paid.account, paid.subaddress, &paid.key).unwrap();
     let key = CompressedPoint::from(paid.key).decompress().unwrap();
     keys.key_image(key, offset).unwrap()
 }
@@ -246,7 +257,7 @@ async fn the_light_path_finds_what_the_node_path_finds() {
     let chain = chain(keys);
 
     // The node way.
-    let (scanner, prefilter) = wallet.scanner(Wallet::watched(0));
+    let (scanner, prefilter) = wallet.scanner(&keyed::Watch::first(Wallet::watched(0)));
     let hashes: Vec<[u8; 32]> = chain.blocks.iter().map(|b| b.1).collect();
     let (results, _) = scan::scan(&scanner, &prefilter, chain.blocks.iter().map(|b| b.0.clone()).collect(), &hashes, false);
     let node_state = {
@@ -313,7 +324,9 @@ fn wallet_output_bytes_are_monero_wallet_s() {
     let keys = Keys::generate(Network::Stagenet).keys;
     let chain = chain(&keys);
     let mut scanner = Scanner::new(keys.view_pair());
-    Wallet::watch(&mut scanner, 1, 10);
+    for i in 1..=10 {
+        scanner.register_subaddress(SubaddressIndex::new(0, i).unwrap());
+    }
     let mut checked = 0;
     for (block, _) in &chain.blocks {
         for output in scanner.scan(block.clone()).unwrap().ignore_additional_timelock() {
@@ -432,7 +445,7 @@ fn a_pool_payment_is_on_its_way_until_mined() {
     let pooled = listed(hash, None, vec![received(&paid, 0)], vec![]);
     let done = reconcile(keys, &mut state, &answer(vec![pooled], 200), &HashMap::new(), 42).unwrap();
     assert!(state.outputs.is_empty(), "not owned until mined");
-    assert_eq!(done.pool.get(&hex::encode(hash)), Some(&Pooled { seen: 42, parts: vec![(2, XMR)] }));
+    assert_eq!(done.pool.get(&hex::encode(hash)), Some(&Pooled { seen: 42, parts: vec![(2, XMR)], accounts: vec![] }));
     // Seen again later: still when it was first seen.
     let pooled = listed(hash, None, vec![received(&paid, 0)], vec![]);
     let done = reconcile(keys, &mut state, &answer(vec![pooled], 200), &done.pool, 99).unwrap();
@@ -665,7 +678,7 @@ async fn a_locked_output_is_kept_alike_both_ways() {
     let (b1, _, _) = block(keys, 300_201, None, vec![(t1, h1), (t2, h2)]);
     let hash = b1.block.hash();
 
-    let (scanner, prefilter) = wallet.scanner(Wallet::watched(0));
+    let (scanner, prefilter) = wallet.scanner(&keyed::Watch::first(Wallet::watched(0)));
     let (results, _) = scan::scan(&scanner, &prefilter, vec![b1], &[hash], false);
     let node = {
         let mut state = wallet.inner.state.lock().await;
@@ -710,7 +723,7 @@ async fn a_version_7_database_opens_as_a_node_wallet() {
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     old.execute_batch(&format!(
-        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; {BACK_TO_VERSION_9} PRAGMA user_version = 7;",
+        "PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN sync_mode; ALTER TABLE wallet DROP COLUMN light_url; ALTER TABLE wallet DROP COLUMN light_self_signed; ALTER TABLE wallet DROP COLUMN light_pin; ALTER TABLE wallet DROP COLUMN light_registered; ALTER TABLE wallet DROP COLUMN light_subaddrs_sent; ALTER TABLE wallet DROP COLUMN light_scanned_height; ALTER TABLE wallet DROP COLUMN light_blocks; ALTER TABLE wallet DROP COLUMN light_history; {BACK_TO_VERSION_11} {BACK_TO_VERSION_9} PRAGMA user_version = 7;",
         hex::encode([1u8; 32])
     ))
     .unwrap();
@@ -1482,3 +1495,80 @@ async fn live_a_payment_through_monokulo_lws() {
 mod send;
 
 mod trezor;
+
+/// A payment to another account (an app's, decisions 418 and 419) is found
+/// the node way and the light way alike, kept in its account, and moves
+/// account 0's Receive on not at all; the light server is told of the
+/// account's addresses first. Unwatched, it isn't found.
+#[tokio::test]
+async fn a_payment_to_another_account_is_found_both_ways() {
+    let wallet = Wallet::create(&dir("other-account"), [1; 32], Network::Stagenet).unwrap();
+    let keys = &wallet.inner.keys;
+    let (t1, h1, paid) = transaction_at(keys, Some((XMR, 3, 7)), &[], Timelock::None);
+    let paid = paid.unwrap();
+    let (b1, _, _) = block(keys, 300_101, None, vec![(t1, h1)]);
+    let hash = b1.block.hash();
+    let scan_with = |watch: &keyed::Watch| {
+        let (scanner, prefilter) = wallet.scanner(watch);
+        scan::scan(&scanner, &prefilter, vec![b1.clone()], &[hash], false).0
+    };
+
+    // Account 3 not watched yet: nothing found.
+    let results = scan_with(&keyed::Watch::first(Wallet::watched(0)));
+    assert!(results.into_iter().all(|r| r.unwrap().found.is_empty()));
+
+    // The receive account set, its pool is watched and the payment found.
+    wallet.set_receive_account(3).await.unwrap();
+    let plan = wallet.inner.state.lock().await.watch_plan();
+    let node_state = {
+        let mut state = wallet.inner.state.lock().await;
+        let mut images = Wallet::key_images(&state);
+        for result in scan_with(&plan) {
+            wallet.take_block(&mut state, &mut images, &HashMap::new(), result.unwrap());
+        }
+        assert_eq!(state.outputs.len(), 1);
+        assert_eq!((state.outputs[0].account, state.outputs[0].subaddress, state.outputs[0].amount), (3, 7, XMR));
+        assert_eq!(state.receive_index, 0, "account 0's Receive doesn't move");
+        assert_eq!(state.found_in.get(&3), Some(&7));
+        let kept = serde_json::to_value(&state.outputs).unwrap();
+        state.outputs.clear();
+        state.found_in.clear();
+        state.restore_height = Some(300_100);
+        state.next_block = 300_102;
+        kept
+    };
+
+    // The light way.
+    let listed = vec![listed(h1, Some(300_101), vec![received(&paid, 3_001_011)], vec![])];
+    let txs = serde_json::to_string(&answer(listed, 300_299)).unwrap();
+    let told = Arc::new(std::sync::Mutex::new(vec![]));
+    let heard = told.clone();
+    let url = scripted_node(move |text| {
+        let txs = txs.clone();
+        let heard = heard.clone();
+        async move {
+            if text.starts_with("POST /login") {
+                r#"{"new_address":true,"start_height":300100}"#.to_owned()
+            } else if text.starts_with("POST /upsert_subaddrs") {
+                heard.lock().unwrap().push(text.clone());
+                r#"{"new_subaddrs":[]}"#.to_owned()
+            } else if text.starts_with("POST /get_address_txs") {
+                txs
+            } else {
+                "{}".to_owned()
+            }
+        }
+    })
+    .await;
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.light_url = Some(url);
+        state.sync_mode = SyncMode::Light;
+    }
+    assert!(!wallet.sync_step().await.unwrap(), "one poll and done");
+    let state = wallet.inner.state.lock().await;
+    assert_eq!(serde_json::to_value(&state.outputs).unwrap(), node_state, "the same output, byte for byte");
+    let upsert = told.lock().unwrap().concat();
+    assert!(upsert.contains(r#"{"key":3,"value":[[0,60]]}"#), "told of account 3's pool: {upsert}");
+    assert_eq!(state.light_accounts_sent, vec![(3, keyed::POOL_SIZE + keyed::POOL_MARGIN)]);
+}

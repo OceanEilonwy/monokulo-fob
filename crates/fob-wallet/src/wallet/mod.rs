@@ -1,10 +1,12 @@
 //! A wallet: its keys, what it has found on the chain, syncing and sending.
 
+mod accounts;
 mod addresses;
 mod coin;
 mod connection;
 mod funds;
 mod hardware;
+mod keyed;
 mod lifecycle;
 mod light;
 mod light_send;
@@ -19,6 +21,8 @@ mod tests;
 mod tracked;
 
 pub use crate::activity::{Activity, Direction};
+pub use accounts::{Account, AccountPayment, AccountView, Connected, Granted, MAX_LABEL};
+pub use keyed::{Ask, Incoming, KeyedRequest, LATE_WINDOW, POOL_SIZE, TAG_MODULUS, Unexpected, tag_for};
 pub use crate::catch_up::{ScanProgress, SyncStatus};
 #[cfg(test)]
 use manual_sync::{CoinsSaid,SentLookup, key_images_spent, sent_lookup, still_missing};
@@ -225,6 +229,11 @@ pub struct ReceiveCode {
 /// Told about every change while the wallet syncs.
 pub trait SyncListener: Send + Sync {
     fn on_status(&self, status: SyncStatus);
+
+    /// The keyed requests (decision 418) whose payments changed, by id:
+    /// after a scan or a look at the pool found one, or a block confirmed
+    /// one further. Fob's own screens make none, and needn't listen.
+    fn on_requests(&self, _ids: Vec<u64>) {}
 }
 
 /// What the price toast's Retry came to.
@@ -302,9 +311,14 @@ struct Inner {
     /// Bumped by each [`reset_pipeline`](Wallet::reset_pipeline): a sync
     /// step doesn't put back a pipeline reset while it had it out.
     pipeline_resets: AtomicU64,
-    /// The scanner, with how far it watches: 200 addresses are slow to work
-    /// out again for every batch.
-    scanner: std::sync::Mutex<Option<(u32, Scanner, Arc<fob_scanner::Prefilter>)>>,
+    /// The scanner, with how far it watches in each account: 200 addresses
+    /// are slow to work out again for every batch.
+    scanner: std::sync::Mutex<Option<(keyed::Watch, Scanner, Arc<fob_scanner::Prefilter>)>>,
+    /// Pool payments to keyed requests' addresses, kept after they leave
+    /// the pool to tell a double spend, by transaction. Not saved.
+    keyed_pool: std::sync::Mutex<HashMap<String, Vec<keyed::Remembered>>>,
+    /// Each keyed request's payments as the listener was last told them.
+    keyed_told: std::sync::Mutex<HashMap<u64, Vec<keyed::Incoming>>>,
     /// This wallet's GPU check has run since it was opened.
     gpu_checked: AtomicBool,
     /// When syncing last looked for sent payments gone quiet.
@@ -446,17 +460,31 @@ impl<T> Pending<T> {
 }
 
 /// A payment to this wallet still in the node's pool.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Pooled {
     /// When it was first seen.
     seen: u64,
-    /// What came to each address it paid, by index (0 is the main one).
+    /// What came to each address of account 0 it paid, by index (0 is the
+    /// main one).
     parts: Vec<(u32, u64)>,
+    /// What came to addresses in other accounts: (account, index, amount).
+    accounts: Vec<(u32, u32, u64)>,
 }
 
 impl Pooled {
     fn amount(&self) -> u64 {
-        amount::total(self.parts.iter().map(|p| p.1))
+        amount::total(self.parts.iter().map(|p| p.1).chain(self.accounts.iter().map(|p| p.2)))
+    }
+
+    /// Adds `amount` paid to `minor` of `account`.
+    fn add(&mut self, account: u32, minor: u32, amount: u64) {
+        if account == 0 {
+            return add_part(&mut self.parts, minor, amount);
+        }
+        match self.accounts.iter_mut().find(|p| p.0 == account && p.1 == minor) {
+            Some(part) => part.2 = part.2.saturating_add(amount),
+            None => self.accounts.push((account, minor, amount)),
+        }
     }
 }
 

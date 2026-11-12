@@ -16,7 +16,9 @@ hex = "0.4"
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
 monero-wallet = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
+# rustls without a crypto provider of reqwest's choosing: Fob hands every
+# client its own rustls config, on ring with webpki's roots (decision 415).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2"] }
 # The rustls and roots reqwest uses, to check a node's certificate in Fob
 # (saying why one fails) and accept a self-signed one where asked.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }

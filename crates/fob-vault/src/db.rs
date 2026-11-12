@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 11;
+const VERSION: i32 = 12;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -99,6 +99,18 @@ const WALLET: Table = Table {
         // Since version 9.
         ("light_blocks", Json),
         ("light_history", Json),
+        // Since version 12: accounts (decisions 418, 419). The account
+        // keyed requests take addresses in, the random id their amount tags
+        // are made from, Fob's own id for the wallet, its labelled accounts
+        // and the apps connected to them, and what a light server has been
+        // told of accounts besides 0.
+        ("receive_account", Int),
+        ("tag_id", Text),
+        ("wallet_id", Text),
+        ("accounts", Json),
+        ("connections", Json),
+        ("keyed_next_id", Int),
+        ("light_accounts_sent", Json),
     ],
 };
 const RECENT: Table = Table { name: "recent_blocks", columns: &[("height", Int), ("hash", Text)] };
@@ -123,6 +135,9 @@ const OUTPUTS: Table = Table {
         // Since version 10: where the coin stands, as the wallet's `Coin`
         // writes itself (its JSON form, tagged, hashes in hex).
         ("coin", Json),
+        // Since version 12: the account its subaddress is in (`subaddress`
+        // is the index within it).
+        ("account", Int),
     ],
 };
 const SPENDS: Table = Table { name: "spends", columns: &[("tx", Text), ("height", Int), ("time", Int), ("fee", Int)] };
@@ -195,7 +210,29 @@ const SHARES: Table = Table {
 /// Nodes this wallet was given besides its network's own. Since version 2.
 const CUSTOM_NODES: Table = Table { name: "custom_nodes", columns: &[("url", Text), ("self_signed", Bool)] };
 
-const TABLES: [&Table; 14] = [&WALLET, &RECENT, &OUTPUTS, &SPENDS, &SENT, &NOTES, &PRICE_CURRENT, &PRICE_HISTORY, &PRICE_RECORDS, &CONTACTS, &REQUESTS, &PROFILE, &SHARES, &CUSTOM_NODES];
+/// Requests made with an idempotency key, on a pooled address and with an
+/// amount tag (decision 418): another app's, through fob-wallet as a
+/// library. Since version 12.
+const KEYED: Table = Table {
+    name: "keyed_requests",
+    columns: &[
+        ("id", Int),
+        ("key", Text),
+        ("account", Int),
+        ("minor", Int),
+        ("address", Text),
+        ("base", Int),
+        ("tag", Int),
+        ("atomic", Int),
+        ("created", Int),
+        ("expires_at", Int),
+        ("height", Int),
+        ("cancelled", Int),
+        ("note", Text),
+    ],
+};
+
+const TABLES: [&Table; 15] = [&WALLET, &RECENT, &OUTPUTS, &SPENDS, &SENT, &NOTES, &PRICE_CURRENT, &PRICE_HISTORY, &PRICE_RECORDS, &CONTACTS, &REQUESTS, &PROFILE, &SHARES, &CUSTOM_NODES, &KEYED];
 
 /// What reads a payment's ORF receipt JSON into the view Activity shows,
 /// as JSON: `None` for one that doesn't read. The database doesn't read
@@ -368,6 +405,7 @@ fn to_rows(state: Value) -> Result<Rows> {
     let spends = rows_of(&SPENDS, list(take(&mut s, "spends")))?;
     let sent = rows_of(&SENT, list(take(&mut s, "sent")))?;
     let custom_nodes = rows_of(&CUSTOM_NODES, list(take(&mut s, "custom_nodes")))?;
+    let keyed = rows_of(&KEYED, list(take(&mut s, "keyed")))?;
 
     // In order, so an unchanged map is unchanged rows.
     let mut notes: Vec<(u64, Value)> = object(take(&mut s, "notes"), "notes")?
@@ -420,7 +458,7 @@ fn to_rows(state: Value) -> Result<Rows> {
     wallet.append(&mut s);
     let wallet = encode_row(&WALLET, wallet)?;
 
-    Ok(vec![(&WALLET, vec![wallet]), recent, outputs, spends, sent, notes, current, history, records, contact_rows, request_rows, you, shares, custom_nodes])
+    Ok(vec![(&WALLET, vec![wallet]), recent, outputs, spends, sent, notes, current, history, records, contact_rows, request_rows, you, shares, custom_nodes, keyed])
 }
 
 /// The recent blocks (`{"height", "hash"}`, oldest first) placed so each
@@ -467,6 +505,7 @@ fn from_rows(mut tables: HashMap<&'static str, Vec<Map<String, Value>>>) -> Resu
         "spends": values(take_table(SPENDS.name)),
         "sent": values(take_table(SENT.name)),
         "custom_nodes": values(take_table(CUSTOM_NODES.name)),
+        "keyed": values(take_table(KEYED.name)),
         "notes": notes,
         "price_records": records,
         "price_cache": {"current": current, "history": values(take_table(PRICE_HISTORY.name))},
@@ -655,6 +694,17 @@ impl Db {
             upgrade.commit().map_err(failed)?;
             version = 11;
         }
+        if version == 11 {
+            // Accounts (decisions 418, 419): every coin found so far is in
+            // account 0, and there are no keyed requests, labelled accounts
+            // or connected apps yet.
+            let upgrade = format!(
+                "BEGIN;\nALTER TABLE outputs ADD COLUMN account INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN receive_account INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN tag_id TEXT;\nALTER TABLE wallet ADD COLUMN wallet_id TEXT;\nALTER TABLE wallet ADD COLUMN accounts TEXT DEFAULT '[]';\nALTER TABLE wallet ADD COLUMN connections TEXT DEFAULT '[]';\nALTER TABLE wallet ADD COLUMN keyed_next_id INTEGER DEFAULT 0;\nALTER TABLE wallet ADD COLUMN light_accounts_sent TEXT DEFAULT '[]';\n{}PRAGMA user_version = 12;\nCOMMIT;",
+                create_table(&KEYED)
+            );
+            connection.execute_batch(&upgrade).map_err(failed)?;
+            version = 12;
+        }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));
         }
@@ -774,6 +824,36 @@ mod tests {
         None
     }
 
+    /// Takes a database made now back to version 11's layout.
+    const BACK_TO_11: &str = "ALTER TABLE outputs DROP COLUMN account; ALTER TABLE wallet DROP COLUMN receive_account; ALTER TABLE wallet DROP COLUMN tag_id; \
+        ALTER TABLE wallet DROP COLUMN wallet_id; ALTER TABLE wallet DROP COLUMN accounts; ALTER TABLE wallet DROP COLUMN connections; \
+        ALTER TABLE wallet DROP COLUMN keyed_next_id; ALTER TABLE wallet DROP COLUMN light_accounts_sent; DROP TABLE keyed_requests; ";
+
+    /// Version 11 had one account: opening it as version 12 puts every coin
+    /// in account 0, with no labelled accounts, connected apps or keyed
+    /// requests, and the receive account 0.
+    #[test]
+    fn a_version_11_file_opens_with_every_coin_in_account_0() {
+        let dir = std::env::temp_dir().join(format!("fob-db-v11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.db");
+        let keys = Keys::generate(Network::Stagenet).keys;
+        let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
+        let connection = db.connection;
+        connection.execute_batch(&format!("{BACK_TO_11}PRAGMA user_version = 11;")).unwrap();
+        connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
+        connection.execute("INSERT INTO outputs (pos, output, tx, height, time, amount, subaddress) VALUES (0, 'o', ?1, 5, 6, 7, 3)", [hash("t")]).unwrap();
+        connection.close().unwrap();
+        let reopened = Db::open(&path, &[7; 32], no_receipts).unwrap();
+        let state = reopened.load().unwrap();
+        assert_eq!(state["outputs"][0]["account"], json!(0));
+        assert_eq!(state["outputs"][0]["subaddress"], json!(3));
+        assert_eq!((&state["receive_account"], &state["accounts"], &state["connections"], &state["keyed"]), (&json!(0), &json!([]), &json!([]), &json!([])));
+        assert_eq!((&state["tag_id"], &state["wallet_id"], &state["light_accounts_sent"]), (&Value::Null, &Value::Null, &json!([])));
+        reopened.close().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Version 10 had no receipt views: opening it as version 11 reads each
     /// payment's receipt into one, leaves a payment without a receipt (or
     /// with one that doesn't read) without, and is done once.
@@ -785,7 +865,7 @@ mod tests {
         let keys = Keys::generate(Network::Stagenet).keys;
         let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
         let connection = db.connection;
-        connection.execute_batch("ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;").unwrap();
+        connection.execute_batch(&format!("{BACK_TO_11}ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;")).unwrap();
         connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
         for (pos, receipt) in [(0, Some("good")), (1, None), (2, Some("bad"))] {
             connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time, receipt) VALUES (?1, ?2, 1, 1, 0, 1, ?3)", rusqlite::params![pos, hash(&format!("p{pos}")), receipt]).unwrap();
@@ -796,7 +876,7 @@ mod tests {
         }
         let reopened = Db::open(&path, &[7; 32], viewer).unwrap();
         let version: i32 = reopened.connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, VERSION);
         let state = reopened.load().unwrap();
         let views: Vec<&Value> = state["sent"].as_array().unwrap().iter().map(|s| &s["receipt_view"]).collect();
         assert_eq!(views, [&json!({"merchant": "Corner Café"}), &Value::Null, &Value::Null]);
@@ -822,7 +902,7 @@ mod tests {
         let keys = Keys::generate(Network::Stagenet).keys;
         let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
         let connection = db.connection;
-        connection.execute_batch("ALTER TABLE outputs DROP COLUMN coin; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 9;").unwrap();
+        connection.execute_batch(&format!("{BACK_TO_11}ALTER TABLE outputs DROP COLUMN coin; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 9;")).unwrap();
         connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
         connection.execute("INSERT INTO spends (pos, tx, height, time, fee) VALUES (0, ?1, 42, 1, 1)", [hash("spend")]).unwrap();
         connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time) VALUES (0, ?1, 1, 1, 0, 1)", [hash("ours")]).unwrap();

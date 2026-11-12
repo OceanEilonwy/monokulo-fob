@@ -321,16 +321,34 @@ impl Wallet {
             }
         }
 
-        // 2. The addresses watched: account 0, minors 1 to watched().
-        let (watched, told) = {
+        // 2. The addresses watched: account 0's minors 1 to watched(), and
+        // each other account's that scanning watches (decision 418).
+        let (plan, told) = {
             let state = self.inner.state.lock().await;
-            (Self::watched(state.receive_index), state.light_subaddrs_sent)
+            let mut told: HashMap<u32, u32> = state.light_accounts_sent.iter().copied().collect();
+            told.insert(0, state.light_subaddrs_sent);
+            (state.watch_plan(), told)
         };
-        if watched > told {
-            match client.upsert_subaddrs(&login, vec![lws::SubaddrRanges { key: 0, value: vec![[1, watched]] }]).await {
+        let ranges: Vec<lws::SubaddrRanges> = plan
+            .0
+            .iter()
+            .filter(|(account, upto)| told.get(account).is_none_or(|t| t < upto))
+            .map(|(&account, &upto)| lws::SubaddrRanges { key: account, value: vec![[if account == 0 { 1 } else { 0 }, upto]] })
+            .collect();
+        if !ranges.is_empty() {
+            match client.upsert_subaddrs(&login, ranges).await {
                 Ok(_) => {
                     let mut state = self.inner.state.lock().await;
-                    state.light_subaddrs_sent = state.light_subaddrs_sent.max(watched);
+                    for (&account, &upto) in &plan.0 {
+                        if account == 0 {
+                            state.light_subaddrs_sent = state.light_subaddrs_sent.max(upto);
+                        } else {
+                            match state.light_accounts_sent.iter_mut().find(|(a, _)| *a == account) {
+                                Some((_, sent)) => *sent = (*sent).max(upto),
+                                None => state.light_accounts_sent.push((account, upto)),
+                            }
+                        }
+                    }
                     self.save_state(&state)?;
                 }
                 Err(Problem::Forbidden) => return self.waiting_for_approval().await,
@@ -643,7 +661,7 @@ pub(super) fn reconcile_checked(keys: &Keys, state: &mut State, answer: &lws::Ad
     // Received, only at a subaddress the wallet watches, as the node's scan
     // finds them: the server holds the view key, so it can make an output
     // at any index, and Receive would move on past it.
-    let watched = Wallet::watched(state.receive_index);
+    let plan = state.watch_plan();
     let mut known_keys: HashSet<String> = state.outputs.iter().map(|o| o.key.clone()).collect();
     for &(t, tx) in &mined {
         let height = tx.height.unwrap_or_default();
@@ -657,15 +675,18 @@ pub(super) fn reconcile_checked(keys: &Keys, state: &mut State, answer: &lws::Ad
             if known_keys.contains(&key) {
                 continue;
             }
-            let Some(output) = (received.recipient.min_i <= watched).then(|| checked_output(tx, received, opened, unlock_block)).flatten() else {
+            let (account, subaddress) = (received.recipient.maj_i, received.recipient.min_i);
+            let watched = plan.upto(account).is_some_and(|upto| subaddress <= upto);
+            let Some(output) = watched.then(|| checked_output(tx, received, opened, unlock_block)).flatten() else {
                 refused += 1;
                 continue;
             };
-            let subaddress = received.recipient.min_i;
-            // Money to the split address doesn't move Receive on to it.
-            if Some(subaddress) != state.split_index {
+            // Money to the split address doesn't move Receive on to it, nor
+            // does money to another account.
+            if account == 0 && Some(subaddress) != state.split_index {
                 state.receive_index = state.receive_index.max(subaddress);
             }
+            state.found_at(account, subaddress);
             let ki = match keys.key_image(output.key(), output.key_offset()) {
                 Some(image) => KeyImage::Known(image),
                 None => KeyImage::Unknown,
@@ -678,6 +699,7 @@ pub(super) fn reconcile_checked(keys: &Keys, state: &mut State, answer: &lws::Ad
                 time,
                 amount: received.amount.0,
                 subaddress,
+                account,
                 coinbase: tx.coinbase,
                 unlock_block,
                 key,
@@ -757,8 +779,7 @@ pub(super) fn reconcile_checked(keys: &Keys, state: &mut State, answer: &lws::Ad
                 continue;
             }
             let seen = pool_before.get(&hash).map_or(now, |p| p.seen);
-            let pooled = pool.entry(hash.clone()).or_insert(Pooled { seen, parts: vec![] });
-            add_part(&mut pooled.parts, received.recipient.min_i, received.amount.0);
+            pool.entry(hash.clone()).or_insert(Pooled { seen, ..Pooled::default() }).add(received.recipient.maj_i, received.recipient.min_i, received.amount.0);
         }
     }
 
@@ -1012,11 +1033,8 @@ pub(super) enum Opened {
 /// as the node refuses the transaction.
 pub(super) fn opened(keys: &Keys, tx: &lws::Transaction, received: &lws::ReceivedOutput, height: Option<u64>) -> Opened {
     use subtle::ConstantTimeEq;
-    if received.recipient.maj_i != 0 {
-        return Opened::NotOurs;
-    }
     let index = u64::from(received.index);
-    let Some((key_offset, derived_mask)) = keys.light_output(&received.tx_pub_key.0, index, received.recipient.min_i, &received.public_key.0) else {
+    let Some((key_offset, derived_mask)) = keys.light_output_at(&received.tx_pub_key.0, index, received.recipient.maj_i, received.recipient.min_i, &received.public_key.0) else {
         return Opened::NotOurs;
     };
     let compact = height.is_none_or(|h| h >= compact_from(keys.network));
@@ -1072,7 +1090,7 @@ pub(super) fn checked_output(tx: &lws::Transaction, received: &lws::ReceivedOutp
         mask,
         amount: received.amount.0,
         timelock,
-        subaddress: SubaddressIndex::new(0, received.recipient.min_i),
+        subaddress: SubaddressIndex::new(received.recipient.maj_i, received.recipient.min_i),
         payment_id,
     });
     WalletOutput::read(&mut bytes.as_slice()).ok()

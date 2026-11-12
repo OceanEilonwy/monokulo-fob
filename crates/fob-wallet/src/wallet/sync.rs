@@ -57,24 +57,29 @@ impl Wallet {
         }
     }
 
-    /// A scanner watching up to `watching`, from the last one.
-    pub(super) fn scanner(&self, watching: u32) -> (Scanner, Arc<fob_scanner::Prefilter>) {
+    /// A scanner watching at least as far as `watching` in each account,
+    /// grown from the last one.
+    pub(super) fn scanner(&self, watching: &keyed::Watch) -> (Scanner, Arc<fob_scanner::Prefilter>) {
         let pair = self.inner.keys.view_pair();
         let mut kept = self.inner.scanner.lock().expect("scanner lock");
         let (upto, scanner, prefilter) = kept.get_or_insert_with(|| {
-            (0, Scanner::new(pair.clone()), Arc::new(fob_scanner::Prefilter::new(&pair, &self.inner.keys.view_bytes())))
+            (keyed::Watch::default(), Scanner::new(pair.clone()), Arc::new(fob_scanner::Prefilter::new(&pair, &self.inner.keys.view_bytes())))
         });
-        if *upto < watching {
-            Self::watch(scanner, *upto + 1, watching);
+        if !upto.covers(watching) {
+            let mut wider = upto.clone();
+            for (&account, &to) in &watching.0 {
+                let at = wider.0.entry(account).or_insert(to);
+                *at = (*at).max(to);
+            }
+            let new: Vec<SubaddressIndex> = wider.beyond(upto).collect();
             // Scans under way hold the last one; this is only ever a little behind them.
             let mut grown = (**prefilter).clone();
-            for i in *upto + 1..=watching {
-                if let Some(sub) = SubaddressIndex::new(0, i) {
-                    grown.watch(&pair, sub);
-                }
+            for sub in new {
+                scanner.register_subaddress(sub);
+                grown.watch(&pair, sub);
             }
             *prefilter = Arc::new(grown);
-            *upto = watching;
+            *upto = wider;
         }
         (scanner.clone(), prefilter.clone())
     }
@@ -231,8 +236,8 @@ impl Wallet {
             return Ok(true);
         }
 
-        let watching = Self::watched(self.inner.state.lock().await.receive_index);
-        let (scanner, prefilter) = self.scanner(watching);
+        let watching = self.inner.state.lock().await.watch_plan();
+        let (scanner, prefilter) = self.scanner(&watching);
         let gpu_allowed = self.gpu_allowed().await;
         let (results, last) = tokio::task::spawn_blocking(move || scan::scan(&scanner, &prefilter, blocks, &hashes, gpu_allowed))
             .await
@@ -251,7 +256,7 @@ impl Wallet {
             // A payment near the edge, or an address just handed out, moves it
             // on from this block. What's left of the batch was scanned watching
             // too few: it's fetched and scanned again next step.
-            if Self::watched(state.receive_index) > watching {
+            if !watching.covers(&state.watch_plan()) {
                 watch_further = true;
                 break;
             }
@@ -356,9 +361,9 @@ impl Wallet {
             }
         };
         let miner = block.miner_transaction().hash();
-        let receive_index = self.inner.state.lock().await.receive_index;
+        let watching = self.inner.state.lock().await.watch_plan();
         // The kept scanner: working out every watched address again is slow.
-        let (scanner, _) = self.scanner(Self::watched(receive_index));
+        let (scanner, _) = self.scanner(&watching);
         // A busy pool is thousands of transactions: a chunk at a time, each
         // seen once it's scanned, so one that fails leaves only the rest to
         // fetch again.
@@ -396,7 +401,7 @@ impl Wallet {
                 .map_err(|e| FobError::Node(format!("scanning the pool: {e}")))?
                 .map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
             let outputs = found.ignore_additional_timelock().into_iter().filter(|o| o.transaction() != miner);
-            self.pool_found(outputs.map(|o| (hex::encode(o.transaction()), o.subaddress().map(|s| s.address()), o.commitment().amount)), now());
+            self.pool_found_at(outputs.map(|o| (hex::encode(o.transaction()), o.subaddress().map_or((0, 0), |s| (s.account(), s.address())), o.commitment().amount)), now());
             // Those that left the pool too: they're not looked for again.
             self.inner.pool_seen.lock().expect("pool lock").extend(chunk.iter().map(hex::encode));
         }
@@ -411,11 +416,17 @@ impl Wallet {
     /// Keeps what a pool scan found, `seen` now: each output's transaction,
     /// the subaddress it paid (`None` for the main address, index 0) and
     /// its amount, each address's own part of a transaction kept apart.
+    #[cfg(test)]
     pub(super) fn pool_found(&self, outputs: impl IntoIterator<Item = (String, Option<u32>, u64)>, seen: u64) {
+        self.pool_found_at(outputs.into_iter().map(|(tx, subaddress, amount)| (tx, (0, subaddress.unwrap_or(0)), amount)), seen);
+    }
+
+    /// [`pool_found`](Wallet::pool_found) in any account: each output's
+    /// transaction, its (account, index) and its amount.
+    pub(super) fn pool_found_at(&self, outputs: impl IntoIterator<Item = (String, (u32, u32), u64)>, seen: u64) {
         let mut pool = self.inner.pool.lock().expect("pool lock");
-        for (tx, subaddress, amount) in outputs {
-            let pooled = pool.entry(tx).or_insert(Pooled { seen, parts: vec![] });
-            add_part(&mut pooled.parts, subaddress.unwrap_or(0), amount);
+        for (tx, (account, minor), amount) in outputs {
+            pool.entry(tx).or_insert(Pooled { seen, ..Pooled::default() }).add(account, minor, amount);
         }
     }
 
@@ -585,6 +596,7 @@ impl Wallet {
                             pace.reset();
                             fob_scanner::rest();
                             wallet.scan_finished().await;
+                            wallet.tell_requests().await;
                             wallet.inner.rounds.send_modify(|n| *n += 1);
                             if wallet.inner.state.lock().await.manual_scanning() {
                                 continue;
@@ -751,11 +763,13 @@ impl Wallet {
             self.inner.pool.lock().expect("pool lock").remove(&tx);
             // Change comes in a transaction this wallet sent: it isn't money in.
             incoming |= !outgoing.contains(&tx) && !state.sent.iter().any(|s| s.tx == tx);
-            let subaddress = output.subaddress().map(|s| s.address()).unwrap_or(0);
-            // Money to the split address doesn't move Receive on to it.
-            if Some(subaddress) != state.split_index {
+            let (account, subaddress) = output.subaddress().map_or((0, 0), |s| (s.account(), s.address()));
+            // Money to the split address doesn't move Receive on to it, nor
+            // does money to another account.
+            if account == 0 && Some(subaddress) != state.split_index {
                 state.receive_index = state.receive_index.max(subaddress);
             }
+            state.found_at(account, subaddress);
             // A view-only wallet can't work the key image out, nor can a
             // device's until the device is asked; a rewind may have kept
             // what the device said of this coin before.
@@ -785,6 +799,7 @@ impl Wallet {
                 time,
                 amount: output.commitment().amount,
                 subaddress,
+                account,
                 coin,
                 tx_key,
                 extra_key,

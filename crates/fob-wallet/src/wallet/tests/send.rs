@@ -14,6 +14,7 @@ async fn a_view_only_wallet_refuses_to_prepare_payments() {
         time: 0,
         amount: 10,
         subaddress: 0,
+        account: 0,
         coinbase: false,
         unlock_block: 0,
         key: "in".into(),

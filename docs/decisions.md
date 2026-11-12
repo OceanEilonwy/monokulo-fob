@@ -4005,3 +4005,189 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      bytes) and `contact_photo(id)` gives the bytes; Android's
      `ContactAvatar` and GTK's `contact_avatar` keep the decoded image by
      key, so an edited photo, with a new key, is fetched again.
+
+## Fob as a library (November 2026)
+
+Monokular's Till links fob-wallet for its view-key mode
+(monokulo-till `docs/view-key-mode.md`), so the two workspaces must build
+together.
+
+415. **One version of each shared crate, the newest; OpenSSL is a feature.**
+     rusqlite moves to 0.42 (libsqlite3-sys 0.40), the newest, and Till
+     moves with it: `libsqlite3-sys` links `sqlite3`, and a build may hold
+     only one version. reqwest moves to 0.13, which dropped
+     `rustls-tls-webpki-roots`; fob-chain and fob-price take
+     `rustls-no-provider` and hand every client their own rustls config on
+     ring with webpki's roots (fob-price used reqwest's built-in one until
+     now), so nothing reaches rustls-platform-verifier, which on Android
+     needs the JVM. SQLCipher's libcrypto built from source is fob-vault's
+     and fob-wallet's `vendored-openssl` feature, on by default, so Fob's
+     own builds are unchanged; Till turns default features off and keeps
+     its own way (till-ffi vendors OpenSSL on Android, CommonCrypto on
+     Apple; Till's core.md decision 150), since one build can link only one
+     libcrypto. fob-words, which fob-wallet depends on, takes fob-vault
+     without default features so the feature stays fob-wallet's to set.
+     proptest is fob-wallet's dev-dependency only.
+
+416. **`fob-keys` holds the keys; fob-vault keeps them at rest.** `Keys`,
+     `Restored`, `SeedKind`, `Device`, seed parsing, `view_only`, the
+     address, key-image and output helpers, and the in-memory holders
+     (`Locked`, `Sealed`) move out of fob-vault into a crate with no
+     database, argon2 or file system, so Till can take it alone. fob-vault
+     keeps `StoredKeys`, the database, the passphrase and process
+     hardening, and re-exports `keys`, `locked` and `sealed` under their
+     old paths, so nothing that used them changes. Keys report a
+     `KeyError` (bad seed, bad key, view-only, bad address), which becomes
+     the same `VaultError` as before. `Locked`'s `mlock` and `MADV_DONTDUMP`
+     are fob-keys' `mlock` feature, which fob-vault turns on: without it a
+     key is still on pages of its own and wiped when it goes, and fob-keys
+     calls no libc itself (getrandom still uses it underneath). Addresses
+     come from any account (`address_at(account, index)`,
+     `subaddress(SubaddressIndex)`), a light server's outputs are checked
+     in any account (`light_output_at`), and a device's transaction key is
+     found for an output in any account, not only 0.
+     `Restored::view_only_from_words(network, words)` gives the view key and
+     public spend key of a seed phrase; it takes the words in a
+     `Zeroizing<String>` and wipes them, the spend key and every copy made
+     on the way before it returns, and its keys keep no words. `from_parts`
+     and `kept_seed_words` are what fob-vault's file reads and writes
+     through, now that it can't see the fields.
+
+417. **Connect to Fob, version 1, is `fob-codes`' `connect.rs`, pinned by
+     vectors.** An app asks with `fob://connect?v=1&app=…&name=…&device=…&net=…&pk=…&state=…&want=…[&cb=…]`,
+     its fields always in that order, values percent-encoded except RFC
+     3986's unreserved characters (`want` keeps its commas); `pk` (a
+     one-time X25519 key) and `state` (16 random bytes) are base64url
+     without padding. A field given twice is refused, so no reader shows one
+     value and acts on another; fields a later version adds are left out.
+     Fob answers `<cb>#v=1&state=…&epk=…&box=…`, or `fob://connected#…`
+     with no callback (the two-device way, which is also the answer's QR
+     code), and `#v=1&state=…&error=declined` for a no. The box is the
+     `Grant` as JSON, sealed with ChaCha20-Poly1305 under HKDF-SHA256 with
+     the X25519 shared secret as input, `state` as salt and
+     `"fob connect v1"` ‖ pk ‖ epk as info, so the key is bound to both
+     keys; additional data `"fob://connect v=1"`. Each key seals one box,
+     so the nonce is twelve zero bytes. A low-order key, whose shared
+     secret anyone knows, is refused. The grant carries the address, view
+     key, network, account and its label, restore height, Fob's wallet id
+     and name, and optionally Fob's node or light server (URL,
+     self-signed, pin) and price provider and currency; its view key is
+     wiped when it goes and never printed. An app refuses a grant for
+     another network than it asked. The identicon is SHA-256 of
+     `"fob connect identicon v1"` ‖ pk: bit 3r + c (each byte from its
+     least significant bit) sets row r's column c and its mirror, and the
+     hash's fifth byte modulo 8 picks one of eight fixed ink-and-paper
+     palettes, the same in light and dark, so both devices draw identical
+     pixels from data, not words. `vectors/connect-v1.json` holds three
+     cases (same device with node and prices, two devices with no
+     callback, another app with a light server): fixed secrets and state
+     to the exact request, sealed answer, decline and identicon.
+     `connect::check_vectors(connect::VECTORS)` runs them, in Fob's tests
+     and in Till's; the X25519, HKDF and identicon steps were also checked
+     against OpenSSL and Python's hashlib when the file was made.
+
+418. **fob-wallet as a library: a receive account, keyed requests on a pool
+     of addresses, amount tags.** For an app that watches a wallet (Till's
+     view-key mode), not for Fob's own screens, whose requests keep a fresh
+     address each in account 0 and no tag.
+     - `set_receive_account(n)` (saved; 0, the default, turns keyed
+       requests off). Scanning watches account 0 as before and, in each
+       other account, as far as it needs: the receive account's pool plus
+       10 (`POOL_MARGIN`), 200 past the highest paid in an account with a
+       label or a payment, and 10 past every keyed request's index. The
+       scanner is kept and grown account by account (`Watch`), and a batch
+       that turns out to need more is scanned again, as account 0's
+       lookahead always was. A light server is told every account's range
+       with `upsert_subaddrs`, and outputs it lists in other accounts are
+       held to the same checks (`light_output_at`).
+     - Every coin keeps its account (`outputs.account`, database version
+       12; files from before are all account 0), and the pool keeps other
+       accounts' parts apart, so another account's index never names one of
+       account 0's requests, notes or shares, and never moves account 0's
+       Receive on. Its payments show in Activity with the account's label.
+     - `request_payment(Ask { key, atomic, expires_at, note })` returns the
+       request made with `key` if there is one (another amount with the
+       same key is refused), else takes the longest-free address of the
+       receive account's pool: indexes 1 to 50 (`POOL_SIZE`) never used
+       come first, then the one whose requests all released earliest, a
+       request releasing its address 24 hours (`LATE_WINDOW`) after it
+       expired or was cancelled; with none free, one index past the
+       highest. Its amount is `atomic + tag`, `tag = SHA3-256("fob amount
+       tag v1" ‖ len(tag id) ‖ tag id ‖ key)` read little-endian, mod 10⁶
+       piconero; the tag id is random, made once per wallet file. The
+       requests live in the `keyed_requests` table.
+     - Matching, per transaction and address (outputs of one transaction to
+       one address count as one): exact when the amount is a request's,
+       the newest made before it came winning a tie; partial when it's no
+       request's, less than asked, and exactly one request was open on the
+       address when it came; otherwise unexpected, flagged as a foreign tag
+       when its last six digits aren't zero and aren't a tag this wallet
+       made. A smaller payment from another wallet sharing the account can
+       still pass as a partial payment of the one request open there: the
+       rules are the proposal's (Till's `docs/view-key-mode.md` §5.3), and
+       the foreign-tag warning is what shows a shared account.
+     - `request_payments(id)` gives each payment in full (`Incoming`:
+       transaction, amount, height or none in the pool, confirmations,
+       double spent, exact). A pool payment to a request's address is
+       remembered after it leaves the pool; not mined within 10 blocks, it's
+       double spent. `unexpected_payments()` lists the rest.
+       `cancel_request(id)` ends one early.
+     - `SyncListener::on_requests(ids)` (empty by default, so Fob's
+       listeners are unchanged) hears which requests' payments changed,
+       confirmations included, after each round of the sync loop and after
+       `catch_up()` (Manual Sync's `FromLast` and then the pool, run in the
+       caller's task, no sync loop needed) and `look_at_pool()`. `listen()`
+       sets the listener without starting the loop.
+     - `restore_watching(path, key, keys, height)` makes a wallet from keys
+       that can't spend, as `Restored::view_only_from_words` gives.
+     - The `usb` feature (Trezor over libusb) stays off unless asked, and
+       `vendored-openssl` (decision 415) can be turned off: Till builds
+       fob-wallet with neither.
+
+419. **Labelled accounts, and Connect to Fob in the wallet.** Accounts
+     besides 0 can have a label (`add_account`, `rename_account`), and
+     `accounts()` lists account 0 and every account labelled, paid or
+     connected, each with its balance (`account_balance`: its coins, its
+     share of the pool; change not yet mined is account 0's) and its
+     payments in (`account_activity`). `next_account()` is past every
+     account labelled, paid, connected, keyed or set to receive in, so two
+     apps connected through one Fob never share an account.
+     `connect_app(request, label, account, wallet name, share node, share
+     prices)` checks the network, makes the account (or gives `account`
+     again on a reconnect, which `connected_before` finds by app and name),
+     remembers the app (`connected_apps`), and seals the grant (decision
+     417) with the tip as restore height, the wallet's id (random, made the
+     first time it's asked), and, when the app asked and the switch is on,
+     the node (with its pin if self-signed) or the light server, and the
+     price provider and currency. `forget_app` drops its line, and the
+     label once no app uses the account; the access stays, as a view key
+     can't be taken back. Sweep to main is decision 421.
+
+420. **Connect to Fob over the FFI, and each wallet's apps in the sealed
+     list.** fob-ffi's `connect.rs` gives Fob's screens what they need and
+     no rules: `is_connect_request`, `connect_request` (app, name, device,
+     network, suggested label, the node and price switches asked for,
+     whether the answer goes back by link, and the identicon as 25 cells
+     with its ink and paper), `connect_declined`, and on a wallet
+     `connected_before`, `connect_app` (the sealed answer, its QR code, and
+     whether to open it as a link), `connected_apps`, `forget_app`,
+     `accounts`, `next_account`, `add_account`, `rename_account` and
+     `account_activity`. Choose a wallet lists every wallet without opening
+     any (`WalletList::connect_wallets`): each wallet's entry in the sealed
+     wallet list keeps its connected apps' labels and the account the next
+     app gets, which `note_connections` copies from the open wallet after
+     an app is connected or forgotten. The wallet's own file stays what's
+     true; the list only follows it.
+
+421. **Sweep to main.** `prepare_sweep(account)` spends every coin of that
+     account ready to spend, paying the main address everything less a fee
+     guess, so what the real fee leaves comes back as change to the same
+     address; the guess grows to the fee monero-oxide says it needs. It's
+     an ordinary prepared payment, confirmed and sent with `send`, noted
+     with the account's label. Any payment still spends coins of every
+     account, its change coming back to account 0. A wallet whose spend key
+     is on a Trezor can't sweep, and its payments leave other accounts'
+     coins alone: the device's signing is given account 0's subaddress
+     index only. Coins made by hand in tests don't read as monero-oxide's,
+     so the tests cover which coins a sweep takes and what it refuses; the
+     transaction itself is built as every payment's is.

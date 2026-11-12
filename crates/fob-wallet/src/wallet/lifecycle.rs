@@ -51,6 +51,15 @@ impl Wallet {
             restored: restore_height.is_some(),
             fresh_from: None,
             backup_pending: restore_height.is_none(),
+            receive_account: 0,
+            tag_id: None,
+            wallet_id: None,
+            accounts: vec![],
+            connections: vec![],
+            keyed: vec![],
+            keyed_next_id: 0,
+            light_accounts_sent: vec![],
+            found_in: Default::default(),
         };
         let path = path.with_extension("db");
         let db = Db::create(&path, &file_key, &StoredKeys::from(&keys))?;
@@ -59,7 +68,8 @@ impl Wallet {
         Ok(wallet)
     }
 
-    pub(super) fn from_parts(path: &Path, db: Db, keys: Keys, state: State) -> Wallet {
+    pub(super) fn from_parts(path: &Path, db: Db, keys: Keys, mut state: State) -> Wallet {
+        state.count_found();
         let light = state.sync_mode == SyncMode::Light;
         let zmq = if state.zmq_on && !light { ZmqStatus::Connecting } else { ZmqStatus::Off };
         let status = SyncStatus {
@@ -84,6 +94,8 @@ impl Wallet {
                 pipeline: Mutex::new(None),
                 pipeline_resets: AtomicU64::new(0),
                 scanner: std::sync::Mutex::new(None),
+                keyed_pool: std::sync::Mutex::new(HashMap::new()),
+                keyed_told: std::sync::Mutex::new(HashMap::new()),
                 gpu_checked: AtomicBool::new(false),
                 quiet_checked: std::sync::Mutex::new(None),
                 scan_asked: AtomicBool::new(false),
@@ -169,6 +181,18 @@ impl Wallet {
         restore_height: Option<u64>,
     ) -> Result<Wallet> {
         Wallet::new(path, file_key, Keys::view_only(network, address, view_hex)?, Some(restore_height.unwrap_or(0)))
+    }
+
+    /// A wallet that only watches, from keys that can't spend: those
+    /// [`Restored::view_only_from_words`](crate::keys::Restored::view_only_from_words)
+    /// or [`Keys::view_only`] give. For an app using fob-wallet as a library,
+    /// which may have the keys before it has a file for them. Keys that can
+    /// spend are refused: their spend key would be kept.
+    pub fn restore_watching(path: &Path, file_key: [u8; 32], keys: Keys, restore_height: Option<u64>) -> Result<Wallet> {
+        if keys.can_spend() {
+            return Err(FobError::Vault(VaultError::BadKey));
+        }
+        Wallet::new(path, file_key, keys, Some(restore_height.unwrap_or(0)))
     }
 
     /// A wallet whose keys are on the Trezor reached over `link`: the

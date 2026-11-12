@@ -151,8 +151,23 @@ pub enum Failure {
     NotOverTor,
 }
 
+/// rustls on ring with webpki's roots, as fob-chain talks to nodes: no
+/// platform verifier, which on Android would need the JVM (decision 415).
+fn tls() -> std::result::Result<rustls::ClientConfig, String> {
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(config)
+}
+
 static CLIENT: LazyLock<std::result::Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
+        .use_preconfigured_tls(tls()?)
         .user_agent(USER_AGENT)
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
