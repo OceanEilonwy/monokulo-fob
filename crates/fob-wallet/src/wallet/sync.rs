@@ -375,9 +375,12 @@ impl Wallet {
             output_index_for_first_ringct_output: Some(0),
         };
         let receive_index = self.inner.state.lock().await.receive_index;
-        let mut scanner = Scanner::new(self.inner.keys.view_pair());
-        Self::watch(&mut scanner, 1, Self::watched(receive_index));
-        let found = scanner.scan(stand_in).map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
+        // The kept scanner: working out every watched address again is slow.
+        let (mut scanner, _) = self.scanner(Self::watched(receive_index));
+        let found = tokio::task::spawn_blocking(move || scanner.scan(stand_in))
+            .await
+            .map_err(|e| FobError::Node(format!("scanning the pool: {e}")))?
+            .map_err(|e| FobError::Node(format!("scanning the pool: {e:?}")))?;
         let outputs = found.ignore_additional_timelock().into_iter().filter(|o| o.transaction() != miner);
         self.pool_found(outputs.map(|o| (hex::encode(o.transaction()), o.subaddress().map(|s| s.address()), o.commitment().amount)), now());
         self.inner.pool_seen.lock().expect("pool lock").extend(new.iter().map(hex::encode));
