@@ -374,6 +374,9 @@ struct Inner {
     node_verdict: std::sync::Mutex<Option<(crate::node::Setting, node::Verdict)>>,
     /// The light wallet server's client, for the server chosen.
     light: std::sync::Mutex<Option<(crate::light::Setting, crate::light::LightClient)>>,
+    /// The outputs the light wallet server listed at the last poll, opened,
+    /// so the next doesn't open them again. Not saved.
+    light_opened: std::sync::Mutex<light::OpenCache>,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
 }

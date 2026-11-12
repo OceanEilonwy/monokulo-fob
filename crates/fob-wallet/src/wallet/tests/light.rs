@@ -1153,6 +1153,64 @@ async fn a_lying_server_s_answer_is_refused_with_words() {
     assert!(*node.asked.lock().unwrap() == vec![300_100], "the made-up block's height wasn't asked by itself");
 }
 
+/// A server making up proofs across the whole chain: for payments that
+/// aren't this wallet's, the node is asked nothing more; for ones that
+/// fit its keys, a few windows a poll, and once the node has said
+/// otherwise, nothing more at the next poll.
+#[tokio::test]
+async fn made_up_proofs_across_the_chain_cost_the_node_little() {
+    let wallet = Wallet::create(&dir("light-many-lies"), [1; 32], Network::Stagenet).unwrap();
+    let keys = &wallet.inner.keys;
+    let other = Wallet::create(&dir("light-many-lies-other"), [2; 32], Network::Stagenet).unwrap();
+    let chain = chain(keys);
+    let node = hash_node(300_300, &chain.blocks.iter().map(|(b, h)| (b.block.number() as u64, *h)).collect::<Vec<_>>()).await;
+    let mut txs = with_proofs(&chain);
+    txs.extend((1..60).map(|i| made_up(&other.inner.keys, i * 5_000)));
+    through(&wallet, txs, 300_299, &node.url).await;
+    assert!(matches!(wallet.sync_step().await, Err(FobError::Light(Problem::BadOutputs(59)))));
+    assert_eq!(*node.asked.lock().unwrap(), vec![300_100], "only the wallet's own payments' stretch");
+    assert_eq!(wallet.inner.state.lock().await.outputs.len(), 3);
+
+    let mut txs = with_proofs(&chain);
+    txs.extend((1..60).map(|i| made_up(keys, i * 5_000)));
+    through(&wallet, txs.clone(), 300_299, &node.url).await;
+    let before = node.requests.load(Ordering::Relaxed);
+    assert!(wallet.sync_step().await.is_err());
+    let first = node.requests.load(Ordering::Relaxed) - before;
+    assert!(first <= 2 * hashes::WINDOWS as u64 + 2, "{first} requests");
+    through(&wallet, txs, 300_299, &node.url).await;
+    let before = node.requests.load(Ordering::Relaxed);
+    assert!(wallet.sync_step().await.is_err());
+    assert!(node.requests.load(Ordering::Relaxed) - before <= 1, "only whether the chain was reorganised");
+    assert_eq!(wallet.inner.state.lock().await.outputs.len(), 3, "nothing made up taken");
+}
+
+/// What a poll opened isn't opened again at the next: only the outputs its
+/// answer lists are kept, and an output that changes in any way is opened
+/// afresh.
+#[test]
+fn a_poll_opens_only_what_the_last_didn_t() {
+    use crate::wallet::light::{OpenCache, Opened, check};
+    let (wallet, _) = fresh();
+    let keys = &wallet.inner.keys;
+    let answer = answer(with_proofs(&chain(keys)), 400_000);
+    let ours = |c: &crate::wallet::light::Checked| c.opened.iter().flatten().filter(|o| matches!(o, Opened::Ours { .. })).count();
+    let (first, kept) = check(keys, &answer, OpenCache::default());
+    assert_eq!((ours(&first), first.images.len()), (3, 3));
+    // Opened with another wallet's keys from what was kept: nothing is
+    // opened again, so they read as before...
+    let other = Wallet::create(&dir("light-cache-other"), [2; 32], Network::Stagenet).unwrap();
+    let (again, kept) = check(&other.inner.keys, &answer, kept);
+    assert_eq!(ours(&again), 3);
+    // ...and an output listed otherwise is opened afresh.
+    let mut changed = answer.clone();
+    changed.transactions[2].receives[0].amount.0 += 1;
+    changed.transactions[2].proof = None;
+    changed.transactions[2].receives[0].commitment = None;
+    let (afresh, _) = check(&other.inner.keys, &changed, kept);
+    assert_eq!(ours(&afresh), 2);
+}
+
 /// A node that can't be reached isn't the server's fault: the payments are
 /// taken, not yet checked, and the screen says the node couldn't be
 /// reached; the next poll with the node back checks them.
