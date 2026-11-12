@@ -21,8 +21,8 @@ Calls made while building the first version, with why. Newest last.
    `monero-seed` is an empty placeholder, and upstream pulls `std-shims`
    from serai's unpinned git branch. Only their `Cargo.toml` changed.
 4. **ORF receipts through Monokular's `orf-codec`**, as a git dependency
-   pinned to `e104a17` of OceanEilonwy/monokular. Licence: GPL-3.0-only to
-   match it.
+   pinned to `3823b28` of OceanEilonwy/monokular (now monokulo-till), the
+   hardened revision. Licence: GPL-3.0-only to match it.
 5. **Fob has no Monokulo features**: no Monokulo node, connect codes or
    dashboard links. Only the look comes from the Monokulo family.
 
