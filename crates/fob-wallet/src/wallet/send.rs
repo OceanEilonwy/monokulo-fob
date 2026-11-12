@@ -371,9 +371,12 @@ impl Wallet {
             return Err(FobError::TrezorNeeded);
         }
         let prepared = self.inner.prepared.lock().await.take(id).ok_or(FobError::Screen(ScreenError::NoSuchPayment))?;
-        let spend = self.inner.keys.spend()?;
         let fee = prepared.signable.necessary_fee();
-        let tx = prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?;
+        // The unsealed key goes as soon as it has signed, before the broadcast waits.
+        let tx = {
+            let spend = self.inner.keys.spend()?;
+            prepared.signable.sign(&mut OsRng, &spend).map_err(|e| FobError::Send(format!("{e:?}")))?
+        };
         let hash = tx.hash();
         let signed = hex::encode(tx.serialize());
         let publish = self.publishing(tx).await;
