@@ -9,6 +9,7 @@ pub mod activity;
 pub mod backup;
 pub mod catch_up;
 pub mod clock;
+pub mod connect;
 pub mod contacts;
 pub mod errors;
 pub mod light;

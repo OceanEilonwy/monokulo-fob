@@ -40,7 +40,7 @@ pub use error::{FobError, Result};
 pub use keys::SeedKind;
 pub use network::{Network, ZmqStatus};
 pub use wallet::{Activity, Balance, CodePreview, Direction, Prepared, Preview, Retried, SyncListener, SyncStatus, Wallet, preview_wallet_code, restore_point};
-pub use wallet::{Account, AccountPayment, AccountView, Ask, Connected, Granted, Incoming, KeyedRequest, Unexpected};
+pub use wallet::{Account, AccountPayment, AccountView, Ask, Connected, Granted, Incoming, Shares, KeyedRequest, Unexpected};
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
