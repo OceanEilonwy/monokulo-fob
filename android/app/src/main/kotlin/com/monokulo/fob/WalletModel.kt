@@ -29,6 +29,8 @@ import uniffi.fob.ScanDrawer
 import uniffi.fob.ScanRequest
 import uniffi.fob.startScanning
 import uniffi.fob.AmountEntry
+import uniffi.fob.ScannedCode
+import uniffi.fob.TypedAmount
 import uniffi.fob.Balance
 import uniffi.fob.BackupReminder
 import uniffi.fob.SplitView
@@ -1011,17 +1013,17 @@ class WalletModel(private val app: Application) {
     }
 
     /**
-     * [amount] as the amount field took it, in money when [inFiat] (Rust
-     * converts at the current price); [note] (typed, or the payment
-     * code's description) is kept with the payment, and Rust keeps what
-     * still applies of [code], the payment code the form came from.
+     * [amount] as the amount field took it, in XMR or money (Rust converts
+     * at the current price); [note] (typed, or the payment code's
+     * description) is kept with the payment, and Rust keeps what still
+     * applies of [code], the payment code the form came from, as read.
      */
-    suspend fun prepare(to: String, amount: String, inFiat: Boolean, note: String?, code: String?): Prepared =
-        requireNotNull(_wallet.value).prepare(to, amount, inFiat, note, code)
+    suspend fun prepare(to: String, amount: TypedAmount, note: String?, code: ScannedCode?): Prepared =
+        requireNotNull(_wallet.value).prepare(to, amount, note, code)
 
     /** What [prepare] would pay, checked the same without asking the node: Confirm shows it while the fee comes. */
-    suspend fun preview(to: String, amount: String, inFiat: Boolean, code: String?): PaymentPreview =
-        requireNotNull(_wallet.value).preview(to, amount, inFiat, code)
+    suspend fun preview(to: String, amount: TypedAmount, code: ScannedCode?): PaymentPreview =
+        requireNotNull(_wallet.value).preview(to, amount, code)
 
     /** What the Paid screen offers for payment [tx]; null for a split or an address that's already a contact's. */
     suspend fun saveOffer(tx: String): SaveOffer? = _wallet.value?.saveOffer(tx)

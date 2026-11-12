@@ -97,6 +97,7 @@ import kotlinx.coroutines.launch
 import uniffi.fob.Contact
 import uniffi.fob.Profile
 import uniffi.fob.ProfileShare
+import uniffi.fob.ScannedCode
 import uniffi.fob.ScannedProfile
 import uniffi.fob.Swapped
 import uniffi.fob.TouchSwap
@@ -245,7 +246,7 @@ fun MeetScreen(model: WalletModel, nav: Nav) {
                 Box(Modifier.align(Alignment.BottomCenter)) {
                     ProfileFound(
                         model, nav, text, found,
-                        onPay = { nav.replace(Screen.Send(draft = SendDraft(found.address, code = text, read = text))) },
+                        onPay = { nav.replace(Screen.Send(draft = SendDraft(found.address, code = runCatching { ScannedCode(network, text) }.getOrNull(), read = text))) },
                         onClose = { asking = null }, startAsking = true, met = true,
                         openContact = { id -> scope.launch { wallet?.contact(id)?.let { saved(it, found, viaTouch = false) } } },
                     )

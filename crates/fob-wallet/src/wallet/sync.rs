@@ -427,7 +427,7 @@ impl Wallet {
             let host = node::address(state.light_url.as_deref().unwrap_or(""));
             let tip = state.tip;
             // Its next block, never past the chain's (monokulo-lws already gives the next).
-            let scanned = (state.light_scanned_height + 1).min(tip.max(1));
+            let scanned = state.light_scanned_height.saturating_add(1).min(tip.max(1));
             let start = state.restore_height.unwrap_or(0);
             let network = self.network();
             drop(state);

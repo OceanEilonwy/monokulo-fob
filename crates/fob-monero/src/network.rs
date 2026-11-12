@@ -98,9 +98,9 @@ impl Network {
     pub fn timestamp_for(self, height: u64) -> u64 {
         let anchor = self.anchor();
         if height >= anchor.height {
-            anchor.timestamp + (height - anchor.height) * BLOCK_SECONDS
+            anchor.timestamp.saturating_add((height - anchor.height).saturating_mul(BLOCK_SECONDS))
         } else {
-            anchor.timestamp.saturating_sub((anchor.height - height) * BLOCK_SECONDS)
+            anchor.timestamp.saturating_sub((anchor.height - height).saturating_mul(BLOCK_SECONDS))
         }
     }
 }

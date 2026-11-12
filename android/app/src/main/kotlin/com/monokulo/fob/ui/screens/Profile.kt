@@ -106,6 +106,7 @@ import com.monokulo.fob.ui.rememberPhotoChooser
 import kotlinx.coroutines.launch
 import uniffi.fob.Profile
 import uniffi.fob.ProfileShare
+import uniffi.fob.ScannedCode
 import uniffi.fob.ScannedProfile
 import uniffi.fob.ShareKind
 import uniffi.fob.ShareLine
@@ -498,7 +499,7 @@ fun ProfileScanScreen(model: WalletModel, nav: Nav) {
                 ProfileFound(
                     model, nav, text, s,
                     // Send's form, filled with their address and the code's name, the camera not taking the code again.
-                    onPay = { nav.replace(Screen.Send(draft = SendDraft(s.address, code = text, read = text))) },
+                    onPay = { nav.replace(Screen.Send(draft = SendDraft(s.address, code = runCatching { ScannedCode(network, text) }.getOrNull(), read = text))) },
                     onClose = { found = null },
                 )
             }

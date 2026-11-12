@@ -13,6 +13,10 @@ use crate::capitalised;
 /// What Fob says when asked for a node on an onion service.
 pub const NO_ONION: &str = "Fob can't reach .onion nodes yet";
 
+/// What Fob says when a node's login would go over plain http, where anyone
+/// on the way could read it.
+pub const NO_PLAIN_LOGIN: &str = "Fob won't send a login over plain http: write https:// before the address";
+
 /// "Right network".
 pub fn title(step: Step) -> &'static str {
     match step {
@@ -54,6 +58,7 @@ pub fn certificate(problem: CertProblem) -> &'static str {
 pub fn failure(failure: &Failure, limit: u64) -> String {
     match failure {
         Failure::Onion => "needs Tor, not in Fob yet".into(),
+        Failure::PlainLogin => "login would go unencrypted: use https://".into(),
         Failure::BadAddress => "not an address Fob can read".into(),
         Failure::Certificate(problem) => format!("{}, not accepted", certificate(*problem)),
         Failure::TimedOut => format!("didn't answer in {limit} s"),
@@ -163,6 +168,7 @@ pub fn sync_failure(why: &Failure) -> String {
 pub fn switch_refused(refused: &SwitchRefused) -> String {
     match refused {
         SwitchRefused::Endpoint(EndpointProblem::Onion) => NO_ONION.to_owned(),
+        SwitchRefused::Endpoint(EndpointProblem::PlainLogin) => NO_PLAIN_LOGIN.to_owned(),
         SwitchRefused::Endpoint(other) => format!("{other:?}"),
         SwitchRefused::Failed(why) => failure(why, ANSWER.as_secs()),
         SwitchRefused::OtherNetwork { theirs, ours } => {
@@ -307,6 +313,8 @@ mod tests {
     #[test]
     fn a_refused_switch_says_why() {
         assert_eq!(switch_refused(&SwitchRefused::Endpoint(EndpointProblem::Onion)), NO_ONION);
+        assert_eq!(switch_refused(&SwitchRefused::Endpoint(EndpointProblem::PlainLogin)), NO_PLAIN_LOGIN);
+        assert_eq!(result(&failed(Failure::PlainLogin, 5)), "login would go unencrypted: use https://");
         assert_eq!(switch_refused(&SwitchRefused::Failed(Failure::Certificate(CertProblem::SelfSigned))), "self-signed, not accepted");
         assert_eq!(switch_refused(&SwitchRefused::OtherNetwork { theirs: "mainnet".into(), ours: "stagenet".into() }), "that node is on mainnet, and this wallet is on stagenet");
         assert_eq!(switch_refused(&SwitchRefused::OtherNetwork { theirs: String::new(), ours: "stagenet".into() }), "that node is on an unknown network, and this wallet is on stagenet");

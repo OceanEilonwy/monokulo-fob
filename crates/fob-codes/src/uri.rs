@@ -93,11 +93,11 @@ pub struct CodeTerms {
     pub receipt: Option<orf_codec::Receipt>,
 }
 
-/// What `code` (the payment code as read, if any) gives a payment of
-/// `amount` to `to`.
-pub fn code_terms(network: Network, to: &str, amount: u64, code: Option<&str>) -> CodeTerms {
-    let Some(code) = code.and_then(|c| parse_payment(network, c).ok()).filter(|c| c.address == to.trim()) else { return CodeTerms::default() };
-    CodeTerms { receipt: code.receipt.filter(|_| code.amount == Some(amount)), name: code.recipient_name }
+/// What `code` (the payment code the form was filled from, as read, if any)
+/// gives a payment of `amount` to `to`.
+pub fn code_terms(to: &str, amount: u64, code: Option<&PaymentRequest>) -> CodeTerms {
+    let Some(code) = code.filter(|c| c.address == to.trim()) else { return CodeTerms::default() };
+    CodeTerms { receipt: code.receipt.clone().filter(|_| code.amount == Some(amount)), name: code.recipient_name.clone() }
 }
 
 /// What a value in a code is encoded with: everything but letters, digits
@@ -201,11 +201,20 @@ pub fn parse_profile(network: Network, text: &str) -> Result<ProfileCode> {
 }
 
 fn read_profile(network: Network, text: &str, nameless_too: bool) -> Result<ProfileCode> {
+    profile_of(parse_payment(network, text)?, text, nameless_too)
+}
+
+/// [`parse_profile`] of a code already read as `payment`, so it isn't read
+/// (its receipt decoded) again.
+pub fn profile_from(payment: PaymentRequest, text: &str) -> Result<ProfileCode> {
+    profile_of(payment, text, false)
+}
+
+fn profile_of(payment: PaymentRequest, text: &str, nameless_too: bool) -> Result<ProfileCode> {
     use base64::Engine;
     use crate::error::ProfileCodeProblem as Problem;
     use crate::names::{PHOTO_MAX, check_photo};
     let not = |why: Problem| Err(CodeError::ProfileCode(why));
-    let payment = parse_payment(network, text)?;
     if payment.amount.is_some() || payment.description.is_some() || payment.receipt.is_some() {
         return not(Problem::IsPaymentCode);
     }
@@ -296,6 +305,9 @@ pub fn receive(address: &str, amount: Option<&str>, note: Option<&str>) -> Resul
     })
 }
 
+/// How far past the chain's estimated tip a wallet code's height may be.
+const WEEK: u64 = 7 * 24 * 3600;
+
 /// A wallet code: `monero_wallet:` with keys or seed (the form the Monero GUI
 /// and Cake Wallet show), or a code holding only seed words.
 pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
@@ -314,6 +326,12 @@ pub fn parse_wallet_code(network: Network, text: &str) -> Result<WalletCode> {
         check_address(network, a)?;
     }
     let height = get(&pairs, &["height", "restore_height", "restoreheight"]).map(|h| h.parse().map_err(|_| CodeError::BadCode)).transpose()?;
+    // A height past the chain's would restore a wallet that never sees its
+    // money; a week ahead allows for a clock that's off.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if height.is_some_and(|h| h > network.height_at(now.saturating_add(WEEK))) {
+        return Err(CodeError::BadCode);
+    }
     let secret = |keys: &[&str]| get(&pairs, keys).map(|s| Zeroizing::new(s.to_owned()));
     if let Some(words) = secret(&["seed", "mnemonic_seed", "mnemonic"]) {
         return Ok(WalletCode::Words { words, height });
@@ -396,7 +414,8 @@ mod tests {
         let (address, other) = (wallet().address(4), wallet().address(5));
         let receipt: orf_codec::Receipt = serde_json::from_str(RECEIPT).unwrap();
         let code = orf_codec::query::append(&format!("monero:{address}?tx_amount=0.1421&recipient_name=Corner%20Caf%C3%A9"), &receipt).unwrap();
-        let terms = |to: &str, amount: u64| code_terms(Network::Stagenet, to, amount, Some(&code));
+        let code = parse_payment(Network::Stagenet, &code).unwrap();
+        let terms = |to: &str, amount: u64| code_terms(to, amount, Some(&code));
         // As asked: both.
         let asked = terms(&format!(" {address} "), 142_100_000_000);
         assert_eq!((asked.name.as_deref(), asked.receipt.map(|r| r.merchant.legal_name)), (Some("Corner Café"), Some("Corner Café".into())));
@@ -406,9 +425,9 @@ mod tests {
         assert_eq!(terms(&other, 142_100_000_000), CodeTerms::default());
         // A receipt in a code without an amount is for nothing in particular: not kept.
         let open = orf_codec::query::append(&format!("monero:{address}?recipient_name=Sam"), &receipt).unwrap();
-        assert_eq!(code_terms(Network::Stagenet, &address, 5, Some(&open)), CodeTerms { name: Some("Sam".into()), receipt: None });
-        assert_eq!(code_terms(Network::Stagenet, &address, 5, None), CodeTerms::default());
-        assert_eq!(code_terms(Network::Stagenet, &address, 5, Some("not a code")), CodeTerms::default());
+        let open = parse_payment(Network::Stagenet, &open).unwrap();
+        assert_eq!(code_terms(&address, 5, Some(&open)), CodeTerms { name: Some("Sam".into()), receipt: None });
+        assert_eq!(code_terms(&address, 5, None), CodeTerms::default());
     }
 
     #[test]
@@ -557,14 +576,25 @@ mod tests {
     #[test]
     fn wallet_codes_round_trip_with_keys() {
         let keys = wallet();
-        let code = wallet_code(&keys.primary_address(), keys.spend_key_hex().as_deref().map(|s| s.as_str()), &keys.view_key_hex(), 2_100_000);
+        let code = wallet_code(&keys.primary_address(), keys.spend_key_hex().as_deref().map(|s| s.as_str()), &keys.view_key_hex(), 1_700_000);
         let WalletCode::SpendKey { address, spend, view, height } = parse_wallet_code(Network::Stagenet, &code).unwrap() else {
             panic!("not a spend-key code")
         };
         assert_eq!(address.as_deref(), Some(keys.primary_address().as_str()));
         assert_eq!(*spend, *keys.spend_key_hex().unwrap());
         assert_eq!(view.as_deref().map(|v| v.as_str()), Some(keys.view_key_hex().as_str()));
-        assert_eq!(height, Some(2_100_000));
+        assert_eq!(height, Some(1_700_000));
+    }
+
+    #[test]
+    fn a_wallet_code_from_beyond_the_chain_is_refused() {
+        let keys = wallet();
+        let view = keys.view_key_hex();
+        for height in ["18446744073709551615", "99999999"] {
+            let code = format!("monero_wallet:{}?view_key={}&height={height}", keys.primary_address(), view.as_str());
+            assert!(matches!(parse_wallet_code(Network::Stagenet, &code), Err(CodeError::BadCode)), "{height}");
+        }
+        assert_eq!(Network::Mainnet.timestamp_for(u64::MAX), u64::MAX, "saturates rather than overflowing");
     }
 
     #[test]

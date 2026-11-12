@@ -14,7 +14,7 @@ test-support = []
 base64 = "0.22"
 fob-monero = { path = "../fob-monero" }
 monero-wallet = "0.2"
-orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "e104a17c0f1a443d826b3d4b8efbeab705cfc39a" }
+orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "3823b28b20bb82faaa826c7a7432aadf7112b371" }
 percent-encoding = "2"
 qrcode = { version = "0.14", default-features = false }
 serde = { version = "1", features = ["derive"] }
