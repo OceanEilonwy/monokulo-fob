@@ -3940,3 +3940,38 @@ wallet server (the MyMonero REST API that monero-lws and monokulo-lws speak).
      `preview` take a `TypedAmount` (`Xmr` or `Fiat`) instead of text and
      an `in_fiat` flag. `amount_entry`, `receive_code` and `make_request`
      still take the flag.
+
+411. **A sent payment's receipt is read once, when it's recorded, and kept**
+     (docs/activity-storage.md). `Sent.receipt_view` holds the
+     `ReceiptView`, in the database's `sent.receipt_view` column (version
+     11, whose upgrade reads every receipt already recorded in its one
+     transaction); Activity and the coins' sources read it and never parse
+     the receipt JSON again. A receipt that doesn't read has no view, as
+     Activity showed none for it before.
+
+412. **Activity is built once per change, in one pass.** The state and the
+     pool live in a `Tracked` wrapper whose every mutable borrow takes a
+     new generation, so no change can go unnoticed; `activity()` returns
+     the same `Arc<[Activity]>` until either changes, and `lists()` the
+     same `Arc<Lists>` until then or the calendar day changes. A rebuild
+     looks each thing up in a map made once (coins spent by a transaction,
+     its own outputs, requests, shares and contacts by address), not by
+     searching everything per row. `Activity.receipt` is an
+     `Arc<ReceiptView>`; `Activity.receipt_json`, which nothing read, is
+     gone. Rows of the same block and time now come in a fixed order (the
+     order their first output was found; the pool's by hash) rather than a
+     map's.
+
+413. **Activity stays in memory, not in a table** (supersedes the
+     suggestion in the round-2 review). The state in memory is the truth
+     and the database lags it while catching up and never holds the pool;
+     Home needs every row anyway; derived rows would double what each save
+     writes through SQLCipher and need a schema version whenever how
+     they're worked out changes. SQLite keeps what's immutable and costly
+     to derive (411); memory keeps what one pass rebuilds in milliseconds.
+
+414. **A contact's photo crosses the FFI once per photo, not with every
+     row.** A contact row carries `photo_key` (its id and a hash of the
+     bytes) and `contact_photo(id)` gives the bytes; Android's
+     `ContactAvatar` and GTK's `contact_avatar` keep the decoded image by
+     key, so an edited photo, with a new key, is fetched again.
