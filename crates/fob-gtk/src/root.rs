@@ -166,6 +166,12 @@ fn page(tag: &str, title: &str, child: &impl IsA<gtk::Widget>) -> adw::Navigatio
     adw::NavigationPage::builder().tag(tag).title(title).child(child).build()
 }
 
+/// A toast showing `text` as it is: a toast reads Pango markup by default,
+/// and errors carry a light server's own words.
+fn plain_toast(text: &str) -> adw::Toast {
+    adw::Toast::builder().title(text).use_markup(false).build()
+}
+
 #[relm4::component(pub)]
 impl SimpleComponent for Root {
     type Init = Init;
@@ -258,7 +264,7 @@ impl SimpleComponent for Root {
             Msg::Go(go) => self.go(go),
             Msg::Open(code) if self.phase == Phase::Open => self.opened(code),
             Msg::Open(code) => self.pending = Some(code),
-            Msg::Say(text) => self.toasts.add_toast(adw::Toast::new(&text)),
+            Msg::Say(text) => self.toasts.add_toast(plain_toast(&text)),
             Msg::Trezor(request) => {
                 // The form that started the exchange draws its card; a sync
                 // or a payment, with no form, gets a dialog.
@@ -373,7 +379,7 @@ impl Root {
 
     fn show_status(&self, status: Arc<SyncStatus>) {
         if let Some(words) = &status.notice {
-            self.toasts.add_toast(adw::Toast::new(&format!("The chain changed · {words}")));
+            self.toasts.add_toast(plain_toast(&format!("The chain changed · {words}")));
             if let Some(wallet) = self.engine.wallet() {
                 wallet.clear_notice();
             }
@@ -404,7 +410,7 @@ impl Root {
             shown.set_title(&view.line);
             return;
         }
-        let shown = adw::Toast::builder().title(&view.line).button_label("Retry").timeout(0).build();
+        let shown = adw::Toast::builder().title(&view.line).use_markup(false).button_label("Retry").timeout(0).build();
         let on_retry = sender.input_sender().clone();
         shown.connect_button_clicked(move |_| on_retry.emit(Msg::ToastRetry));
         let on_gone = sender.input_sender().clone();
