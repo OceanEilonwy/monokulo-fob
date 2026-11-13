@@ -18,7 +18,7 @@ fob-vault = { path = "../fob-vault", default-features = false }
 fob-words = { path = "../fob-words" }
 monero-daemon-rpc = "0.2"
 monero-epee = "0.2"
-orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "3823b28b20bb82faaa826c7a7432aadf7112b371" }
+orf-codec = { git = "https://github.com/OceanEilonwy/monokulo-orf", rev = "f141c91ccc0eb41a5e96c3e6df0e730e5a5d398b" }
 # The wallet's database, encrypted. OpenSSL comes from source, for every ABI
 # alike, behind the `vendored-openssl` feature (decision 415).
 rusqlite = { version = "0.42.0", features = ["bundled-sqlcipher"] }
