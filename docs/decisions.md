@@ -4292,3 +4292,23 @@ The boards are the view-key canvas's B1 to B3, C2 and C3 (monokulo-till
      time. Till's view-key mode is the first user, and scans only in the
      foreground; Fob on iOS isn't planned. `fob_scanner::backend` names the
      backend a build has, for tools.
+
+## A light wallet server for Till (November 2026)
+
+427. **A library wallet through a light server: one poll a catch-up, the
+     tip from the poll, no import unless wanted, every account told
+     afresh.** Till watches its account through the shop's light wallet
+     server (Till's `docs/view-key-mode.md` §5.7), in Manual Sync, asking
+     only while it's on screen. `catch_up` through a server is one poll
+     (`light_step`): its answer holds the blocks and the pool together, so
+     the pool isn't asked for again after it. `refresh_tip` asks nothing
+     through a server: the tip comes with each poll, and the node is there
+     only to check proofs. `set_light_import(false)` stops the wallet
+     asking the server to import (monokulo-lws and monero-lws scan from
+     block 0 for it, and may hold it for the operator): Till's wallet is
+     new, set up at the tip, with nothing to find before the server's
+     start. It isn't kept in the file, so the schema doesn't change: an
+     app says it each time it opens the wallet. And choosing a server, or
+     turning light mode on, now forgets what a server was told of accounts
+     besides 0 (`light_accounts_sent`) as it already forgot account 0's,
+     so a new server is told of the till's account, not only the main one.
