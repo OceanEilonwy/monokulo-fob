@@ -4271,3 +4271,24 @@ The boards are the view-key canvas's B1 to B3, C2 and C3 (monokulo-till
      The codec is the one at `3823b28`, except that it keeps its own copy
      of the ISO 4217 table (the same digits for every code) instead of
      reading `till-types`, which leaves Fob's build.
+
+## The prefilter on Metal (November 2026)
+
+426. **On Apple's platforms the prefilter runs on Metal, and Fob's policy is
+     the same as anywhere.** monokulo-8ar has a Metal backend beside its
+     Vulkan one (its `metal` feature, through `objc2-metal`), since iOS has
+     no Vulkan and MoltenVK (367) would have been a translation layer for
+     what Metal does natively. `fob-scanner` turns the feature on as a
+     target-specific dependency for `target_vendor = "apple"`, at the same
+     rev, so every other build is as it was. Nothing in Fob changes for it:
+     `gpu_allowed` asks `gpu_identity`, which is the Metal GPU once it has
+     passed the startup vectors, and then this wallet's own check, as on
+     Android. `Reason` is unchanged; `NoVulkan` just never comes up there.
+     iOS refuses the GPU to an app in the background, failing its command
+     buffers. 8aR takes that for neither a failure nor a check's answer: the
+     batch is scanned on the CPU, the GPU isn't retired, a warm-up that hit
+     it starts again with the next batch, and `check_wallet` gives `None`,
+     so `gpu_allowed` says false without saving a result and asks again next
+     time. Till's view-key mode is the first user, and scans only in the
+     foreground; Fob on iOS isn't planned. `fob_scanner::backend` names the
+     backend a build has, for tools.
