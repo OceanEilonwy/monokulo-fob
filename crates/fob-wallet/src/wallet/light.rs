@@ -193,7 +193,7 @@ impl Wallet {
     /// which monokulo-lws and monero-lws do from block 0, and may hold for
     /// the operator to approve). On by default. An app whose wallet is new,
     /// with nothing to find before the server's start, turns it off: Till,
-    /// whose wallet starts at the tip when it's set up (decision 425).
+    /// whose wallet starts at the tip when it's set up (decision 427).
     /// Not kept in the file: said again each time the wallet is opened.
     pub fn set_light_import(&self, on: bool) {
         self.inner.light_no_import.store(!on, Ordering::Relaxed);
