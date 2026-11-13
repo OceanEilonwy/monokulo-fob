@@ -12,7 +12,12 @@ monero-wallet = "0.2"
 # Clearing torsion from transaction keys for a device's key images (decision 361).
 curve25519-dalek = { version = "4", features = ["precomputed-tables"] }
 # The prefilter itself (decisions 366, 367), pinned by rev as orf-codec is (decision 4).
-monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "2f8db05" }
+monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "0125cf51ddd445339089bf451738acbf66963c6f" }
+
+# On Apple's platforms, which have no Vulkan, the prefilter runs on Metal
+# (decision 425). The same rev as above: Cargo takes the two as one.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+monokulo-8ar = { git = "https://github.com/OceanEilonwy/monokulo-8ar", rev = "0125cf51ddd445339089bf451738acbf66963c6f", features = ["metal"] }
 
 [dev-dependencies]
 rand = "0.8"
