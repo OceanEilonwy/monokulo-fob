@@ -2153,7 +2153,7 @@ dependencies = [
 [[package]]
 name = "monokulo-8ar"
 version = "0.1.0"
-source = "git+https://github.com/OceanEilonwy/monokulo-8ar?rev=0125cf51ddd445339089bf451738acbf66963c6f#0125cf51ddd445339089bf451738acbf66963c6f"
+source = "git+https://github.com/OceanEilonwy/monokulo-8ar?rev=0ef0965aaa83a96e39459eb13fade27bf06afa90#0ef0965aaa83a96e39459eb13fade27bf06afa90"
 dependencies = [
  "ash",
  "crypto-bigint",

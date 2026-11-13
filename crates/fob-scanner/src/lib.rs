@@ -2,7 +2,7 @@
 //!
 //! The prefilter that does nearly all of it lives in `monokulo-8ar` (decisions
 //! 366, 367), shared with monokulo-lws: 8aR for each transaction key on the
-//! GPU (Vulkan, or Metal on Apple's platforms: decision 425), and a view tag
+//! GPU (Vulkan, or Metal on Apple's platforms: decision 426), and a view tag
 //! for each output, flagging the few blocks that could pay the wallet. Without
 //! a GPU that can do it, every block goes to monero-oxide's
 //! `Scanner`. What it exports is re-exported here, so the rest of Fob doesn't
