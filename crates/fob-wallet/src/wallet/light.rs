@@ -130,6 +130,7 @@ impl Wallet {
             state.light_pin = report.pin.map(hex::encode);
             state.light_registered = false;
             state.light_subaddrs_sent = 0;
+            state.light_accounts_sent.clear();
             self.save_state(&state)?;
             state.sync_mode == SyncMode::Light
         };
@@ -162,6 +163,7 @@ impl Wallet {
                     state.recent.clear();
                     state.light_registered = false;
                     state.light_subaddrs_sent = 0;
+                    state.light_accounts_sent.clear();
                     self.save_state(&state)?;
                 }
                 (false, SyncMode::Light) => {
@@ -184,6 +186,17 @@ impl Wallet {
         self.restart_syncing().await;
         self.restart_zmq().await;
         Ok(())
+    }
+
+    /// Whether a light wallet server is asked to scan the blocks between
+    /// where this wallet starts and where the server starts it (an import,
+    /// which monokulo-lws and monero-lws do from block 0, and may hold for
+    /// the operator to approve). On by default. An app whose wallet is new,
+    /// with nothing to find before the server's start, turns it off: Till,
+    /// whose wallet starts at the tip when it's set up (decision 425).
+    /// Not kept in the file: said again each time the wallet is opened.
+    pub fn set_light_import(&self, on: bool) {
+        self.inner.light_no_import.store(!on, Ordering::Relaxed);
     }
 
     /// Starts the sync loop again on what's chosen now (a node, a server,
@@ -300,8 +313,9 @@ impl Wallet {
                                 false
                             }
                             // Blocks between what Fob scanned itself and where the
-                            // server starts would go unscanned: ask for them.
-                            (Some(_), Some(start)) => start > state.next_block,
+                            // server starts would go unscanned: ask for them, unless
+                            // the wallet wants nothing before the server's start.
+                            (Some(_), Some(start)) => !self.inner.light_no_import.load(Ordering::Relaxed) && start > state.next_block,
                             _ => false,
                         };
                         self.save_state(&state)?;

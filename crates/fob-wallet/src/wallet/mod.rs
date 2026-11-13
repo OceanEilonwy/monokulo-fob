@@ -408,6 +408,9 @@ struct Inner {
     /// The outputs the light wallet server listed at the last poll, opened,
     /// so the next doesn't open them again. Not saved.
     light_opened: std::sync::Mutex<light::OpenCache>,
+    /// Never ask a light wallet server to import (`set_light_import`). Not
+    /// saved: an app that wants it says so each time it opens the wallet.
+    light_no_import: AtomicBool,
     /// The swap running on it, ended at once if its link goes out.
     live_swap: std::sync::Mutex<std::sync::Weak<swap::Session>>,
 }

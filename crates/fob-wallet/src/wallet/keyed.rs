@@ -552,11 +552,19 @@ impl Wallet {
     /// Manual Sync as a library: scans from the last block scanned to the
     /// newest (`FromLast`), then looks at the pool, and tells the listener
     /// which keyed requests changed. Runs here, not in the sync loop, which
-    /// needn't be started.
+    /// needn't be started. Through a light wallet server it's one poll,
+    /// whose answer holds the blocks and the pool together.
     pub async fn catch_up(&self) -> Result<()> {
         let _one = self.inner.scan_running.lock().await;
-        while self.sync_step().await? {}
-        self.pool_now().await?;
+        match self.backend().await {
+            crate::light::Backend::Node => {
+                while self.sync_step().await? {}
+                self.pool_now().await?;
+            }
+            crate::light::Backend::Light { .. } => {
+                self.light_step().await?;
+            }
+        }
         self.tell_requests().await;
         Ok(())
     }

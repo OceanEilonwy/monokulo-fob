@@ -136,6 +136,7 @@ impl Wallet {
                 node_verdict: std::sync::Mutex::new(None),
                 light: std::sync::Mutex::new(None),
                 light_opened: std::sync::Mutex::default(),
+                light_no_import: AtomicBool::new(false),
                 live_swap: std::sync::Mutex::new(std::sync::Weak::new()),
             }),
         }

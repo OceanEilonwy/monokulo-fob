@@ -1572,3 +1572,112 @@ async fn a_payment_to_another_account_is_found_both_ways() {
     assert!(upsert.contains(r#"{"key":3,"value":[[0,60]]}"#), "told of account 3's pool: {upsert}");
     assert_eq!(state.light_accounts_sent, vec![(3, keyed::POOL_SIZE + keyed::POOL_MARGIN)]);
 }
+
+/// Hears which keyed requests a poll changed.
+#[derive(Default)]
+struct Told(std::sync::Mutex<Vec<u64>>);
+
+impl SyncListener for Told {
+    fn on_status(&self, _: SyncStatus) {}
+    fn on_requests(&self, ids: Vec<u64>) {
+        self.0.lock().unwrap().extend(ids);
+    }
+}
+
+/// A keyed request in an account besides 0, as Till makes one, through a
+/// light wallet server: the server is told of that account's pool, a
+/// payment it lists in the pool and then in a block counts toward the
+/// request, each catch-up is one poll, and a wallet that wants no history
+/// never asks the server to import.
+#[tokio::test]
+async fn a_keyed_request_in_another_account_is_watched_through_a_server() {
+    let wallet = Wallet::create(&dir("light-keyed"), [1; 32], Network::Stagenet).unwrap();
+    wallet.set_receive_account(3).await.unwrap();
+    wallet.set_light_import(false);
+    let request = wallet.request_payment(Ask { key: "sale-1".into(), atomic: XMR, expires_at: now() + 1800, note: None }).await.unwrap();
+    assert_eq!(request.account, 3);
+    let (_, hash, paid) = transaction_at(&wallet.inner.keys, Some((request.atomic, 3, request.minor)), &[], Timelock::None);
+    let paid = paid.unwrap();
+
+    let txs = Arc::new(std::sync::Mutex::new(answer(vec![listed(hash, None, vec![received(&paid, 3_001_011)], vec![])], 300_299)));
+    let upserts = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let (polls, imports) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let url = {
+        let (txs, upserts, polls, imports) = (txs.clone(), upserts.clone(), polls.clone(), imports.clone());
+        scripted_node(move |text| {
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+            let said = if text.starts_with("POST /login") {
+                r#"{"new_address":true,"start_height":300100}"#.to_owned()
+            } else if text.starts_with("POST /get_address_txs") {
+                polls.fetch_add(1, Ordering::Relaxed);
+                serde_json::to_string(&*txs.lock().unwrap()).unwrap()
+            } else if text.starts_with("POST /import_wallet_request") {
+                imports.fetch_add(1, Ordering::Relaxed);
+                r#"{"import_fee":"0","status":"Accepted, waiting for approval","new_request":true,"request_fulfilled":false}"#.to_owned()
+            } else {
+                upserts.lock().unwrap().push(body);
+                r#"{"new_subaddrs":[]}"#.to_owned()
+            };
+            async move { said }
+        })
+        .await
+    };
+    {
+        let mut state = wallet.inner.state.lock().await;
+        state.light_url = Some(url);
+        state.sync_mode = SyncMode::Light;
+        // Set up before the server's start: an import, but for the switch.
+        state.restore_height = Some(300_000);
+        state.next_block = 300_000;
+    }
+    let told = Arc::new(Told::default());
+    wallet.listen(told.clone());
+
+    // In the pool.
+    wallet.catch_up().await.unwrap();
+    assert_eq!(polls.load(Ordering::Relaxed), 1, "one poll a catch-up");
+    assert_eq!(imports.load(Ordering::Relaxed), 0, "no import asked");
+    let sent: serde_json::Value = serde_json::from_str(upserts.lock().unwrap().first().expect("told of the addresses")).unwrap();
+    let ranges = sent["subaddrs"].as_array().unwrap();
+    let three = ranges.iter().find(|r| r["key"] == 3).expect("account 3 told");
+    let upto = three["value"][0][1].as_u64().unwrap();
+    assert!(upto >= u64::from(request.minor) && upto >= u64::from(keyed::POOL_SIZE), "the pool and its margin: {sent}");
+    let incoming = wallet.request_payments(request.id).await.unwrap();
+    assert_eq!(incoming.len(), 1, "{incoming:?}");
+    assert_eq!((incoming[0].atomic, incoming[0].height), (request.atomic, None));
+    assert_eq!(told.0.lock().unwrap().as_slice(), [request.id]);
+
+    // Mined, ten blocks deep at the server's tip.
+    *txs.lock().unwrap() = answer(vec![listed(hash, Some(300_290), vec![received(&paid, 3_001_011)], vec![])], 300_299);
+    wallet.catch_up().await.unwrap();
+    assert_eq!(polls.load(Ordering::Relaxed), 2);
+    let incoming = wallet.request_payments(request.id).await.unwrap();
+    assert_eq!(incoming[0].height, Some(300_290));
+    assert_eq!(incoming[0].confirmations, 10);
+    assert_eq!(upserts.lock().unwrap().len(), 1, "told once");
+
+    // The tip comes with each poll: the node isn't asked for it.
+    wallet.refresh_tip().await;
+    assert_eq!(polls.load(Ordering::Relaxed), 2);
+}
+
+/// A server chosen again from scratch is told of every account afresh,
+/// not only account 0.
+#[tokio::test]
+async fn a_new_server_is_told_of_every_account() {
+    let wallet = Wallet::create(&dir("light-new-server"), [1; 32], Network::Stagenet).unwrap();
+    wallet.set_receive_account(2).await.unwrap();
+    let upserts = Arc::new(AtomicU64::new(0));
+    let first = light_server(Arc::new(AtomicBool::new(true)), upserts.clone()).await;
+    wallet.set_light_server(&first, false).await.unwrap();
+    wallet.use_light_wallet(true).await.unwrap();
+    wallet.sync_step().await.unwrap();
+    assert_eq!(upserts.load(Ordering::Relaxed), 1);
+    assert!(!wallet.inner.state.lock().await.light_accounts_sent.is_empty());
+    let second_upserts = Arc::new(AtomicU64::new(0));
+    let second = light_server(Arc::new(AtomicBool::new(true)), second_upserts.clone()).await;
+    wallet.set_light_server(&second, false).await.unwrap();
+    assert!(wallet.inner.state.lock().await.light_accounts_sent.is_empty());
+    wallet.sync_step().await.unwrap();
+    assert_eq!(second_upserts.load(Ordering::Relaxed), 1, "the new server told");
+}

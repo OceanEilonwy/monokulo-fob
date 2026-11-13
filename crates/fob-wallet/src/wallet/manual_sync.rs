@@ -112,6 +112,11 @@ impl Wallet {
 
     /// Asks the node where the chain has got to, quietly keeping what's known on failure.
     pub async fn refresh_tip(&self) {
+        // Through a light wallet server, each poll's answer says the tip:
+        // the node (only there to check proofs) isn't asked.
+        if self.light_mode().await {
+            return;
+        }
         if let Ok(rpc) = self.rpc().await
             && let Ok(latest) = rpc.latest_block_number().await
         {
