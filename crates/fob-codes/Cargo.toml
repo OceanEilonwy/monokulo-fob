@@ -20,7 +20,7 @@ sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 fob-monero = { path = "../fob-monero" }
 monero-wallet = "0.2"
-orf-codec = { git = "https://github.com/OceanEilonwy/monokular", rev = "3823b28b20bb82faaa826c7a7432aadf7112b371" }
+orf-codec = { git = "https://github.com/OceanEilonwy/monokulo-orf", rev = "f141c91ccc0eb41a5e96c3e6df0e730e5a5d398b" }
 percent-encoding = "2"
 qrcode = { version = "0.14", default-features = false }
 serde = { version = "1", features = ["derive"] }
