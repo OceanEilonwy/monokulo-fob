@@ -2208,13 +2208,12 @@ dependencies = [
 [[package]]
 name = "orf-codec"
 version = "0.1.0"
-source = "git+https://github.com/OceanEilonwy/monokular?rev=3823b28b20bb82faaa826c7a7432aadf7112b371#3823b28b20bb82faaa826c7a7432aadf7112b371"
+source = "git+https://github.com/OceanEilonwy/monokulo-orf?rev=f141c91ccc0eb41a5e96c3e6df0e730e5a5d398b#f141c91ccc0eb41a5e96c3e6df0e730e5a5d398b"
 dependencies = [
  "jiff",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "till-types",
  "zstd",
 ]
 
@@ -3120,7 +3119,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3173,14 +3172,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "till-types"
-version = "0.1.0"
-source = "git+https://github.com/OceanEilonwy/monokular?rev=3823b28b20bb82faaa826c7a7432aadf7112b371#3823b28b20bb82faaa826c7a7432aadf7112b371"
-dependencies = [
- "serde",
 ]
 
 [[package]]

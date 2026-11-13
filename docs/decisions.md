@@ -22,7 +22,8 @@ Calls made while building the first version, with why. Newest last.
    from serai's unpinned git branch. Only their `Cargo.toml` changed.
 4. **ORF receipts through Monokular's `orf-codec`**, as a git dependency
    pinned to `3823b28` of OceanEilonwy/monokular (now monokulo-till), the
-   hardened revision. Licence: GPL-3.0-only to match it.
+   hardened revision. Licence: GPL-3.0-only to match it. (Now from
+   monokulo-orf, at the rev Till pins: decision 425.)
 5. **Fob has no Monokulo features**: no Monokulo node, connect codes or
    dashboard links. Only the look comes from the Monokulo family.
 
@@ -4256,3 +4257,17 @@ The boards are the view-key canvas's B1 to B3, C2 and C3 (monokulo-till
      wallet is the only way to stop it. After a connect or a forget the
      sealed list notes the wallet's apps (`note_connections`), so Choose a
      wallet stays right without opening any wallet.
+
+425. **`orf-codec` from its own repository, monokulo-orf, at the rev Till
+     pins.** The receipt module left Till's repository with its history for
+     OceanEilonwy/monokulo-orf (Till's docs/view-key-mode.md §3.1, Till's
+     core.md decision 241), GPL-3.0-only still. `fob-codes` and
+     `fob-wallet` take it from there at one rev instead of `3823b28` of
+     monokulo-till (decision 4). Till links `fob-wallet` and takes
+     `orf-codec` itself, so the two pins must be the same commit: two would
+     be two `orf-codec` crates in Till's build, and a receipt from one
+     wouldn't be the other's. Moving the rev means a commit here first,
+     then Till's two pins (monokulo-orf's and this repository's) together.
+     The codec is the one at `3823b28`, except that it keeps its own copy
+     of the ISO 4217 table (the same digits for every code) instead of
+     reading `till-types`, which leaves Fob's build.
