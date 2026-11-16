@@ -24,8 +24,14 @@ final class MacScaffoldTests: XCTestCase {
         // give an empty screen, while the window comes from the app).
         attach(XCUIScreen.main.screenshot(), "T-SCAFFOLD-macos--oled-screen")
         attach(app.windows.firstMatch.screenshot(), "T-SCAFFOLD-macos--oled")
-        XCTAssertEqual(balance.label, "0.4182")
-        XCTAssertEqual(app.staticTexts["fiat"].label, "A$148.20")
+        XCTAssertEqual(text(of: balance), "0.4182")
+        XCTAssertEqual(text(of: app.staticTexts["fiat"]), "A$148.20")
+    }
+
+    /// A text's words: its label on iOS, its value on macOS.
+    @MainActor
+    private func text(of element: XCUIElement) -> String {
+        element.label.isEmpty ? (element.value as? String ?? "") : element.label
     }
 
     @MainActor

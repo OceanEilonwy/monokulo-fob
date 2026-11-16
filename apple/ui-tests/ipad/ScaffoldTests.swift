@@ -21,8 +21,14 @@ final class IPadScaffoldTests: XCTestCase {
         // Let the first frame settle.
         Thread.sleep(forTimeInterval: 1)
         attach(XCUIScreen.main.screenshot(), "T-SCAFFOLD-ipad--oled")
-        XCTAssertEqual(balance.label, "0.4182")
-        XCTAssertEqual(app.staticTexts["fiat"].label, "A$148.20")
+        XCTAssertEqual(text(of: balance), "0.4182")
+        XCTAssertEqual(text(of: app.staticTexts["fiat"]), "A$148.20")
+    }
+
+    /// A text's words: its label on iOS, its value on macOS.
+    @MainActor
+    private func text(of element: XCUIElement) -> String {
+        element.label.isEmpty ? (element.value as? String ?? "") : element.label
     }
 
     @MainActor

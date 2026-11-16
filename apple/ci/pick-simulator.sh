@@ -31,7 +31,7 @@ for runtime in runtimes:
     found = [d for d in devices[runtime] if d["name"].startswith(family) and not re.search(r"Duo|Fold|Flip", d["name"])]
     if found:
         best = min(found, key=lambda d: score(d["name"]))
-        print(f"{best['udid']}")
-        print(f"{family}: {best['name']} on {runtime}", file=sys.stderr)
+        print(best["udid"])
+        print(family + ": " + best["name"] + " on " + runtime, file=sys.stderr)
         sys.exit(0)
 sys.exit(1)' "$family"
