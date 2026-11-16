@@ -297,6 +297,36 @@ mod tests {
     }
 
     #[test]
+    fn every_board_scene_is_listed_and_deterministic() {
+        let names = scene_names();
+        for name in [
+            "home",
+            "home-syncing",
+            "receive",
+            "send",
+            "send-form",
+            "confirm",
+            "confirm-joel",
+            "pay-who",
+            "payment",
+            "contacts",
+            "settings",
+            "welcome",
+            "backup",
+            "catchup",
+            "coins",
+            "split",
+        ] {
+            assert!(names.iter().any(|n| n == name), "{name} is missing");
+            let (a, b) = (scene(name.into()).unwrap(), scene(name.into()).unwrap());
+            assert_eq!(a.now, b.now);
+            assert_eq!(a.balance.total_text, b.balance.total_text);
+            assert_eq!(a.activity.len(), b.activity.len());
+            assert_eq!(a.receive_address, b.receive_address);
+        }
+    }
+
+    #[test]
     fn home_shows_the_boards_balance() {
         let s = scene("home".into()).unwrap();
         assert_eq!(s.balance.total_text, "0.4182");

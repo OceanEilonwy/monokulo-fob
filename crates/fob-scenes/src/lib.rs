@@ -10,6 +10,31 @@
 //!
 //! This crate is plain data; `fob-ffi` turns it into the records the apps
 //! already use (`scene(name)`).
+//!
+//! Each scene opens the screen one or more boards draw
+//! (`docs/apple/design/<board>.dc.html`):
+//!
+//! | scene | screen | boards |
+//! |---|---|---|
+//! | `home` | Wallet | Main, PhoneHomeLight, PadHome, MacHome |
+//! | `home-syncing` | Wallet while catching up (sync chip) | Main, PadHome, MacHome |
+//! | `receive` | Receive | PhoneReceive, PhoneReceiveLight |
+//! | `send` | Send: camera and the people to pay | PhoneSend |
+//! | `send-form` | Send: the form, to Joel | PhoneSendForm, PadSend |
+//! | `confirm` | Confirm paying Corner Bakery (Face ID) | PhoneConfirm |
+//! | `confirm-joel` | Confirm paying Joel (Touch ID) | MacSend |
+//! | `pay-who` | "Pay who?" pushed from the form's To | PadSendTo |
+//! | `payment` | Payment and its receipt | PhonePayment |
+//! | `contacts` | Contacts | PhoneContacts |
+//! | `settings` | Settings | PhoneSettings, MacSettings |
+//! | `welcome` | Welcome, first run | PhoneWelcome |
+//! | `backup` | Back up your wallet (seed words) | PhoneBackup |
+//! | `catchup` | Catch up (scan) | PhoneCatchUp |
+//! | `coins` | Coins | PhoneCoins |
+//! | `split` | Split up | PhoneSplit |
+//!
+//! Component galleries (`gallery-<component>`) are not scenes: the apps'
+//! FobUI gallery draws them without a wallet.
 
 /// One XMR in atomic units.
 pub const XMR: u64 = 1_000_000_000_000;
@@ -17,7 +42,22 @@ pub const XMR: u64 = 1_000_000_000_000;
 /// Every scene's name, matching the GTK app's `FOB_SCENE` names where a screen
 /// exists in both. Each names the screen the app opens on; they share one wallet.
 pub const NAMES: &[&str] = &[
-    "home", "receive", "send", "contacts", "coins", "settings", "payment", "split",
+    "home",
+    "home-syncing",
+    "receive",
+    "send",
+    "send-form",
+    "confirm",
+    "confirm-joel",
+    "pay-who",
+    "payment",
+    "contacts",
+    "settings",
+    "welcome",
+    "backup",
+    "catchup",
+    "coins",
+    "split",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,6 +408,35 @@ mod tests {
             assert_eq!(scene(name).unwrap().name, *name);
         }
         assert!(scene("nope").is_none());
+    }
+
+    #[test]
+    fn every_board_has_its_scene() {
+        for name in [
+            "home",
+            "home-syncing",
+            "receive",
+            "send",
+            "send-form",
+            "confirm",
+            "confirm-joel",
+            "pay-who",
+            "payment",
+            "contacts",
+            "settings",
+            "welcome",
+            "backup",
+            "catchup",
+            "coins",
+            "split",
+        ] {
+            assert!(NAMES.contains(&name), "{name} is missing");
+        }
+        assert_eq!(NAMES.len(), 16);
+        let mut sorted = NAMES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), NAMES.len(), "names are unique");
     }
 
     #[test]
