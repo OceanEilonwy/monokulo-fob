@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Back up your wallet</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}</style>
+</helmet>
+<div class="phone oled">
+  <div class="safe-top"></div>
+  <div class="navbar" style="padding: 0 8px">
+    <a class="nav-btn" href="PhoneWelcome.dc.html" style="text-decoration: none">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>Back</a>
+    <span></span><span style="width: 60px"></span>
+  </div>
+  <h1 class="large-title" style="padding: 2px 20px 0">Back up your wallet</h1>
+  <p class="callout muted" style="margin: 10px 20px 0; line-height: 22px">These 16 words are your wallet. Write them down in order and keep them somewhere safe: anyone with them can spend your money, and without them it can't be restored.</p>
+
+  <div class="card" style="margin: 22px 16px 0; padding: 14px 6px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; grid-template-rows: repeat(8, auto); row-gap: 2px">
+    <sc-for list="{{words}}" as="w" hint-placeholder-count="16">
+      <div style="display: flex; align-items: baseline; gap: 10px; padding: 7px 14px">
+        <span class="num footnote" style="color: var(--outline); width: 18px; text-align: right">{{w.n}}</span>
+        <span style="font-family: var(--mono); font-size: 17px; font-weight: 500">{{w.word}}</span>
+      </div>
+    </sc-for>
+  </div>
+
+
+  <div style="flex: 1"></div>
+  <div style="padding: 0 20px 44px">
+    <a class="btn btn-primary" href="Main.dc.html" style="height: 56px; border-radius: 28px; width: 100%">I've written them down</a>
+  </div>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ws = ['timber','orbit','velvet','harbor','lemon','sketch','plunge','meadow','cactus','ribbon','frozen','wander','pillow','summit','glide','anchor'];
+    return { words: ws.map((word, i) => ({ word, n: i + 1 })) };
+  }
+}
+</script>
+</body>
+</html>

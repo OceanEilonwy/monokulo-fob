@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Send form</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}
+.lbl{font-size:13px;font-weight:600;color:var(--muted);padding:0 4px 6px;display:block}</style>
+</helmet>
+<div class="phone oled" style="background: #2B2925">
+  <div style="position: absolute; left: 0; right: 0; top: 0; height: 200px; background: radial-gradient(ellipse at 45% 60%, #4a4640 0%, #2B2925 70%)" role="img" aria-label="Camera, still scanning"></div>
+  <div class="safe-top" style="position: relative"></div>
+  <div class="navbar" style="position: relative; padding: 0 16px">
+    <a class="circle-btn" href="Main.dc.html" aria-label="Close" style="background: rgba(58,55,50,.9); color: #F4F1EA">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+    <span class="nav-title" style="color: #F4F1EA">Send</span>
+    <span style="width: 36px"></span>
+  </div>
+  <svg width="70" height="70" viewBox="0 0 190 190" fill="none" stroke="#F4F1EA" stroke-width="9" stroke-linecap="round" aria-hidden="true" style="position: absolute; left: 50%; top: 112px; margin-left: -35px"><path d="M3 40V18A15 15 0 0 1 18 3h22M150 3h22a15 15 0 0 1 15 15v22M187 150v22a15 15 0 0 1-15 15h-22M40 187H18A15 15 0 0 1 3 172v-22"></path></svg>
+
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; top: 200px; background: #000; border-radius: 28px 28px 0 0; padding: 0 20px; display: flex; flex-direction: column">
+    <a href="PhoneSend.dc.html" aria-label="Back to the camera" style="height: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0"><span style="width: 36px; height: 4px; border-radius: 2px; background: #6B655A; display: block"></span></a>
+
+    <div style="display: flex; flex-direction: column; gap: 14px">
+      <div>
+        <span class="lbl">To</span>
+        <div class="field" style="border-style: solid; border-color: var(--line); padding-right: 8px; min-height: 60px">
+          <span style="width: 30px; height: 30px; border-radius: 8px; background: #000; box-shadow: 0 0 0 1px #2A2723; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0" role="img" aria-label="Address pattern"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><g fill="#9FE3C0"><circle cx="5" cy="5" r="2.4"></circle><circle cx="12" cy="12" r="2.4"></circle><circle cx="19" cy="19" r="2.4"></circle><circle cx="19" cy="5" r="2.4"></circle></g></svg></span>
+          <div style="flex: 1; min-width: 0"><div style="font-size: 16px; font-weight: 600; color: var(--ink)">Joel</div><div style="font-family: var(--mono); font-size: 13px">46Qm TxVk … 9bRe</div></div>
+          <button class="btn btn-tinted btn-sm">Paste</button>
+        </div>
+      </div>
+      <div>
+        <span class="lbl">Amount</span>
+        <div class="field" style="border-style: solid; border-color: var(--orange); padding-right: 8px; min-height: 64px">
+          <span style="font-family: var(--display); font-weight: 800; font-size: 22px; color: var(--muted)">A$</span>
+          <span class="num" style="flex: 1; font-family: var(--display); font-weight: 800; font-size: 26px; color: var(--ink); letter-spacing: -0.03em">20.00</span>
+          <button class="btn btn-primary btn-sm" aria-label="Amount in AUD. Switch to XMR" style="height: 44px; border-radius: 14px">AUD
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
+        </div>
+        <div class="footnote muted num" style="padding: 6px 4px 0">≈ 0.0564 XMR · A$354.60</div>
+      </div>
+      <div>
+        <span class="lbl">Note (optional)</span>
+        <label class="field">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"></path></svg>
+          <input type="text" placeholder="What it's for" value="Dinner, Friday">
+        </label>
+      </div>
+      <div class="footnote muted num" style="padding: 0 4px">0.3870 XMR ready to spend</div>
+    </div>
+
+    <div style="flex: 1"></div>
+    <div style="padding-bottom: 40px">
+      <a class="btn btn-primary" href="PhoneConfirm.dc.html" style="width: 100%; height: 56px; border-radius: 28px">Review</a>
+    </div>
+  </div>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

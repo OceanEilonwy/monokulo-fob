@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Scan</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}</style>
+</helmet>
+<div class="phone oled">
+  <div class="safe-top"></div>
+  <div class="navbar" style="padding: 0 12px 0 16px">
+    <span class="headline">Spending</span>
+    <span class="chip" style="gap: 8px">
+      <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="#2A2723" stroke-width="3"></circle><path d="M10 3a7 7 0 0 1 6.6 9.3" fill="none" stroke="#FF6600" stroke-width="3" stroke-linecap="round"></path></svg>4 min left</span>
+  </div>
+  <div style="padding: 28px 20px 0">
+    <div style="display: flex; align-items: baseline; gap: 8px">
+      <span class="num" style="font-family: var(--display); font-weight: 800; font-size: 56px; letter-spacing: -0.04em">0.4182</span>
+      <span style="font-family: var(--display); font-weight: 700; font-size: 22px; color: var(--muted)">XMR</span>
+    </div>
+  </div>
+  <div style="position: absolute; inset: 0; background: rgba(0,0,0,.6)"></div>
+
+  <div class="sheet" style="top: 300px">
+    <div class="grabber"></div>
+    <div class="navbar" style="padding: 0 8px">
+      <a class="nav-btn" href="PhoneSettings.dc.html" style="text-decoration: none; padding: 0 8px">Cancel</a>
+      <span class="nav-title">Scan</span>
+      <span style="width: 64px"></span>
+    </div>
+    <div style="padding: 6px 16px 0">
+      <div class="seg"><button class="on">Quick</button><button>Dates</button><button>Block</button></div>
+    </div>
+    <div class="group" style="margin-top: 16px; background: #000">
+      <div class="row"><span class="grow body">From last scan</span><span class="footnote muted">seconds</span></div>
+      <div class="row"><span class="grow body">Today</span><span class="footnote muted">seconds</span></div>
+      <div class="row"><span class="grow body">Past week</span><span class="footnote muted">about 1 min</span>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF8F45" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-label="Selected" role="img"><path d="M5 12l5 5 9-10"></path></svg></div>
+      <div class="row"><span class="grow body">Past month</span><span class="footnote muted">about 4 min</span></div>
+      <div class="row"><span class="grow body">The whole wallet</span><span class="footnote muted">about 20 min</span></div>
+    </div>
+    <div style="flex: 1"></div>
+    <div style="padding: 0 16px 44px">
+      <button class="btn btn-primary" style="width: 100%; height: 56px; border-radius: 28px">Scan the past week</button>
+    </div>
+  </div>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

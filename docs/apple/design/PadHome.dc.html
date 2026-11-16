@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob for iPad · Wallet</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}</style>
+</helmet>
+<div class="oled" style="width: 1180px; height: 820px; display: flex; flex-direction: column; overflow: hidden; position: relative">
+  <div style="height: 24px; flex-shrink: 0"></div>
+  <div style="height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; flex-shrink: 0">
+    <div style="display: flex; align-items: center; gap: 12px">
+      <button class="nav-btn" style="color: var(--ink); gap: 8px" aria-label="Switch wallet">
+        <svg width="30" height="30" viewBox="9.91 11 81.28 80.64" aria-hidden="true"><path fill="#FF6600" d="M90.67,50L91.19,54.33L90.44,58.59L88.69,62.57L86.47,66.24L84.11,69.69L81.6,72.96L78.78,75.91L75.61,78.45L72.28,80.66L68.99,82.88L65.75,85.38L62.36,88.05L58.57,90.34L54.37,91.56L50,91.39L45.79,90.09L41.86,88.27L38.14,86.5L34.47,84.88L30.84,83.18L27.37,81.14L24.15,78.71L21.08,76.04L17.99,73.25L14.9,70.27L12.17,66.84L10.39,62.87L9.91,58.52L10.54,54.15L11.67,50L12.62,46.07L13.16,42.17L13.56,38.16L14.3,34.11L15.69,30.19L17.68,26.52L20.07,23.05L22.75,19.74L25.84,16.75L29.49,14.47L33.62,13.21L37.95,12.92L42.15,13.06L46.11,12.99L50,12.39L54.04,11.52L58.29,11L62.55,11.36L66.6,12.71L70.34,14.77L73.81,17.23L77.01,20L79.79,23.17L81.91,26.82L83.31,30.77L84.34,34.71L85.53,38.46L87.18,42.1L89.11,45.89Z"></path><path fill="none" stroke="#C24E00" stroke-width="3.2" d="M21,50a29,29 0 1 0 58,0a29,29 0 1 0 -58,0Z"></path><path fill="#C24E00" d="M50,39.75L58.88,44.88L61.27,30.46ZM58.88,44.88L58.88,55.12L72.55,50ZM58.88,55.12L50,60.25L61.27,69.54ZM50,60.25L41.12,55.12L38.73,69.54ZM41.12,55.12L41.12,44.88L27.45,50ZM41.12,44.88L50,39.75L38.73,30.46Z"></path><path fill="#1A1917" d="M50,39.75L58.88,44.88L58.88,55.12L50,60.25L41.12,55.12L41.12,44.88Z"></path></svg>
+        <span style="font-size: 19px; font-weight: 700">Spending</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--muted)"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      <span class="net-chip">Stagenet</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px">
+      <button class="chip"><span class="dot"></span>Synced</button>
+      <button class="circle-btn" style="width: 40px; height: 40px; border-radius: 20px" aria-label="Scan a payment code"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"></path><rect x="9" y="9" width="6" height="6" rx="1"></rect></svg></button>
+      <button class="circle-btn" style="width: 40px; height: 40px; border-radius: 20px" aria-label="Contacts"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M3 19c0-3 3-5 6-5s6 2 6 5M16 4.5a3 3 0 0 1 0 6M18 14c2 .6 3 2.3 3 5"></path></svg></button>
+      <button class="circle-btn" style="width: 40px; height: 40px; border-radius: 20px" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 48px; padding: 56px 56px 0; align-items: center">
+    <div style="width: 400px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px">
+      <div style="display: flex; align-items: baseline; gap: 10px">
+        <span class="num" style="font-family: var(--display); font-weight: 800; font-size: 76px; letter-spacing: -0.045em; line-height: 80px">0.4182</span>
+        <span style="font-family: var(--display); font-weight: 700; font-size: 26px; color: var(--muted)">XMR</span>
+      </div>
+      <div class="callout muted num">A$148.20 · 0.3870 ready to spend</div>
+      <div style="display: flex; gap: 12px; margin-top: 28px; width: 100%">
+        <button class="btn btn-secondary" style="flex: 1; height: 54px; border-radius: 27px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"></path></svg>Receive</button>
+        <a class="btn btn-primary" href="PadSend.dc.html" style="flex: 1; height: 54px; border-radius: 27px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>Send</a>
+      </div>
+    </div>
+
+    <div class="card" style="flex: 1; min-width: 0; padding: 16px 0 8px">
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 18px 4px">
+        <h2 class="title2" style="font-size: 20px">Activity</h2>
+        <button class="chip" style="height: 30px; font-size: 14px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="12" r="5"></circle><path d="M14 7.5a5 5 0 1 1 0 9"></path></svg>Coins</button>
+      </div>
+      <div class="day" style="padding-left: 18px">TODAY</div>
+      <div class="act" style="padding: 10px 18px">
+        <span class="act-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></span>
+        <div style="flex: 1; min-width: 0"><div class="act-title">To Corner Bakery</div><div class="act-sub">Receipt, 2 items · 09:12</div></div>
+        <div class="act-amt"><div class="a">−0.0312</div><div class="f">A$11.05</div></div>
+      </div>
+      <div class="act" style="padding: 10px 18px">
+        <span class="act-icon in"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"></path></svg></span>
+        <div style="flex: 1; min-width: 0"><div class="act-title">From Mara</div><div class="act-sub">Concert tickets · not ready · 3 of 10 · 08:40</div></div>
+        <div class="act-amt"><div class="a green">+0.1250</div><div class="f">A$44.30</div></div>
+      </div>
+      <div class="act" style="padding: 10px 18px">
+        <span class="act-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2M14 18h6M18 14h2"></path></svg></span>
+        <div style="flex: 1; min-width: 0"><div class="act-title">Request to Joel</div><div class="act-sub">Dinner, Friday · waiting · 08:05</div></div>
+        <div class="act-amt"><div class="a">A$20.00</div><div class="f">asked</div></div>
+      </div>
+      <div class="day" style="padding-left: 18px">YESTERDAY</div>
+      <div class="act" style="padding: 10px 18px">
+        <span class="act-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></span>
+        <div style="flex: 1; min-width: 0"><div class="act-title">To Joel</div><div class="act-sub">Rent share · 19:31</div></div>
+        <div class="act-amt"><div class="a">−0.5600</div><div class="f">A$198.40</div></div>
+      </div>
+      <div class="act" style="padding: 10px 18px">
+        <span class="act-icon in"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"></path></svg></span>
+        <div style="flex: 1; min-width: 0"><div class="act-title">Via your profile</div><div class="act-sub">14:02</div></div>
+        <div class="act-amt"><div class="a green">+0.2000</div><div class="f">A$70.86</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1180,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

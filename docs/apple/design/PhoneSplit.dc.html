@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Split up</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}
+.tile-wrap{position:relative;padding:10px 10px 0 0}
+.note{width:100%;height:76px;border-radius:18px;border:1px solid var(--outline);background:transparent;color:var(--ink);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font:inherit;cursor:pointer;padding:0}
+.note.on{border-color:var(--ink);background:var(--card)}
+.note .v{font-family:var(--display);font-weight:800;font-size:22px;letter-spacing:-0.02em}
+.note .c{font-size:13px;color:var(--muted)}
+.minus{position:absolute;top:0;right:0;width:28px;height:28px;border-radius:14px;background:var(--ink);color:var(--paper);border:0;font-size:18px;line-height:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}</style>
+</helmet>
+<div class="phone oled">
+  <div class="safe-top"></div>
+  <div class="navbar" style="padding: 0 8px">
+    <a class="nav-btn" href="PhoneCoins.dc.html" style="text-decoration: none">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>Coins</a>
+    <div style="display: flex; align-items: center; gap: 4px">
+      <button onClick="{{auto}}" aria-label="Auto, fill coins like your last 30 days" aria-pressed="{{isAuto}}" style="height: 34px; border-radius: 17px; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px 0 10px; font: inherit; font-size: 15px; font-weight: 600; color: var(--ink); cursor: pointer; background: {{autoBg}}; border: 1px solid {{autoEdge}}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="#FF8F45" aria-hidden="true"><path d="M12 2l2.2 6.3L20.5 10.5l-6.3 2.2L12 19l-2.2-6.3L3.5 10.5l6.3-2.2zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"></path></svg>Auto</button>
+      <sc-if value="{{hasPieces}}" hint-placeholder-val="{{true}}">
+        <button class="nav-btn" onClick="{{clear}}" style="padding: 0 8px">Clear</button>
+      </sc-if>
+    </div>
+  </div>
+  <h1 class="large-title" style="padding: 2px 20px 0">Split up</h1>
+  <p class="subhead muted" style="margin: 8px 20px 0; line-height: 20px">Each payment locks what's left of a coin for about 20 minutes. More, smaller coins keep money ready to spend.</p>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 2px; row-gap: 2px; padding: 6px 10px 0 20px">
+    <sc-for list="{{tiles}}" as="t" hint-placeholder-count="6">
+      <div class="tile-wrap">
+        <button class="{{t.cls}}" onClick="{{t.add}}" aria-label="{{t.addLabel}}"><span class="v">{{t.label}}</span><span class="c">{{t.countText}}</span></button>
+        <sc-if value="{{t.chosen}}" hint-placeholder-val="{{false}}">
+          <button class="minus" onClick="{{t.remove}}" aria-label="{{t.removeLabel}}">−</button>
+        </sc-if>
+      </div>
+    </sc-for>
+  </div>
+
+  <sc-if value="{{hasPieces}}" hint-placeholder-val="{{true}}">
+    <div class="card" style="margin: 18px 16px 0; border-radius: 18px; padding: 16px">
+      <div style="display: flex; gap: 2px; align-items: flex-end; height: 44px" role="img" aria-label="{{summary}}">
+        <sc-for list="{{bar}}" as="b" hint-placeholder-count="9">
+          <span style="{{b.style}}"></span>
+        </sc-for>
+      </div>
+      <div class="callout num" style="margin-top: 12px">{{summary}}</div>
+      <div class="subhead muted num" style="margin-top: 2px">{{leftOver}}</div>
+    </div>
+  </sc-if>
+
+  <div style="flex: 1"></div>
+  <div style="padding: 0 16px 38px; display: flex; flex-direction: column; gap: 10px">
+    <button class="btn btn-primary" style="width: 100%; height: 56px; border-radius: 28px; opacity: {{btnOpacity}}">{{button}}</button>
+    <div class="footnote muted num" style="text-align: center; min-height: 18px">{{footer}}</div>
+  </div>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { counts: { 5: 2, 10: 3, 20: 4 } };
+  }
+  renderVals() {
+    const NOTES = [5, 10, 20, 50, 100, 200];
+    const READY = 137.23;
+    const AUTO = { 5: 2, 10: 3, 20: 4 };
+    const counts = this.state.counts;
+    const money = (n) => 'A$' + n.toFixed(2);
+    const total = NOTES.reduce((s, n) => s + n * (counts[n] || 0), 0);
+    const pieces = NOTES.reduce((s, n) => s + (counts[n] || 0), 0);
+    const set = (n, d) => {
+      const next = Object.assign({}, this.state.counts);
+      const c = (next[n] || 0) + d;
+      if (c < 0) return;
+      if (d > 0 && total + n > READY) return;
+      if (c === 0) delete next[n]; else next[n] = c;
+      this.setState({ counts: next });
+    };
+    const tiles = NOTES.map((n) => {
+      const c = counts[n] || 0;
+      return {
+        label: 'A$' + n,
+        countText: c > 0 ? '× ' + c : 'tap to add',
+        chosen: c > 0,
+        cls: c > 0 ? 'note on' : 'note',
+        addLabel: 'Add a A$' + n + ' coin, ' + (c === 0 ? 'none' : c) + ' so far',
+        removeLabel: 'Remove a A$' + n + ' coin',
+        add: () => set(n, 1),
+        remove: () => set(n, -1),
+      };
+    });
+    const left = READY - total;
+    const blocks = [];
+    NOTES.slice().reverse().forEach((n) => { for (let i = 0; i < (counts[n] || 0); i++) blocks.push({ v: n, left: false }); });
+    if (pieces > 0 && left > 0.005) blocks.push({ v: left, left: true });
+    const max = blocks.reduce((m, b) => Math.max(m, b.v), 1);
+    const bar = blocks.map((b) => ({
+      style: 'flex: ' + b.v.toFixed(2) + ' 1 0; height: ' + Math.max(12, Math.round(Math.sqrt(b.v / max) * 100)) + '%; border-radius: 3px; background: ' + (b.left ? '#2A2723' : '#F2EEE6'),
+    }));
+    const same = JSON.stringify(counts) === JSON.stringify(AUTO);
+    return {
+      tiles, bar,
+      hasPieces: pieces > 0,
+      isAuto: same ? 'true' : 'false',
+      autoBg: same ? '#3A210F' : 'transparent',
+      autoEdge: same ? '#FF8F45' : '#6B655A',
+      auto: () => this.setState({ counts: Object.assign({}, AUTO) }),
+      clear: () => this.setState({ counts: {} }),
+      summary: pieces + (pieces === 1 ? ' coin' : ' coins') + ' · ' + money(total),
+      leftOver: left > 0.005 ? '+ ' + money(left) + ' left as one coin' : '',
+      button: pieces === 0 ? 'Add a coin to split' : 'Split into ' + pieces + (pieces === 1 ? ' coin' : ' coins'),
+      btnOpacity: pieces === 0 ? '0.4' : '1',
+      footer: pieces === 0 ? '' : 'Network fee about A$0.03',
+    };
+  }
+}
+</script>
+</body>
+</html>

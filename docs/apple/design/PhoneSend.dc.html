@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Send</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}
+.srow{display:flex;align-items:center;gap:12px;min-height:52px;padding:4px;border-radius:12px;text-decoration:none;color:inherit}
+.srow .t{font-size:16px;font-weight:600}
+.srow .l{font-size:13px;color:var(--muted);margin-top:1px}</style>
+</helmet>
+<div class="phone oled" style="background: #2B2925">
+  <div style="position: absolute; left: 0; right: 0; top: 0; height: 470px; background: radial-gradient(ellipse at 45% 40%, #4a4640 0%, #2B2925 70%)" role="img" aria-label="Camera, looking for a payment code"></div>
+  <div style="position: absolute; left: 0; right: 0; top: 0; height: 130px; background: linear-gradient(rgba(43,41,37,.7), rgba(43,41,37,0))"></div>
+
+  <div class="safe-top" style="position: relative"></div>
+  <div class="navbar" style="position: relative; padding: 0 16px">
+    <a class="circle-btn" href="Main.dc.html" aria-label="Close" style="background: rgba(58,55,50,.9); color: #F4F1EA">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+    <span class="nav-title" style="color: #F4F1EA">Send</span>
+    <button class="circle-btn" aria-label="Torch, off" style="background: rgba(58,55,50,.9); color: #F4F1EA">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M7 2h10v5l-3 4v11h-4V11L7 7z"></path></svg></button>
+  </div>
+  <svg width="210" height="210" viewBox="0 0 190 190" fill="none" stroke="#F4F1EA" stroke-width="5" stroke-linecap="round" aria-hidden="true" style="position: absolute; left: 50%; top: 150px; margin-left: -105px"><path d="M3 40V18A15 15 0 0 1 18 3h22M150 3h22a15 15 0 0 1 15 15v22M187 150v22a15 15 0 0 1-15 15h-22M40 187H18A15 15 0 0 1 3 172v-22"></path></svg>
+  <div style="position: absolute; left: 0; right: 0; top: 378px; text-align: center; color: #F4F1EA; font-size: 15px; font-weight: 600">Point at a payment code</div>
+
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; top: 430px; background: #000; border-radius: 28px 28px 0 0; padding: 0 16px; display: flex; flex-direction: column">
+    <a href="PhoneSendForm.dc.html" aria-label="Type the payment instead" style="height: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0"><span style="width: 36px; height: 4px; border-radius: 2px; background: #6B655A; display: block"></span></a>
+    <button style="display: flex; align-items: center; gap: 12px; min-height: 60px; border-radius: 18px; background: var(--card); box-shadow: inset 0 0 0 1px var(--outline); border: 0; padding: 8px 12px 8px 14px; color: var(--ink); font: inherit; text-align: left; cursor: pointer">
+      <span style="width: 36px; height: 36px; border-radius: 18px; background: var(--sunken); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="12" height="17" rx="2"></rect><path d="M9 4V3h6v1"></path></svg></span>
+      <span style="flex: 1; font-size: 16px; font-weight: 600">Paste an address</span>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--muted)"><path d="M9 6l6 6-6 6"></path></svg>
+    </button>
+
+    <p class="section-label" style="padding: 18px 4px 4px">Contacts</p>
+    <a class="srow" href="PhoneSendForm.dc.html">
+      <span class="avatar" style="width: 32px; height: 32px; font-size: 14px; background: #13302A; color: #9FE3C0">J</span>
+      <div style="flex: 1; min-width: 0"><div class="t">Joel</div><div class="l">Paid yesterday · Rent share</div></div>
+      <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+    </a>
+    <a class="srow" href="PhoneSendForm.dc.html">
+      <span class="avatar" style="width: 32px; height: 32px; font-size: 14px">M</span>
+      <div style="flex: 1; min-width: 0"><div class="t">Mara Okafor</div><div class="l">Paid 3 Nov · Concert tickets</div></div>
+      <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+    </a>
+
+    <p class="section-label" style="padding: 14px 4px 4px">Paid before</p>
+    <a class="srow" href="PhoneConfirm.dc.html">
+      <span style="width: 32px; height: 32px; border-radius: 9px; background: #000; box-shadow: 0 0 0 1px #2A2723; display: inline-flex; align-items: center; justify-content: center" role="img" aria-label="Address pattern"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><g fill="#7FD0DA"><circle cx="5" cy="5" r="2.4"></circle><circle cx="19" cy="5" r="2.4"></circle><circle cx="12" cy="12" r="2.4"></circle><circle cx="5" cy="19" r="2.4"></circle><circle cx="12" cy="19" r="2.4"></circle></g></svg></span>
+      <div style="flex: 1; min-width: 0"><div class="t">Corner Bakery</div><div class="l" style="font-family: var(--mono); font-size: 12.5px">86Ux 3m9P … 7kQa · today</div></div>
+      <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+    </a>
+    <div style="flex: 1"></div>
+    <div class="footnote muted num" style="padding: 0 4px 40px">0.3870 XMR ready to spend</div>
+  </div>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

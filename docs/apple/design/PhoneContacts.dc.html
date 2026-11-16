@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Contacts</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}</style>
+</helmet>
+<div class="phone oled">
+  <div class="safe-top"></div>
+  <div class="navbar" style="justify-content: flex-end; gap: 4px; padding: 0 8px">
+    <button class="nav-btn" aria-label="Meet">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M3 19c0-3 3-5 6-5 1.3 0 2.5.3 3.5.9M17 11c1.5 1 2.5 2.4 2.5 4M15.5 8c.8.6 1.3 1.4 1.3 2.4"></path></svg>
+    </button>
+    <button class="nav-btn" aria-label="Add a contact">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+    </button>
+  </div>
+  <h1 class="large-title" style="padding: 2px 20px 0">Contacts</h1>
+  <div style="padding: 10px 16px 0">
+    <label style="height: 38px; border-radius: 11px; background: var(--sunken); display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted)">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+      <input type="search" placeholder="Search names and notes" style="flex: 1; background: none; border: 0; font: inherit; font-size: 17px; color: var(--ink); outline: none">
+    </label>
+  </div>
+
+  <div style="padding-top: 22px">
+    <div class="group">
+      <a class="row" href="#" style="min-height: 72px; padding-top: 12px; padding-bottom: 12px; --inset: 72px; text-decoration: none; color: inherit">
+        <span class="avatar" style="width: 44px; height: 44px; font-size: 17px">M</span>
+        <div class="grow"><div class="headline">Mara Okafor</div><div class="footnote muted">Concerts, coffee · paid 6 times, last today</div></div>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+      </a>
+      <div class="row" style="min-height: 72px; padding-top: 12px; padding-bottom: 12px; --inset: 72px">
+        <span class="avatar" style="width: 44px; height: 44px; font-size: 17px; background: #13302A; color: #9FE3C0">J</span>
+        <div class="grow"><div class="headline">Joel</div><div class="footnote muted">Flatmate · paid 14 times, last yesterday</div></div>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+      </div>
+      <div class="row" style="min-height: 72px; padding-top: 12px; padding-bottom: 12px; --inset: 72px">
+        <span class="avatar" style="width: 44px; height: 44px; font-size: 17px; background: #1C2540; color: #AFC4F5">P</span>
+        <div class="grow"><div class="headline">Priya</div><div class="footnote orange-text">Half set up</div></div>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+      </div>
+      <div class="row" style="min-height: 72px; padding-top: 12px; padding-bottom: 12px; --inset: 72px">
+        <span class="avatar" style="width: 44px; height: 44px; font-size: 17px; background: #2E1C38; color: #DDB6F2">S</span>
+        <div class="grow"><div class="headline">Sam Whitlock</div><div class="footnote muted">Not paid yet</div></div>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+      </div>
+    </div>
+  </div>
+
+  <div style="padding-top: 24px">
+    <p class="section-label">Paid, not saved</p>
+    <div class="group">
+      <div class="row" style="min-height: 58px; --inset: 72px">
+        <span style="width: 44px; height: 44px; border-radius: 22px; background: #000; box-shadow: 0 0 0 1px #2A2723; display: inline-flex; align-items: center; justify-content: center" role="img" aria-label="Address pattern"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><g fill="#F0A35E"><circle cx="12" cy="5" r="2.4"></circle><circle cx="5" cy="12" r="2.4"></circle><circle cx="19" cy="12" r="2.4"></circle><circle cx="12" cy="19" r="2.4"></circle></g></svg></span>
+        <div class="grow"><div class="body" style="font-family: var(--mono); font-size: 15px">4AdU nnb4 … q2Ws</div><div class="footnote muted">paid 2 times, last 3 Nov</div></div>
+        <button class="btn btn-tinted btn-sm" aria-label="Save 4AdU nnb4 as a contact">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <nav class="tabbar" aria-label="Sections">
+    <a class="tab" href="Main.dc.html" style="text-decoration: none">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3"></rect><path d="M3 10h18"></path><circle cx="16.5" cy="14.5" r="1.2" fill="currentColor"></circle></svg>Wallet</a>
+    <button class="tab on" aria-current="page">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M3 19c0-3 3-5 6-5s6 2 6 5M16 4.5a3 3 0 0 1 0 6M18 14c2 .6 3 2.3 3 5"></path></svg>Contacts</button>
+    <a class="tab" href="PhoneSettings.dc.html" style="text-decoration: none">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>Settings</a>
+  </nav>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

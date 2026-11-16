@@ -1,0 +1,137 @@
+/* Fob for Apple: shared tokens and components for every artboard.
+   Colours are Fob's own roles (android ui/Theme.kt): OLED, Light. */
+
+.oled {
+  --paper: #000000; --card: #0C0B0A; --sunken: #181613; --onpaper: #181613;
+  --line: #2A2723; --ink: #F2EEE6; --muted: #B0A999; --outline: #6B655A;
+  --orange-text: #FF8F45; --green: #5CC88A; --highlight: #1C1610; --warning: #3A2814;
+  --selected: #3A210F; --mark: #3F230E; --on-mark: #FFC9A0; --red: #F2B8B5;
+  --track: #2A2723; --scrim: rgba(0,0,0,.72); --bar: rgba(0,0,0,.82); --glass: rgba(24,22,19,.78);
+}
+.light {
+  --paper: #F4F1EA; --card: #FFFFFF; --sunken: #EFEAE0; --onpaper: #E4DDD0;
+  --line: #E2DCCF; --ink: #1A1917; --muted: #5A564C; --outline: #8C8577;
+  --orange-text: #B34700; --green: #1F7A45; --highlight: #FBF3E8; --warning: #F7D6B4;
+  --selected: #FBE3CF; --mark: #FBE3CC; --on-mark: #7A2F00; --red: #B3261E;
+  --track: #D8D1C3; --scrim: rgba(26,25,23,.45); --bar: rgba(244,241,234,.86); --glass: rgba(255,255,255,.8);
+}
+.oled, .light {
+  --orange: #FF6600; --on-orange: #111111;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+  --display: "Manrope", -apple-system, "SF Pro Display", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  background: var(--paper); color: var(--ink); font-family: var(--sans);
+  -webkit-font-smoothing: antialiased; letter-spacing: -0.01em;
+}
+
+/* Device shells: real screens, no fake status bar; safe areas kept clear. */
+.phone { width: 390px; height: 844px; position: relative; overflow: hidden; display: flex; flex-direction: column; box-sizing: border-box; }
+.safe-top { height: 59px; flex-shrink: 0; }
+.home-ind { position: absolute; left: 50%; bottom: 8px; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: var(--ink); opacity: .9; }
+
+/* Type: Manrope ExtraBold for amounts and titles (Fob's display face); SF for UI text. */
+.large-title { font-family: var(--display); font-weight: 800; font-size: 34px; letter-spacing: -0.03em; line-height: 41px; margin: 0; }
+.title2 { font-family: var(--display); font-weight: 800; font-size: 22px; letter-spacing: -0.02em; margin: 0; }
+.headline { font-size: 17px; font-weight: 600; }
+.body { font-size: 17px; }
+.callout { font-size: 16px; }
+.subhead { font-size: 15px; }
+.footnote { font-size: 13px; }
+.caption { font-size: 12px; }
+.muted { color: var(--muted); }
+.orange-text { color: var(--orange-text); }
+.green { color: var(--green); }
+.num { font-variant-numeric: tabular-nums; }
+.section-label { font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0; padding: 0 20px 7px; }
+
+/* Navigation bar (inline) */
+.navbar { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; flex-shrink: 0; }
+.navbar .nav-title { font-size: 17px; font-weight: 600; }
+.nav-btn { min-width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; background: none; border: 0; color: var(--orange-text); font: inherit; font-size: 17px; padding: 0; cursor: pointer; }
+.nav-btn.bold { font-weight: 600; }
+.circle-btn { width: 36px; height: 36px; border-radius: 18px; background: var(--onpaper); border: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--ink); padding: 0; }
+
+/* Buttons: Fob's pills */
+.btn { height: 50px; border-radius: 25px; border: 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: inherit; font-size: 17px; font-weight: 600; padding: 0 22px; cursor: pointer; box-sizing: border-box; text-decoration: none; }
+.btn-primary { background: var(--orange); color: var(--on-orange); }
+.btn-secondary { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--outline); }
+.btn-tinted { background: var(--sunken); color: var(--ink); }
+.btn-sm { height: 34px; border-radius: 17px; font-size: 15px; padding: 0 14px; }
+.chip { height: 32px; border-radius: 16px; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; background: var(--onpaper); font-size: 15px; font-weight: 600; color: var(--ink); border: 0; }
+.net-chip { height: 24px; border-radius: 12px; display: inline-flex; align-items: center; padding: 0 9px; background: var(--highlight); color: var(--orange-text); font-size: 13px; font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 4px; background: var(--green); flex-shrink: 0; }
+
+/* Cards and grouped lists. On OLED a card is the faintest lift, held by its hairline. */
+.card { background: var(--card); border-radius: 22px; box-shadow: inset 0 0 0 1px var(--line); }
+.group { background: var(--card); border-radius: 14px; box-shadow: inset 0 0 0 1px var(--line); margin: 0 16px; overflow: hidden; }
+.row { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 16px; position: relative; box-sizing: border-box; }
+.row + .row::before { content: ""; position: absolute; top: 0; right: 0; left: var(--inset, 16px); height: 1px; background: var(--line); }
+.row .grow { flex: 1; min-width: 0; }
+.row .value { color: var(--muted); font-size: 17px; }
+.chev { color: var(--outline); flex-shrink: 0; }
+.tile { width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--sunken); color: var(--ink); }
+.tile.orange { background: var(--orange); color: var(--on-orange); }
+.footer-note { font-size: 13px; color: var(--muted); padding: 7px 20px 0; margin: 0; line-height: 18px; }
+
+/* Activity rows */
+.act { display: flex; align-items: center; gap: 12px; padding: 10px 16px; position: relative; }
+.act + .act::before { content: ""; position: absolute; top: 0; right: 0; left: 60px; height: 1px; background: var(--line); }
+.act-icon { width: 32px; height: 32px; border-radius: 16px; background: var(--sunken); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--muted); }
+.act-icon.in { color: var(--green); }
+.act-title { font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act-sub { font-size: 14px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act-amt { text-align: right; flex-shrink: 0; }
+.act-amt .a { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.act-amt .f { font-size: 13px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.day { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .04em; padding: 14px 16px 4px; }
+
+/* Avatars */
+.avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--on-mark); background: var(--mark); flex-shrink: 0; }
+
+/* Tab bar (iPhone) */
+.tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 83px; background: var(--bar); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 1px 0 var(--line); display: flex; justify-content: space-around; padding-top: 7px; box-sizing: border-box; }
+.tab { width: 88px; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; color: var(--outline); background: none; border: 0; padding: 0; }
+.tab.on { color: var(--orange-text); }
+
+/* Sheets */
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--card); border-radius: 14px 14px 0 0; box-shadow: inset 0 1px 0 var(--line); display: flex; flex-direction: column; }
+.oled .sheet { background: #0C0B0A; }
+.grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--outline); opacity: .6; margin: 5px auto 0; }
+
+/* Fields: Fob's dashed entry fields */
+.field { border: 1.5px dashed var(--outline); border-radius: 18px; min-height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 16px; box-sizing: border-box; color: var(--muted); font-size: 17px; background: var(--card); }
+.field input { flex: 1; min-width: 0; background: none; border: 0; font: inherit; color: var(--ink); outline: none; }
+.field input::placeholder { color: var(--muted); }
+
+/* Address, in groups of five; first, middle and last marked */
+.addr { font-family: var(--mono); font-size: 14px; line-height: 23px; display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 9px; color: var(--muted); }
+.addr b { font-weight: 500; background: var(--mark); color: var(--on-mark); border-radius: 5px; padding: 0 3px; }
+
+/* Warning card */
+.warn { background: var(--warning); border-radius: 18px; padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start; }
+
+/* Segmented control */
+.seg { display: flex; background: var(--sunken); border-radius: 9px; padding: 2px; gap: 2px; }
+.seg button { flex: 1; height: 28px; border: 0; border-radius: 7px; background: none; font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); }
+.seg button.on { background: var(--card); box-shadow: 0 0 0 1px var(--line), 0 2px 6px rgba(0,0,0,.25); }
+
+/* Toggle */
+.toggle { width: 51px; height: 31px; border-radius: 16px; background: var(--track); position: relative; flex-shrink: 0; border: 0; padding: 0; }
+.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 14px; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,.25); }
+.toggle.on { background: var(--orange); }
+.toggle.on::after { left: 22px; }
+
+/* QR: always dark on white so every reader reads it */
+.qr { background: #fff; border-radius: 22px; padding: 18px; display: inline-flex; }
+
+/* macOS window chrome */
+.mac { border-radius: 12px; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 24px 70px rgba(0,0,0,.45); display: flex; position: relative; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 6px; display: block; }
+.lights i:nth-child(1) { background: #FF5F57; } .lights i:nth-child(2) { background: #FEBC2E; } .lights i:nth-child(3) { background: #28C840; }
+.sidebar-item { height: 28px; border-radius: 6px; display: flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 13px; color: var(--ink); }
+.sidebar-item.on { background: var(--selected); color: var(--ink); }
+.sidebar-item svg { color: var(--orange-text); }
+.sidebar-head { font-size: 11px; font-weight: 600; color: var(--muted); padding: 12px 8px 4px; }
+.mac-btn { height: 28px; border-radius: 7px; border: 0; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 600; background: var(--sunken); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.mac-btn.primary { background: var(--orange); color: var(--on-orange); box-shadow: none; }

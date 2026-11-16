@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Coins</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}
+.crow{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 16px;position:relative;box-sizing:border-box}
+.crow + .crow::before{content:"";position:absolute;top:0;left:16px;right:0;height:1px;background:var(--line)}
+.crow .t{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.crow .l{font-size:13px;color:var(--muted);margin-top:2px}
+.chead{display:flex;align-items:baseline;padding:14px 16px 6px}
+.chead .h{flex:1;font-size:15px;font-weight:600}
+.chead .s{font-size:15px;color:var(--muted);font-variant-numeric:tabular-nums}</style>
+</helmet>
+<div class="phone oled">
+  <div class="safe-top"></div>
+  <div class="navbar" style="padding: 0 8px">
+    <a class="nav-btn" href="Main.dc.html" style="text-decoration: none">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>Wallet</a>
+    <span></span><span style="width: 70px"></span>
+  </div>
+  <h1 class="large-title" style="padding: 2px 20px 0">Coins</h1>
+
+  <div style="padding: 14px 20px 0">
+    <p class="callout muted" style="margin: 0; line-height: 22px">Your 0.4182 XMR is held as 4 coins. A payment uses whole coins; what's left comes back as a new coin, not ready for about 20 minutes.</p>
+    <div style="display: flex; gap: 2px; height: 6px; margin-top: 16px" role="img" aria-label="3 coins ready, 1 not ready, 3 of 10 confirmations">
+      <span style="flex: 2000; background: var(--ink)"></span>
+      <span style="flex: 1250; background: var(--ink)"></span>
+      <span style="flex: 620; background: var(--ink)"></span>
+      <span style="flex: 312; position: relative"><span style="position: absolute; inset: 0; background: var(--green); opacity: .28"></span><span style="position: absolute; left: 0; top: 0; bottom: 0; width: 30%; background: var(--green)"></span></span>
+    </div>
+  </div>
+
+  <div class="card" style="margin: 18px 16px 0; border-radius: 18px; padding-bottom: 4px">
+    <div class="chead"><span class="h">Ready to spend</span><span class="s">0.3870 · A$137.23</span></div>
+    <div class="crow"><div style="flex: 1"><div class="t">0.2000</div><div class="l">Received · 15 Nov</div></div><span class="subhead muted num">A$70.92</span></div>
+    <div class="crow"><div style="flex: 1"><div class="t">0.1250</div><div class="l">Split up · 14 Nov</div></div><span class="subhead muted num">A$44.33</span></div>
+    <div class="crow"><div style="flex: 1"><div class="t">0.0620</div><div class="l">Change · Joel</div></div><span class="subhead muted num">A$21.99</span></div>
+  </div>
+
+  <div class="card" style="margin: 12px 16px 0; border-radius: 18px; padding-bottom: 4px">
+    <div class="chead"><span class="h">Not ready · 1 coin</span><span class="s">0.0312 · A$11.06</span></div>
+    <div class="crow">
+      <svg width="30" height="30" viewBox="0 0 30 30" role="img" aria-label="3 of 10 confirmations"><circle cx="15" cy="15" r="12" fill="none" stroke="#2A2723" stroke-width="3.5"></circle><path d="M15 3a12 12 0 0 1 11.4 8.3" fill="none" stroke="#5CC88A" stroke-width="3.5" stroke-linecap="round"></path></svg>
+      <div style="flex: 1; min-width: 0"><div class="t">0.0312 · A$11.06</div><div class="l">Change · Corner Bakery</div></div>
+      <div style="text-align: right"><div class="subhead num">09:32</div><div class="caption muted">3 of 10</div></div>
+    </div>
+  </div>
+
+  <div style="flex: 1"></div>
+  <div style="padding: 0 16px 42px">
+    <a class="btn btn-primary" href="PhoneSplit.dc.html" style="width: 100%; height: 56px; border-radius: 28px">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v6M12 9l-6 6v6M12 9l6 6v6"></path></svg>Split up</a>
+  </div>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

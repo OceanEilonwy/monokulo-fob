@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob for Mac · Wallet</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#151412}a{color:#FF8F45}a:hover{color:#FFB27F}
+.tb{width:30px;height:28px;border-radius:7px;border:0;background:none;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;padding:0}
+.mrow{display:flex;align-items:center;gap:10px;padding:8px 12px;position:relative}
+.mrow + .mrow::before{content:"";position:absolute;top:0;left:50px;right:0;height:1px;background:#2A2723}
+.mrow .t{font-size:13px;font-weight:600}
+.mrow .l{font-size:11.5px;color:var(--muted);margin-top:1px}
+.mrow .a{font-size:13px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.mrow .f{font-size:11.5px;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.mi{width:26px;height:26px;border-radius:13px;background:var(--sunken);display:inline-flex;align-items:center;justify-content:center;color:var(--muted);flex-shrink:0}</style>
+</helmet>
+<div class="mac oled" style="width: 480px; height: 760px; flex-direction: column">
+  <div style="height: 52px; display: flex; align-items: center; padding: 0 12px 0 16px; gap: 6px; flex-shrink: 0">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <button class="tb" aria-label="Contacts" style="margin-left: 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M3 19c0-3 3-5 6-5s6 2 6 5M16 4.5a3 3 0 0 1 0 6M18 14c2 .6 3 2.3 3 5"></path></svg></button>
+    <span style="flex: 1; display: flex; justify-content: center">
+      <button style="background: none; border: 0; color: var(--ink); font: inherit; font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border-radius: 7px" aria-label="Wallets">Spending<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+    </span>
+    <button class="tb" aria-label="Refresh"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"></path></svg></button>
+    <button class="tb" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+  </div>
+
+  <div style="display: flex; flex-direction: column; align-items: center; padding: 14px 24px 0; gap: 8px">
+    <div style="display: flex; gap: 6px">
+      <span class="net-chip" style="height: 22px; font-size: 12px">Stagenet</span>
+      <span class="chip" style="height: 22px; font-size: 12px; padding: 0 9px; gap: 6px"><span class="dot" style="width: 7px; height: 7px"></span>Synced</span>
+    </div>
+    <div style="display: flex; align-items: baseline; gap: 6px; margin-top: 6px">
+      <span class="num" style="font-family: var(--display); font-weight: 800; font-size: 46px; letter-spacing: -0.04em">0.4182</span>
+      <span style="font-family: var(--display); font-weight: 700; font-size: 18px; color: var(--muted)">XMR</span>
+    </div>
+    <div class="footnote muted num">A$148.20 · 0.3870 ready to spend</div>
+    <div style="display: flex; gap: 10px; margin-top: 14px">
+      <button class="btn btn-tinted" style="height: 40px; border-radius: 20px; font-size: 14px; width: 140px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"></path></svg>Receive</button>
+      <a class="btn btn-primary" href="MacSend.dc.html" style="height: 40px; border-radius: 20px; font-size: 14px; width: 140px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>Send</a>
+    </div>
+  </div>
+
+  <div style="padding: 28px 20px 0">
+    <div style="font-size: 11px; font-weight: 600; color: var(--muted); padding: 0 4px 6px">TODAY</div>
+    <div class="card" style="border-radius: 12px">
+      <div class="mrow"><span class="mi"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></span><div style="flex: 1; min-width: 0"><div class="t">To Corner Bakery</div><div class="l">Receipt, 2 items · 09:12</div></div><div><div class="a">−0.0312</div><div class="f">A$11.05</div></div></div>
+      <div class="mrow"><span class="mi" style="color: var(--green)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"></path></svg></span><div style="flex: 1; min-width: 0"><div class="t">From Mara</div><div class="l">Concert tickets · not ready · 3 of 10 · 08:40</div></div><div><div class="a green">+0.1250</div><div class="f">A$44.30</div></div></div>
+      <div class="mrow"><span class="mi"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2M14 18h6M18 14h2"></path></svg></span><div style="flex: 1; min-width: 0"><div class="t">Request to Joel</div><div class="l">Dinner, Friday · waiting · 08:05</div></div><div><div class="a">A$20.00</div><div class="f">asked</div></div></div>
+    </div>
+    <div style="font-size: 11px; font-weight: 600; color: var(--muted); padding: 16px 4px 6px">YESTERDAY</div>
+    <div class="card" style="border-radius: 12px">
+      <div class="mrow"><span class="mi"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></span><div style="flex: 1; min-width: 0"><div class="t">To Joel</div><div class="l">Rent share · 19:31</div></div><div><div class="a">−0.5600</div><div class="f">A$198.40</div></div></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":480,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

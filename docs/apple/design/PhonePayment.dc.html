@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fob · Payment</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="fob.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#000}a{color:#FF8F45}a:hover{color:#FFB27F}</style>
+</helmet>
+<div class="phone oled">
+  <div class="safe-top"></div>
+  <div class="navbar" style="padding: 0 8px">
+    <a class="nav-btn" href="Main.dc.html" style="text-decoration: none">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>Wallet</a>
+    <span class="nav-title">Sent</span>
+    <button class="nav-btn" aria-label="More">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>
+    </button>
+  </div>
+
+  <div style="display: flex; flex-direction: column; align-items: center; padding: 10px 20px 0; gap: 8px">
+    <span class="avatar" style="width: 56px; height: 56px; background: #FF6600; color: #111"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"></path><path d="M9 8h6M9 12h6" stroke-linecap="round"></path></svg></span>
+    <div class="headline">Corner Bakery</div>
+    <div style="display: inline-flex; align-items: baseline; gap: 6px">
+      <span class="num" style="font-family: var(--display); font-weight: 800; font-size: 40px; letter-spacing: -0.04em">−0.0312</span>
+      <span style="font-family: var(--display); font-weight: 700; font-size: 18px; color: var(--muted)">XMR</span>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 18px 16px 0">
+    <div class="card" style="border-radius: 16px; padding: 12px 14px"><div class="footnote muted">When sent</div><div class="headline num" style="margin-top: 2px">A$11.05</div></div>
+    <div class="card" style="border-radius: 16px; padding: 12px 14px"><div class="footnote muted">Worth now</div><div class="headline num" style="margin-top: 2px">A$11.31</div><div class="caption green" style="margin-top: 2px">Up A$0.26 (2.4%)</div></div>
+  </div>
+
+  <div class="group" style="margin-top: 18px">
+    <div class="row" style="min-height: 48px"><span class="grow muted">Status</span><span style="display: inline-flex; align-items: center; gap: 6px"><span class="dot"></span>Confirmed · 14</span></div>
+    <div class="row" style="min-height: 48px"><span class="grow muted">Network fee</span><span class="num">0.00006 XMR</span></div>
+    <div class="row" style="min-height: 48px"><span class="grow muted">Coins spent</span><span>1 · change back 0.2088</span></div>
+    <div class="row" style="min-height: 48px"><span class="grow muted">Transaction</span><span style="font-family: var(--mono); font-size: 14px">c9e1 … 04af</span><button class="nav-btn" style="min-width: 0; height: 32px; font-size: 15px; font-weight: 600">Copy</button></div>
+  </div>
+
+  <p class="section-label" style="padding-top: 20px">Receipt</p>
+  <div class="group" style="padding: 6px 0">
+    <div class="row" style="min-height: 34px"><span class="grow">Flat white</span><span class="num">A$5.50</span></div>
+    <div class="row" style="min-height: 34px; --inset: 9999px"><span class="grow">Croissant</span><span class="num">A$5.55</span></div>
+    <div class="row" style="min-height: 40px"><span class="grow" style="font-weight: 600">Total</span><span class="num" style="font-weight: 600">A$11.05</span></div>
+    <div class="row" style="min-height: 34px; --inset: 9999px"><span class="grow footnote muted">Paid in Monero</span><span class="num footnote muted">0.0312 XMR</span></div>
+  </div>
+  <p class="footer-note">Prices from CoinGecko. 16 Nov 2026, 09:12.</p>
+  <div class="home-ind"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
