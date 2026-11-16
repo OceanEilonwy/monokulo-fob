@@ -33,18 +33,24 @@ final class IPadScaffoldTests: XCTestCase {
     }
 
     /// The screen as it's seen: XCUIScreen gives a landscape iPad's pixels
-    /// in the portrait order of its panel, so they're turned upright here.
+    /// in its panel's portrait order with an orientation flag that the PNG
+    /// loses, so the image is redrawn upright (drawing applies the flag).
     @MainActor
     private func attach(_ screenshot: XCUIScreenshot, _ name: String) {
-        var image = screenshot.image
+        let shot = screenshot.image
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = shot.scale
+        var image = UIGraphicsImageRenderer(size: shot.size, format: format).image { _ in
+            shot.draw(in: CGRect(origin: .zero, size: shot.size))
+        }
         if image.size.width < image.size.height {
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = image.scale
-            let size = CGSize(width: image.size.height, height: image.size.width)
+            // No flag, still portrait: turn it a quarter anticlockwise.
+            let portrait = image
+            let size = CGSize(width: portrait.size.height, height: portrait.size.width)
             image = UIGraphicsImageRenderer(size: size, format: format).image { context in
-                context.cgContext.translateBy(x: 0, y: image.size.width)
+                context.cgContext.translateBy(x: 0, y: portrait.size.width)
                 context.cgContext.rotate(by: -.pi / 2)
-                image.draw(at: .zero)
+                portrait.draw(at: .zero)
             }
         }
         let attachment = XCTAttachment(image: image)

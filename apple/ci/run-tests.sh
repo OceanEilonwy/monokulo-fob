@@ -16,12 +16,13 @@ run() {
         -project Fob.xcodeproj -scheme "$scheme" \
         -destination "$destination" \
         -resultBundlePath "$result" \
+        -parallel-testing-enabled NO \
         "$@" 2>&1 | tee "$log"
     return "${PIPESTATUS[0]}"
 }
 
 if run "$@"; then exit 0; fi
-if grep -qE "before establishing connection|never began executing|lost connection to the test|Early unexpected exit|Unable to boot|failed to boot" "$log" \
+if grep -qE "before establishing connection|never began executing|Restarting after unexpected exit|Setting up automation session.*timed out|lost connection to the test|Early unexpected exit|Unable to boot|failed to boot" "$log" \
     && ! grep -qE "\) failed after|Test Case .* failed|recorded an issue" "$log"; then
     echo "::warning::The simulator failed, not a test: running the tests once more"
     xcrun simctl shutdown all >/dev/null 2>&1 || true
