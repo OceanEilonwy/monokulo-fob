@@ -12,6 +12,7 @@ pub mod clock;
 pub mod connect;
 pub mod contacts;
 pub mod errors;
+pub mod labels;
 pub mod light;
 pub mod manual;
 pub mod node;
