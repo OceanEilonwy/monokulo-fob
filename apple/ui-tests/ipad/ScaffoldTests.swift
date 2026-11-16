@@ -2,6 +2,7 @@
 // shows its balance. The screenshot is the xcresult attachment
 // "T-SCAFFOLD-ipad--oled" (apple/ci/extract-screenshots.sh, docs/apple/plan.md §5).
 
+import UIKit
 import XCTest
 
 final class IPadScaffoldTests: XCTestCase {
@@ -31,9 +32,22 @@ final class IPadScaffoldTests: XCTestCase {
         element.label.isEmpty ? (element.value as? String ?? "") : element.label
     }
 
+    /// The screen as it's seen: XCUIScreen gives a landscape iPad's pixels
+    /// in the portrait order of its panel, so they're turned upright here.
     @MainActor
     private func attach(_ screenshot: XCUIScreenshot, _ name: String) {
-        let attachment = XCTAttachment(screenshot: screenshot)
+        var image = screenshot.image
+        if image.size.width < image.size.height {
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = image.scale
+            let size = CGSize(width: image.size.height, height: image.size.width)
+            image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+                context.cgContext.translateBy(x: 0, y: image.size.width)
+                context.cgContext.rotate(by: -.pi / 2)
+                image.draw(at: .zero)
+            }
+        }
+        let attachment = XCTAttachment(image: image)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
