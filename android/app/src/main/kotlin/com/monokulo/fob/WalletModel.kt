@@ -320,7 +320,26 @@ class WalletModel(private val app: Application) {
     private var book: WalletList? = null
     private val booking = Mutex()
 
+    /** The last [open], so a retry doesn't start a second alongside one under way. */
+    private var openJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * The last open failed only because the phone was locked (the file key needs it unlocked): Fob started
+     * behind the lock screen, by a reinstall, say. Opened again, quietly, once the phone is unlocked.
+     */
+    private var openAfterUnlock = false
+
+    /** The phone unlocked: an open the lock refused goes again. */
+    private val unlocked = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+            if (openAfterUnlock) retryOpen()
+        }
+    }
+
     init {
+        androidx.core.content.ContextCompat.registerReceiver(
+            app, unlocked, android.content.IntentFilter(android.content.Intent.ACTION_USER_PRESENT), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         open()
     }
 
@@ -336,9 +355,6 @@ class WalletModel(private val app: Application) {
 
     fun hasWallet(network: Network = _network.value) = walletsOn(app.filesDir.absolutePath, network)
 
-    /** The last [open], to retry one that failed without starting a second alongside it. */
-    private var openJob: kotlinx.coroutines.Job? = null
-
     /** Opens the wallet last open on this network, if it has one. */
     private fun open() {
         val network = _network.value
@@ -350,8 +366,30 @@ class WalletModel(private val app: Application) {
                 val file = _current.value?.file ?: return@launch
                 withContext(Dispatchers.IO) { vault.withFileKey { FobWallet.open(book.path(file), it) } }
             }.onSuccess { if (_network.value == network) use(it) else it.close() }
-                .onFailure { _openError.value = it.message }
+                .onFailure { e ->
+                    if (refusedForLock(e)) openAfterUnlock = true
+                    else _openError.value = e.message ?: "Fob couldn't open this wallet."
+                }
         }
+    }
+
+    /**
+     * [e] is the Keystore refusing because the phone is locked. Vault names it [Vault.DeviceLocked] when the
+     * Keystore says why, but not every phone does (a Pixel 9 Pro gives a bare InvalidKeyException), so any
+     * failure while the phone is locked counts too.
+     */
+    private fun refusedForLock(e: Throwable): Boolean {
+        if (generateSequence(e) { it.cause }.any { it is Vault.DeviceLocked }) return true
+        val keyguard = app.getSystemService(android.app.KeyguardManager::class.java)
+        return keyguard?.isDeviceLocked == true
+    }
+
+    /** Opens the wallet again after a failed open: Home's Try again, or the phone unlocked. */
+    fun retryOpen() {
+        if (_wallet.value != null || openJob?.isActive == true) return
+        openAfterUnlock = false
+        _openError.value = null
+        open()
     }
 
     /** Opens wallet [file] in place of this one, moving network with it if it's on the other. */
@@ -835,12 +873,8 @@ class WalletModel(private val app: Application) {
      */
     fun setVisible(visible: Boolean) {
         this.visible = visible
-        // The file key needs the phone unlocked: started while it was locked (a reinstall, NFC), the open failed.
-        // Back on screen, the phone is unlocked: try again.
-        if (visible && _wallet.value == null && _openError.value != null && openJob?.isActive != true) {
-            _openError.value = null
-            open()
-        }
+        // On screen, the phone is unlocked: an open the lock refused goes again.
+        if (visible && openAfterUnlock) retryOpen()
         if (visible) startSync() else if (_status.value?.synced != false) stopSync()
         // Prices are asked only while Fob is on screen.
         _wallet.value?.let { if (visible) it.startPrices(observer) else it.stopPrices() }

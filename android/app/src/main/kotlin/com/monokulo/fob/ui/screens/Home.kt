@@ -190,6 +190,11 @@ fun HomeScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit, confi
         }
 
         Column(Modifier.padding(horizontal = 16.dp)) {
+            // The wallet on this phone wouldn't open: why, and a way to try again.
+            val openError by model.openError.collectAsState()
+            openError?.let { reason ->
+                Warning(reason, Modifier.padding(bottom = 12.dp), title = "Fob couldn't open this wallet", icon = Icons.refresh, onClick = model::retryOpen)
+            }
             // The words behind the phone's lock, as from Backup and keys.
             reminder?.let { BackupCard(it) { openLocked(Screen.ShowSeed) } }
             // A Trezor wallet with money the device hasn't been asked about yet.
