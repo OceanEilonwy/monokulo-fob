@@ -59,9 +59,20 @@ crates/fob-scenes ────────────┘ (deterministic sample 
   Neither the xcframework nor the generated Swift is committed (built
   every time, like Android's bindings).
 - **Apps** (`apple/project.yml`, XcodeGen, no committed .xcodeproj):
-  `Fob` (iOS, `TARGETED_DEVICE_FAMILY: "1,2"`), `FobMac` (macOS), and UI
-  test bundles `FobUITestsPhone`, `FobUITestsPad`, `FobUITestsMac` with one
-  scheme per platform so CI can run each alone.
+  `FobiOS` (iOS 26.7+, `TARGETED_DEVICE_FAMILY: "1,2"`, sources
+  `apple/ios`), `FobMac` (macOS 26+, `apple/macos`), and UI test bundles
+  `FobiPhoneUITests` (`apple/ui-tests/iphone`), `FobiPadUITests`
+  (`apple/ui-tests/ipad`), `FobMacUITests` (`apple/ui-tests/macos`) with one
+  scheme each, named as the bundle, so CI can run each platform alone.
+- **Core build** `apple/core/build-core.sh --sim | --mac | --release`
+  builds `fob-ffi` (now `crate-type = ["cdylib", "staticlib", "lib"]`) per
+  slice and generates the Swift from the first slice's `libfob_ffi.a` with
+  a standalone bindgen (`apple/core/bindgen`, its own small crate and
+  lockfile, uniffi `=0.32.2`), so no host build of the core is needed.
+- **Scenes** `fob_ffi::scene(name) -> Option<SceneWallet>` and
+  `scene_names()`: `SceneWallet` holds the same records the screens use
+  (`Balance`, `NotReady`, `ActivityDay`, `ContactRow`, `PaidBefore`,
+  `Coins`, and the receipt's `Activity`), from `crates/fob-scenes`.
 - **Launch arguments.** `-FobScene <scene>` loads a fob-scenes wallet
   instead of the real store; `-FobTheme <oled|light>` forces the theme.
   Both are read only by the app's scene loader; absent, the app runs
@@ -135,11 +146,13 @@ Jobs are **independent** so one platform failing never blocks another: no
 | job | runner | builds | runs |
 |---|---|---|---|
 | `check` | `ubuntu-latest` | host | `cargo check` + `cargo test -p fob-ffi -p fob-scenes --locked` |
-| `iphone` | `xcode-27` | core slice `aarch64-apple-ios-sim` | `xcodebuild test -scheme FobUITestsPhone` on an iPhone simulator |
-| `ipad` | `xcode-27` | core slice `aarch64-apple-ios-sim` | `xcodebuild test -scheme FobUITestsPad` on an iPad simulator |
-| `macos` | `xcode-27` | core slice `aarch64-apple-darwin` | `xcodebuild test -scheme FobUITestsMac -destination 'platform=macOS'` |
+| `iphone` | `xcode-27` | core slice `aarch64-apple-ios-sim` | `xcodebuild test -scheme FobiPhoneUITests` on an iPhone simulator |
+| `ipad` | `xcode-27` | core slice `aarch64-apple-ios-sim` | `xcodebuild test -scheme FobiPadUITests` on an iPad simulator |
+| `macos` | `xcode-27` | core slice `aarch64-apple-darwin` | `xcodebuild test -scheme FobMacUITests -destination 'platform=macOS'` (ad-hoc signed) |
 
-Each macOS job:
+Each macOS job (steps 1-5 are the composite action `apple/ci/setup`; the
+tests, simulator choice and summary are `apple/ci/run-tests.sh`,
+`pick-simulator.sh` and `summary.sh`):
 
 1. `actions/checkout`; select the newest `/Applications/Xcode_27*.app`
    and fail with `::error::` if `xcodebuild -version` is not Xcode 27 (as
@@ -152,7 +165,7 @@ Each macOS job:
 4. `actions/cache` for SwiftPM (`~/Library/Caches/org.swift.swiftpm` and
    `apple/core/.build`) and DerivedData, keyed on the Xcode version +
    `hashFiles('apple/project.yml', '**/Package.resolved')`.
-5. `brew install xcodegen`; `apple/ci/build-core.sh <slice>` (the
+5. `brew install xcodegen`; `apple/core/build-core.sh <slice>` (the
    xcframework with just that slice + Swift bindings); `xcodegen generate`
    in `apple/`.
 6. Pick the simulator by JSON (`xcrun simctl list devices available -j`),

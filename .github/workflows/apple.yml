@@ -1,0 +1,174 @@
+name: Apple
+
+# Fob for iPhone, iPad and macOS (docs/apple/plan.md §4). Nobody has an Apple
+# device: these jobs build each app, run its UI tests and hand back the
+# screenshots (shots-<platform>). The jobs are independent: one platform
+# failing never blocks another (no needs:, no shared job, no matrix).
+on:
+  push:
+    branches: [apple/integration, apple/main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The core's Rust: fob-ffi (with what Apple adds) and fob-scenes.
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: apple-check-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: apple-check-${{ runner.os }}-
+      - name: Check
+        run: cargo check --locked -p fob-ffi -p fob-scenes --all-targets
+      - name: Test
+        run: cargo test --locked -p fob-ffi -p fob-scenes
+      - name: Clippy
+        run: cargo clippy --locked -p fob-ffi -p fob-scenes --all-targets -- -D warnings
+
+  # The iOS app on an iPhone simulator.
+  iphone:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./apple/ci/setup
+        with:
+          slice: "--sim"
+          target: aarch64-apple-ios-sim
+      - name: iPhone simulator
+        id: sim
+        run: |
+          udid="$(apple/ci/pick-simulator.sh iPhone)" || { echo "::error::No iPhone simulator"; exit 1; }
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+      - name: UI tests (FobiPhoneUITests)
+        working-directory: apple
+        run: >
+          ci/run-tests.sh FobiPhoneUITests "id=${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/iphone.xcresult"
+          -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO
+      - name: Screenshots
+        if: always()
+        run: apple/ci/extract-screenshots.sh "$RUNNER_TEMP/iphone.xcresult" "$RUNNER_TEMP/shots-iphone"
+      - uses: actions/upload-artifact@v7
+        id: shots
+        if: always()
+        with:
+          name: shots-iphone
+          path: ${{ runner.temp }}/shots-iphone
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: xcresult-iphone
+          path: |
+            ${{ runner.temp }}/iphone.xcresult
+            ${{ runner.temp }}/iphone.xcresult.log
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Summary
+        if: always()
+        run: apple/ci/summary.sh iphone "$RUNNER_TEMP/shots-iphone" "$RUNNER_TEMP/iphone.xcresult.log" "${{ steps.shots.outputs.artifact-url }}"
+
+  # The same iOS app on an iPad simulator.
+  ipad:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./apple/ci/setup
+        with:
+          slice: "--sim"
+          target: aarch64-apple-ios-sim
+      - name: iPad simulator
+        id: sim
+        run: |
+          udid="$(apple/ci/pick-simulator.sh iPad)" || { echo "::error::No iPad simulator"; exit 1; }
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+      - name: UI tests (FobiPadUITests)
+        working-directory: apple
+        run: >
+          ci/run-tests.sh FobiPadUITests "id=${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/ipad.xcresult"
+          -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO
+      - name: Screenshots
+        if: always()
+        run: apple/ci/extract-screenshots.sh "$RUNNER_TEMP/ipad.xcresult" "$RUNNER_TEMP/shots-ipad"
+      - uses: actions/upload-artifact@v7
+        id: shots
+        if: always()
+        with:
+          name: shots-ipad
+          path: ${{ runner.temp }}/shots-ipad
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: xcresult-ipad
+          path: |
+            ${{ runner.temp }}/ipad.xcresult
+            ${{ runner.temp }}/ipad.xcresult.log
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Summary
+        if: always()
+        run: apple/ci/summary.sh ipad "$RUNNER_TEMP/shots-ipad" "$RUNNER_TEMP/ipad.xcresult.log" "${{ steps.shots.outputs.artifact-url }}"
+
+  # The macOS app, signed to run locally (ad hoc): macOS won't run an unsigned UI-test runner.
+  macos:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./apple/ci/setup
+        with:
+          slice: "--mac"
+          target: aarch64-apple-darwin
+      - name: UI tests (FobMacUITests)
+        working-directory: apple
+        run: >
+          ci/run-tests.sh FobMacUITests "platform=macOS,arch=arm64" "$RUNNER_TEMP/macos.xcresult"
+          -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGNING_REQUIRED=NO
+      - name: Screenshots
+        if: always()
+        run: apple/ci/extract-screenshots.sh "$RUNNER_TEMP/macos.xcresult" "$RUNNER_TEMP/shots-macos"
+      - uses: actions/upload-artifact@v7
+        id: shots
+        if: always()
+        with:
+          name: shots-macos
+          path: ${{ runner.temp }}/shots-macos
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: xcresult-macos
+          path: |
+            ${{ runner.temp }}/macos.xcresult
+            ${{ runner.temp }}/macos.xcresult.log
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Summary
+        if: always()
+        run: apple/ci/summary.sh macos "$RUNNER_TEMP/shots-macos" "$RUNNER_TEMP/macos.xcresult.log" "${{ steps.shots.outputs.artifact-url }}"

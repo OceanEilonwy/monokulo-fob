@@ -1,0 +1,17 @@
+# UniFFI's bindgen alone, outside the workspace: reading a built libfob_ffi.a
+# needs no build of fob-ffi for this Mac, so the iOS jobs build the core once
+# (apple/core/build-core.sh). The version is fob-ffi's.
+[package]
+name = "fob-apple-bindgen"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi = { version = "=0.32.2", features = ["cli"] }
+
+[workspace]

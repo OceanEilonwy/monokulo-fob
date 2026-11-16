@@ -20,6 +20,7 @@ static ALLOCATOR: wiping::Wiping = wiping::Wiping;
 pub mod connect;
 pub mod form;
 pub mod photo;
+pub mod scene;
 
 /// What went wrong, for the app to show. (The field is `reason`, not
 /// `message`, which Kotlin's `Throwable` already has.)

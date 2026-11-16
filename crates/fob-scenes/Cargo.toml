@@ -1,0 +1,9 @@
+[package]
+name = "fob-scenes"
+description = "Deterministic demo wallets for screenshots: the same data on iPhone, iPad, macOS (and later Android and GTK)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

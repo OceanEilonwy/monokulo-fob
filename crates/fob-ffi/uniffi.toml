@@ -1,2 +1,7 @@
 [bindings.kotlin]
 package_name = "uniffi.fob"
+
+[bindings.swift]
+module_name = "FobFFI"
+ffi_module_name = "fob_ffiFFI"
+ffi_module_filename = "fob_ffiFFI"

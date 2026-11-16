@@ -1,0 +1,7 @@
+# Generated: xcodegen generate, apple/core/build-core.sh
+Fob.xcodeproj/
+core/FobFFI.xcframework/
+core/Sources/FobCore/Generated/
+core/.build/
+core/.swiftpm/
+core/bindgen/target/

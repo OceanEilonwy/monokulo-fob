@@ -1,0 +1,86 @@
+# What every Apple job does before its tests (docs/apple/plan.md §4, steps
+# 1-5): Xcode 27, Rust with the one slice it needs, sccache keyed by that
+# slice, SwiftPM caches, XcodeGen, the core as FobFFI.xcframework with its
+# Swift bindings, and Fob.xcodeproj.
+name: Apple setup
+description: Xcode 27, the core's slice and the generated project
+inputs:
+  slice:
+    description: build-core.sh's flag, --sim or --mac
+    required: true
+  target:
+    description: the Rust target that slice is, e.g. aarch64-apple-ios-sim
+    required: true
+outputs:
+  xcode:
+    description: xcodebuild -version's first line
+    value: ${{ steps.xcode.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - name: Xcode 27
+      id: xcode
+      shell: bash
+      run: |
+        ls -d /Applications/Xcode*.app
+        xcode="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -n 1)"
+        if [ -n "$xcode" ]; then
+          sudo xcode-select -s "$xcode/Contents/Developer"
+        fi
+        if ! xcodebuild -version | grep -q '^Xcode 27'; then
+          echo "::error::This runner image has no Xcode 27"
+          exit 1
+        fi
+        xcodebuild -version
+        echo "version=$(xcodebuild -version | head -n 1 | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+    - name: Rust for ${{ inputs.target }}
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+        rustup target add "${{ inputs.target }}"
+    - name: Deployment targets
+      id: deployment
+      shell: bash
+      run: |
+        ios="$(sed -n 's/^export IPHONEOS_DEPLOYMENT_TARGET=//p' apple/core/build-core.sh)"
+        mac="$(sed -n 's/^export MACOSX_DEPLOYMENT_TARGET=//p' apple/core/build-core.sh)"
+        echo "key=ios${ios}-mac${mac}" >> "$GITHUB_OUTPUT"
+    - uses: mozilla-actions/sccache-action@v0.0.9
+    # Per slice: iphone and ipad share the simulator's objects, macos keeps its own.
+    - name: sccache for ${{ inputs.target }}
+      shell: bash
+      run: |
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "SCCACHE_GHA_VERSION=sccache-${{ inputs.target }}-${{ steps.deployment.outputs.key }}"
+          echo "RUSTC_WRAPPER=sccache"
+          echo "CARGO_INCREMENTAL=0"
+        } >> "$GITHUB_ENV"
+    - uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-home-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'apple/core/bindgen/Cargo.lock') }}
+        restore-keys: cargo-home-${{ runner.os }}-
+    - uses: actions/cache@v6
+      with:
+        path: |
+          ~/Library/Caches/org.swift.swiftpm
+          apple/core/.build
+          ${{ runner.temp }}/DerivedData/ModuleCache.noindex
+          ${{ runner.temp }}/DerivedData/SourcePackages
+        key: swiftpm-${{ inputs.target }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('apple/project.yml', '**/Package.resolved', 'apple/core/Package.swift') }}
+        restore-keys: swiftpm-${{ inputs.target }}-${{ steps.xcode.outputs.version }}-
+    - name: XcodeGen
+      shell: bash
+      run: brew install xcodegen && xcodegen --version
+    - name: The core as FobFFI.xcframework (${{ inputs.target }}), with its Swift bindings
+      shell: bash
+      run: apple/core/build-core.sh ${{ inputs.slice }} && sccache --show-stats
+    - name: Generate Fob.xcodeproj
+      shell: bash
+      working-directory: apple
+      run: xcodegen generate

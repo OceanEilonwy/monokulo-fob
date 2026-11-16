@@ -7,7 +7,8 @@ license.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib", "lib"]
+# staticlib: the Apple apps link it from FobFFI.xcframework (apple/core/build-core.sh).
+crate-type = ["cdylib", "staticlib", "lib"]
 name = "fob_ffi"
 
 # Generates the Kotlin bindings from the built library:
@@ -25,6 +26,7 @@ bindgen = ["uniffi/cli"]
 wipe-freed = []
 
 [dependencies]
+fob-scenes = { path = "../fob-scenes" }
 fob-wallet = { path = "../fob-wallet" }
 # Draws other people's contact photos in memory-safe Rust, so no app hands
 # their bytes to a platform C decoder (src/photo.rs).
