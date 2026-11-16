@@ -232,7 +232,6 @@ private fun ScanDrawerSheet(model: WalletModel) {
                 0 -> if (counting) {
                     PrimaryButton("Scan", {}, enabled = false)
                 } else drawer?.options?.getOrNull(picked)?.let { option ->
-                    Text(option.cost, color = Fob.muted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                     PrimaryButton(option.action, { start(option.request) }, enabled = !busy)
                 }
                 1 -> PrimaryButton(
