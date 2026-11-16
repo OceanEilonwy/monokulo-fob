@@ -336,11 +336,14 @@ class WalletModel(private val app: Application) {
 
     fun hasWallet(network: Network = _network.value) = walletsOn(app.filesDir.absolutePath, network)
 
+    /** The last [open], to retry one that failed without starting a second alongside it. */
+    private var openJob: kotlinx.coroutines.Job? = null
+
     /** Opens the wallet last open on this network, if it has one. */
     private fun open() {
         val network = _network.value
         if (!hasWallet(network)) return
-        scope.launch {
+        openJob = scope.launch {
             runCatching {
                 val book = book()
                 listChanged(book)
@@ -832,6 +835,12 @@ class WalletModel(private val app: Application) {
      */
     fun setVisible(visible: Boolean) {
         this.visible = visible
+        // The file key needs the phone unlocked: started while it was locked (a reinstall, NFC), the open failed.
+        // Back on screen, the phone is unlocked: try again.
+        if (visible && _wallet.value == null && _openError.value != null && openJob?.isActive != true) {
+            _openError.value = null
+            open()
+        }
         if (visible) startSync() else if (_status.value?.synced != false) stopSync()
         // Prices are asked only while Fob is on screen.
         _wallet.value?.let { if (visible) it.startPrices(observer) else it.stopPrices() }
