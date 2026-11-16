@@ -21,7 +21,7 @@ run() {
 }
 
 if run "$@"; then exit 0; fi
-if grep -qE "hung before establishing connection|never began executing|lost connection to the test|Early unexpected exit|Unable to boot|failed to boot" "$log" \
+if grep -qE "before establishing connection|never began executing|lost connection to the test|Early unexpected exit|Unable to boot|failed to boot" "$log" \
     && ! grep -qE "\) failed after|Test Case .* failed|recorded an issue" "$log"; then
     echo "::warning::The simulator failed, not a test: running the tests once more"
     xcrun simctl shutdown all >/dev/null 2>&1 || true
