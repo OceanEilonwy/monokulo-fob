@@ -103,6 +103,20 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: FobMac
         ENABLE_HARDENED_RUNTIME: NO
+  # FobCore's own unit tests (AppModel, words), on the Mac with no app:
+  # they run in the macOS job, in FobMacUITests' scheme.
+  FobCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [core/Tests/FobCoreTests]
+    dependencies:
+      - package: FobCore
+        product: FobCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.monokulo.fob.coretests
+        GENERATE_INFOPLIST_FILE: YES
+        ENABLE_HARDENED_RUNTIME: NO
 # One scheme per UI-test target, so CI runs each platform alone.
 schemes:
   FobiPhoneUITests:
@@ -124,5 +138,6 @@ schemes:
       targets:
         FobMac: all
         FobMacUITests: [test]
+        FobCoreTests: [test]
     test:
-      targets: [FobMacUITests]
+      targets: [FobMacUITests, FobCoreTests]

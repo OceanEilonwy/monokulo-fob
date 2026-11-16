@@ -19,6 +19,7 @@ static ALLOCATOR: wiping::Wiping = wiping::Wiping;
 
 pub mod connect;
 pub mod form;
+pub mod labels;
 pub mod photo;
 pub mod scene;
 
