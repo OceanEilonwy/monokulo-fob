@@ -97,6 +97,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import kotlinx.coroutines.launch
 import uniffi.fob.QrCode
 import uniffi.fob.SecretQr
@@ -861,18 +869,75 @@ fun BarIcons(darkIcons: Boolean, statusOnly: Boolean = false) {
 }
 
 /**
- * A sheet over the screen, on a scrim: tapping the scrim or Back calls
- * [onDismiss]. Its paper reaches the bottom edge; what's on it stays above
+ * A sheet over the screen, on a scrim: tapping the scrim, Back, or pulling
+ * the sheet down calls [onDismiss]. The sheet follows the finger down; let
+ * go past a third of its height, or flung down, it slides away, else it
+ * springs back. A sheet whose content scrolls is pulled down once that's
+ * at its top. Its paper reaches the bottom edge; what's on it stays above
  * the gesture bar and clear of the sides, and a tall one stops short of
  * the status bar. [title] names it for TalkBack.
  */
 @Composable
 fun BottomSheet(title: String, onDismiss: () -> Unit, background: Color = Fob.paper, content: @Composable ColumnScope.() -> Unit) {
     androidx.activity.compose.BackHandler(onBack = onDismiss)
+    val scope = rememberCoroutineScope()
+    val dismiss by androidx.compose.runtime.rememberUpdatedState(onDismiss)
+    val fling = with(LocalDensity.current) { 125.dp.toPx() }
+    // How far the sheet is pulled down, and its height to slide it away by.
+    var shift by remember { mutableFloatStateOf(0f) }
+    var height by remember { mutableFloatStateOf(0f) }
+    var settling by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun pull(delta: Float) {
+        settling?.cancel()
+        shift = (shift + delta).coerceAtLeast(0f)
+    }
+    fun settle(velocity: Float) {
+        settling?.cancel()
+        settling = scope.launch {
+            val away = height > 0f && (velocity > fling || (velocity > -fling && shift > height / 3f))
+            if (away) {
+                androidx.compose.animation.core.animate(shift, height, animationSpec = tween(180)) { v, _ -> shift = v }
+                dismiss()
+                // Still here a couple of frames on (the caller kept it open): back up.
+                androidx.compose.runtime.withFrameNanos {}
+                androidx.compose.runtime.withFrameNanos {}
+            }
+            androidx.compose.animation.core.animate(shift, 0f, animationSpec = spring()) { v, _ -> shift = v }
+        }
+    }
+    // Content that scrolls hands the sheet what it doesn't use: a pull down at its top, a push up while pulled.
+    val nested = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source != NestedScrollSource.UserInput || available.y >= 0f || shift <= 0f) return Offset.Zero
+                val used = maxOf(available.y, -shift)
+                pull(used)
+                return Offset(0f, used)
+            }
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (source != NestedScrollSource.UserInput || available.y <= 0f) return Offset.Zero
+                pull(available.y)
+                return Offset(0f, available.y)
+            }
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (shift <= 0f) return Velocity.Zero
+                settle(available.y)
+                return available
+            }
+        }
+    }
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().background(Fob.scrim).clickable(onClickLabel = "Close", onClick = onDismiss, indication = null, interactionSource = null))
+        Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer { alpha = if (height > 0f) (1f - shift / height).coerceIn(0f, 1f) else 1f }
+                .background(Fob.scrim).clickable(onClickLabel = "Close", onClick = onDismiss, indication = null, interactionSource = null),
+        )
         Column(
             Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).padding(top = 24.dp)
+                .offset { IntOffset(0, shift.roundToInt()) }
+                .onSizeChanged { height = it.height.toFloat() }
+                .nestedScroll(nested)
+                .draggable(rememberDraggableState(::pull), Orientation.Vertical, onDragStopped = { settle(it) })
                 .fillMaxWidth().clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(background)
                 // Taps on the sheet stay on it.
                 .clickable(onClick = {}, indication = null, interactionSource = null)
