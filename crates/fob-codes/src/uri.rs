@@ -181,6 +181,91 @@ pub fn nameless_uri(address: &str, reply: bool) -> String {
     uri
 }
 
+/// `uri` (a payment code, `monero:…`) with the node its maker's wallet uses
+/// as `fob_node=<node>`, which other wallets ignore: Fob paying it also hands
+/// the payment straight to that node, so the payee sees it in the pool at
+/// once instead of after it crosses the network. A `fob_node` already in
+/// `uri` is replaced.
+///
+/// When `node` isn't one to give strangers (see [`shareable_node`]), `uri`
+/// comes back without any `fob_node`. Whether the node is up, and answers
+/// without a login kept apart from its URL, is the caller's to check: only a
+/// node a payer's phone can use belongs here.
+pub fn with_node(uri: &str, node: &str) -> String {
+    let uri = uri.trim();
+    let (base, query) = uri.split_once('?').unwrap_or((uri, ""));
+    let mut params: Vec<String> = query
+        .split('&')
+        .filter(|p| !p.is_empty() && !p.split('=').next().unwrap_or("").eq_ignore_ascii_case("fob_node"))
+        .map(str::to_owned)
+        .collect();
+    if let Some(node) = shareable_node(node) {
+        params.push(format!("fob_node={}", utf8_percent_encode(&node, VALUE)));
+    }
+    if params.is_empty() { base.to_owned() } else { format!("{base}?{}", params.join("&")) }
+}
+
+/// `node` as it goes in a code, if a payer anywhere could reach it and
+/// nothing private goes with it: `host:port` for plain http (as Fob reads a
+/// node typed without a scheme), the whole URL otherwise. `None` for a node
+/// with a login in its URL, an onion service (Fob can't reach those yet), a
+/// host on this device, on a private or shared (CGNAT) network, or a name
+/// only a home network answers (no dot, `.local`, `.lan`, `.internal`,
+/// `.home.arpa`), or for anything but http and https.
+pub fn shareable_node(node: &str) -> Option<String> {
+    use std::net::IpAddr;
+    let node = node.trim().trim_end_matches('/');
+    let (scheme, rest) = match node.split_once("://") {
+        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
+        None => ("http".to_owned(), node),
+    };
+    if scheme != "http" && scheme != "https" || rest.contains(['?', '#']) || rest.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    if authority.contains('@') {
+        return None;
+    }
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(inner) => {
+            let (host, after) = inner.split_once(']')?;
+            match after {
+                "" => (host, None),
+                _ => (host, Some(after.strip_prefix(':')?)),
+            }
+        }
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    if port.is_some_and(|p| p.parse::<u16>().map_or(true, |p| p == 0)) {
+        return None;
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let public = match host.parse::<IpAddr>() {
+        Ok(ip) => {
+            let shared = matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 100 && v4.octets()[1] & 0xC0 == 64 || v4.is_broadcast());
+            !ip.is_unspecified() && !ip.is_multicast() && !shared && !fob_monero::network::is_local(&host)
+        }
+        Err(_) => {
+            host.contains('.')
+                && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+                && !fob_monero::network::is_onion(&host)
+                && !["localhost", "local", "lan", "internal", "home.arpa"].iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+        }
+    };
+    if !public {
+        return None;
+    }
+    let host = if host.contains(':') { format!("[{host}]") } else { host };
+    let authority = match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    };
+    if scheme == "http" && path.is_empty() { Some(authority) } else { Some(format!("{scheme}://{authority}/{path}").trim_end_matches('/').to_owned()) }
+}
+
 /// A code Meet takes: a profile, or an address marked as [`nameless_uri`] has it.
 pub fn parse_meet_code(network: Network, text: &str) -> Result<ProfileCode> {
     read_profile(network, text, true)
@@ -717,6 +802,72 @@ mod tests {
         assert_eq!((read.name.as_str(), read.address.as_str()), ("Sam", address.as_str()));
         // Other wallets see the same address with a name.
         assert!(parse_payment(Network::Stagenet, &reply).is_ok());
+    }
+
+    #[test]
+    fn a_public_node_goes_into_a_code_and_other_wallets_still_read_it() {
+        let address = wallet().address(1);
+        let code = payment_uri(&address, Some(500_000_000_000), Some("Coffee"), None);
+        let with = with_node(&code, "node.example.org:18089");
+        assert_eq!(with, format!("{code}&fob_node=node.example.org%3A18089"));
+        let read = parse_payment(Network::Stagenet, &with).unwrap();
+        assert_eq!((read.amount, read.description.as_deref()), (Some(500_000_000_000), Some("Coffee")));
+        // A bare address gets its query from the node alone.
+        assert_eq!(with_node(&format!("monero:{address}"), "203.0.113.7:18081"), format!("monero:{address}?fob_node=203.0.113.7%3A18081"));
+    }
+
+    #[test]
+    fn a_node_already_in_a_code_is_replaced_or_dropped() {
+        let once = with_node("monero:4abc?tx_amount=1", "a.example.org:18089");
+        assert_eq!(with_node(&once, "b.example.org:18089"), "monero:4abc?tx_amount=1&fob_node=b.example.org%3A18089");
+        assert_eq!(with_node("monero:4abc?FOB_NODE=x.example.org&tx_amount=1", "192.168.1.5:18081"), "monero:4abc?tx_amount=1");
+        assert_eq!(with_node("monero:4abc?fob_node=x.example.org", "localhost:18081"), "monero:4abc");
+    }
+
+    #[test]
+    fn a_node_is_written_as_fob_reads_one_typed() {
+        assert_eq!(shareable_node(" http://Node.Example.org:18089/ ").as_deref(), Some("node.example.org:18089"));
+        assert_eq!(shareable_node("node.example.org").as_deref(), Some("node.example.org"));
+        assert_eq!(shareable_node("HTTPS://node.example.org").as_deref(), Some("https://node.example.org"));
+        assert_eq!(shareable_node("https://node.example.org:443/Monero/").as_deref(), Some("https://node.example.org:443/Monero"));
+        assert_eq!(shareable_node("http://node.example.org/rpc").as_deref(), Some("http://node.example.org/rpc"));
+        assert_eq!(shareable_node("[2001:db8::1]:18089").as_deref(), Some("[2001:db8::1]:18089"));
+    }
+
+    #[test]
+    fn a_node_strangers_can_t_use_or_shouldn_t_see_stays_out() {
+        for node in [
+            "",
+            "user:pass@node.example.org:18089",
+            "https://user@node.example.org",
+            "abcdefghijklmnop.onion:18081",
+            "http://ABCDEFGHIJKLMNOP.ONION.",
+            "localhost:18081",
+            "127.0.0.1:18081",
+            "[::1]:18081",
+            "0.0.0.0:18081",
+            "192.168.1.5:18081",
+            "10.0.0.2:18081",
+            "172.16.4.4:18081",
+            "169.254.1.1:18081",
+            "100.100.1.1:18081",
+            "[fd00::1]:18081",
+            "[fe80::1]:18081",
+            "mynode:18081",
+            "mynode.local:18081",
+            "nas.lan:18081",
+            "node.internal",
+            "node.home.arpa",
+            "ftp://node.example.org",
+            "node.example.org:0",
+            "node.example.org:99999",
+            "node.example.org:port",
+            "node.example.org?x=1",
+            "node example.org",
+        ] {
+            assert_eq!(shareable_node(node), None, "{node}");
+            assert_eq!(with_node("monero:4abc", node), "monero:4abc", "{node}");
+        }
     }
 
     #[test]

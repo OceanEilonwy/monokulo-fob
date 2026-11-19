@@ -158,6 +158,20 @@ pub fn is_onion(host: &str) -> bool {
     host.eq_ignore_ascii_case("onion") || n > 6 && host.is_char_boundary(n - 6) && host[n - 6..].eq_ignore_ascii_case(".onion")
 }
 
+/// Whether `host` is this device or on a private network: where a login
+/// over plain http stays off the internet.
+pub fn is_local(host: &str) -> bool {
+    use std::net::IpAddr;
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+        Err(_) => false,
+    }
+}
+
 /// Confirmations before money can be spent.
 pub const UNLOCK: u64 = monero_wallet::DEFAULT_LOCK_WINDOW as u64;
 
