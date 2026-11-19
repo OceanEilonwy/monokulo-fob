@@ -340,7 +340,7 @@ const DAY: u64 = 86_400;
 /// in [`BACK_TO_VERSION_11`].
 /// Takes a database made now back to version 11's layout: no accounts or
 /// keyed requests.
-const BACK_TO_VERSION_11: &str = "ALTER TABLE outputs DROP COLUMN account; ALTER TABLE wallet DROP COLUMN receive_account; ALTER TABLE wallet DROP COLUMN tag_id; ALTER TABLE wallet DROP COLUMN wallet_id; ALTER TABLE wallet DROP COLUMN accounts; ALTER TABLE wallet DROP COLUMN connections; ALTER TABLE wallet DROP COLUMN keyed_next_id; ALTER TABLE wallet DROP COLUMN light_accounts_sent; DROP TABLE keyed_requests;";
+const BACK_TO_VERSION_11: &str = "ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE outputs DROP COLUMN account; ALTER TABLE wallet DROP COLUMN receive_account; ALTER TABLE wallet DROP COLUMN tag_id; ALTER TABLE wallet DROP COLUMN wallet_id; ALTER TABLE wallet DROP COLUMN accounts; ALTER TABLE wallet DROP COLUMN connections; ALTER TABLE wallet DROP COLUMN keyed_next_id; ALTER TABLE wallet DROP COLUMN light_accounts_sent; DROP TABLE keyed_requests;";
 
 const BACK_TO_VERSION_9: &str = "ALTER TABLE sent DROP COLUMN receipt_view; UPDATE outputs SET key_image = COALESCE(json_extract(coin, '$.Free.ki.Known'), json_extract(coin, '$.Held.ki.Known'), json_extract(coin, '$.Spent.ki.Known')), spent_in = COALESCE(json_extract(coin, '$.Spent.tx'), json_extract(coin, '$.Held.hold.InPool.tx'), json_extract(coin, '$.Held.hold.OurPayment.tx'), CASE WHEN json_type(coin, '$.Held.hold.DeviceChain') IS NOT NULL THEN 'spent-before-sync' WHEN json_type(coin, '$.Held.hold.DevicePool') IS NOT NULL THEN 'spent-in-pool-at-sync' END); ALTER TABLE outputs DROP COLUMN coin;";
 

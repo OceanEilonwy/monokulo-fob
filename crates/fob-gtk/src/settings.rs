@@ -39,6 +39,10 @@ pub enum Input {
     Rename(String, String),
     Forget,
     Zmq,
+    /// "Share node in payment codes" switched.
+    ShareNode(bool),
+    /// The wallet's setting, read: the switch follows without saving it again.
+    ShareNodeRead(bool),
     /// Whether syncing goes through a light wallet server, and its row.
     Light(bool, Option<String>),
     /// "Sync through" chosen: 0 the node, 1 a light wallet server.
@@ -76,6 +80,9 @@ pub struct Settings {
     /// The Light wallet server row: "lws.example:8443 · synced".
     light_line: Option<String>,
     sync_through: adw::ComboRow,
+    share_node: adw::SwitchRow,
+    /// Setting the switch from the wallet, not someone switching it.
+    share_filling: bool,
     /// The Node card's and the Light server screen's words.
     words: fob_app::views::LightWords,
     zmq_problem: Option<String>,
@@ -158,6 +165,15 @@ impl SimpleComponent for Settings {
                                 set_subtitle: &model.node_line,
                                 add_suffix = &gtk::Image { set_icon_name: Some("go-next-symbolic") },
                                 connect_activated[sender] => move |_| { let _ = sender.output(RootMsg::Go(Go::Node)); },
+                            },
+                            #[local_ref]
+                            add = share_node -> adw::SwitchRow {
+                                set_title: "Share node in payment codes",
+                                set_subtitle: "A Fob paying you also sends to your node, so you see it at once. Only a public node without a login.",
+                                // A server syncs: the node isn't what's used.
+                                #[watch]
+                                set_visible: !model.light_on,
+                                connect_active_notify[sender] => move |row| sender.input(Input::ShareNode(row.is_active())),
                             },
                             add = &adw::ActionRow {
                                 set_use_markup: false,
@@ -249,6 +265,7 @@ impl SimpleComponent for Settings {
     fn init(engine: Engine, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
         let (wallets_group, backup_group) = (adw::PreferencesGroup::new(), adw::PreferencesGroup::new());
         let sync_through = adw::ComboRow::new();
+        let share_node = adw::SwitchRow::new();
         let scan_line = engine.scan_engine(false).line;
         let model = Settings {
             engine,
@@ -266,13 +283,15 @@ impl SimpleComponent for Settings {
             light_on: false,
             light_line: None,
             sync_through: sync_through.clone(),
+            share_node: share_node.clone(),
+            share_filling: false,
             words: fob_app::views::light_words(),
             zmq_problem: None,
             profile_line: String::new(),
             scan_line,
             gpu_refused: false,
         };
-        let (wallets_group, backup_group, sync_through) = (&wallets_group, &backup_group, &sync_through);
+        let (wallets_group, backup_group, sync_through, share_node) = (&wallets_group, &backup_group, &sync_through, &share_node);
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -299,6 +318,25 @@ impl SimpleComponent for Settings {
                 relm4::spawn(async move {
                     if let Some((on, line)) = engine.read(|wallet, _| async move { (wallet.light_mode().await, wallet.light_line().await) }).await {
                         sender.input(Input::Light(on, line));
+                    }
+                    if let Some(on) = engine.read(|wallet, _| async move { wallet.share_node().await }).await {
+                        sender.input(Input::ShareNodeRead(on));
+                    }
+                });
+            }
+            Input::ShareNodeRead(on) => {
+                if self.share_node.is_active() != on {
+                    self.share_filling = true;
+                    self.share_node.set_active(on);
+                    self.share_filling = false;
+                }
+            }
+            Input::ShareNode(_) if self.share_filling => {}
+            Input::ShareNode(on) => {
+                let (engine, sender) = (self.engine.clone(), sender.clone());
+                relm4::spawn(async move {
+                    if let Err(e) = engine.change(move |wallet| async move { wallet.set_share_node(on).await }).await {
+                        sender.input(Input::Say(e.to_string()));
                     }
                 });
             }

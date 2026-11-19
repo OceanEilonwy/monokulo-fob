@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 12;
+const VERSION: i32 = 13;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -111,6 +111,8 @@ const WALLET: Table = Table {
         ("connections", Json),
         ("keyed_next_id", Int),
         ("light_accounts_sent", Json),
+        // Since version 13: naming the node in payment codes.
+        ("share_node", Bool),
     ],
 };
 const RECENT: Table = Table { name: "recent_blocks", columns: &[("height", Int), ("hash", Text)] };
@@ -705,6 +707,11 @@ impl Db {
             connection.execute_batch(&upgrade).map_err(failed)?;
             version = 12;
         }
+        if version == 12 {
+            let upgrade = "BEGIN;\nALTER TABLE wallet ADD COLUMN share_node INTEGER DEFAULT 0;\nPRAGMA user_version = 13;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 13;
+        }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));
         }
@@ -825,7 +832,7 @@ mod tests {
     }
 
     /// Takes a database made now back to version 11's layout.
-    const BACK_TO_11: &str = "ALTER TABLE outputs DROP COLUMN account; ALTER TABLE wallet DROP COLUMN receive_account; ALTER TABLE wallet DROP COLUMN tag_id; \
+    const BACK_TO_11: &str = "ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE outputs DROP COLUMN account; ALTER TABLE wallet DROP COLUMN receive_account; ALTER TABLE wallet DROP COLUMN tag_id; \
         ALTER TABLE wallet DROP COLUMN wallet_id; ALTER TABLE wallet DROP COLUMN accounts; ALTER TABLE wallet DROP COLUMN connections; \
         ALTER TABLE wallet DROP COLUMN keyed_next_id; ALTER TABLE wallet DROP COLUMN light_accounts_sent; DROP TABLE keyed_requests; ";
 

@@ -19,6 +19,7 @@ impl Wallet {
             pull_mark_hash: None,
             zmq_endpoint: None,
             zmq_on: false,
+            share_node: false,
             sync_mode: SyncMode::Node,
             light_url: None,
             light_self_signed: false,

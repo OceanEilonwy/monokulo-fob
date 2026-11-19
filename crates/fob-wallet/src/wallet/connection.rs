@@ -245,6 +245,39 @@ impl Wallet {
         Ok(())
     }
 
+    /// Whether this wallet's payment codes name its node (`fob_node`).
+    pub async fn share_node(&self) -> bool {
+        self.inner.state.lock().await.share_node
+    }
+
+    /// Turns naming the node in payment codes on or off. Codes made from
+    /// here on follow it; one already shown stays as it was made.
+    pub async fn set_share_node(&self, on: bool) -> Result<()> {
+        let mut state = self.inner.state.lock().await;
+        state.share_node = on;
+        self.save_state(&state)
+    }
+
+    /// `uri` with the node in it ([`uri::with_node`]) when sharing it is on
+    /// and a payer could use it: syncing goes through it (not a light
+    /// wallet server), its certificate needn't be accepted by hand, it
+    /// answers (its last check passed, or syncing is getting through), and
+    /// it's one to give strangers (no login, onion or private address).
+    /// Otherwise `uri` as it is.
+    pub(super) fn with_shared_node(&self, state: &State, uri: String) -> String {
+        if !state.share_node || state.sync_mode != state::SyncMode::Node || state.node_self_signed {
+            return uri;
+        }
+        let checked = self.inner.node_verdict.lock().expect("node lock").clone();
+        let status = self.status();
+        let current = node::Setting { url: state.node.clone(), self_signed: state.node_self_signed };
+        let answers = match checked {
+            Some((setting, verdict)) if setting == current => verdict == node::Verdict::Working,
+            _ => status.connected && status.error.is_none(),
+        };
+        if answers { uri::with_node(&uri, &state.node) } else { uri }
+    }
+
     /// Starts the ZMQ subscriber afresh from the settings, if the sync loop
     /// runs and instant updates are on; otherwise just stops it.
     pub(super) async fn restart_zmq(&self) {

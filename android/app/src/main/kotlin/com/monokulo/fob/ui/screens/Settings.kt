@@ -243,6 +243,18 @@ fun SettingsScreen(model: WalletModel, nav: Nav, openLocked: (Screen) -> Unit) {
                     // Only the row for the way syncing goes: the other's kept for switching back.
                     if (light) SettingRow(words.serverTitle, lightLine ?: words.noneChosen, onClick = { nav.go(Screen.LightServer) })
                     else SettingRow("Node", node, onClick = { nav.go(Screen.Node) })
+                    // A server syncs, so the node isn't what's used: nothing to share. Read as the screen opens.
+                    if (!light) {
+                        val wallet by model.wallet.collectAsState()
+                        var shareNode by remember { mutableStateOf(false) }
+                        LaunchedEffect(wallet) { shareNode = wallet?.shareNode() ?: false }
+                        SettingRow(
+                            "Share node in payment codes",
+                            "A Fob paying you also sends to your node, so you see it at once. Only a public node without a login.",
+                            checked = shareNode,
+                            onChecked = { on -> scope.launch { runCatching { model.setShareNode(on) }.onSuccess { shareNode = on }.onFailure { model.say(it.reason()) } } },
+                        )
+                    }
                     confirming?.let { on ->
                         AlertDialog(
                             onDismissRequest = { confirming = null },
