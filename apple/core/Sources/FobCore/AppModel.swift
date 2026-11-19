@@ -27,6 +27,9 @@ public final class AppModel {
     public let theme: ThemeName
     /// Every screen's own words, for this device.
     public let labels: Labels
+    /// Face ID / Touch ID before a payment (CORE-040); a stub in scene
+    /// mode, answering as `-FobBiometrics pass|fail|unavailable` says.
+    public let biometrics: Biometrics
 
     /// Where the wallet comes from; none while no wallet is open.
     public private(set) var source: (any WalletSource)?
@@ -46,6 +49,10 @@ public final class AppModel {
     public private(set) var receive: ReceiveModel?
     /// Contacts' model for the open wallet (CORE-012).
     public private(set) var contacts: ContactsModel?
+    /// Coins' model for the open wallet (CORE-013).
+    public private(set) var coins: CoinsModel?
+    /// Split up's model for the open wallet (CORE-013).
+    public private(set) var split: SplitModel?
 
     public init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         func value(_ flag: String) -> String? {
@@ -61,10 +68,13 @@ public final class AppModel {
         tab = start.tab
         path = start.path
         gallery = name.flatMap { $0.hasPrefix("gallery-") ? String($0.dropFirst("gallery-".count)) : nil }
-        labels = FobCore.labels(device: Self.deviceName, biometry: Self.defaultBiometry)
+        biometrics = Biometrics(arguments: arguments, sceneMode: name != nil)
+        labels = FobCore.labels(device: Self.deviceName, biometry: biometrics.kind.biometry ?? Self.defaultBiometry)
         open(scene)
         receive = name.flatMap(ReceiveModel.init(scene:))
         contacts = name.flatMap(ContactsModel.init(scene:))
+        coins = name.flatMap(CoinsModel.init(scene:))
+        split = name.flatMap(SplitModel.init(scene:))
     }
 
     /// Shows `source`'s wallet and follows its changes; none closes it.
@@ -141,13 +151,10 @@ public final class AppModel {
         #endif
     }
 
-    /// How the device checks it's you until LocalAuthentication says
-    /// (CORE-040): Face ID on iPhone, Touch ID on iPad and the Mac.
+    /// The device's usual kind (Face ID on iPhone, Touch ID on iPad and the
+    /// Mac), for the words when biometrics are unavailable and the
+    /// passphrase stands in.
     static var defaultBiometry: Biometry {
-        #if os(macOS)
-        .touchId
-        #else
-        UIDevice.current.userInterfaceIdiom == .phone ? .faceId : .touchId
-        #endif
+        Biometrics.deviceKind.biometry ?? .touchId
     }
 }

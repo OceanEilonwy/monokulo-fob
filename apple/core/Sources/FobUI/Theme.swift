@@ -102,3 +102,28 @@ extension View {
             .tint(FobColors.orange)
     }
 }
+
+/// One of FobColors' roles, named as Theme.kt names it (the gallery's swatches).
+public struct FobColorRole: Sendable, Identifiable {
+    public let name: String
+    public let color: Color
+    public var id: String { name }
+}
+
+extension FobColors {
+    /// Every role, in Theme.kt's order, then the fixed orange.
+    public var roles: [FobColorRole] {
+        let named: [(String, Color)] = [
+            ("paper", paper), ("card", card), ("sunken", sunken), ("onPaper", onPaper),
+            ("line", line), ("ink", ink), ("muted", muted), ("outline", outline),
+            ("orangeText", orangeText), ("green", green), ("greenDot", greenDot),
+            ("greenFill", greenFill), ("onGreen", onGreen), ("highlight", highlight),
+            ("warning", warning), ("selectedFill", selectedFill), ("addressMark", addressMark),
+            ("onAddressMark", onAddressMark), ("red", red), ("onRed", onRed), ("track", track),
+            ("scrim", scrim), ("inverse", inverse), ("onInverse", onInverse),
+            ("inverseMuted", inverseMuted), ("inverseAccent", inverseAccent),
+            ("inverseGreen", inverseGreen), ("orange", FobColors.orange), ("onOrange", FobColors.onOrange),
+        ]
+        return named.map { FobColorRole(name: $0.0, color: $0.1) }
+    }
+}

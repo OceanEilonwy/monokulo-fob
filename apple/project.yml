@@ -79,6 +79,20 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1,2"
         TEST_TARGET_NAME: FobiOS
+  # Core's own UI tests: FobUI's gallery (-FobScene gallery-<name>) in the
+  # iPhone app, run in the iphone job (FobiPhoneUITests' scheme).
+  FobCoreUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [core/UITests]
+    dependencies:
+      - target: FobiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.monokulo.fob.uitests.core
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        TEST_TARGET_NAME: FobiOS
   FobiPadUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -124,8 +138,9 @@ schemes:
       targets:
         FobiOS: all
         FobiPhoneUITests: [test]
+        FobCoreUITests: [test]
     test:
-      targets: [FobiPhoneUITests]
+      targets: [FobiPhoneUITests, FobCoreUITests]
   FobiPadUITests:
     build:
       targets:

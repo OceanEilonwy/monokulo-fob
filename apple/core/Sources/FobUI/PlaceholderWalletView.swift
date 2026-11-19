@@ -1,5 +1,7 @@
 // The scaffold's Wallet screen: the scene's wallet name and balance in Fob's
 // colours, until the device teams build the real ones (docs/apple/design).
+// It sits in FobRoot, so `-FobScene gallery-<name>` shows the gallery in the
+// scaffold apps too.
 
 import FobCore
 import SwiftUI
@@ -12,8 +14,9 @@ public struct PlaceholderWalletView: View {
     }
 
     public var body: some View {
-        WalletCard(wallet: model.wallet)
-            .fobTheme(model.theme)
+        FobRoot(model: model) {
+            WalletCard(wallet: model.wallet)
+        }
     }
 }
 
