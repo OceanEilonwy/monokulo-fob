@@ -2022,6 +2022,19 @@ impl FobWallet {
         Ok(self.inner.set_zmq(on, endpoint.as_deref()).await?)
     }
 
+    /// Whether this wallet's payment codes name its node (`fob_node`), so a
+    /// Fob paying one hands the payment straight to it.
+    pub async fn share_node(&self) -> bool {
+        self.inner.share_node().await
+    }
+
+    /// Turns naming the node in payment codes on or off. Even on, a code
+    /// names it only while it answers and strangers could use it (no
+    /// login, onion or private address, syncing through it).
+    pub async fn set_share_node(&self, on: bool) -> Result<()> {
+        Ok(self.inner.set_share_node(on).await?)
+    }
+
     /// Syncing through a light wallet server now.
     pub async fn light_mode(&self) -> bool {
         self.inner.light_mode().await

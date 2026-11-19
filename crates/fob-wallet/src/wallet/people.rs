@@ -277,7 +277,8 @@ impl Wallet {
         let name = Self::name_in_requests(&state);
         let ask = requests::Draft { subaddress: 0, address: String::new(), contact, note: note.map(Into::into), asked, name };
         if let Some(again) = state.requests.same_again(&ask, &rows) {
-            return Ok((again.clone(), Self::request_code_of(again)));
+            let code = self.shared(&state, Self::request_code_of(again));
+            return Ok((again.clone(), code));
         }
         let mut changed = state.clone();
         let subaddress = Self::hand_out(&mut changed);
@@ -285,7 +286,7 @@ impl Wallet {
         let request = changed.requests.add(draft, now())?;
         self.save_state(&changed)?;
         *state = changed;
-        let code = Self::request_code_of(&request);
+        let code = self.shared(&state, Self::request_code_of(&request));
         Ok((request, code))
     }
 
@@ -305,7 +306,7 @@ impl Wallet {
     /// whatever the profile's name is now.
     pub async fn request_code(&self, id: u64) -> Option<ReceiveCode> {
         let state = self.inner.state.lock().await;
-        Some(Self::request_code_of(state.requests.get(id)?))
+        Some(self.shared(&state, Self::request_code_of(state.requests.get(id)?)))
     }
 
     /// A request's own screen, or `None` once it's deleted.
@@ -424,14 +425,22 @@ impl Wallet {
         let xmr = xmr.filter(|a| *a > 0);
         let xmr_text = xmr.map(amount::format);
         let code = uri::receive(address, xmr_text.as_deref(), note)?;
-        Ok(match (fiat.filter(|_| xmr.is_some()), xmr_text) {
+        let code = match (fiat.filter(|_| xmr.is_some()), xmr_text) {
             (Some(fiat), Some(xmr)) => ReceiveCode {
                 uri: code.uri,
                 headline: Some(fiat),
                 detail: Some([Some(format!("{xmr} XMR")), code.detail].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
             },
             _ => ReceiveCode { uri: code.uri, headline: code.headline, detail: code.detail },
-        })
+        };
+        let state = self.inner.state.lock().await;
+        Ok(self.shared(&state, code))
+    }
+
+    /// `code` naming the node when the setting asks and a payer could use
+    /// it ([`with_shared_node`](Wallet::with_shared_node)).
+    fn shared(&self, state: &State, code: ReceiveCode) -> ReceiveCode {
+        ReceiveCode { uri: self.with_shared_node(state, code.uri), ..code }
     }
 }
 

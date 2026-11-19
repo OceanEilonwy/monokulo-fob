@@ -22,6 +22,55 @@ async fn zmq_is_off_until_turned_on_and_follows_the_node_s_host() {
 }
 
 #[tokio::test]
+async fn codes_name_the_node_only_when_asked_and_a_payer_could_use_it() {
+    let path = dir("share-node");
+    let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();
+    let address = wallet.receive_address().await.unwrap();
+    let node = wallet.node().await.url;
+    let shared = format!("fob_node={}", node::address(&node).replace(':', "%3A"));
+    let code = || async { wallet.receive_code(&address, None, None).await.unwrap().uri };
+    wallet.set_status(|s| s.connected = true);
+    assert!(!wallet.share_node().await, "off by default");
+    assert_eq!(code().await, format!("monero:{address}"));
+
+    wallet.set_share_node(true).await.unwrap();
+    assert_eq!(code().await, format!("monero:{address}?{shared}"), "on, and syncing gets through");
+    let (_, request) = wallet.make_request(None, Some(Typed::Xmr("0.5")), None).await.unwrap();
+    assert!(request.uri.ends_with(&format!("&{shared}")), "{}", request.uri);
+
+    // Not answering: syncing fails, or the last check of it did.
+    wallet.set_status(|s| s.error = Some("no answer".into()));
+    assert_eq!(code().await, format!("monero:{address}"));
+    let current = wallet.node().await;
+    *wallet.inner.node_verdict.lock().unwrap() = Some((current.clone(), node::Verdict::Working));
+    assert!(code().await.ends_with(&shared), "a passed check is newer");
+    *wallet.inner.node_verdict.lock().unwrap() = Some((current, node::Verdict::Checking));
+    assert_eq!(code().await, format!("monero:{address}"));
+    *wallet.inner.node_verdict.lock().unwrap() = None;
+    wallet.set_status(|s| s.error = None);
+
+    // A node strangers can't use, or syncing through a light wallet server.
+    wallet.inner.state.lock().await.node = "http://user:pass@node.example.org:38081".into();
+    assert_eq!(code().await, format!("monero:{address}"), "a login");
+    wallet.inner.state.lock().await.node = "http://192.168.1.5:38081".into();
+    assert_eq!(code().await, format!("monero:{address}"), "a home network's");
+    wallet.inner.state.lock().await.node = node.clone();
+    wallet.inner.state.lock().await.node_self_signed = true;
+    assert_eq!(code().await, format!("monero:{address}"), "a certificate accepted by hand");
+    wallet.inner.state.lock().await.node_self_signed = false;
+    wallet.inner.state.lock().await.sync_mode = state::SyncMode::Light;
+    assert_eq!(code().await, format!("monero:{address}"), "light wallet server");
+    wallet.inner.state.lock().await.sync_mode = state::SyncMode::Node;
+
+    // Kept with the wallet.
+    drop(wallet);
+    let again = Wallet::open(&path, [1; 32]).unwrap();
+    assert!(again.share_node().await);
+    again.set_share_node(false).await.unwrap();
+    assert!(!again.share_node().await);
+}
+
+#[tokio::test]
 async fn custom_nodes_are_kept_per_wallet_until_removed() {
     let path = dir("nodes-kept");
     let wallet = Wallet::create(&path, [1; 32], Network::Stagenet).unwrap();

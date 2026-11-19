@@ -145,6 +145,10 @@ pub(super) struct State {
     /// Instant updates on. Off by default.
     #[serde(default)]
     pub(super) zmq_on: bool,
+    /// Put the node in this wallet's payment codes (`fob_node`), so a Fob
+    /// paying one hands the payment straight to it. Off by default.
+    #[serde(default)]
+    pub(super) share_node: bool,
     /// Where syncing comes from: the node, or a light wallet server.
     #[serde(default)]
     pub(super) sync_mode: SyncMode,

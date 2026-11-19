@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::{error::VaultError, error::Result, keys::StoredKeys};
 
 /// `PRAGMA user_version` for this layout.
-const VERSION: i32 = 11;
+const VERSION: i32 = 12;
 
 fn failed(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage(e.to_string())
@@ -99,6 +99,8 @@ const WALLET: Table = Table {
         // Since version 9.
         ("light_blocks", Json),
         ("light_history", Json),
+        // Since version 12.
+        ("share_node", Bool),
     ],
 };
 const RECENT: Table = Table { name: "recent_blocks", columns: &[("height", Int), ("hash", Text)] };
@@ -655,6 +657,11 @@ impl Db {
             upgrade.commit().map_err(failed)?;
             version = 11;
         }
+        if version == 11 {
+            let upgrade = "BEGIN;\nALTER TABLE wallet ADD COLUMN share_node INTEGER DEFAULT 0;\nPRAGMA user_version = 12;\nCOMMIT;";
+            connection.execute_batch(upgrade).map_err(failed)?;
+            version = 12;
+        }
         if version != VERSION {
             return Err(failed(format!("this wallet's database is version {version}, and this Fob reads version {VERSION}")));
         }
@@ -785,7 +792,7 @@ mod tests {
         let keys = Keys::generate(Network::Stagenet).keys;
         let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
         let connection = db.connection;
-        connection.execute_batch("ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;").unwrap();
+        connection.execute_batch("ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;").unwrap();
         connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
         for (pos, receipt) in [(0, Some("good")), (1, None), (2, Some("bad"))] {
             connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time, receipt) VALUES (?1, ?2, 1, 1, 0, 1, ?3)", rusqlite::params![pos, hash(&format!("p{pos}")), receipt]).unwrap();
@@ -796,7 +803,7 @@ mod tests {
         }
         let reopened = Db::open(&path, &[7; 32], viewer).unwrap();
         let version: i32 = reopened.connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, VERSION);
         let state = reopened.load().unwrap();
         let views: Vec<&Value> = state["sent"].as_array().unwrap().iter().map(|s| &s["receipt_view"]).collect();
         assert_eq!(views, [&json!({"merchant": "Corner Café"}), &Value::Null, &Value::Null]);
@@ -822,7 +829,7 @@ mod tests {
         let keys = Keys::generate(Network::Stagenet).keys;
         let db = Db::create(&path, &[7; 32], &StoredKeys::from(&keys)).unwrap();
         let connection = db.connection;
-        connection.execute_batch("ALTER TABLE outputs DROP COLUMN coin; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 9;").unwrap();
+        connection.execute_batch("ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE outputs DROP COLUMN coin; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 9;").unwrap();
         connection.execute("INSERT INTO wallet (pos, node) VALUES (0, 'node')", []).unwrap();
         connection.execute("INSERT INTO spends (pos, tx, height, time, fee) VALUES (0, ?1, 42, 1, 1)", [hash("spend")]).unwrap();
         connection.execute("INSERT INTO sent (pos, tx, amount, fee, change, time) VALUES (0, ?1, 1, 1, 0, 1)", [hash("ours")]).unwrap();

@@ -111,7 +111,7 @@ async fn a_version_9_database_opens_with_each_coin_in_its_state() {
     // Back to version 9 by hand: the column gone, the two old ones filled.
     let connection = rusqlite::Connection::open(path.with_extension("db")).unwrap();
     connection.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex::encode([1u8; 32]))).unwrap();
-    connection.execute_batch("ALTER TABLE sent DROP COLUMN receipt_view; ALTER TABLE outputs DROP COLUMN coin; PRAGMA user_version = 9;").unwrap();
+    connection.execute_batch("ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE sent DROP COLUMN receipt_view; ALTER TABLE outputs DROP COLUMN coin; PRAGMA user_version = 9;").unwrap();
     let image = hex::encode([0xaa; 32]);
     let marks: [(Option<&str>, Option<String>); 8] = [
         (None, None),

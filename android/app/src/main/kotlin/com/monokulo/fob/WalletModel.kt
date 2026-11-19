@@ -783,6 +783,11 @@ class WalletModel(private val app: Application) {
     }
 
     /** Instant updates (ZMQ) on or off; [endpoint], if given, replaces the one set. Throws what Rust refused. */
+    /** Settings' "Share node in payment codes": Receive's and requests' codes made from here on follow it. */
+    suspend fun setShareNode(on: Boolean) {
+        _wallet.value?.setShareNode(on)
+    }
+
     suspend fun setZmq(on: Boolean, endpoint: String? = null) {
         val wallet = _wallet.value ?: return
         wallet.setZmq(on, endpoint)

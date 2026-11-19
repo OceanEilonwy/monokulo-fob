@@ -335,7 +335,7 @@ const DAY: u64 = 86_400;
 /// version 11's receipt views dropped, the two columns that held a coin's
 /// state in pieces filled from `coin`, and `coin` dropped. Goes before
 /// `PRAGMA user_version` in the batch that takes the rest of the file back.
-const BACK_TO_VERSION_9: &str = "ALTER TABLE sent DROP COLUMN receipt_view; UPDATE outputs SET key_image = COALESCE(json_extract(coin, '$.Free.ki.Known'), json_extract(coin, '$.Held.ki.Known'), json_extract(coin, '$.Spent.ki.Known')), spent_in = COALESCE(json_extract(coin, '$.Spent.tx'), json_extract(coin, '$.Held.hold.InPool.tx'), json_extract(coin, '$.Held.hold.OurPayment.tx'), CASE WHEN json_type(coin, '$.Held.hold.DeviceChain') IS NOT NULL THEN 'spent-before-sync' WHEN json_type(coin, '$.Held.hold.DevicePool') IS NOT NULL THEN 'spent-in-pool-at-sync' END); ALTER TABLE outputs DROP COLUMN coin;";
+const BACK_TO_VERSION_9: &str = "ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE sent DROP COLUMN receipt_view; UPDATE outputs SET key_image = COALESCE(json_extract(coin, '$.Free.ki.Known'), json_extract(coin, '$.Held.ki.Known'), json_extract(coin, '$.Spent.ki.Known')), spent_in = COALESCE(json_extract(coin, '$.Spent.tx'), json_extract(coin, '$.Held.hold.InPool.tx'), json_extract(coin, '$.Held.hold.OurPayment.tx'), CASE WHEN json_type(coin, '$.Held.hold.DeviceChain') IS NOT NULL THEN 'spent-before-sync' WHEN json_type(coin, '$.Held.hold.DevicePool') IS NOT NULL THEN 'spent-in-pool-at-sync' END); ALTER TABLE outputs DROP COLUMN coin;";
 
 /// A transaction hash for a test, from a short name: the name's bytes,
 /// padded. What a coin's state names must be a hash, not a word.

@@ -479,7 +479,7 @@ async fn a_version_10_database_opens_with_the_same_activity() {
     assert!(before.iter().any(|r| r.receipt.is_some()));
     drop(wallet);
     let old = rusqlite::Connection::open(path.with_extension("db")).unwrap();
-    old.execute_batch(&format!("PRAGMA key = \"x'{}'\"; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;", hex::encode([1u8; 32]))).unwrap();
+    old.execute_batch(&format!("PRAGMA key = \"x'{}'\"; ALTER TABLE wallet DROP COLUMN share_node; ALTER TABLE sent DROP COLUMN receipt_view; PRAGMA user_version = 10;", hex::encode([1u8; 32]))).unwrap();
     drop(old);
     let upgraded = Wallet::open(&path, [1; 32]).unwrap();
     assert_eq!(canonical(upgraded.activity().await.to_vec()), before);
