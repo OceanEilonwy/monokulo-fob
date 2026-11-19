@@ -20,7 +20,7 @@ use monero_daemon_rpc::HttpTransport;
 use monero_wallet::interface::InterfaceError;
 use tokio::time::Instant;
 
-pub use fob_monero::network::is_onion;
+pub use fob_monero::network::{is_local, is_onion};
 use fob_monero::network::Network;
 use crate::error::EndpointProblem;
 use crate::{fetch, transport::{CertProblem, Transport}};
@@ -65,20 +65,6 @@ pub fn reachable(url: &str) -> Result<(), EndpointProblem> {
         return Err(EndpointProblem::PlainLogin);
     }
     Ok(())
-}
-
-/// Whether `host` is this device or on a private network: where a login
-/// over plain http stays off the internet.
-fn is_local(host: &str) -> bool {
-    use std::net::IpAddr;
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
-        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
-        Err(_) => false,
-    }
 }
 
 /// A node address as people type it: `host:port` gets `http://`, no trailing slash.
