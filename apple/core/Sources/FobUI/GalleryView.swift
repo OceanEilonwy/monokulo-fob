@@ -20,7 +20,7 @@ public struct GalleryView: View {
     }
 
     /// The pages there are.
-    public static let names = ["theme"]
+    public static let names = ["theme", "biometrics"]
 
     public var body: some View {
         ScrollView {
@@ -28,6 +28,8 @@ public struct GalleryView: View {
                 switch name {
                 case "theme":
                     ThemeGallery()
+                case "biometrics":
+                    BiometricsGallery()
                 default:
                     Text(verbatim: "gallery-\(name)?")
                         .fobFont(.headline)
@@ -102,5 +104,43 @@ private struct Swatch: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("swatch-\(role.name)")
+    }
+}
+
+/// gallery-biometrics (CORE-040): the buttons that pay, as the phone says
+/// it ("Pay with Face ID") and as the Mac does ("Send with Touch ID"), and
+/// the passphrase fallback. The words are fob-words'.
+private struct BiometricsGallery: View {
+    @Environment(\.fobColors) private var colors
+
+    var body: some View {
+        let phone = labels(device: "iPhone", biometry: .faceId).confirm
+        let mac = labels(device: "Mac", biometry: .touchId).confirm
+        VStack(spacing: 16) {
+            PayButton(title: phone.payWith, symbol: BiometricKind.faceID.symbol)
+                .accessibilityIdentifier("pay-biometric")
+            PayButton(title: mac.sendWith, symbol: BiometricKind.touchID.symbol)
+                .accessibilityIdentifier("send-biometric")
+            Text(phone.usePassphrase)
+                .fobFont(.headline)
+                .foregroundStyle(colors.orangeText)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("use-passphrase")
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// The confirm screens' orange pill until CORE-021's PillButton.
+private struct PayButton: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .fobFont(.headline)
+            .foregroundStyle(FobColors.onOrange)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(FobColors.orange, in: Capsule())
     }
 }
