@@ -35,6 +35,7 @@ async fn codes_name_the_node_only_when_asked_and_a_payer_could_use_it() {
 
     wallet.set_share_node(true).await.unwrap();
     assert_eq!(code().await, format!("monero:{address}?{shared}"), "on, and syncing gets through");
+    assert_eq!(wallet.shared_node().await, Some(node::address(&node)), "for codes made elsewhere, as Till's");
     let (_, request) = wallet.make_request(None, Some(Typed::Xmr("0.5")), None).await.unwrap();
     assert!(request.uri.ends_with(&format!("&{shared}")), "{}", request.uri);
 
@@ -60,6 +61,7 @@ async fn codes_name_the_node_only_when_asked_and_a_payer_could_use_it() {
     wallet.inner.state.lock().await.node_self_signed = false;
     wallet.inner.state.lock().await.sync_mode = state::SyncMode::Light;
     assert_eq!(code().await, format!("monero:{address}"), "light wallet server");
+    assert_eq!(wallet.shared_node().await, None);
     wallet.inner.state.lock().await.sync_mode = state::SyncMode::Node;
 
     // Kept with the wallet.

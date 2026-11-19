@@ -258,15 +258,23 @@ impl Wallet {
         self.save_state(&state)
     }
 
-    /// `uri` with the node in it ([`uri::with_node`]) when sharing it is on
-    /// and a payer could use it: syncing goes through it (not a light
-    /// wallet server), its certificate needn't be accepted by hand, it
-    /// answers (its last check passed, or syncing is getting through), and
-    /// it's one to give strangers (no login, onion or private address).
-    /// Otherwise `uri` as it is.
-    pub(super) fn with_shared_node(&self, state: &State, uri: String) -> String {
+    /// The node to name in a payment code made now, as it goes in one
+    /// ([`uri::shareable_node`]), or `None`. For a code made outside this
+    /// wallet (as Till makes its sales' codes): pass it to
+    /// [`uri::with_node`].
+    pub async fn shared_node(&self) -> Option<String> {
+        let state = self.inner.state.lock().await;
+        self.node_to_share(&state)
+    }
+
+    /// The node, when sharing it is on and a payer could use it: syncing
+    /// goes through it (not a light wallet server), its certificate needn't
+    /// be accepted by hand, it answers (its last check passed, or syncing is
+    /// getting through), and it's one to give strangers (no login, onion or
+    /// private address).
+    fn node_to_share(&self, state: &State) -> Option<String> {
         if !state.share_node || state.sync_mode != state::SyncMode::Node || state.node_self_signed {
-            return uri;
+            return None;
         }
         let checked = self.inner.node_verdict.lock().expect("node lock").clone();
         let status = self.status();
@@ -275,7 +283,16 @@ impl Wallet {
             Some((setting, verdict)) if setting == current => verdict == node::Verdict::Working,
             _ => status.connected && status.error.is_none(),
         };
-        if answers { uri::with_node(&uri, &state.node) } else { uri }
+        if answers { uri::shareable_node(&state.node) } else { None }
+    }
+
+    /// `uri` with the node in it ([`uri::with_node`]) when
+    /// [`node_to_share`](Wallet::node_to_share) gives one; otherwise as it is.
+    pub(super) fn with_shared_node(&self, state: &State, uri: String) -> String {
+        match self.node_to_share(state) {
+            Some(node) => uri::with_node(&uri, &node),
+            None => uri,
+        }
     }
 
     /// Starts the ZMQ subscriber afresh from the settings, if the sync loop
