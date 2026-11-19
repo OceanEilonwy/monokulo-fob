@@ -3,11 +3,11 @@
 //! screens from [`scene`] with no node, no clock and no randomness.
 
 use crate::{
-    Activity, ActivityDay, ActivityRow, AmountEntry, Balance, Coin, CoinSegment, Coins, ContactRow,
-    Network, NotReady, NotReadyPiece, PaidBefore, PaymentStatus, Prepared, Receipt, ReceiptLine,
-    ScanOption, SplitView, SyncStatus,
+    Activity, ActivityDay, ActivityRow, AmountEntry, AmountUnit, Balance, Coin, CoinSegment, Coins,
+    ContactRow, FobError, Network, NotReady, NotReadyPiece, PaidBefore, PaymentStatus, Prepared,
+    Receipt, ReceiptLine, ReceiveCode, ScanOption, SplitView, SyncStatus, TypedAmount,
 };
-use fob_wallet::{amount, catch_up, fiat, manual, price, split};
+use fob_wallet::{amount, catch_up, fiat, manual, price, split, uri};
 
 /// A demo wallet, opened on the screen its name says.
 #[derive(uniffi::Record)]
@@ -171,6 +171,86 @@ pub fn scene_sync_states() -> Vec<SyncStatus> {
         .into_iter()
         .map(sync_status)
         .collect()
+}
+
+/// The amount field as scene `name`'s wallet reads `amount`: A$ at the
+/// scene's fixed price, never aged, as `FobWallet::amount_entry` does with a
+/// price. None for a name that isn't a scene.
+#[uniffi::export]
+pub fn scene_amount_entry(name: String, amount: TypedAmount) -> Option<AmountEntry> {
+    let w = fob_scenes::scene(&name)?.wallet;
+    let aud = fiat::currency(w.currency);
+    Some(price::amount_field(amount.typed(), price::FieldPrice::At(&aud, w.price, None)).into())
+}
+
+/// An amount field's text switched to `to` at scene `name`'s price, as
+/// `FobWallet::convert_amount`: blank for blank, or what isn't an amount.
+#[uniffi::export]
+pub fn scene_convert_amount(name: String, text: String, to: AmountUnit) -> String {
+    let Some(w) = fob_scenes::scene(&name).map(|s| s.wallet) else {
+        return String::new();
+    };
+    let aud = fiat::currency(w.currency);
+    match to {
+        AmountUnit::Fiat => amount::parse(&text)
+            .map(|a| fiat::plain(fiat::to_minor(a, w.price, &aud), &aud))
+            .unwrap_or_default(),
+        AmountUnit::Xmr => fiat::parse(&text, &aud)
+            .ok()
+            .and_then(|m| fiat::to_atomic(m, w.price, &aud))
+            .map(amount::format)
+            .unwrap_or_default(),
+    }
+}
+
+/// Receive's payment code for scene `name`'s receive address, as
+/// `FobWallet::receive_code` makes it: the amount (XMR, or A$ converted at
+/// the scene's price) and a note for the payer. None for a name that isn't
+/// a scene; throws when the amount isn't one.
+#[uniffi::export]
+pub fn scene_receive_code(
+    name: String,
+    amount: Option<TypedAmount>,
+    note: Option<String>,
+) -> Result<Option<ReceiveCode>, FobError> {
+    let Some(w) = fob_scenes::scene(&name).map(|s| s.wallet) else {
+        return Ok(None);
+    };
+    let aud = fiat::currency(w.currency);
+    let typed = amount.as_ref().map(TypedAmount::typed);
+    let (xmr, money) = match typed.and_then(amount::Typed::trimmed) {
+        None => (None, None),
+        Some(amount::Typed::Xmr(text)) => (Some(amount::parse(text.trim())?), None),
+        Some(amount::Typed::Fiat(text)) => {
+            let minor = fiat::parse(text.trim(), &aud)?;
+            let atomic =
+                fiat::to_atomic(minor, w.price, &aud).ok_or_else(|| FobError::Invalid {
+                    reason: "That isn't an amount".into(),
+                })?;
+            (Some(atomic), Some(fiat::format(minor, &aud)))
+        }
+    };
+    let xmr = xmr.filter(|a| *a > 0);
+    let xmr_text = xmr.map(amount::format);
+    let code = uri::receive(w.receive_address, xmr_text.as_deref(), note.as_deref())?;
+    Ok(Some(match (money.filter(|_| xmr.is_some()), xmr_text) {
+        (Some(money), Some(xmr)) => ReceiveCode {
+            uri: code.uri,
+            headline: Some(money),
+            detail: Some(
+                [Some(format!("{xmr} XMR")), code.detail]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            ),
+        },
+        _ => ReceiveCode {
+            uri: code.uri,
+            headline: code.headline,
+            detail: code.detail,
+        },
+    }))
 }
 
 fn sync_status(state: fob_scenes::SyncState) -> SyncStatus {
@@ -939,5 +1019,90 @@ mod tests {
         );
         assert_eq!(row.fiat_text.as_deref(), Some("A$70.86"));
         assert!(!row.activity.as_ref().unwrap().outgoing);
+    }
+
+    #[test]
+    fn receive_is_the_boards() {
+        let s = scene("receive".into()).unwrap();
+        let groups: Vec<_> = crate::address_groups(s.receive_address.clone())
+            .into_iter()
+            .map(|g| g.text)
+            .collect();
+        assert_eq!(groups.len(), 19);
+        assert_eq!(groups[..3], ["5AqHt", "JB65J", "3Lu7M"]);
+        assert_eq!(groups[18], "cUDet");
+
+        let blank =
+            scene_amount_entry("receive".into(), TypedAmount::Fiat { text: "".into() }).unwrap();
+        assert_eq!(
+            (blank.sign.as_deref(), blank.unit.as_str()),
+            (Some("A$"), "AUD")
+        );
+        assert!(blank.can_switch && !blank.sendable);
+        let twenty = scene_amount_entry(
+            "receive".into(),
+            TypedAmount::Fiat {
+                text: "20.00".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            twenty.line.as_deref(),
+            Some("≈ 0.0564 XMR · 1 XMR = A$354.60")
+        );
+        assert!(scene_amount_entry("nope".into(), TypedAmount::Xmr { text: "1".into() }).is_none());
+        assert_eq!(
+            scene_convert_amount("receive".into(), "20.00".into(), AmountUnit::Xmr),
+            "0.0564"
+        );
+        assert_eq!(
+            scene_convert_amount("receive".into(), "1".into(), AmountUnit::Fiat),
+            "354.60"
+        );
+
+        let plain = scene_receive_code("receive".into(), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plain.uri, format!("monero:{}", s.receive_address));
+        assert_eq!((plain.headline, plain.detail), (None, None));
+        let asked = scene_receive_code(
+            "receive".into(),
+            Some(TypedAmount::Fiat {
+                text: "20.00".into(),
+            }),
+            Some("Joel".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            asked
+                .uri
+                .starts_with(&format!("monero:{}?tx_amount=0.0564", s.receive_address)),
+            "{}",
+            asked.uri
+        );
+        assert!(asked.uri.contains("Joel"), "{}", asked.uri);
+        assert_eq!(asked.headline.as_deref(), Some("A$20.00"));
+        assert!(
+            asked
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("0.0564") && d.ends_with(" XMR · Joel")),
+            "{:?}",
+            asked.detail
+        );
+        assert!(
+            scene_receive_code(
+                "receive".into(),
+                Some(TypedAmount::Xmr { text: "abc".into() }),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            scene_receive_code("nope".into(), None, None)
+                .unwrap()
+                .is_none()
+        );
     }
 }

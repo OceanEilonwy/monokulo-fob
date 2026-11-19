@@ -771,7 +771,8 @@ const TX_BAKERY: &str = "c9e1f00dfeedfacecafebeef0123456789abcdef0123456789abcde
 const TX_MARA: &str = "7b2a00112233445566778899aabbccddeeff00112233445566778899aabb0c01";
 const TX_JOEL: &str = "e4d3c2b1a0998877665544332211000ffeeddccbbaa99887766554433221100a";
 const TX_PROFILE: &str = "5a5a00c0ffee00112233445566778899aabbccddeeff0011223344556677d14a";
-const ADDRESS_RECEIVE: &str = "74Fob1SceneReceiveAddressStagenetxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx9Qa";
+// Receive's address as PhoneReceive draws it, 19 groups of five.
+const ADDRESS_RECEIVE: &str = "5AqHtJB65J3Lu7MZNBt3oj8eDqKVeiVFsRwNfnvdNvgLiH21DJZWwE1UpyhySdmjheGZJAeWQbWvqc9STx2MP8M63KcUDet";
 const ADDRESS_MARA: &str = "74Fob1SceneMaraOkaforStagenetxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxM01";
 const ADDRESS_JOEL: &str = "46QmTxVkSceneJoelStagenetxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx9bRe";
 const ADDRESS_BAKERY: &str = "86Ux3m9PSceneCornerBakeryStagenetxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx7kQa";

@@ -33,6 +33,20 @@ public final class AppModel {
     /// What Home shows now.
     public private(set) var state: WalletState = .empty
 
+    /// The tab shown (the iPhone's tab bar binds to it).
+    public var tab: AppTab
+    /// The pages pushed on that tab, the top one last (a NavigationStack's
+    /// path binds to it).
+    public var path: [Route]
+    /// `-FobScene gallery-<name>`: the FobUI gallery to show in place of the
+    /// app, by its name ("theme"); none otherwise.
+    public let gallery: String?
+
+    /// Receive's model for the open wallet (CORE-014).
+    public private(set) var receive: ReceiveModel?
+    /// Contacts' model for the open wallet (CORE-012).
+    public private(set) var contacts: ContactsModel?
+
     public init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         func value(_ flag: String) -> String? {
             guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
@@ -43,8 +57,14 @@ public final class AppModel {
         sceneName = name
         wallet = scene?.wallet
         theme = value("-FobTheme").flatMap(ThemeName.init(rawValue:)) ?? .oled
+        let start = Route.start(scene: name)
+        tab = start.tab
+        path = start.path
+        gallery = name.flatMap { $0.hasPrefix("gallery-") ? String($0.dropFirst("gallery-".count)) : nil }
         labels = FobCore.labels(device: Self.deviceName, biometry: Self.defaultBiometry)
         open(scene)
+        receive = name.flatMap(ReceiveModel.init(scene:))
+        contacts = name.flatMap(ContactsModel.init(scene:))
     }
 
     /// Shows `source`'s wallet and follows its changes; none closes it.
@@ -54,6 +74,47 @@ public final class AppModel {
         source?.observe { [weak self, weak source] state in
             guard let self, let source, self.source === source else { return }
             self.state = state
+        }
+    }
+
+    /// The screen on top: the last page pushed, or the tab's own.
+    public var route: Route { path.last ?? Self.root(of: tab) }
+
+    /// Shows `route`: a tab's own screen selects that tab; any other is
+    /// pushed on the tab it belongs to (switching to it first).
+    public func show(_ route: Route) {
+        if route.isTabRoot {
+            select(route.tab)
+            return
+        }
+        if route.tab != tab {
+            tab = route.tab
+            path = []
+        }
+        if path.last != route { path.append(route) }
+    }
+
+    /// Selects `tab` with nothing pushed on it.
+    public func select(_ tab: AppTab) {
+        self.tab = tab
+        path = []
+    }
+
+    /// Back: drops the top page.
+    public func back() {
+        _ = path.popLast()
+    }
+
+    /// Back to the tab's own screen.
+    public func popToRoot() {
+        path = []
+    }
+
+    static func root(of tab: AppTab) -> Route {
+        switch tab {
+        case .wallet: .wallet
+        case .contacts: .contacts
+        case .settings: .settings
         }
     }
 
