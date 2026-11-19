@@ -396,6 +396,7 @@ fn outgoing(to: &str, coins: &[&str]) -> Outgoing {
         recipient_name: Some("Sam".into()),
         pieces: None,
         back: vec![],
+        payee_node: None,
     }
 }
 

@@ -250,6 +250,43 @@ async fn a_payment_published_is_recorded_even_if_its_caller_goes_away() {
     assert!(wallet.inner.state.lock().await.sent.iter().all(|s| s.tx != tx_hex("refused")));
 }
 
+/// A payment code's node (`fob_node`) is handed the payment once this
+/// wallet's own node has it, and never when that node refused it; its
+/// silence changes nothing.
+#[tokio::test]
+async fn a_payment_goes_to_the_payee_s_node_after_this_wallet_s_own() {
+    use tokio::io::AsyncReadExt;
+    let wallet = Wallet::create(&dir("send-payee-node"), [1; 32], Network::Stagenet).unwrap();
+    wallet.inner.state.lock().await.outputs.push(received("coin", 1, XMR));
+    wallet.inner.state.lock().await.outputs.push(received("coin-2", 1, XMR));
+    let to = wallet.inner.keys.address(9);
+    // The payee's node: takes the request and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let payee = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let with_payee = |coin: &str| Outgoing { payee_node: Some(payee.clone()), ..outgoing(&to, &[coin]) };
+
+    let refused = async { Err(Unpublished::Refused(FobError::Node("rejected".into()))) };
+    assert!(wallet.publish_and_record(tx_hash("refused"), 30, with_payee("coin-2"), "0100".into(), refused).await.is_err());
+    assert!(tokio::time::timeout(Duration::from_millis(200), listener.accept()).await.is_err(), "refused here: not offered there");
+
+    let taken = async { Ok(()) };
+    assert_eq!(wallet.publish_and_record(tx_hash("hash"), 30, with_payee("coin"), "0200".into(), taken).await.unwrap(), tx_hex("hash"));
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.expect("offered to the payee's node").unwrap();
+    let mut request = vec![0; 4096];
+    let mut read = 0;
+    while !String::from_utf8_lossy(&request[..read]).contains("\"do_not_relay\":false") {
+        let n = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut request[read..])).await.unwrap().unwrap();
+        assert!(n > 0, "closed early: {}", String::from_utf8_lossy(&request[..read]));
+        read += n;
+    }
+    let request = String::from_utf8_lossy(&request[..read]);
+    assert!(request.starts_with("POST /send_raw_transaction "), "{request}");
+    assert!(request.contains("\"tx_as_hex\":\"0200\""), "{request}");
+    // Recorded already, whatever the payee's node does.
+    let state = wallet.inner.state.lock().await;
+    assert_eq!(state.sent.iter().find(|s| s.tx == tx_hex("hash")).map(|s| s.signed.clone()), Some(None));
+}
+
 /// A node that gave no answer may have taken the payment (audit #24): it's
 /// recorded as sent, its coins spent so a second try can't pick others and
 /// pay twice, and the signed transaction kept, saved, to offer again.

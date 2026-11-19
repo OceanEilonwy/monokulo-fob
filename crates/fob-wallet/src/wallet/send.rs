@@ -14,7 +14,11 @@ impl Wallet {
         self.spendable()?;
         let (destination, terms) = self.payment_terms(to, amount, code)?;
         let receipt_json = terms.receipt.as_ref().and_then(crate::receipt::to_json);
-        self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await
+        let prepared = self.prepare_payments(to.trim(), vec![(destination, amount)], receipt_json, note, terms.name, None).await?;
+        if let Some(tx) = self.inner.prepared.lock().await.get_mut(prepared.id) {
+            tx.out.payee_node = terms.node;
+        }
+        Ok(prepared)
     }
 
     /// What [`prepare`](Wallet::prepare) would pay, checked as it checks
@@ -256,6 +260,7 @@ impl Wallet {
                     recipient_name,
                     pieces,
                     back: if pieces.is_some() { payments.iter().map(|p| p.1).collect() } else { vec![] },
+                    payee_node: None,
                 },
             },
         );
@@ -339,6 +344,7 @@ impl Wallet {
                     recipient_name: None,
                     pieces: None,
                     back: vec![],
+                    payee_node: None,
                 },
             },
         );
@@ -530,11 +536,17 @@ impl Wallet {
                     return Err(FobError::Screen(ScreenError::NoSuchPayment));
                 }
             }
+            let payee = out.payee_node.clone().map(|node| (node, signed.clone()));
             let unanswered = match publish.await {
                 Ok(()) => None,
                 Err(Unpublished::Refused(e)) => return Err(e),
                 Err(Unpublished::Unsure) => Some(signed),
             };
+            // Only once this wallet's own node (or server) has it, or may:
+            // the payee's node is never what says it went out.
+            if let Some((node, signed)) = payee {
+                tokio::spawn(hand_to_payee(node, signed));
+            }
             wallet.record_sent(hash, fee, out, unanswered).await
         });
         step.await.map_err(|e| FobError::Send(format!("{e}")))?
@@ -694,4 +706,21 @@ impl Wallet {
 pub(super) fn turned_down(reason: &str) -> bool {
     let reason = reason.trim();
     !reason.is_empty() && !reason.to_ascii_lowercase().contains("busy")
+}
+
+/// How long the payee's node gets to take a payment before it's left to the
+/// network, which carries it there anyway.
+pub(super) const PAYEE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Offers a published payment (`signed`, in hex) to the payee's node, as
+/// its payment code named it (`fob_node`, which [`uri::shareable_node`]
+/// passed), so the payee sees it in the pool at once instead of after it
+/// crosses the network. Only the payment goes: nothing is asked of that
+/// node, and its answer, or silence, is ignored. A stranger's node can say
+/// anything; this wallet's own node is what says the payment went out.
+pub(super) async fn hand_to_payee(node: String, signed: String) {
+    use monero_daemon_rpc::HttpTransport;
+    let Ok(transport) = Transport::new(&node::normalize(&node), false) else { return };
+    let body = serde_json::json!({ "tx_as_hex": signed, "do_not_relay": false }).to_string().into_bytes();
+    let _ = tokio::time::timeout(PAYEE_WAIT, transport.post("send_raw_transaction", body, Some(4096))).await;
 }

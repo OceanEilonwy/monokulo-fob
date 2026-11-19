@@ -20,6 +20,9 @@ pub struct PaymentRequest {
     pub description: Option<String>,
     /// The ORF receipt the code carried, if any.
     pub receipt: Option<orf_codec::Receipt>,
+    /// The payee's node (`fob_node`, see [`with_node`]), as
+    /// [`shareable_node`] writes it; `None` for one it refuses.
+    pub node: Option<String>,
 }
 
 /// A wallet read from a wallet code.
@@ -77,6 +80,8 @@ pub fn parse_payment(network: Network, text: &str) -> Result<PaymentRequest> {
         // Kept as the payment's note and shown on contacts' cards: cleaned and cut as a request's note.
         description: get(&pairs, &["tx_description", "description"]).and_then(|d| crate::names::clean_note(Some(d))),
         receipt,
+        // Checked again here: the code may not be one Fob made.
+        node: get(&pairs, &["fob_node"]).and_then(shareable_node),
     })
 }
 
@@ -91,13 +96,16 @@ pub struct CodeTerms {
     /// The code's receipt, only while the payment is to the code's address
     /// for the amount the code asked: a receipt is for what it asked.
     pub receipt: Option<orf_codec::Receipt>,
+    /// The code's node, while the payment goes to the code's address: the
+    /// payment is also handed to it, so the payee sees it at once.
+    pub node: Option<String>,
 }
 
 /// What `code` (the payment code the form was filled from, as read, if any)
 /// gives a payment of `amount` to `to`.
 pub fn code_terms(to: &str, amount: u64, code: Option<&PaymentRequest>) -> CodeTerms {
     let Some(code) = code.filter(|c| c.address == to.trim()) else { return CodeTerms::default() };
-    CodeTerms { receipt: code.receipt.clone().filter(|_| code.amount == Some(amount)), name: code.recipient_name.clone() }
+    CodeTerms { receipt: code.receipt.clone().filter(|_| code.amount == Some(amount)), name: code.recipient_name.clone(), node: code.node.clone() }
 }
 
 /// What a value in a code is encoded with: everything but letters, digits
@@ -505,13 +513,13 @@ mod tests {
         let asked = terms(&format!(" {address} "), 142_100_000_000);
         assert_eq!((asked.name.as_deref(), asked.receipt.map(|r| r.merchant.legal_name)), (Some("Corner Café"), Some("Corner Café".into())));
         // Another amount (edited, or the unit switched and converted back): the name stays, the receipt goes.
-        assert_eq!(terms(&address, 142_140_000_000), CodeTerms { name: Some("Corner Café".into()), receipt: None });
+        assert_eq!(terms(&address, 142_140_000_000), CodeTerms { name: Some("Corner Café".into()), receipt: None, node: None });
         // Another address: neither.
         assert_eq!(terms(&other, 142_100_000_000), CodeTerms::default());
         // A receipt in a code without an amount is for nothing in particular: not kept.
         let open = orf_codec::query::append(&format!("monero:{address}?recipient_name=Sam"), &receipt).unwrap();
         let open = parse_payment(Network::Stagenet, &open).unwrap();
-        assert_eq!(code_terms(&address, 5, Some(&open)), CodeTerms { name: Some("Sam".into()), receipt: None });
+        assert_eq!(code_terms(&address, 5, Some(&open)), CodeTerms { name: Some("Sam".into()), receipt: None, node: None });
         assert_eq!(code_terms(&address, 5, None), CodeTerms::default());
     }
 
@@ -812,8 +820,26 @@ mod tests {
         assert_eq!(with, format!("{code}&fob_node=node.example.org%3A18089"));
         let read = parse_payment(Network::Stagenet, &with).unwrap();
         assert_eq!((read.amount, read.description.as_deref()), (Some(500_000_000_000), Some("Coffee")));
+        assert_eq!(read.node.as_deref(), Some("node.example.org:18089"));
         // A bare address gets its query from the node alone.
         assert_eq!(with_node(&format!("monero:{address}"), "203.0.113.7:18081"), format!("monero:{address}?fob_node=203.0.113.7%3A18081"));
+        assert_eq!(parse_payment(Network::Stagenet, &code).unwrap().node, None);
+    }
+
+    #[test]
+    fn a_node_a_code_names_goes_with_a_payment_to_its_address_alone() {
+        let address = wallet().address(1);
+        // A code someone else wrote: a node on the payer's own network,
+        // or with a login, is never offered anything.
+        for node in ["192.168.1.1%3A18081", "localhost%3A18081", "u%3Ap%40node.example.org", "abc.onion"] {
+            let code = format!("monero:{address}?tx_amount=1&fob_node={node}");
+            assert_eq!(parse_payment(Network::Stagenet, &code).unwrap().node, None, "{node}");
+        }
+        let code = parse_payment(Network::Stagenet, &format!("monero:{address}?tx_amount=1&fob_node=https%3A%2F%2Fnode.example.org")).unwrap();
+        assert_eq!(code.node.as_deref(), Some("https://node.example.org"));
+        // Another amount keeps it; another address drops it.
+        assert_eq!(code_terms(&address, 5, Some(&code)).node.as_deref(), Some("https://node.example.org"));
+        assert_eq!(code_terms(&wallet().address(2), 1_000_000_000_000, Some(&code)).node, None);
     }
 
     #[test]

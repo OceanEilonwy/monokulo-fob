@@ -292,6 +292,9 @@ struct Outgoing {
     pieces: Option<u32>,
     /// A split's pieces, paid back to this wallet; empty for a payment.
     back: Vec<u64>,
+    /// The payee's node, from the payment code (`fob_node`): the payment
+    /// is also handed to it once published, so the payee sees it at once.
+    payee_node: Option<String>,
 }
 
 struct Inner {
