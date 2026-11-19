@@ -36,32 +36,25 @@ jobs:
       - name: Check
         run: cargo check --locked -p fob-ffi -p fob-scenes --all-targets
       - name: Test
-        run: cargo test --locked -p fob-ffi -p fob-scenes
+        run: cargo test --locked -p fob-ffi -p fob-scenes -p fob-words
       - name: Clippy
         run: cargo clippy --locked -p fob-ffi -p fob-scenes --all-targets -- -D warnings
 
   # The iOS app on an iPhone simulator.
   iphone:
     runs-on: xcode-27
-    timeout-minutes: 75
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v7
       - uses: ./apple/ci/setup
         with:
           slice: "--sim"
           target: aarch64-apple-ios-sim
-      - name: iPhone simulator
-        id: sim
-        run: |
-          udid="$(apple/ci/pick-simulator.sh iPhone)" || { echo "::error::No iPhone simulator"; exit 1; }
-          echo "udid=$udid" >> "$GITHUB_OUTPUT"
-          xcrun simctl boot "$udid" || true
-          xcrun simctl bootstatus "$udid" -b
-          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+      # Boot (10 min limit) and tests (35 min limit); either hanging starts both over once.
       - name: UI tests (FobiPhoneUITests)
         working-directory: apple
         run: >
-          ci/run-tests.sh FobiPhoneUITests "id=${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/iphone.xcresult"
+          ci/sim-tests.sh iPhone FobiPhoneUITests "$RUNNER_TEMP/iphone.xcresult"
           -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO
       - name: Screenshots
         if: always()
@@ -90,25 +83,18 @@ jobs:
   # The same iOS app on an iPad simulator.
   ipad:
     runs-on: xcode-27
-    timeout-minutes: 75
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v7
       - uses: ./apple/ci/setup
         with:
           slice: "--sim"
           target: aarch64-apple-ios-sim
-      - name: iPad simulator
-        id: sim
-        run: |
-          udid="$(apple/ci/pick-simulator.sh iPad)" || { echo "::error::No iPad simulator"; exit 1; }
-          echo "udid=$udid" >> "$GITHUB_OUTPUT"
-          xcrun simctl boot "$udid" || true
-          xcrun simctl bootstatus "$udid" -b
-          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+      # Boot (10 min limit) and tests (35 min limit); either hanging starts both over once.
       - name: UI tests (FobiPadUITests)
         working-directory: apple
         run: >
-          ci/run-tests.sh FobiPadUITests "id=${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/ipad.xcresult"
+          ci/sim-tests.sh iPad FobiPadUITests "$RUNNER_TEMP/ipad.xcresult"
           -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO
       - name: Screenshots
         if: always()
