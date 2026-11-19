@@ -46,6 +46,10 @@ public final class AppModel {
     public private(set) var receive: ReceiveModel?
     /// Contacts' model for the open wallet (CORE-012).
     public private(set) var contacts: ContactsModel?
+    /// Coins' model for the open wallet (CORE-013).
+    public private(set) var coins: CoinsModel?
+    /// Split up's model for the open wallet (CORE-013).
+    public private(set) var split: SplitModel?
 
     public init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         func value(_ flag: String) -> String? {
@@ -65,6 +69,8 @@ public final class AppModel {
         open(scene)
         receive = name.flatMap(ReceiveModel.init(scene:))
         contacts = name.flatMap(ContactsModel.init(scene:))
+        coins = name.flatMap(CoinsModel.init(scene:))
+        split = name.flatMap(SplitModel.init(scene:))
     }
 
     /// Shows `source`'s wallet and follows its changes; none closes it.

@@ -415,22 +415,71 @@ fn catch_up_sheet(w: &fob_scenes::Wallet) -> SceneCatchUp {
 }
 
 fn split_view(w: &fob_scenes::Wallet) -> SplitView {
+    split_view_of(w, &w.split.counts)
+}
+
+/// Split up for scene wallet `w` with `counts` of each note, as
+/// `FobWallet::split_view` reads it: its notes at the scene's price, its
+/// ready coins to spend, Auto learned from its payments, a fresh price.
+fn split_view_of(w: &fob_scenes::Wallet, counts: &[u32]) -> SplitView {
     let aud = fiat::currency(w.currency);
     let money = Some((&aud, w.price));
     let notes = split::notes(money);
-    let budget = split::Budget {
-        outputs: w.coins.ready.iter().map(|c| c.atomic).collect(),
-        fee_rate: None,
-    };
     split::view(
         &notes,
-        &w.split.counts,
+        counts,
         &w.split.payments,
-        &budget,
+        &split_budget(w),
         money,
         None,
     )
     .into()
+}
+
+fn split_budget(w: &fob_scenes::Wallet) -> split::Budget {
+    split::Budget {
+        outputs: w.coins.ready.iter().map(|c| c.atomic).collect(),
+        fee_rate: None,
+    }
+}
+
+fn split_notes(w: &fob_scenes::Wallet) -> Vec<split::Note> {
+    let aud = fiat::currency(w.currency);
+    split::notes(Some((&aud, w.price)))
+}
+
+/// Split up for scene `name` with `counts` of each note (in the order of
+/// `SplitView::tiles`), as the live wallet's `split_view` gives it. None for
+/// a name that isn't a scene.
+#[uniffi::export]
+pub fn scene_split_view(name: String, counts: Vec<u32>) -> Option<SplitView> {
+    let w = fob_scenes::scene(&name)?.wallet;
+    Some(split_view_of(&w, &counts))
+}
+
+/// One more piece of note `index` in scene `name`, as `split_add`: throws
+/// why not (15 pieces at most, or not enough ready to spend with the fee).
+/// Unchanged counts for a name that isn't a scene.
+#[uniffi::export]
+pub fn scene_split_add(name: String, counts: Vec<u32>, index: u32) -> Result<Vec<u32>, FobError> {
+    let Some(w) = fob_scenes::scene(&name).map(|s| s.wallet) else {
+        return Ok(counts);
+    };
+    Ok(split::add(
+        &split_notes(&w),
+        &counts,
+        index as usize,
+        &split_budget(&w),
+    )?)
+}
+
+/// One fewer piece of note `index` in scene `name`, as `split_remove`.
+#[uniffi::export]
+pub fn scene_split_remove(name: String, counts: Vec<u32>, index: u32) -> Vec<u32> {
+    match fob_scenes::scene(&name).map(|s| s.wallet) {
+        Some(w) => split::remove(&split_notes(&w), &counts, index as usize),
+        None => counts,
+    }
 }
 
 fn status(confirmations: u64, needed: u64) -> PaymentStatus {
@@ -962,6 +1011,35 @@ mod tests {
                 (crate::ChipLook::Offline, "Can't reach node")
             ]
         );
+    }
+
+    #[test]
+    fn split_taps_go_through_split_add() {
+        let name = "split".to_string();
+        let opened = scene(name.clone()).unwrap().split;
+        // A$120 of A$137 is in coins: no room for another A$20.
+        assert!(scene_split_add(name.clone(), opened.counts.clone(), 2).is_err());
+        let cleared = scene_split_view(name.clone(), vec![0; 6]).unwrap();
+        assert_eq!(cleared.pieces, 0);
+        assert!(!cleared.ready);
+        let once = scene_split_add(name.clone(), cleared.counts.clone(), 2).unwrap();
+        let twice = scene_split_add(name.clone(), once, 2).unwrap();
+        assert_eq!(twice, [0, 0, 2, 0, 0, 0]);
+        let v = scene_split_view(name.clone(), twice.clone()).unwrap();
+        assert_eq!(v.summary.as_deref(), Some("2 coins · A$40.00"));
+        assert_eq!(v.button, "Split into 2 coins");
+        assert!(v.ready);
+        let one = scene_split_remove(name.clone(), twice, 2);
+        assert_eq!(one, [0, 0, 1, 0, 0, 0]);
+        let v = scene_split_view(name.clone(), one).unwrap();
+        assert_eq!(v.summary.as_deref(), Some("1 coin · A$20.00"));
+        if let Some(auto) = &opened.auto {
+            let v = scene_split_view(name.clone(), auto.counts.clone()).unwrap();
+            assert!(v.is_auto);
+        }
+        let same = scene_split_view(name.clone(), opened.counts.clone()).unwrap();
+        assert_eq!(same.summary, opened.summary);
+        assert!(scene_split_view("nope".into(), vec![]).is_none());
     }
 
     #[test]
