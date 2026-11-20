@@ -1,5 +1,6 @@
 // Fob for macOS: one small window, like the GTK app (docs/apple/design,
-// MacHome 480 x 760). The scaffold shows the Wallet placeholder.
+// MacHome 480 x 760), with its pages pushed in place, and Settings in a
+// window of its own (MacSettings 760 x 560).
 
 import FobCore
 import FobUI
@@ -14,11 +15,23 @@ struct FobMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            PlaceholderWalletView(model: model)
-                .frame(minWidth: 400, idealWidth: 480, minHeight: 600, idealHeight: 760)
+        Window("Fob", id: "main") {
+            FobRoot(model: model) {
+                MacWindow(model: model)
+            }
+            .frame(minWidth: MacWindow.minSize.width, idealWidth: MacWindow.size.width,
+                   maxWidth: MacWindow.maxWidth,
+                   minHeight: MacWindow.minSize.height, idealHeight: MacWindow.size.height)
         }
-        .defaultSize(width: 480, height: 760)
-        .windowResizability(.contentMinSize)
+        .defaultSize(MacWindow.size)
+        .windowResizability(.contentSize)
+        .windowToolbarStyle(.unified(showsTitle: false))
+
+        Settings {
+            FobRoot(model: model) {
+                MacSettingsWindow(model: model)
+            }
+        }
+        .windowResizability(.contentSize)
     }
 }
