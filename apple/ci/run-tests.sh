@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Runs one platform's UI-test scheme (docs/apple/plan.md §4, step 7), once
 # more only when the simulator failed and no test did (the till's list:
-# "The test runner hung before establishing connection" and the like).
+# "The test runner hung before establishing connection" and the like, or
+# run 44645541687's iPad: "Failed to install or launch the test runner ...
+# Invalid device state ... (ipc/mig) server died").
 #
 #   run-tests.sh <scheme> <destination> <result.xcresult> [build settings...]
 #
@@ -22,10 +24,20 @@ run() {
 }
 
 if run "$@"; then exit 0; fi
-if grep -qE "before establishing connection|never began executing|Restarting after unexpected exit|Setting up automation session.*timed out|lost connection to the test|Early unexpected exit|Unable to boot|failed to boot" "$log" \
+if grep -qE "before establishing connection|never began executing|Restarting after unexpected exit|Setting up automation session.*timed out|lost connection to the test|Early unexpected exit|Unable to boot|failed to boot|Failed to install or launch the test runner|Invalid device state|server died" "$log" \
     && ! grep -qE "\) failed after|Test Case .* failed|recorded an issue" "$log"; then
     echo "::warning::The simulator failed, not a test: running the tests once more"
     xcrun simctl shutdown all >/dev/null 2>&1 || true
+    # A simulator whose services died needs a clean slate, not just a reboot;
+    # boot it again here so the screenshots keep sim-tests.sh's status bar.
+    udid="${destination#id=}"
+    if [[ "$udid" != "$destination" ]]; then
+        xcrun simctl erase "$udid" >/dev/null 2>&1 || true
+        xcrun simctl boot "$udid" >/dev/null 2>&1 || true
+        xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || true
+        xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged \
+            --batteryLevel 100 --wifiBars 3 --cellularBars 4 >/dev/null 2>&1 || true
+    fi
     run "$@"
     exit $?
 fi
