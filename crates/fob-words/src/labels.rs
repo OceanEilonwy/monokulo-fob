@@ -30,6 +30,25 @@ pub mod tabs {
     pub const SETTINGS: &str = "Settings";
 }
 
+/// The bars around the screens: the toolbar's icon buttons (their
+/// VoiceOver names), the wallet switcher and the sync chip's hint.
+pub mod chrome {
+    pub const SCAN_A_PAYMENT_CODE: &str = "Scan a payment code";
+    pub const SWITCH_WALLET: &str = "Switch wallet";
+    /// The tab bar, read as one group.
+    pub const SECTIONS: &str = "Sections";
+    pub const CONTACTS: &str = super::tabs::CONTACTS;
+    pub const REFRESH: &str = "Refresh";
+    pub const SETTINGS: &str = super::tabs::SETTINGS;
+    /// The Mac's wallet menu in the title bar.
+    pub const WALLETS: &str = super::settings::WALLETS;
+
+    /// The sync chip read as a button: "Synced, tap for details".
+    pub fn sync_chip(label: &str) -> String {
+        format!("{label}, tap for details")
+    }
+}
+
 /// Home: the balance card, its buttons and Activity.
 pub mod home {
     pub const RECEIVE: &str = "Receive";
@@ -228,5 +247,12 @@ mod tests {
         assert_eq!(settings::same_as_device("Mac"), "Same as Mac");
         assert_eq!(welcome::points("iPhone")[2].1, "Talks only to the node you pick. Receipts stay on this iPhone.");
         assert_eq!((send::CANCEL, settings::NODE, coins::SPLIT_UP), ("Cancel", "Node", "Split up"));
+    }
+
+    #[test]
+    fn chrome_words() {
+        assert_eq!(chrome::sync_chip("Synced"), "Synced, tap for details");
+        assert_eq!((chrome::CONTACTS, chrome::SETTINGS, chrome::WALLETS), ("Contacts", "Settings", "Wallets"));
+        assert_eq!(chrome::SCAN_A_PAYMENT_CODE, "Scan a payment code");
     }
 }
