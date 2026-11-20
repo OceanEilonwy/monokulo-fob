@@ -153,6 +153,9 @@ public struct WalletState: Sendable, Equatable {
     public var activity: [ActivitySection]
     /// Soonest ready first; empty when all of it is ready.
     public var notReadyCoins: [NotReadyCoin]
+    /// The settling card's coins bar, coin by coin (ready in ink, not ready
+    /// in green); empty when all of it is ready.
+    public var coinBar: [CoinSegment] = []
 
     public init(walletName: String, network: WalletNetwork, balance: HomeBalance, syncChip: SyncChip,
                 syncLabel: String, activity: [ActivitySection], notReadyCoins: [NotReadyCoin]) {
@@ -188,6 +191,7 @@ extension WalletState {
             activity: w.activity.map(ActivitySection.init),
             notReadyCoins: w.coins.notReadyCoins.map(NotReadyCoin.init)
         )
+        coinBar = w.notReady?.segments ?? []
     }
 }
 

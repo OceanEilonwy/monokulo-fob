@@ -24,7 +24,10 @@ final class ChromeGalleryTests: GalleryTestCase {
         XCTAssertTrue(app.tabBars.buttons["Settings"].exists, "no Settings tab")
         XCTAssertTrue(app.buttons["Scan a payment code"].exists, "no Scan a payment code")
         XCTAssertTrue(app.buttons["Refresh"].exists, "no Refresh")
-        XCTAssertTrue(app.buttons["Switch wallet"].exists, "no wallet switcher")
+        let switcher = app.buttons["Switch wallet"]
+        XCTAssertTrue(switcher.exists, "no wallet switcher")
+        // The mark, "Spending" and the chevron: far wider than mark + chevron.
+        XCTAssertGreaterThan(switcher.frame.width, 90, "the wallet chip lost its name")
 
         element(app, "open-coins").tap()
         let title = element(app, "coins-title")
@@ -32,6 +35,9 @@ final class ChromeGalleryTests: GalleryTestCase {
         let back = element(app, "back")
         XCTAssertTrue(back.waitForExistence(timeout: 5), "no back button")
         XCTAssertTrue(app.staticTexts["Wallet"].exists || back.label.contains("Wallet"), "the back button doesn't say Wallet")
+        // "‹ Wallet" on one line, not wrapped.
+        XCTAssertLessThan(back.frame.height, 50, "the back button's name wrapped")
+        XCTAssertGreaterThan(back.frame.width, 60, "the back button's name was squeezed")
         // Let the push finish.
         Thread.sleep(forTimeInterval: 1)
         attach("CORE-030-pushed--\(theme)")

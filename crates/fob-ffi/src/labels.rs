@@ -380,6 +380,13 @@ pub fn label_sync_chip(label: String) -> String {
     l::chrome::sync_chip(&label)
 }
 
+/// A confirmation ring read aloud (Coins' not-ready row, an Activity line):
+/// "3 of 10 confirmations".
+#[uniffi::export]
+pub fn label_confirmations(done: u64, needed: u64) -> String {
+    l::coins::confirmations(done, needed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +413,6 @@ mod tests {
         assert_eq!(phone.chrome.scan_a_payment_code, "Scan a payment code");
         assert_eq!(phone.chrome.switch_wallet, "Switch wallet");
         assert_eq!(label_sync_chip("Synced".into()), "Synced, tap for details");
+        assert_eq!(label_confirmations(3, 10), "3 of 10 confirmations");
     }
 }

@@ -221,6 +221,11 @@ pub mod coins {
     pub const TITLE: &str = "Coins";
     pub const SPLIT_UP: &str = crate::split::TITLE;
     pub const CLEAR: &str = "Clear";
+
+    /// A confirmation ring read aloud: "3 of 10 confirmations".
+    pub fn confirmations(done: u64, needed: u64) -> String {
+        format!("{done} of {needed} confirmations")
+    }
 }
 
 /// The Scan sheet.
@@ -238,6 +243,7 @@ mod tests {
         assert_eq!(confirm::send_with(Biometry::TouchId), "Send with Touch ID");
         assert_eq!(confirm::pay("Corner Bakery"), "Pay Corner Bakery");
         assert_eq!(confirm::receipt_items(2), "Receipt · 2 items");
+        assert_eq!(coins::confirmations(3, 10), "3 of 10 confirmations");
         assert_eq!(confirm::receipt_items(1), "Receipt · 1 item");
     }
 

@@ -138,6 +138,7 @@ public final class AppModel {
     public var syncChip: SyncChip { state.syncChip }
     public var activity: [ActivitySection] { state.activity }
     public var notReadyCoins: [NotReadyCoin] { state.notReadyCoins }
+    public var coinBar: [CoinSegment] { state.coinBar }
 
     /// Every scene fob-scenes knows.
     public static var sceneNames: [String] { FobCore.sceneNames() }

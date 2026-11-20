@@ -93,6 +93,10 @@ public struct FobBackButton: View {
                 Text(title)
                     .font(.body)
             }
+            .lineLimit(1)
+            // A toolbar item is offered less than its width on iOS 26 and
+            // wrapped "Wallet" onto two lines; keep it whole on one.
+            .fixedSize()
             .foregroundStyle(colors.orangeText)
             .frame(minWidth: 44, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())

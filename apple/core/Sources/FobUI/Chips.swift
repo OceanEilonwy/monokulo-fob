@@ -192,6 +192,10 @@ public struct WalletChip: View {
                         .font(.caption.weight(.heavy))
                         .foregroundStyle(colors.muted)
                 }
+                .lineLimit(1)
+                // In a toolbar item the name was squeezed out entirely;
+                // the chip keeps its natural width.
+                .fixedSize()
                 .frame(minHeight: 44)
             case .mac:
                 HStack(spacing: 5) {

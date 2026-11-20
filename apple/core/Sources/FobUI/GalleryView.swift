@@ -20,7 +20,7 @@ public struct GalleryView: View {
     }
 
     /// The pages there are.
-    public static let names = ["theme", "biometrics", "pills", "chips", "chrome"]
+    public static let names = ["theme", "biometrics", "pills", "chips", "chrome", "ring", "coinbar"]
 
     /// The words, the app's when there is one.
     private var words: Labels {
@@ -50,6 +50,10 @@ public struct GalleryView: View {
                     PillsGallery(words: words)
                 case "chips":
                     ChipsGallery(words: words)
+                case "ring":
+                    RingGallery()
+                case "coinbar":
+                    CoinBarGallery(words: words)
                 default:
                     Text(verbatim: "gallery-\(name)?")
                         .fobFont(.headline)

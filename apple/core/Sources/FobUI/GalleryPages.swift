@@ -1,5 +1,6 @@
 // The component pages of FobUI's gallery: gallery-pills (CORE-021),
-// gallery-chips (CORE-022) and gallery-chrome (CORE-030). Each draws its
+// gallery-chips (CORE-022), gallery-chrome (CORE-030), gallery-ring
+// (CORE-028) and gallery-coinbar (CORE-027). Each draws its
 // component as the boards do, with fob-words' words; the small headings are
 // the gallery's own.
 
@@ -258,5 +259,108 @@ private struct ChromeEmptyPage: View {
             .padding(20)
             .background(colors.paper.ignoresSafeArea())
             .fobBars()
+    }
+}
+
+// MARK: - gallery-ring
+
+/// The confirmation ring: Coins' not-ready row as PhoneCoins draws it, the
+/// ring at both sizes along the way, and the small one beside an Activity
+/// line ("not ready · 3 of 10").
+struct RingGallery: View {
+    @Environment(\.fobColors) private var colors
+
+    private var home: WalletState? { SceneSource(name: "home")?.state }
+
+    private static let steps = [0, 3, 7, 10]
+
+    var body: some View {
+        if let coin = home?.notReadyCoins.first {
+            GallerySection(title: "coins") {
+                HStack(spacing: 12) {
+                    ConfirmationRing(coin.confirmations)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: [coin.amount, coin.fiat].compactMap { $0 }.joined(separator: " · "))
+                            .font(.body.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(colors.ink)
+                        Text(verbatim: coin.source)
+                            .font(.subheadline)
+                            .foregroundStyle(colors.muted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(verbatim: coin.readyAt)
+                            .font(.subheadline)
+                            .monospacedDigit()
+                            .foregroundStyle(colors.ink)
+                        Text(verbatim: coin.confirmationsText)
+                            .font(.caption)
+                            .foregroundStyle(colors.muted)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(colors.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(colors.line, lineWidth: 1))
+            }
+        }
+        GallerySection(title: "along the way") {
+            HStack(spacing: 16) {
+                ForEach(Self.steps, id: \.self) { done in
+                    ConfirmationRing(Confirmations(done: done, needed: 10))
+                }
+            }
+            HStack(spacing: 16) {
+                ForEach(Self.steps, id: \.self) { done in
+                    ConfirmationRing(Confirmations(done: done, needed: 10), size: .small)
+                        .frame(width: 30)
+                }
+            }
+        }
+        if let row = home?.activity.flatMap(\.rows).first(where: { $0.confirmations != nil }),
+           let confirmations = row.confirmations {
+            GallerySection(title: "in a line") {
+                HStack(spacing: 6) {
+                    ConfirmationRing(confirmations, size: .small)
+                    Text(verbatim: row.line)
+                        .font(.subheadline)
+                        .foregroundStyle(colors.muted)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - gallery-coinbar
+
+/// Home's settling card as Main draws it, then the coins bar alone: Coins'
+/// (ready coins and one not ready) and one with all of it ready.
+struct CoinBarGallery: View {
+    let words: Labels
+
+    private var home: WalletState? { SceneSource(name: "home")?.state }
+    private var coins: Coins? { scene(name: "coins")?.coins }
+
+    var body: some View {
+        if let home {
+            GallerySection(title: "main") {
+                SettlingCard(balance: home.balance, coinBar: home.coinBar, labels: words.home)
+            }
+            GallerySection(title: "all ready") {
+                CoinBar(home.coinBar.filter { $0.progress == nil })
+            }
+        }
+        if let coins {
+            GallerySection(title: "coins") {
+                // The bar hides itself from VoiceOver; Coins reads it out
+                // as one element with the core's words.
+                ZStack { CoinBar(coins.segments) }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(coins.barDescription)
+                    .accessibilityIdentifier("coin-bar")
+            }
+        }
     }
 }
