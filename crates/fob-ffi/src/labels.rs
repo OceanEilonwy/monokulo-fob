@@ -25,6 +25,7 @@ impl From<Biometry> for B {
 #[derive(uniffi::Record)]
 pub struct Labels {
     pub tabs: TabLabels,
+    pub chrome: ChromeLabels,
     pub home: HomeLabels,
     pub receive: ReceiveLabels,
     pub send: SendLabels,
@@ -44,6 +45,21 @@ pub struct TabLabels {
     pub wallet: String,
     pub contacts: String,
     pub settings: String,
+}
+
+/// The toolbar's icon buttons as VoiceOver names them, and the wallet
+/// switcher's.
+#[derive(uniffi::Record)]
+pub struct ChromeLabels {
+    pub scan_a_payment_code: String,
+    pub switch_wallet: String,
+    /// The tab bar, read as one group.
+    pub sections: String,
+    pub contacts: String,
+    pub refresh: String,
+    pub settings: String,
+    /// The Mac's wallet menu.
+    pub wallets: String,
 }
 
 #[derive(uniffi::Record)]
@@ -217,6 +233,15 @@ pub fn labels(device: String, biometry: Biometry) -> Labels {
             contacts: s(l::tabs::CONTACTS),
             settings: s(l::tabs::SETTINGS),
         },
+        chrome: ChromeLabels {
+            scan_a_payment_code: s(l::chrome::SCAN_A_PAYMENT_CODE),
+            switch_wallet: s(l::chrome::SWITCH_WALLET),
+            sections: s(l::chrome::SECTIONS),
+            contacts: s(l::chrome::CONTACTS),
+            refresh: s(l::chrome::REFRESH),
+            settings: s(l::chrome::SETTINGS),
+            wallets: s(l::chrome::WALLETS),
+        },
         home: HomeLabels {
             receive: s(l::home::RECEIVE),
             send: s(l::home::SEND),
@@ -348,6 +373,20 @@ pub fn label_receipt_items(items: u32) -> String {
     l::confirm::receipt_items(items)
 }
 
+/// The sync chip read as a button: "Synced, tap for details", from the
+/// chip's own VoiceOver words (`SyncStatus.chip_label`).
+#[uniffi::export]
+pub fn label_sync_chip(label: String) -> String {
+    l::chrome::sync_chip(&label)
+}
+
+/// A confirmation ring read aloud (Coins' not-ready row, an Activity line):
+/// "3 of 10 confirmations".
+#[uniffi::export]
+pub fn label_confirmations(done: u64, needed: u64) -> String {
+    l::coins::confirmations(done, needed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +410,9 @@ mod tests {
         assert_eq!(mac.settings.this_device, "This Mac");
         assert_eq!(label_pay("Corner Bakery".into()), "Pay Corner Bakery");
         assert_eq!(label_receipt_items(2), "Receipt · 2 items");
+        assert_eq!(phone.chrome.scan_a_payment_code, "Scan a payment code");
+        assert_eq!(phone.chrome.switch_wallet, "Switch wallet");
+        assert_eq!(label_sync_chip("Synced".into()), "Synced, tap for details");
+        assert_eq!(label_confirmations(3, 10), "3 of 10 confirmations");
     }
 }

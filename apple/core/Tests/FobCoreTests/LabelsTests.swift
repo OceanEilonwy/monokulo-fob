@@ -32,4 +32,27 @@ final class LabelsTests: XCTestCase {
         XCTAssertEqual(labelPay(name: "Corner Bakery"), "Pay Corner Bakery")
         XCTAssertEqual(labelReceiptItems(items: 2), "Receipt · 2 items")
     }
+
+    func testChromeWords() {
+        let chrome = labels(device: "iPhone", biometry: .faceId).chrome
+        XCTAssertEqual([chrome.scanAPaymentCode, chrome.switchWallet, chrome.sections],
+                       ["Scan a payment code", "Switch wallet", "Sections"])
+        XCTAssertEqual([chrome.contacts, chrome.refresh, chrome.settings, chrome.wallets],
+                       ["Contacts", "Refresh", "Settings", "Wallets"])
+        XCTAssertEqual(labelSyncChip(label: "Synced"), "Synced, tap for details")
+    }
+
+    func testSyncChipLooks() {
+        let chips = SyncChip.sceneStates.map(\.chip)
+        XCTAssertEqual(chips.count, 3)
+        guard chips.count == 3 else { return }
+        XCTAssertEqual(chips[0], .synced(text: "Synced"))
+        if case .catchingUp(let text, let progress) = chips[1] {
+            XCTAssertEqual(text, "4 min left")
+            XCTAssertTrue(progress > 0 && progress < 1, "progress \(progress)")
+        } else {
+            XCTFail("the second look isn't catching up: \(chips[1])")
+        }
+        XCTAssertEqual(chips[2], .offline(text: "Can't reach node"))
+    }
 }
