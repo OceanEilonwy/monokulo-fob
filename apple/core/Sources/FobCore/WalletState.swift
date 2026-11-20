@@ -220,12 +220,19 @@ extension HomeBalance {
 }
 
 extension SyncChip {
-    init(_ s: SyncStatus) {
+    /// The chip a core sync status draws (a scene's, or the live wallet's).
+    public init(_ s: SyncStatus) {
         switch s.chipLook {
         case .synced: self = .synced(text: s.chipText)
         case .ring: self = .catchingUp(text: s.chipText, progress: Double(s.progress))
         case .offline: self = .offline(text: s.chipText)
         }
+    }
+
+    /// One of each look (synced, catching up, offline) with its VoiceOver
+    /// words, from fob-scenes: what FobUI's gallery shows.
+    public static var sceneStates: [(chip: SyncChip, label: String)] {
+        sceneSyncStates().map { (SyncChip($0), $0.chipLabel) }
     }
 }
 

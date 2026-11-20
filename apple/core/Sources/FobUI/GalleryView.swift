@@ -20,9 +20,25 @@ public struct GalleryView: View {
     }
 
     /// The pages there are.
-    public static let names = ["theme", "biometrics"]
+    public static let names = ["theme", "biometrics", "pills", "chips", "chrome"]
+
+    /// The words, the app's when there is one.
+    private var words: Labels {
+        model?.labels ?? labels(device: "iPhone", biometry: .faceId)
+    }
 
     public var body: some View {
+        if name == "chrome" {
+            // The bars themselves: a whole tab bar and navigation stack.
+            ChromeGallery(words: words)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("gallery")
+        } else {
+            page
+        }
+    }
+
+    private var page: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 switch name {
@@ -30,6 +46,10 @@ public struct GalleryView: View {
                     ThemeGallery()
                 case "biometrics":
                     BiometricsGallery()
+                case "pills":
+                    PillsGallery(words: words)
+                case "chips":
+                    ChipsGallery(words: words)
                 default:
                     Text(verbatim: "gallery-\(name)?")
                         .fobFont(.headline)
@@ -117,9 +137,9 @@ private struct BiometricsGallery: View {
         let phone = labels(device: "iPhone", biometry: .faceId).confirm
         let mac = labels(device: "Mac", biometry: .touchId).confirm
         VStack(spacing: 16) {
-            PayButton(title: phone.payWith, symbol: BiometricKind.faceID.symbol)
+            PillButton(phone.payWith, systemImage: BiometricKind.faceID.symbol) {}
                 .accessibilityIdentifier("pay-biometric")
-            PayButton(title: mac.sendWith, symbol: BiometricKind.touchID.symbol)
+            PillButton(mac.sendWith, systemImage: BiometricKind.touchID.symbol) {}
                 .accessibilityIdentifier("send-biometric")
             Text(phone.usePassphrase)
                 .fobFont(.headline)
@@ -128,19 +148,5 @@ private struct BiometricsGallery: View {
                 .accessibilityIdentifier("use-passphrase")
         }
         .frame(maxWidth: .infinity)
-    }
-}
-
-/// The confirm screens' orange pill until CORE-021's PillButton.
-private struct PayButton: View {
-    let title: String
-    let symbol: String
-
-    var body: some View {
-        Label(title, systemImage: symbol)
-            .fobFont(.headline)
-            .foregroundStyle(FobColors.onOrange)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .background(FobColors.orange, in: Capsule())
     }
 }

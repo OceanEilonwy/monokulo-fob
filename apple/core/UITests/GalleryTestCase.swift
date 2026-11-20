@@ -22,10 +22,23 @@ class GalleryTestCase: XCTestCase {
         XCTAssertTrue(gallery.waitForExistence(timeout: 60), "gallery-\(name) never showed")
         // Let the first frame settle.
         Thread.sleep(forTimeInterval: 1)
+        attach("\(task)--\(theme)")
+        return app
+    }
+
+    /// Screenshots the screen as it is now and keeps it as `name`
+    /// ("<task>-<step>--<theme>" for a test's extra shots).
+    @MainActor
+    func attach(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        attachment.name = "\(task)--\(theme)"
+        attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
-        return app
+    }
+
+    /// The element with accessibility identifier `id`, whatever it is.
+    @MainActor
+    func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any)[id].firstMatch
     }
 }
